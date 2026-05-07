@@ -8,7 +8,7 @@ import (
 	"eve-flipper/internal/esi"
 )
 
-func TestReconcilePaperTradeWithRuntime_SuggestsSoldFromTransactions(t *testing.T) {
+func TestReconcilePaperTradeWithRuntime_SuggestsReconciledFromTransactions(t *testing.T) {
 	created := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
 	trade := db.PaperTrade{
 		ID:              42,
@@ -52,8 +52,8 @@ func TestReconcilePaperTradeWithRuntime_SuggestsSoldFromTransactions(t *testing.
 	}
 
 	row := reconcilePaperTradeWithRuntime(trade, runtime)
-	if row.SuggestedStatus != db.PaperTradeStatusSold {
-		t.Fatalf("status = %q, want sold", row.SuggestedStatus)
+	if row.SuggestedStatus != db.PaperTradeStatusReconciled {
+		t.Fatalf("status = %q, want reconciled", row.SuggestedStatus)
 	}
 	if row.Confidence != "high" {
 		t.Fatalf("confidence = %q, want high", row.Confidence)
@@ -67,7 +67,7 @@ func TestReconcilePaperTradeWithRuntime_SuggestsSoldFromTransactions(t *testing.
 	if row.SuggestedPatch == nil {
 		t.Fatal("expected suggested patch")
 	}
-	if row.SuggestedPatch.Status != db.PaperTradeStatusSold ||
+	if row.SuggestedPatch.Status != db.PaperTradeStatusReconciled ||
 		row.SuggestedPatch.ActualQuantity != 10 ||
 		row.SuggestedPatch.ActualBuyPrice != 5.6 ||
 		row.SuggestedPatch.ActualSellPrice != 8 {

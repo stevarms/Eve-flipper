@@ -101,6 +101,7 @@ export interface FlipBacktestTrade {
   exit_date: string;
   status: "closed" | "open" | string;
   quantity: number;
+  requested_quantity?: number;
   buy_price: number;
   sell_price: number;
   buy_cost: number;
@@ -108,7 +109,14 @@ export interface FlipBacktestTrade {
   pnl: number;
   roi_percent: number;
   fillable: boolean;
+  fill_percent?: number;
+  fill_source?: string;
+  fill_reason?: string;
+  source_volume?: number;
   target_volume: number;
+  buy_snapshot_id?: number;
+  sell_snapshot_id?: number;
+  snapshot_age_seconds?: number;
   route_time_minutes?: number;
   route_jumps?: number;
   cargo_trips?: number;
@@ -170,11 +178,61 @@ export interface FlipBacktestSummary {
   max_route_safety_multiplier?: number;
 }
 
+export interface FlipBacktestAssumptions {
+  strategy_mode: string;
+  price_model: string;
+  data_source: string;
+  quantity_mode: string;
+  volume_fill_fraction: number;
+  partial_fill_behavior: string;
+  buy_price_basis: string;
+  sell_price_basis: string;
+  fill_model: string;
+  cooldown_model: string;
+  fee_model: string;
+  includes_open_mtm: boolean;
+  uses_recorded_orderbook: boolean;
+  uses_vwap_depth: boolean;
+  uses_daily_history: boolean;
+  orderbook_max_age_minutes?: number;
+}
+
+export interface FlipBacktestDiagnostics {
+  rows_tested: number;
+  candidate_entries: number;
+  executed_trades: number;
+  full_fills: number;
+  partial_fills: number;
+  unfilled_trades: number;
+  skipped_missing_price: number;
+  skipped_no_quantity: number;
+  skipped_unfillable: number;
+  skipped_below_roi: number;
+  skipped_no_pair: number;
+  replay_source_books?: number;
+  replay_target_books?: number;
+  replay_paired_books?: number;
+  replay_errors?: number;
+  requested_quantity: number;
+  executed_quantity: number;
+  avg_fill_percent: number;
+  executable_fill_percent: number;
+  avg_roi: number;
+  best_roi: number;
+  worst_roi: number;
+  profit_per_trade_isk: number;
+  avg_capital_isk: number;
+  capital_turnover_isk: number;
+  estimated_isk_per_hour?: number;
+}
+
 export interface FlipBacktestResult {
   summary: FlipBacktestSummary;
   items: FlipBacktestItemSummary[];
   ledger: FlipBacktestTrade[];
   equity: FlipBacktestEquityPoint[];
+  assumptions: FlipBacktestAssumptions;
+  diagnostics: FlipBacktestDiagnostics;
   warnings?: string[];
 }
 
@@ -257,7 +315,7 @@ export interface OrderBookCleanupPlan {
   newest_remaining: string;
 }
 
-export type PaperTradeStatus = "planned" | "bought" | "hauled" | "sold" | "cancelled";
+export type PaperTradeStatus = "planned" | "bought" | "hauled" | "listed" | "sold" | "reconciled" | "cancelled";
 
 export interface PaperTrade {
   id: number;
@@ -1934,6 +1992,85 @@ export interface PortfolioPnL {
   open_positions: OpenPosition[];
   coverage: MatchingCoverage;
   settings: PortfolioSettings;
+}
+
+export interface EveLedgerSummary {
+  wallet_isk: number;
+  estimated_capital_isk: number;
+  journal_income_isk: number;
+  journal_outgoing_isk: number;
+  journal_net_isk: number;
+  trading_pnl_isk: number;
+  trading_cashflow_isk: number;
+  other_income_isk: number;
+  other_outgoing_isk: number;
+  other_net_isk: number;
+  inventory_mtm_isk: number;
+  inventory_cost_basis_isk: number;
+  unrealized_pnl_isk: number;
+  sell_orders_value_isk: number;
+  buy_orders_value_isk: number;
+  open_orders_value_isk: number;
+  journal_entries: number;
+  transaction_count: number;
+  asset_types: number;
+  asset_units: number;
+  priced_asset_types: number;
+  unpriced_asset_types: number;
+  unpriced_asset_units: number;
+}
+
+export interface EveLedgerCurvePoint {
+  period: string;
+  start_date: string;
+  end_date: string;
+  income_isk: number;
+  outgoing_isk: number;
+  net_cashflow_isk: number;
+  trading_pnl_isk: number;
+  other_net_isk: number;
+  capital_isk: number;
+  journal_entries: number;
+  transactions: number;
+}
+
+export interface EveLedgerCategory {
+  key: string;
+  label: string;
+  income_isk: number;
+  outgoing_isk: number;
+  net_isk: number;
+  entries: number;
+  is_trading: boolean;
+}
+
+export interface EveLedgerInventoryItem {
+  type_id: number;
+  type_name: string;
+  quantity: number;
+  adjusted_price: number;
+  market_value: number;
+  cost_basis: number;
+  unrealized_pnl: number;
+  priced: boolean;
+}
+
+export interface EveLedgerSettings {
+  lookback_days: number;
+  sales_tax_percent: number;
+  broker_fee_percent: number;
+}
+
+export interface EveLedgerDashboard {
+  summary: EveLedgerSummary;
+  daily: EveLedgerCurvePoint[];
+  weekly: EveLedgerCurvePoint[];
+  monthly: EveLedgerCurvePoint[];
+  categories: EveLedgerCategory[];
+  inventory: EveLedgerInventoryItem[];
+  settings: EveLedgerSettings;
+  warnings?: string[];
+  portfolio?: PortfolioPnL;
 }
 
 // --- Portfolio Optimizer Types ---

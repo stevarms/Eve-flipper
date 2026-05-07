@@ -5,6 +5,7 @@ import type {
   StationAIScanSnapshot,
   StationCommandRow,
   StationCommandSummary,
+  FlipResult,
   StationTrade,
   StationInfo,
   ScanParams,
@@ -30,7 +31,7 @@ import { formatISK, formatMargin, formatNumber } from "@/lib/format";
 import { useI18n, type TranslationKey } from "@/lib/i18n";
 import { MetricTooltip } from "./Tooltip";
 import { EmptyState } from "./EmptyState";
-import { StationTradingExecutionCalculator } from "./StationTradingExecutionCalculator";
+import { TradeExecutionAutopilotPopup } from "./TradeExecutionAutopilotPopup";
 import { useGlobalToast } from "./Toast";
 import { handleEveUIError } from "@/lib/handleEveUIError";
 import {
@@ -260,6 +261,72 @@ function rowRegionID(row: StationTrade, fallbackRegionID: number): number {
 
 function rowSystemID(row: StationTrade, fallbackSystemID: number): number {
   return row.SystemID && row.SystemID > 0 ? row.SystemID : fallbackSystemID;
+}
+
+function stationTradeToFlipResult(
+  row: StationTrade | null,
+  fallbackRegionID: number,
+  fallbackSystemID: number,
+  fallbackSystemName: string,
+): FlipResult | null {
+  if (!row) return null;
+  const positiveVolumes = [row.BuyVolume, row.SellVolume, row.DailyVolume]
+    .map((value) => Math.floor(Number(value ?? 0)))
+    .filter((value) => value > 0);
+  const liquidityQty = positiveVolumes.length > 0 ? Math.min(...positiveVolumes) : 100;
+  const units = Math.max(1, Math.min(100, liquidityQty));
+  const region = rowRegionID(row, fallbackRegionID);
+  const system = rowSystemID(row, fallbackSystemID);
+  const systemName = fallbackSystemName || row.StationName;
+  const buy = Number(row.BuyPrice ?? 0);
+  const sell = Number(row.SellPrice ?? 0);
+  const profitPerUnit = Number(row.ProfitPerUnit ?? sell - buy);
+  const totalProfit = profitPerUnit * units;
+  return {
+    TypeID: row.TypeID,
+    TypeName: row.TypeName,
+    Volume: Number(row.Volume ?? 0),
+    BuyPrice: buy,
+    BuyStation: row.StationName,
+    BuySystemName: systemName,
+    BuySystemID: system,
+    BuyRegionID: region,
+    BuyLocationID: row.StationID,
+    SellPrice: sell,
+    SellStation: row.StationName,
+    SellSystemName: systemName,
+    SellSystemID: system,
+    SellRegionID: region,
+    SellLocationID: row.StationID,
+    ProfitPerUnit: profitPerUnit,
+    MarginPercent: Number(row.MarginPercent ?? row.ROI ?? 0),
+    UnitsToBuy: units,
+    BuyOrderRemain: Math.floor(Number(row.BuyVolume ?? units)),
+    SellOrderRemain: Math.floor(Number(row.SellVolume ?? units)),
+    TotalProfit: totalProfit,
+    ProfitPerJump: totalProfit,
+    BuyJumps: 0,
+    SellJumps: 0,
+    TotalJumps: 0,
+    DailyVolume: Number(row.DailyVolume ?? 0),
+    Velocity: 0,
+    PriceTrend: 0,
+    BuyCompetitors: Number(row.BuyOrderCount ?? 0),
+    SellCompetitors: Number(row.SellOrderCount ?? 0),
+    DailyProfit: Number(row.DailyProfit ?? row.RealizableDailyProfit ?? totalProfit),
+    ExpectedBuyPrice: buy,
+    ExpectedSellPrice: sell,
+    ExpectedProfit: totalProfit,
+    RealProfit: totalProfit,
+    FilledQty: units,
+    CanFill: true,
+    FillTimeDays: row.DailyVolume > 0 ? units / row.DailyVolume : Number(row.DOS ?? 0),
+    LiquidityScore: Number(row.ConfidenceScore ?? row.CTS ?? 0),
+    LiquidityLabel: row.ConfidenceLabel,
+    CharacterAssets: row.CharacterAssets,
+    CharacterBuyOrders: row.CharacterBuyOrders,
+    CharacterSellOrders: row.CharacterSellOrders,
+  };
 }
 
 function normalizeStationResults(rows: StationTrade[]): StationTrade[] {
@@ -1809,6 +1876,11 @@ export function StationTrading({
     ? hiddenTradeMap[stationRowKey(contextMenu.row)]
     : undefined;
 
+  const execPlanFlipRow = useMemo(
+    () => stationTradeToFlipResult(execPlanRow, regionId, systemId, params.system_name || ""),
+    [execPlanRow, params.system_name, regionId, systemId],
+  );
+
   return (
     <div className="flex-1 flex flex-col min-h-0">
       {/* Settings Panel - unified design */}
@@ -3081,7 +3153,7 @@ export function StationTrading({
             )}
             {rowRegionID(contextMenu.row, regionId) > 0 && (
               <ContextItem
-                label={t("placeDraft")}
+                label="Build Execution Plan"
                 onClick={() => {
                   setExecPlanRow(contextMenu.row);
                   setContextMenu(null);
@@ -3327,21 +3399,18 @@ export function StationTrading({
         </>
       )}
 
-      <StationTradingExecutionCalculator
+      <TradeExecutionAutopilotPopup
         open={execPlanRow !== null}
         onClose={() => setExecPlanRow(null)}
-        typeID={execPlanRow?.TypeID ?? 0}
-        typeName={execPlanRow?.TypeName ?? ""}
-        regionID={execPlanRow ? rowRegionID(execPlanRow, regionId) : regionId}
-        stationID={execPlanRow?.StationID ?? 0}
-        defaultQuantity={100}
+        row={execPlanFlipRow}
+        mode="station"
+        isLoggedIn={isLoggedIn}
         brokerFeePercent={splitTradeFees ? undefined : brokerFee}
         salesTaxPercent={splitTradeFees ? undefined : salesTaxPercent}
         buyBrokerFeePercent={splitTradeFees ? buyBrokerFeePercent : undefined}
         sellBrokerFeePercent={splitTradeFees ? sellBrokerFeePercent : undefined}
         buySalesTaxPercent={splitTradeFees ? buySalesTaxPercent : undefined}
         sellSalesTaxPercent={splitTradeFees ? sellSalesTaxPercent : undefined}
-        impactDays={avgPricePeriod}
       />
       <StationAIAssistant
         params={params}

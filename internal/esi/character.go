@@ -56,6 +56,23 @@ type WalletTransaction struct {
 	LocationName string `json:"location_name,omitempty"`
 }
 
+// WalletJournalEntry represents a character wallet journal entry.
+type WalletJournalEntry struct {
+	ID            int64   `json:"id"`
+	Date          string  `json:"date"`
+	RefType       string  `json:"ref_type"`
+	FirstPartyID  int64   `json:"first_party_id,omitempty"`
+	SecondPartyID int64   `json:"second_party_id,omitempty"`
+	Amount        float64 `json:"amount"`
+	Balance       float64 `json:"balance"`
+	Reason        string  `json:"reason,omitempty"`
+	Description   string  `json:"description,omitempty"`
+	Tax           float64 `json:"tax,omitempty"`
+	TaxReceiverID int64   `json:"tax_receiver_id,omitempty"`
+	ContextID     int64   `json:"context_id,omitempty"`
+	ContextIDType string  `json:"context_id_type,omitempty"`
+}
+
 // CharacterAsset represents an asset row from character inventory.
 type CharacterAsset struct {
 	ItemID          int64  `json:"item_id"`
@@ -289,6 +306,83 @@ func (c *Client) GetWalletTransactions(characterID int64, accessToken string) ([
 		return nil, fmt.Errorf("wallet transactions: %w", err)
 	}
 	return txns, nil
+}
+
+// GetWalletJournal fetches all available pages of a character's wallet journal.
+func (c *Client) GetWalletJournal(characterID int64, accessToken string) ([]WalletJournalEntry, error) {
+	journalURL := fmt.Sprintf("%s/characters/%d/wallet/journal/?datasource=tranquility", baseURL, characterID)
+
+	c.sem <- struct{}{}
+
+	req, err := http.NewRequest("GET", journalURL+"&page=1", nil)
+	if err != nil {
+		<-c.sem
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "eve-flipper/1.0 (github.com)")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		<-c.sem
+		return nil, fmt.Errorf("wallet journal page 1: %w", err)
+	}
+
+	totalPages := 1
+	if p := resp.Header.Get("X-Pages"); p != "" {
+		if tp, parseErr := strconv.Atoi(p); parseErr == nil && tp > 1 {
+			totalPages = tp
+		}
+	}
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		<-c.sem
+		return nil, fmt.Errorf("wallet journal: ESI %d: %s", resp.StatusCode, string(body))
+	}
+
+	var page1 []WalletJournalEntry
+	decErr := json.NewDecoder(resp.Body).Decode(&page1)
+	resp.Body.Close()
+	<-c.sem
+	if decErr != nil {
+		return nil, fmt.Errorf("wallet journal decode: %w", decErr)
+	}
+
+	if totalPages <= 1 {
+		return page1, nil
+	}
+
+	type pageResult struct {
+		data []WalletJournalEntry
+		err  error
+	}
+	results := make(chan pageResult, totalPages-1)
+
+	for p := 2; p <= totalPages; p++ {
+		go func(pageNum int) {
+			pageURL := fmt.Sprintf("%s&page=%d", journalURL, pageNum)
+			var data []WalletJournalEntry
+			if fetchErr := c.AuthGetJSON(pageURL, accessToken, &data); fetchErr != nil {
+				results <- pageResult{err: fetchErr}
+				return
+			}
+			results <- pageResult{data: data}
+		}(p)
+	}
+
+	all := make([]WalletJournalEntry, 0, len(page1)*totalPages)
+	all = append(all, page1...)
+	for i := 0; i < totalPages-1; i++ {
+		r := <-results
+		if r.err != nil {
+			continue
+		}
+		all = append(all, r.data...)
+	}
+	return all, nil
 }
 
 // GetCharacterAssets fetches all pages of character assets.

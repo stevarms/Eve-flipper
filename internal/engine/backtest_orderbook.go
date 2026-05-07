@@ -133,6 +133,8 @@ func BuildOrderBookReplayBacktest(rows []FlipResult, params FlipBacktestParams, 
 	result := FlipBacktestResult{}
 	if len(rows) == 0 || getBooks == nil {
 		result.Summary = summarizeFlipBacktest(rows, nil, params)
+		result.Assumptions = buildFlipBacktestAssumptions(params)
+		result.Diagnostics = buildFlipBacktestDiagnostics(rows, nil, params)
 		result.Warnings = append(result.Warnings, "recorded orderbook replay needs stored orderbook snapshots")
 		return result
 	}
@@ -174,6 +176,20 @@ func BuildOrderBookReplayBacktest(rows []FlipResult, params FlipBacktestParams, 
 	result.Summary = summarizeFlipBacktest(rows, result.Ledger, params)
 	result.Items = summarizeFlipBacktestItems(result.Ledger)
 	result.Equity = buildFlipBacktestEquityCurve(result.Ledger)
+	result.Assumptions = buildFlipBacktestAssumptions(params)
+	result.Diagnostics = buildFlipBacktestDiagnostics(rows, result.Ledger, params)
+	result.Diagnostics.CandidateEntries = diag.Pairs
+	result.Diagnostics.SkippedNoPair = diag.NoPair
+	result.Diagnostics.SkippedNoQuantity = diag.NoQuantity
+	result.Diagnostics.SkippedUnfillable = diag.Unfillable
+	result.Diagnostics.SkippedBelowROI = diag.BelowROI
+	result.Diagnostics.ReplaySourceBooks = diag.SourceBooks
+	result.Diagnostics.ReplayTargetBooks = diag.TargetBooks
+	result.Diagnostics.ReplayPairedBooks = diag.Pairs
+	result.Diagnostics.ReplayErrors = diag.Errors
+	if diag.HasBestROI {
+		result.Diagnostics.BestROI = sanitizeFloat(diag.BestROI)
+	}
 	if len(result.Ledger) == 0 {
 		if diag.SourceBooks == 0 && diag.TargetBooks == 0 {
 			result.Warnings = append(result.Warnings, "recorded orderbook has no stored snapshots for these rows yet; ESI cannot backfill old order books, so run live scans first")
@@ -394,6 +410,10 @@ func backtestOrderBookReplayRow(
 			diag.Unfillable++
 			continue
 		}
+		fillReason := "orderbook_depth_full"
+		if !fillable {
+			fillReason = "partial_orderbook_depth"
+		}
 		var buyGross, sellGross float64
 		buyFilled, buyGross, sourceDepth = fillReplayLevels(sourceBook.Levels, actualQty, buyPriceMult, params.VolumeFillFraction)
 		sellFilled, sellGross, targetDepth = fillReplayLevels(targetBook.Levels, actualQty, sellPriceMult, params.VolumeFillFraction)
@@ -419,6 +439,10 @@ func backtestOrderBookReplayRow(
 		if targetBook.CapturedAt.After(exitAt) {
 			exitAt = targetBook.CapturedAt
 		}
+		snapshotAge := targetBook.CapturedAt.Sub(sourceBook.CapturedAt)
+		if snapshotAge < 0 {
+			snapshotAge = -snapshotAge
+		}
 		routeTime := RouteTimeEstimate{}
 		cooldown := manualCooldown
 		if params.CooldownMode == "route_time" {
@@ -427,26 +451,34 @@ func backtestOrderBookReplayRow(
 		}
 		tradeDate := exitAt.UTC().Format("2006-01-02")
 		out = append(out, FlipBacktestTrade{
-			TypeID:          row.TypeID,
-			TypeName:        row.TypeName,
-			EntryDate:       sourceBook.CapturedAt.UTC().Format("2006-01-02"),
-			ExitDate:        tradeDate,
-			Status:          "closed",
-			Quantity:        actualQty,
-			BuyPrice:        sanitizeFloat(buyGross / float64(actualQty)),
-			SellPrice:       sanitizeFloat(sellGross / float64(actualQty)),
-			BuyCost:         sanitizeFloat(buyCost),
-			SellRevenue:     sanitizeFloat(sellRevenue),
-			PnL:             sanitizeFloat(pnl),
-			ROIPercent:      sanitizeFloat(roi),
-			Fillable:        fillable,
-			TargetVolume:    minInt64(sourceDepth, targetDepth),
-			RouteTimeMin:    routeTime.Minutes,
-			RouteJumps:      routeTime.Jumps,
-			CargoTrips:      routeTime.Trips,
-			RouteSafetyMult: routeTime.SafetyMult,
-			RouteDanger:     routeTime.Danger,
-			RouteKills:      routeTime.Kills,
+			TypeID:             row.TypeID,
+			TypeName:           row.TypeName,
+			EntryDate:          sourceBook.CapturedAt.UTC().Format("2006-01-02"),
+			ExitDate:           tradeDate,
+			Status:             "closed",
+			Quantity:           actualQty,
+			RequestedQuantity:  requestedQty,
+			BuyPrice:           sanitizeFloat(buyGross / float64(actualQty)),
+			SellPrice:          sanitizeFloat(sellGross / float64(actualQty)),
+			BuyCost:            sanitizeFloat(buyCost),
+			SellRevenue:        sanitizeFloat(sellRevenue),
+			PnL:                sanitizeFloat(pnl),
+			ROIPercent:         sanitizeFloat(roi),
+			Fillable:           fillable,
+			FillPercent:        fillPercent(requestedQty, actualQty),
+			FillSource:         "recorded_orderbook_vwap",
+			FillReason:         fillReason,
+			SourceVolume:       sourceDepth,
+			TargetVolume:       minInt64(sourceDepth, targetDepth),
+			BuySnapshotID:      sourceBook.SnapshotID,
+			SellSnapshotID:     targetBook.SnapshotID,
+			SnapshotAgeSeconds: int64(snapshotAge.Seconds()),
+			RouteTimeMin:       routeTime.Minutes,
+			RouteJumps:         routeTime.Jumps,
+			CargoTrips:         routeTime.Trips,
+			RouteSafetyMult:    routeTime.SafetyMult,
+			RouteDanger:        routeTime.Danger,
+			RouteKills:         routeTime.Kills,
 		})
 		nextAllowed = sourceBook.CapturedAt.Add(cooldown)
 	}

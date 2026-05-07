@@ -28,7 +28,7 @@ import {
 } from "@/lib/api";
 import { useGlobalToast } from "./Toast";
 import { EmptyState, type EmptyReason } from "./EmptyState";
-import { ExecutionPlannerPopup } from "./ExecutionPlannerPopup";
+import { TradeExecutionAutopilotPopup } from "./TradeExecutionAutopilotPopup";
 import { handleEveUIError } from "@/lib/handleEveUIError";
 import { BatchBuilderPopup } from "./BatchBuilderPopup";
 import { RouteSafetyModal } from "./RouteSafetyModal";
@@ -3187,7 +3187,7 @@ export function ScanResultsTable({
             {(contextMenu.row.BuyRegionID != null ||
               contextMenu.row.SellRegionID != null) && (
               <ContextItem
-                label={t("placeDraft")}
+                label="Build Execution Plan"
                 onClick={() => {
                   setExecPlanRow(contextMenu.row);
                   setContextMenu(null);
@@ -3458,16 +3458,11 @@ export function ScanResultsTable({
         <DayDetailPanel row={dayDetailRow} onClose={() => setDayDetailRow(null)} />
       )}
 
-      <ExecutionPlannerPopup
+      <TradeExecutionAutopilotPopup
         open={execPlanRow !== null}
         onClose={() => setExecPlanRow(null)}
-        typeID={execPlanRow?.TypeID ?? 0}
-        typeName={execPlanRow?.TypeName ?? ""}
-        regionID={execPlanRow?.BuyRegionID ?? 0}
-        locationID={execPlanRow?.BuyLocationID ?? 0}
-        sellRegionID={execPlanRow?.SellRegionID}
-        sellLocationID={execPlanRow?.SellLocationID ?? 0}
-        defaultQuantity={execPlanRow?.UnitsToBuy ?? 100}
+        row={execPlanRow}
+        isLoggedIn={isLoggedIn}
         brokerFeePercent={brokerFeePercent}
         salesTaxPercent={salesTaxPercent}
         splitTradeFees={splitTradeFees}
@@ -3475,6 +3470,7 @@ export function ScanResultsTable({
         sellBrokerFeePercent={sellBrokerFeePercent}
         buySalesTaxPercent={buySalesTaxPercent}
         sellSalesTaxPercent={sellSalesTaxPercent}
+        onJournalCreated={() => setPaperJournalOpen(true)}
       />
 
       <BatchBuilderPopup

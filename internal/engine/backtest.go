@@ -46,26 +46,34 @@ type FlipBacktestParams struct {
 }
 
 type FlipBacktestTrade struct {
-	TypeID          int32   `json:"type_id"`
-	TypeName        string  `json:"type_name"`
-	EntryDate       string  `json:"entry_date"`
-	ExitDate        string  `json:"exit_date"`
-	Status          string  `json:"status"` // closed | open
-	Quantity        int32   `json:"quantity"`
-	BuyPrice        float64 `json:"buy_price"`
-	SellPrice       float64 `json:"sell_price"`
-	BuyCost         float64 `json:"buy_cost"`
-	SellRevenue     float64 `json:"sell_revenue"`
-	PnL             float64 `json:"pnl"`
-	ROIPercent      float64 `json:"roi_percent"`
-	Fillable        bool    `json:"fillable"`
-	TargetVolume    int64   `json:"target_volume"`
-	RouteTimeMin    float64 `json:"route_time_minutes,omitempty"`
-	RouteJumps      int     `json:"route_jumps,omitempty"`
-	CargoTrips      int     `json:"cargo_trips,omitempty"`
-	RouteSafetyMult float64 `json:"route_safety_multiplier,omitempty"`
-	RouteDanger     string  `json:"route_danger,omitempty"`
-	RouteKills      int     `json:"route_kills,omitempty"`
+	TypeID             int32   `json:"type_id"`
+	TypeName           string  `json:"type_name"`
+	EntryDate          string  `json:"entry_date"`
+	ExitDate           string  `json:"exit_date"`
+	Status             string  `json:"status"` // closed | open
+	Quantity           int32   `json:"quantity"`
+	RequestedQuantity  int32   `json:"requested_quantity,omitempty"`
+	BuyPrice           float64 `json:"buy_price"`
+	SellPrice          float64 `json:"sell_price"`
+	BuyCost            float64 `json:"buy_cost"`
+	SellRevenue        float64 `json:"sell_revenue"`
+	PnL                float64 `json:"pnl"`
+	ROIPercent         float64 `json:"roi_percent"`
+	Fillable           bool    `json:"fillable"`
+	FillPercent        float64 `json:"fill_percent,omitempty"`
+	FillSource         string  `json:"fill_source,omitempty"`
+	FillReason         string  `json:"fill_reason,omitempty"`
+	SourceVolume       int64   `json:"source_volume,omitempty"`
+	TargetVolume       int64   `json:"target_volume"`
+	BuySnapshotID      int64   `json:"buy_snapshot_id,omitempty"`
+	SellSnapshotID     int64   `json:"sell_snapshot_id,omitempty"`
+	SnapshotAgeSeconds int64   `json:"snapshot_age_seconds,omitempty"`
+	RouteTimeMin       float64 `json:"route_time_minutes,omitempty"`
+	RouteJumps         int     `json:"route_jumps,omitempty"`
+	CargoTrips         int     `json:"cargo_trips,omitempty"`
+	RouteSafetyMult    float64 `json:"route_safety_multiplier,omitempty"`
+	RouteDanger        string  `json:"route_danger,omitempty"`
+	RouteKills         int     `json:"route_kills,omitempty"`
 }
 
 type FlipBacktestItemSummary struct {
@@ -121,12 +129,62 @@ type FlipBacktestSummary struct {
 	MaxRouteSafetyMult float64 `json:"max_route_safety_multiplier,omitempty"`
 }
 
+type FlipBacktestAssumptions struct {
+	StrategyMode          string  `json:"strategy_mode"`
+	PriceModel            string  `json:"price_model"`
+	DataSource            string  `json:"data_source"`
+	QuantityMode          string  `json:"quantity_mode"`
+	VolumeFillFraction    float64 `json:"volume_fill_fraction"`
+	PartialFillBehavior   string  `json:"partial_fill_behavior"`
+	BuyPriceBasis         string  `json:"buy_price_basis"`
+	SellPriceBasis        string  `json:"sell_price_basis"`
+	FillModel             string  `json:"fill_model"`
+	CooldownModel         string  `json:"cooldown_model"`
+	FeeModel              string  `json:"fee_model"`
+	IncludesOpenMTM       bool    `json:"includes_open_mtm"`
+	UsesRecordedOrderBook bool    `json:"uses_recorded_orderbook"`
+	UsesVWAPDepth         bool    `json:"uses_vwap_depth"`
+	UsesDailyHistory      bool    `json:"uses_daily_history"`
+	OrderBookMaxAgeMin    int     `json:"orderbook_max_age_minutes,omitempty"`
+}
+
+type FlipBacktestDiagnostics struct {
+	RowsTested            int     `json:"rows_tested"`
+	CandidateEntries      int     `json:"candidate_entries"`
+	ExecutedTrades        int     `json:"executed_trades"`
+	FullFills             int     `json:"full_fills"`
+	PartialFills          int     `json:"partial_fills"`
+	UnfilledTrades        int     `json:"unfilled_trades"`
+	SkippedMissingPrice   int     `json:"skipped_missing_price"`
+	SkippedNoQuantity     int     `json:"skipped_no_quantity"`
+	SkippedUnfillable     int     `json:"skipped_unfillable"`
+	SkippedBelowROI       int     `json:"skipped_below_roi"`
+	SkippedNoPair         int     `json:"skipped_no_pair"`
+	ReplaySourceBooks     int     `json:"replay_source_books,omitempty"`
+	ReplayTargetBooks     int     `json:"replay_target_books,omitempty"`
+	ReplayPairedBooks     int     `json:"replay_paired_books,omitempty"`
+	ReplayErrors          int     `json:"replay_errors,omitempty"`
+	RequestedQuantity     int64   `json:"requested_quantity"`
+	ExecutedQuantity      int64   `json:"executed_quantity"`
+	AvgFillPercent        float64 `json:"avg_fill_percent"`
+	ExecutableFillPercent float64 `json:"executable_fill_percent"`
+	AvgROI                float64 `json:"avg_roi"`
+	BestROI               float64 `json:"best_roi"`
+	WorstROI              float64 `json:"worst_roi"`
+	ProfitPerTradeISK     float64 `json:"profit_per_trade_isk"`
+	AvgCapitalISK         float64 `json:"avg_capital_isk"`
+	CapitalTurnoverISK    float64 `json:"capital_turnover_isk"`
+	EstimatedISKPerHour   float64 `json:"estimated_isk_per_hour,omitempty"`
+}
+
 type FlipBacktestResult struct {
-	Summary  FlipBacktestSummary       `json:"summary"`
-	Items    []FlipBacktestItemSummary `json:"items"`
-	Ledger   []FlipBacktestTrade       `json:"ledger"`
-	Equity   []FlipBacktestEquityPoint `json:"equity"`
-	Warnings []string                  `json:"warnings,omitempty"`
+	Summary     FlipBacktestSummary       `json:"summary"`
+	Items       []FlipBacktestItemSummary `json:"items"`
+	Ledger      []FlipBacktestTrade       `json:"ledger"`
+	Equity      []FlipBacktestEquityPoint `json:"equity"`
+	Assumptions FlipBacktestAssumptions   `json:"assumptions"`
+	Diagnostics FlipBacktestDiagnostics   `json:"diagnostics"`
+	Warnings    []string                  `json:"warnings,omitempty"`
 }
 
 type historyGetter func(regionID int32, typeID int32) []esi.HistoryEntry
@@ -190,6 +248,8 @@ func BuildFlipBacktest(rows []FlipResult, params FlipBacktestParams, getHistory 
 		result.Summary.BacktestDays = params.WindowDays
 		result.Summary.StrategyMode = params.StrategyMode
 		result.Summary.TravelCooldown = params.TravelCooldownDays
+		result.Assumptions = buildFlipBacktestAssumptions(params)
+		result.Diagnostics = buildFlipBacktestDiagnostics(nil, nil, params)
 		return result
 	}
 	if len(rows) > params.MaxRows {
@@ -236,6 +296,18 @@ func BuildFlipBacktest(rows []FlipResult, params FlipBacktestParams, getHistory 
 	result.Summary = summarizeFlipBacktest(rows, result.Ledger, params)
 	result.Items = summarizeFlipBacktestItems(result.Ledger)
 	result.Equity = buildFlipBacktestEquityCurve(result.Ledger)
+	result.Assumptions = buildFlipBacktestAssumptions(params)
+	result.Diagnostics = buildFlipBacktestDiagnostics(rows, result.Ledger, params)
+	if params.StrategyMode == "instant_flip" {
+		result.Diagnostics.CandidateEntries = instantDiag.Candidates
+		result.Diagnostics.SkippedMissingPrice = instantDiag.MissingPrice
+		result.Diagnostics.SkippedNoQuantity = instantDiag.NoQuantity
+		result.Diagnostics.SkippedUnfillable = instantDiag.Unfillable
+		result.Diagnostics.SkippedBelowROI = instantDiag.BelowROI
+		if instantDiag.HasBestROI {
+			result.Diagnostics.BestROI = sanitizeFloat(instantDiag.BestROI)
+		}
+	}
 	if params.StrategyMode == "instant_flip" && len(result.Ledger) == 0 {
 		result.Warnings = append(result.Warnings, instantDiag.warning())
 	}
@@ -442,9 +514,14 @@ func backtestHoldCycleRow(
 		if qty <= 0 {
 			continue
 		}
-		fillable := float64(entry.Volume)*params.VolumeFillFraction/100 >= float64(qty)
+		fillCapacity := historyFillCapacity(entry.Volume, params.VolumeFillFraction)
+		fillable := fillCapacity >= int64(qty)
 		if params.SkipUnfillable && !fillable {
 			continue
+		}
+		fillReason := "daily_volume_full"
+		if !fillable {
+			fillReason = "daily_volume_below_requested"
 		}
 
 		buyCost := buyPrice * buyCostMult * float64(qty)
@@ -462,20 +539,24 @@ func backtestHoldCycleRow(
 		}
 
 		out = append(out, FlipBacktestTrade{
-			TypeID:       row.TypeID,
-			TypeName:     row.TypeName,
-			EntryDate:    entry.Date,
-			ExitDate:     exit.Date,
-			Status:       status,
-			Quantity:     qty,
-			BuyPrice:     sanitizeFloat(buyPrice),
-			SellPrice:    sanitizeFloat(sellPrice),
-			BuyCost:      sanitizeFloat(buyCost),
-			SellRevenue:  sanitizeFloat(sellRevenue),
-			PnL:          sanitizeFloat(pnl),
-			ROIPercent:   sanitizeFloat(roi),
-			Fillable:     fillable,
-			TargetVolume: entry.Volume,
+			TypeID:            row.TypeID,
+			TypeName:          row.TypeName,
+			EntryDate:         entry.Date,
+			ExitDate:          exit.Date,
+			Status:            status,
+			Quantity:          qty,
+			RequestedQuantity: qty,
+			BuyPrice:          sanitizeFloat(buyPrice),
+			SellPrice:         sanitizeFloat(sellPrice),
+			BuyCost:           sanitizeFloat(buyCost),
+			SellRevenue:       sanitizeFloat(sellRevenue),
+			PnL:               sanitizeFloat(pnl),
+			ROIPercent:        sanitizeFloat(roi),
+			Fillable:          fillable,
+			FillPercent:       fillPercent(qty, clampInt64ToInt32(fillCapacity)),
+			FillSource:        "daily_history_volume",
+			FillReason:        fillReason,
+			TargetVolume:      entry.Volume,
 		})
 	}
 	return out
@@ -562,14 +643,27 @@ func backtestInstantFlipRow(
 		if sourceVolume > 0 && sourceVolume < fillVolume {
 			fillVolume = sourceVolume
 		}
-		fillable := float64(fillVolume)*params.VolumeFillFraction/100 >= float64(qty)
+		fillCapacity := historyFillCapacity(fillVolume, params.VolumeFillFraction)
+		actualQty := qty
+		fillable := fillCapacity >= int64(qty)
+		if !fillable {
+			actualQty = clampInt64ToInt32(fillCapacity)
+		}
 		if params.SkipUnfillable && !fillable {
 			diag.Unfillable++
 			continue
 		}
+		if actualQty <= 0 {
+			diag.Unfillable++
+			continue
+		}
+		fillReason := "daily_volume_full"
+		if !fillable {
+			fillReason = "partial_daily_volume"
+		}
 
-		buyCost := buyPrice * buyCostMult * float64(qty)
-		sellRevenue := sellPrice * sellRevenueMult * float64(qty)
+		buyCost := buyPrice * buyCostMult * float64(actualQty)
+		sellRevenue := sellPrice * sellRevenueMult * float64(actualQty)
 		pnl := sellRevenue - buyCost
 		roi := 0.0
 		if buyCost > 0 {
@@ -582,20 +676,25 @@ func backtestInstantFlipRow(
 		}
 
 		out = append(out, FlipBacktestTrade{
-			TypeID:       row.TypeID,
-			TypeName:     row.TypeName,
-			EntryDate:    entry.Date,
-			ExitDate:     entry.Date,
-			Status:       "closed",
-			Quantity:     qty,
-			BuyPrice:     sanitizeFloat(buyPrice),
-			SellPrice:    sanitizeFloat(sellPrice),
-			BuyCost:      sanitizeFloat(buyCost),
-			SellRevenue:  sanitizeFloat(sellRevenue),
-			PnL:          sanitizeFloat(pnl),
-			ROIPercent:   sanitizeFloat(roi),
-			Fillable:     fillable,
-			TargetVolume: entry.Volume,
+			TypeID:            row.TypeID,
+			TypeName:          row.TypeName,
+			EntryDate:         entry.Date,
+			ExitDate:          entry.Date,
+			Status:            "closed",
+			Quantity:          actualQty,
+			RequestedQuantity: qty,
+			BuyPrice:          sanitizeFloat(buyPrice),
+			SellPrice:         sanitizeFloat(sellPrice),
+			BuyCost:           sanitizeFloat(buyCost),
+			SellRevenue:       sanitizeFloat(sellRevenue),
+			PnL:               sanitizeFloat(pnl),
+			ROIPercent:        sanitizeFloat(roi),
+			Fillable:          fillable,
+			FillPercent:       fillPercent(qty, actualQty),
+			FillSource:        "daily_history_volume",
+			FillReason:        fillReason,
+			SourceVolume:      sourceVolume,
+			TargetVolume:      entry.Volume,
 		})
 		nextAllowedIdx = i + params.TravelCooldownDays
 	}
@@ -625,6 +724,34 @@ func backtestTradeQuantity(row FlipResult, params FlipBacktestParams, buyPrice f
 	}
 }
 
+func historyFillCapacity(volume int64, pct float64) int64 {
+	if volume <= 0 || pct <= 0 {
+		return 0
+	}
+	if pct >= 100 {
+		return volume
+	}
+	capacity := int64(math.Floor(float64(volume) * pct / 100))
+	if capacity <= 0 {
+		return 1
+	}
+	return capacity
+}
+
+func fillPercent(requested, executed int32) float64 {
+	if requested <= 0 {
+		return 0
+	}
+	pct := float64(executed) / float64(requested) * 100
+	if pct > 100 {
+		pct = 100
+	}
+	if pct < 0 {
+		pct = 0
+	}
+	return sanitizeFloat(pct)
+}
+
 func sortedHistory(entries []esi.HistoryEntry) []esi.HistoryEntry {
 	if len(entries) == 0 {
 		return nil
@@ -645,6 +772,155 @@ func historyByDate(entries []esi.HistoryEntry) map[string]esi.HistoryEntry {
 		}
 	}
 	return out
+}
+
+func buildFlipBacktestAssumptions(params FlipBacktestParams) FlipBacktestAssumptions {
+	priceModel := params.InstantPriceMode
+	if params.StrategyMode == "hold" {
+		priceModel = "hold_history_exit"
+	}
+	dataSource := "daily_market_history"
+	if params.InstantPriceMode == "recorded_orderbook" {
+		dataSource = "recorded_orderbook"
+	}
+
+	buyBasis := "current scan/depth fallback"
+	sellBasis := "current scan/depth fallback"
+	fillModel := "daily history volume capped by volume_fill_fraction"
+	partialBehavior := "partial fills are executed when skip_unfillable=false"
+	if params.StrategyMode == "hold" {
+		buyBasis = "history average or scan fallback"
+		sellBasis = "future history average after hold window"
+		partialBehavior = "unfillable hold entries are marked; skip_unfillable controls exclusion"
+	} else if params.InstantPriceMode == "history_pair" {
+		buyBasis = "same-day source history average or scan fallback"
+		sellBasis = "same-day target history average"
+	} else if params.InstantPriceMode == "recorded_orderbook" {
+		buyBasis = "recorded source sell-book VWAP"
+		sellBasis = "recorded target buy-book VWAP"
+		fillModel = "stored orderbook depth VWAP capped by volume_fill_fraction"
+	}
+
+	cooldown := fmt.Sprintf("%dd travel cooldown", params.TravelCooldownDays)
+	if params.InstantPriceMode == "recorded_orderbook" {
+		if params.CooldownMode == "route_time" {
+			cooldown = "route-time cooldown from jumps, cargo trips, dock time and safety multiplier"
+		} else {
+			cooldown = fmt.Sprintf("%dm recorded-book cooldown", params.OrderBookCooldownMin)
+		}
+	}
+
+	feeModel := fmt.Sprintf("buy %.2f%% broker, sell %.2f%% broker + %.2f%% tax",
+		params.BrokerFeePercent,
+		params.BrokerFeePercent,
+		params.SalesTaxPercent,
+	)
+	if params.SplitTradeFees {
+		feeModel = fmt.Sprintf("buy %.2f%% broker + %.2f%% tax, sell %.2f%% broker + %.2f%% tax",
+			params.BuyBrokerFeePercent,
+			params.BuySalesTaxPercent,
+			params.SellBrokerFeePercent,
+			params.SellSalesTaxPercent,
+		)
+	}
+
+	return FlipBacktestAssumptions{
+		StrategyMode:          params.StrategyMode,
+		PriceModel:            priceModel,
+		DataSource:            dataSource,
+		QuantityMode:          params.QuantityMode,
+		VolumeFillFraction:    sanitizeFloat(params.VolumeFillFraction),
+		PartialFillBehavior:   partialBehavior,
+		BuyPriceBasis:         buyBasis,
+		SellPriceBasis:        sellBasis,
+		FillModel:             fillModel,
+		CooldownModel:         cooldown,
+		FeeModel:              feeModel,
+		IncludesOpenMTM:       !params.ExcludeOpenTrades,
+		UsesRecordedOrderBook: params.InstantPriceMode == "recorded_orderbook",
+		UsesVWAPDepth:         params.InstantPriceMode == "recorded_orderbook",
+		UsesDailyHistory:      params.InstantPriceMode != "recorded_orderbook",
+		OrderBookMaxAgeMin:    params.OrderBookMaxAgeMin,
+	}
+}
+
+func buildFlipBacktestDiagnostics(rows []FlipResult, ledger []FlipBacktestTrade, params FlipBacktestParams) FlipBacktestDiagnostics {
+	d := FlipBacktestDiagnostics{
+		RowsTested:       len(rows),
+		CandidateEntries: len(ledger),
+		ExecutedTrades:   len(ledger),
+	}
+	if len(ledger) == 0 {
+		return d
+	}
+
+	roiTotal := 0.0
+	roiCount := 0
+	bestSet := false
+	capitalTotal := 0.0
+	fillPctTotal := 0.0
+	routeMinutes := 0.0
+	for _, tr := range ledger {
+		requested := tr.RequestedQuantity
+		if requested <= 0 {
+			requested = tr.Quantity
+		}
+		fillPct := tr.FillPercent
+		if fillPct <= 0 {
+			fillPct = fillPercent(requested, tr.Quantity)
+		}
+		d.RequestedQuantity += int64(requested)
+		d.ExecutedQuantity += int64(tr.Quantity)
+		fillPctTotal += fillPct
+		capitalTotal += tr.BuyCost
+		d.CapitalTurnoverISK += tr.BuyCost
+		d.ProfitPerTradeISK += tr.PnL
+		if tr.Fillable && tr.Quantity >= requested {
+			d.FullFills++
+		} else if tr.Quantity > 0 && tr.Quantity < requested {
+			d.PartialFills++
+		} else if !tr.Fillable {
+			d.UnfilledTrades++
+		}
+		roiTotal += tr.ROIPercent
+		roiCount++
+		if !bestSet {
+			d.BestROI = tr.ROIPercent
+			d.WorstROI = tr.ROIPercent
+			bestSet = true
+		} else {
+			if tr.ROIPercent > d.BestROI {
+				d.BestROI = tr.ROIPercent
+			}
+			if tr.ROIPercent < d.WorstROI {
+				d.WorstROI = tr.ROIPercent
+			}
+		}
+		if tr.RouteTimeMin > 0 {
+			routeMinutes += tr.RouteTimeMin
+		}
+	}
+	if d.ExecutedTrades > 0 {
+		d.AvgFillPercent = sanitizeFloat(fillPctTotal / float64(d.ExecutedTrades))
+		d.ProfitPerTradeISK = sanitizeFloat(d.ProfitPerTradeISK / float64(d.ExecutedTrades))
+		d.AvgCapitalISK = sanitizeFloat(capitalTotal / float64(d.ExecutedTrades))
+	}
+	if d.RequestedQuantity > 0 {
+		d.ExecutableFillPercent = sanitizeFloat(float64(d.ExecutedQuantity) / float64(d.RequestedQuantity) * 100)
+	}
+	if roiCount > 0 {
+		d.AvgROI = sanitizeFloat(roiTotal / float64(roiCount))
+		d.BestROI = sanitizeFloat(d.BestROI)
+		d.WorstROI = sanitizeFloat(d.WorstROI)
+	}
+	if routeMinutes > 0 {
+		totalPnL := 0.0
+		for _, tr := range ledger {
+			totalPnL += tr.PnL
+		}
+		d.EstimatedISKPerHour = sanitizeFloat(totalPnL / (routeMinutes / 60))
+	}
+	return d
 }
 
 func summarizeFlipBacktest(rows []FlipResult, ledger []FlipBacktestTrade, params FlipBacktestParams) FlipBacktestSummary {

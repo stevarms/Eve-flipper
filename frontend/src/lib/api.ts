@@ -16,6 +16,7 @@ import type {
   DemandRegionResponse,
   DemandRegionsResponse,
   ExecutionPlanResult,
+  EveLedgerDashboard,
   FlipBacktestResult,
   FlipResult,
   HotZonesResponse,
@@ -1551,6 +1552,16 @@ export async function getPortfolioPnL(days: number = 30, params?: PortfolioPnLPa
   appendCharacterScope(qp, params?.characterId);
   const res = await apiFetch(`${BASE}/api/auth/portfolio?${qp.toString()}`);
   return handleResponse<PortfolioPnL>(res);
+}
+
+export async function getEveLedgerDashboard(days: number = 90, params?: PortfolioPnLParams): Promise<EveLedgerDashboard> {
+  const qp = new URLSearchParams();
+  qp.set("days", String(days));
+  if (params?.salesTax != null) qp.set("sales_tax", String(params.salesTax));
+  if (params?.brokerFee != null) qp.set("broker_fee", String(params.brokerFee));
+  appendCharacterScope(qp, params?.characterId);
+  const res = await apiFetch(`${BASE}/api/auth/ledger?${qp.toString()}`);
+  return handleResponse<EveLedgerDashboard>(res);
 }
 
 export type OptimizerResult =

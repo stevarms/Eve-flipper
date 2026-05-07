@@ -282,6 +282,54 @@ func TestBuildFlipBacktest_InstantFlipScanSpreadMode(t *testing.T) {
 	}
 }
 
+func TestBuildFlipBacktest_InstantFlipPartialFillUsesExecutableQuantity(t *testing.T) {
+	row := FlipResult{
+		TypeID:       34,
+		TypeName:     "Tritanium",
+		BuyRegionID:  1,
+		SellRegionID: 2,
+		BuyPrice:     10,
+		SellPrice:    20,
+		FilledQty:    100,
+	}
+	history := map[int32][]esi.HistoryEntry{
+		1: {{Date: "2026-01-01", Average: 10, Volume: 40}},
+		2: {{Date: "2026-01-01", Average: 20, Volume: 50}},
+	}
+
+	result := BuildFlipBacktest(
+		[]FlipResult{row},
+		FlipBacktestParams{
+			StrategyMode:       "instant_flip",
+			InstantPriceMode:   "history_pair",
+			WindowDays:         1,
+			EntrySpacingDays:   1,
+			TravelCooldownDays: 1,
+			VolumeFillFraction: 50,
+		},
+		func(regionID int32, typeID int32) []esi.HistoryEntry {
+			return history[regionID]
+		},
+	)
+
+	if result.Summary.Trades != 1 {
+		t.Fatalf("trades = %d, want 1", result.Summary.Trades)
+	}
+	trade := result.Ledger[0]
+	if trade.RequestedQuantity != 100 || trade.Quantity != 20 {
+		t.Fatalf("requested/executed = %d/%d, want 100/20", trade.RequestedQuantity, trade.Quantity)
+	}
+	if trade.Fillable || trade.FillPercent != 20 {
+		t.Fatalf("fillable/fill pct = %t/%v, want false/20", trade.Fillable, trade.FillPercent)
+	}
+	if result.Summary.RealizedPnL != 200 {
+		t.Fatalf("realized pnl = %v, want 200 from partial quantity", result.Summary.RealizedPnL)
+	}
+	if result.Diagnostics.PartialFills != 1 || result.Diagnostics.ExecutableFillPercent != 20 {
+		t.Fatalf("diagnostics = %#v, want partial fill and 20%% executable", result.Diagnostics)
+	}
+}
+
 func TestBuildOrderBookReplayBacktest_UsesRecordedVWAPDepth(t *testing.T) {
 	now := time.Now().UTC().Add(-time.Hour)
 	row := FlipResult{
@@ -343,6 +391,15 @@ func TestBuildOrderBookReplayBacktest_UsesRecordedVWAPDepth(t *testing.T) {
 	}
 	if result.Summary.DataSource != "recorded_orderbook" {
 		t.Fatalf("data source = %q, want recorded_orderbook", result.Summary.DataSource)
+	}
+	if !result.Assumptions.UsesRecordedOrderBook || !result.Assumptions.UsesVWAPDepth {
+		t.Fatalf("assumptions = %#v, want recorded orderbook VWAP", result.Assumptions)
+	}
+	if result.Diagnostics.ReplayPairedBooks != 1 || result.Diagnostics.AvgFillPercent != 100 {
+		t.Fatalf("diagnostics = %#v, want one paired full fill", result.Diagnostics)
+	}
+	if trade.BuySnapshotID != 1 || trade.SellSnapshotID != 2 || trade.FillSource != "recorded_orderbook_vwap" {
+		t.Fatalf("trade replay fields = %#v", trade)
 	}
 }
 

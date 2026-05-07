@@ -9,12 +9,14 @@ import (
 )
 
 const (
-	PaperTradeStatusPlanned   = "planned"
-	PaperTradeStatusBought    = "bought"
-	PaperTradeStatusHauled    = "hauled"
-	PaperTradeStatusSold      = "sold"
-	PaperTradeStatusCancelled = "cancelled"
-	PaperTradeStatusActive    = "active"
+	PaperTradeStatusPlanned    = "planned"
+	PaperTradeStatusBought     = "bought"
+	PaperTradeStatusHauled     = "hauled"
+	PaperTradeStatusListed     = "listed"
+	PaperTradeStatusSold       = "sold"
+	PaperTradeStatusReconciled = "reconciled"
+	PaperTradeStatusCancelled  = "cancelled"
+	PaperTradeStatusActive     = "active"
 )
 
 type PaperTrade struct {
@@ -108,8 +110,12 @@ func normalizePaperTradeStatus(status string) string {
 		return PaperTradeStatusBought
 	case PaperTradeStatusHauled:
 		return PaperTradeStatusHauled
+	case PaperTradeStatusListed:
+		return PaperTradeStatusListed
 	case PaperTradeStatusSold:
 		return PaperTradeStatusSold
+	case PaperTradeStatusReconciled:
+		return PaperTradeStatusReconciled
 	case PaperTradeStatusCancelled:
 		return PaperTradeStatusCancelled
 	default:
@@ -147,7 +153,7 @@ func (t *PaperTrade) finalizeComputedFields() {
 		t.ExpectedProfitISK = (cleanPaperFloat(t.PlannedSellPrice) - cleanPaperFloat(t.PlannedBuyPrice)) * plannedQty
 	}
 
-	if t.Status == PaperTradeStatusSold {
+	if t.Status == PaperTradeStatusSold || t.Status == PaperTradeStatusReconciled {
 		actualQty := t.ActualQuantity
 		if actualQty <= 0 {
 			actualQty = t.PlannedQuantity
@@ -239,16 +245,16 @@ func paperTradeFromCreateInput(userID string, in PaperTradeCreateInput, now stri
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}
-	if t.ActualQuantity <= 0 && (status == PaperTradeStatusBought || status == PaperTradeStatusHauled || status == PaperTradeStatusSold) {
+	if t.ActualQuantity <= 0 && (status == PaperTradeStatusBought || status == PaperTradeStatusHauled || status == PaperTradeStatusListed || status == PaperTradeStatusSold || status == PaperTradeStatusReconciled) {
 		t.ActualQuantity = t.PlannedQuantity
 	}
-	if t.ActualBuyPrice <= 0 && (status == PaperTradeStatusBought || status == PaperTradeStatusHauled || status == PaperTradeStatusSold) {
+	if t.ActualBuyPrice <= 0 && (status == PaperTradeStatusBought || status == PaperTradeStatusHauled || status == PaperTradeStatusListed || status == PaperTradeStatusSold || status == PaperTradeStatusReconciled) {
 		t.ActualBuyPrice = t.PlannedBuyPrice
 	}
-	if t.ActualSellPrice <= 0 && status == PaperTradeStatusSold {
+	if t.ActualSellPrice <= 0 && (status == PaperTradeStatusSold || status == PaperTradeStatusReconciled) {
 		t.ActualSellPrice = t.PlannedSellPrice
 	}
-	if status == PaperTradeStatusSold || status == PaperTradeStatusCancelled {
+	if status == PaperTradeStatusSold || status == PaperTradeStatusReconciled || status == PaperTradeStatusCancelled {
 		t.ClosedAt = now
 	}
 	if err := validatePaperTrade(t); err != nil {
@@ -368,10 +374,10 @@ func (d *DB) ListPaperTradesForUser(userID, status string, limit int) ([]PaperTr
 			SELECT `+paperTradeSelectColumns+`
 			  FROM paper_trades
 			 WHERE user_id = ?
-			   AND status IN (?, ?, ?)
+			   AND status IN (?, ?, ?, ?)
 			 ORDER BY updated_at DESC, id DESC
 			 LIMIT ?
-		`, userID, PaperTradeStatusPlanned, PaperTradeStatusBought, PaperTradeStatusHauled, limit)
+		`, userID, PaperTradeStatusPlanned, PaperTradeStatusBought, PaperTradeStatusHauled, PaperTradeStatusListed, limit)
 	default:
 		normalized := normalizePaperTradeStatus(status)
 		if normalized == "" {
@@ -446,16 +452,16 @@ func applyPaperTradePatch(t *PaperTrade, patch PaperTradeUpdateInput, now string
 		t.Notes = cleanPaperText(*patch.Notes, 2048)
 	}
 
-	if t.ActualQuantity <= 0 && (t.Status == PaperTradeStatusBought || t.Status == PaperTradeStatusHauled || t.Status == PaperTradeStatusSold) {
+	if t.ActualQuantity <= 0 && (t.Status == PaperTradeStatusBought || t.Status == PaperTradeStatusHauled || t.Status == PaperTradeStatusListed || t.Status == PaperTradeStatusSold || t.Status == PaperTradeStatusReconciled) {
 		t.ActualQuantity = t.PlannedQuantity
 	}
-	if t.ActualBuyPrice <= 0 && (t.Status == PaperTradeStatusBought || t.Status == PaperTradeStatusHauled || t.Status == PaperTradeStatusSold) {
+	if t.ActualBuyPrice <= 0 && (t.Status == PaperTradeStatusBought || t.Status == PaperTradeStatusHauled || t.Status == PaperTradeStatusListed || t.Status == PaperTradeStatusSold || t.Status == PaperTradeStatusReconciled) {
 		t.ActualBuyPrice = t.PlannedBuyPrice
 	}
-	if t.ActualSellPrice <= 0 && t.Status == PaperTradeStatusSold {
+	if t.ActualSellPrice <= 0 && (t.Status == PaperTradeStatusSold || t.Status == PaperTradeStatusReconciled) {
 		t.ActualSellPrice = t.PlannedSellPrice
 	}
-	if t.Status == PaperTradeStatusSold || t.Status == PaperTradeStatusCancelled {
+	if t.Status == PaperTradeStatusSold || t.Status == PaperTradeStatusReconciled || t.Status == PaperTradeStatusCancelled {
 		if strings.TrimSpace(t.ClosedAt) == "" {
 			t.ClosedAt = now
 		}

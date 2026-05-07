@@ -258,13 +258,13 @@ func suggestPaperTradeLiveStatus(trade db.PaperTrade, row paperTradeReconcileRow
 	}
 
 	if row.MatchedSellQty >= plannedQty && row.MatchedBuyQty > 0 {
-		return db.PaperTradeStatusSold, "high", "Matched completed buy and sell wallet transactions"
+		return db.PaperTradeStatusReconciled, "high", "Matched completed buy and sell wallet transactions"
 	}
 	if row.MatchedSellQty > 0 && row.MatchedBuyQty > 0 {
-		return db.PaperTradeStatusHauled, "medium", "Matched partial sell wallet transactions"
+		return db.PaperTradeStatusSold, "medium", "Matched partial sell wallet transactions"
 	}
 	if row.OpenSellQty > 0 {
-		return db.PaperTradeStatusHauled, "high", "Matching active sell order is live"
+		return db.PaperTradeStatusListed, "high", "Matching active sell order is live"
 	}
 	if row.SellLocationAssetQty > 0 {
 		return db.PaperTradeStatusHauled, "medium", "Matching inventory is already at the sell location"

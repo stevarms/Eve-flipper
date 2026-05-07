@@ -43,6 +43,24 @@ func TestPaperTradeCRUDAndPnL(t *testing.T) {
 		t.Fatalf("active list mismatch: %#v", list)
 	}
 
+	listedStatus := PaperTradeStatusListed
+	listed, err := d.UpdatePaperTradeForUser("user-paper", trade.ID, PaperTradeUpdateInput{
+		Status: &listedStatus,
+	})
+	if err != nil {
+		t.Fatalf("update listed: %v", err)
+	}
+	if listed.Status != PaperTradeStatusListed || listed.ClosedAt != "" {
+		t.Fatalf("listed result = %q/%q, want active listed", listed.Status, listed.ClosedAt)
+	}
+	list, err = d.ListPaperTradesForUser("user-paper", PaperTradeStatusActive, 20)
+	if err != nil {
+		t.Fatalf("list active after listed: %v", err)
+	}
+	if len(list) != 1 || list[0].Status != PaperTradeStatusListed {
+		t.Fatalf("listed trade should remain active, got %#v", list)
+	}
+
 	status := PaperTradeStatusSold
 	actualQty := int64(90)
 	actualBuy := 5.1
@@ -66,6 +84,17 @@ func TestPaperTradeCRUDAndPnL(t *testing.T) {
 	}
 	if updated.ClosedAt == "" {
 		t.Fatalf("closed_at not set for sold trade")
+	}
+
+	reconciledStatus := PaperTradeStatusReconciled
+	reconciled, err := d.UpdatePaperTradeForUser("user-paper", trade.ID, PaperTradeUpdateInput{
+		Status: &reconciledStatus,
+	})
+	if err != nil {
+		t.Fatalf("update reconciled: %v", err)
+	}
+	if reconciled.Status != PaperTradeStatusReconciled || reconciled.ClosedAt == "" || reconciled.RealizedProfitISK != wantPnL {
+		t.Fatalf("reconciled result status/closed/pnl = %q/%q/%.2f", reconciled.Status, reconciled.ClosedAt, reconciled.RealizedProfitISK)
 	}
 
 	active, err := d.ListPaperTradesForUser("user-paper", PaperTradeStatusActive, 20)

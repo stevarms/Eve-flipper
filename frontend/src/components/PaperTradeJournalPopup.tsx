@@ -54,8 +54,8 @@ type LiveTradeDraft = {
   draft: NewTradeDraft;
 };
 
-const activeStatuses = new Set(["planned", "bought", "hauled"]);
-const tradeStatuses: PaperTradeStatus[] = ["planned", "bought", "hauled", "sold", "cancelled"];
+const activeStatuses = new Set(["planned", "bought", "hauled", "listed"]);
+const tradeStatuses: PaperTradeStatus[] = ["planned", "bought", "hauled", "listed", "sold", "reconciled", "cancelled"];
 
 function emptyNewTradeDraft(): NewTradeDraft {
   return {
@@ -96,11 +96,14 @@ function parseDraftNumber(value: string): number {
 function statusTone(status: string): string {
   switch (status) {
     case "sold":
+    case "reconciled":
       return "border-green-500/40 text-green-300 bg-green-950/20";
     case "cancelled":
       return "border-red-500/40 text-red-300 bg-red-950/20";
     case "hauled":
       return "border-blue-400/40 text-blue-300 bg-blue-950/20";
+    case "listed":
+      return "border-cyan-400/40 text-cyan-300 bg-cyan-950/20";
     case "bought":
       return "border-eve-accent/40 text-eve-accent bg-eve-accent/10";
     default:
@@ -116,8 +119,12 @@ function statusLabel(status: string): string {
       return "Bought";
     case "hauled":
       return "Hauled";
+    case "listed":
+      return "Listed";
     case "sold":
       return "Sold";
+    case "reconciled":
+      return "Reconciled";
     case "cancelled":
       return "Cancelled";
     default:
@@ -393,7 +400,7 @@ export function PaperTradeJournalPopup({ open, onClose }: Props) {
     const status = tradeStatuses.includes(newTradeDraft.status) ? newTradeDraft.status : "planned";
     const plannedProfit = (sell - buy) * quantity;
     const capital = buy * quantity;
-    const actualKnown = status === "bought" || status === "hauled" || status === "sold";
+    const actualKnown = status === "bought" || status === "hauled" || status === "listed" || status === "sold" || status === "reconciled";
     const payload: PaperTradeCreatePayload = {
       status,
       type_id: typeID,
@@ -405,7 +412,7 @@ export function PaperTradeJournalPopup({ open, onClose }: Props) {
       planned_roi_percent: capital > 0 ? (plannedProfit / capital) * 100 : 0,
       actual_quantity: actualKnown ? quantity : 0,
       actual_buy_price: actualKnown ? buy : 0,
-      actual_sell_price: status === "sold" ? sell : 0,
+      actual_sell_price: status === "sold" || status === "reconciled" ? sell : 0,
       fees_isk: parseDraftNumber(newTradeDraft.fees_isk),
       hauling_cost_isk: parseDraftNumber(newTradeDraft.hauling_cost_isk),
       buy_station: newTradeDraft.buy_station.trim(),
@@ -503,7 +510,7 @@ export function PaperTradeJournalPopup({ open, onClose }: Props) {
             : item,
         ),
       );
-      if (filter === "active" && (updated.status === "sold" || updated.status === "cancelled")) {
+      if (filter === "active" && (updated.status === "sold" || updated.status === "reconciled" || updated.status === "cancelled")) {
         await load();
       }
     },
@@ -545,7 +552,7 @@ export function PaperTradeJournalPopup({ open, onClose }: Props) {
         },
         `Status: ${statusLabel(status)}`,
       );
-      if (filter === "active" && (status === "sold" || status === "cancelled")) {
+      if (filter === "active" && (status === "sold" || status === "reconciled" || status === "cancelled")) {
         await load();
       }
     },
@@ -575,7 +582,7 @@ export function PaperTradeJournalPopup({ open, onClose }: Props) {
     <Modal open={open} onClose={onClose} title="Paper Trade Journal" width="max-w-7xl">
       <div className="p-4 space-y-3 text-xs text-eve-text">
         <div className="flex flex-wrap items-center gap-2">
-          {(["active", "all", "planned", "bought", "hauled", "sold", "cancelled"] as StatusFilter[]).map((item) => (
+          {(["active", "all", "planned", "bought", "hauled", "listed", "sold", "reconciled", "cancelled"] as StatusFilter[]).map((item) => (
             <button
               key={item}
               type="button"
@@ -808,7 +815,7 @@ export function PaperTradeJournalPopup({ open, onClose }: Props) {
                     </td>
                     <td className={`px-2 py-2 text-right font-mono ${trade.realized_profit_isk >= 0 ? "text-green-400" : "text-red-300"}`}>
                       <div>{formatISK(trade.realized_profit_isk)}</div>
-                      <div className="text-[10px] text-eve-dim">{formatMargin(trade.status === "sold" ? trade.roi_percent : 0)}</div>
+                      <div className="text-[10px] text-eve-dim">{formatMargin(trade.status === "sold" || trade.status === "reconciled" ? trade.roi_percent : 0)}</div>
                     </td>
                     <td className="px-2 py-2 min-w-[180px]">
                       {live ? <LiveReconcileCell row={live} /> : <span className="text-eve-dim">-</span>}
@@ -832,10 +839,16 @@ export function PaperTradeJournalPopup({ open, onClose }: Props) {
                         {(trade.status === "planned" || trade.status === "bought") && (
                           <ActionButton disabled={busy} onClick={() => void setStatus(trade, "hauled")}>Hauled</ActionButton>
                         )}
-                        {trade.status !== "sold" && trade.status !== "cancelled" && (
+                        {(trade.status === "bought" || trade.status === "hauled") && (
+                          <ActionButton disabled={busy} onClick={() => void setStatus(trade, "listed")}>Listed</ActionButton>
+                        )}
+                        {trade.status !== "sold" && trade.status !== "reconciled" && trade.status !== "cancelled" && (
                           <ActionButton disabled={busy} onClick={() => void setStatus(trade, "sold")}>Sold</ActionButton>
                         )}
-                        {trade.status !== "cancelled" && trade.status !== "sold" && (
+                        {trade.status === "sold" && (
+                          <ActionButton disabled={busy} onClick={() => void setStatus(trade, "reconciled")}>Reconciled</ActionButton>
+                        )}
+                        {trade.status !== "cancelled" && trade.status !== "sold" && trade.status !== "reconciled" && (
                           <ActionButton disabled={busy} danger onClick={() => void setStatus(trade, "cancelled")}>Cancel</ActionButton>
                         )}
                         <ActionButton disabled={busy} danger onClick={() => void removeTrade(trade)}>Delete</ActionButton>

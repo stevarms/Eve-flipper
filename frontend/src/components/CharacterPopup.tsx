@@ -356,10 +356,7 @@ export function CharacterPopup({
               )}
               {tab === "ledger" && (
                 <WalletDashboardTab
-                  wallet={data.wallet}
-                  orders={data.orders ?? []}
-                  transactions={data.transactions ?? []}
-                  assets={data.assets ?? []}
+                  characterScope={selectedScope}
                   formatIsk={formatIsk}
                   t={t}
                 />

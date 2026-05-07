@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { findRoutes, setWaypointInGame } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
-import type { RouteResult, RouteHop, ScanParams } from "@/lib/types";
-import { ExecutionPlannerPopup } from "./ExecutionPlannerPopup";
+import type { FlipResult, RouteResult, RouteHop, ScanParams } from "@/lib/types";
+import { TradeExecutionAutopilotPopup } from "./TradeExecutionAutopilotPopup";
 import { useGlobalToast } from "./Toast";
 import { handleEveUIError } from "@/lib/handleEveUIError";
 import {
@@ -83,6 +83,55 @@ function formatM3(v?: number): string {
   if (m3 >= 1_000_000) return `${(m3 / 1_000_000).toFixed(2)}M m3`;
   if (m3 >= 1_000) return `${(m3 / 1_000).toFixed(1)}K m3`;
   return `${m3.toFixed(m3 >= 10 ? 0 : 1)} m3`;
+}
+
+function routeHopToFlipResult(hop: RouteHop | null): FlipResult | null {
+  if (!hop) return null;
+  const units = Math.max(1, Math.floor(Number(hop.Units ?? 0)));
+  const buy = Number(hop.BuyPrice ?? 0);
+  const sell = Number(hop.SellPrice ?? 0);
+  const profit = Number(hop.Profit ?? (sell - buy) * units);
+  const regionID = Number(hop.RegionID ?? 0);
+  return {
+    TypeID: hop.TypeID,
+    TypeName: hop.TypeName,
+    Volume: Number(hop.VolumeM3 ?? 0),
+    BuyPrice: buy,
+    BuyStation: hop.StationName || hop.SystemName,
+    BuySystemName: hop.SystemName,
+    BuySystemID: hop.SystemID,
+    BuyRegionID: regionID,
+    SellPrice: sell,
+    SellStation: hop.DestStationName || hop.DestSystemName,
+    SellSystemName: hop.DestSystemName,
+    SellSystemID: hop.DestSystemID,
+    SellRegionID: regionID,
+    ProfitPerUnit: units > 0 ? profit / units : sell - buy,
+    MarginPercent: buy > 0 ? ((sell - buy) / buy) * 100 : 0,
+    UnitsToBuy: units,
+    BuyOrderRemain: units,
+    SellOrderRemain: units,
+    TotalProfit: profit,
+    ProfitPerJump: Number(hop.Jumps ?? 0) > 0 ? profit / Number(hop.Jumps) : profit,
+    BuyJumps: 0,
+    SellJumps: Number(hop.Jumps ?? 0),
+    TotalJumps: Number(hop.Jumps ?? 0),
+    DailyVolume: Number(hop.DailyVolume ?? 0),
+    Velocity: 0,
+    PriceTrend: 0,
+    BuyCompetitors: 0,
+    SellCompetitors: 0,
+    DailyProfit: profit,
+    ExpectedBuyPrice: buy,
+    ExpectedSellPrice: sell,
+    ExpectedProfit: profit,
+    RealProfit: profit,
+    FilledQty: units,
+    CanFill: true,
+    FillTimeDays: hop.FillTimeDays,
+    LiquidityScore: hop.LiquidityScore,
+    LiquidityLabel: hop.LiquidityLabel,
+  };
 }
 
 function RouteRiskText({ route }: { route: RouteResult }) {
@@ -913,14 +962,11 @@ function RouteDetailPopup({
       </div>
     </div>
 
-    <ExecutionPlannerPopup
+    <TradeExecutionAutopilotPopup
       open={execPlanHop !== null}
       onClose={() => setExecPlanHop(null)}
-      typeID={execPlanHop?.TypeID ?? 0}
-      typeName={execPlanHop?.TypeName ?? ""}
-      regionID={execPlanHop?.RegionID ?? 0}
-      defaultQuantity={execPlanHop?.Units ?? 100}
-      isBuy={true}
+      row={routeHopToFlipResult(execPlanHop)}
+      isLoggedIn={isLoggedIn}
       brokerFeePercent={brokerFeePercent}
       salesTaxPercent={salesTaxPercent}
       splitTradeFees={splitTradeFees}

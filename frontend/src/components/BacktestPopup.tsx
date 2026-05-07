@@ -403,6 +403,10 @@ export function BacktestPopup({
           </div>
         ) : null}
 
+        {result?.assumptions && result?.diagnostics ? (
+          <BacktestDiagnosticsPanel result={result} />
+        ) : null}
+
         {summary ? (
           <>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
@@ -472,6 +476,7 @@ export function BacktestPopup({
                         <th className="px-2 py-1 text-left">Exit</th>
                         <th className="px-2 py-1 text-left">Item</th>
                         <th className="px-2 py-1 text-right">Qty</th>
+                        <th className="px-2 py-1 text-right">Fill</th>
                         <th className="px-2 py-1 text-right">PnL</th>
                         <th className="px-2 py-1 text-right">ROI</th>
                       </tr>
@@ -481,7 +486,12 @@ export function BacktestPopup({
                         <tr key={`${tr.type_id}:${tr.entry_date}:${idx}`} className="border-t border-eve-border/40">
                           <td className="px-2 py-1 text-eve-dim">{tr.exit_date}{tr.status === "open" ? " *" : ""}</td>
                           <td className="px-2 py-1 truncate max-w-[160px]">{tr.type_name}</td>
-                          <td className="px-2 py-1 text-right font-mono text-eve-dim">{tr.quantity.toLocaleString()}</td>
+                          <td className="px-2 py-1 text-right font-mono text-eve-dim">
+                            {formatTradeQty(tr)}
+                          </td>
+                          <td className={`px-2 py-1 text-right font-mono ${(tr.fill_percent ?? 100) >= 100 ? "text-eve-dim" : "text-amber-300"}`}>
+                            {formatMargin(tr.fill_percent ?? (tr.fillable ? 100 : 0))}
+                          </td>
                           <td className={`px-2 py-1 text-right font-mono ${tr.pnl >= 0 ? "text-green-400" : "text-red-300"}`}>
                             {formatISK(tr.pnl)}
                           </td>
@@ -502,6 +512,113 @@ export function BacktestPopup({
       </div>
     </Modal>
   );
+}
+
+function BacktestDiagnosticsPanel({ result }: { result: FlipBacktestResult }) {
+  const assumptions = result.assumptions;
+  const diagnostics = result.diagnostics;
+  if (!assumptions || !diagnostics) return null;
+
+  const skipped =
+    (diagnostics.skipped_missing_price ?? 0) +
+    (diagnostics.skipped_no_quantity ?? 0) +
+    (diagnostics.skipped_unfillable ?? 0) +
+    (diagnostics.skipped_below_roi ?? 0) +
+    (diagnostics.skipped_no_pair ?? 0) +
+    (diagnostics.replay_errors ?? 0);
+
+  return (
+    <section className="border border-eve-border rounded-sm overflow-hidden">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 bg-eve-dark/60">
+        <div className="text-eve-dim uppercase tracking-wide text-[10px]">Execution diagnostics</div>
+        <div className="text-[10px] text-eve-dim">
+          {assumptions.data_source} / {assumptions.price_model}
+        </div>
+      </div>
+      <div className="p-3 space-y-3 bg-eve-panel/40">
+        <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-2">
+          <DiagMetric label="Candidates" value={diagnostics.candidate_entries.toLocaleString()} />
+          <DiagMetric label="Executed" value={diagnostics.executed_trades.toLocaleString()} />
+          <DiagMetric label="Exec fill" value={formatMargin(diagnostics.executable_fill_percent)} />
+          <DiagMetric label="Avg fill" value={formatMargin(diagnostics.avg_fill_percent)} />
+          <DiagMetric label="Partial" value={diagnostics.partial_fills.toLocaleString()} tone={diagnostics.partial_fills > 0 ? "warn" : "muted"} />
+          <DiagMetric label="Skipped" value={skipped.toLocaleString()} tone={skipped > 0 ? "warn" : "muted"} />
+          <DiagMetric label="Profit/trade" value={formatISK(diagnostics.profit_per_trade_isk)} tone={diagnostics.profit_per_trade_isk >= 0 ? "profit" : "loss"} />
+          <DiagMetric label="Avg capital" value={formatISK(diagnostics.avg_capital_isk)} />
+          {assumptions.uses_recorded_orderbook && (
+            <>
+              <DiagMetric label="Source books" value={(diagnostics.replay_source_books ?? 0).toLocaleString()} />
+              <DiagMetric label="Target books" value={(diagnostics.replay_target_books ?? 0).toLocaleString()} />
+              <DiagMetric label="Pairs" value={(diagnostics.replay_paired_books ?? 0).toLocaleString()} />
+              <DiagMetric label="Max age" value={`${assumptions.orderbook_max_age_minutes ?? 0}m`} />
+            </>
+          )}
+          {(diagnostics.estimated_isk_per_hour ?? 0) !== 0 && (
+            <DiagMetric label="ISK/hour" value={formatISK(diagnostics.estimated_isk_per_hour ?? 0)} tone={(diagnostics.estimated_isk_per_hour ?? 0) >= 0 ? "profit" : "loss"} />
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
+          <AssumptionRow label="Buy" value={assumptions.buy_price_basis} />
+          <AssumptionRow label="Sell" value={assumptions.sell_price_basis} />
+          <AssumptionRow label="Fill" value={assumptions.fill_model} />
+          <AssumptionRow label="Partial" value={assumptions.partial_fill_behavior} />
+          <AssumptionRow label="Cooldown" value={assumptions.cooldown_model} />
+          <AssumptionRow label="Fees" value={assumptions.fee_model} />
+        </div>
+
+        {skipped > 0 && (
+          <div className="grid grid-cols-2 md:grid-cols-6 gap-2 text-[10px] text-eve-dim">
+            <span>no pair {diagnostics.skipped_no_pair}</span>
+            <span>unfillable {diagnostics.skipped_unfillable}</span>
+            <span>ROI {diagnostics.skipped_below_roi}</span>
+            <span>price {diagnostics.skipped_missing_price}</span>
+            <span>qty {diagnostics.skipped_no_quantity}</span>
+            <span>errors {diagnostics.replay_errors ?? 0}</span>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function DiagMetric({
+  label,
+  value,
+  tone = "muted",
+}: {
+  label: string;
+  value: string;
+  tone?: "muted" | "profit" | "loss" | "warn";
+}) {
+  const color =
+    tone === "profit" ? "text-eve-profit" :
+    tone === "loss" ? "text-eve-error" :
+    tone === "warn" ? "text-amber-300" :
+    "text-eve-text";
+  return (
+    <div className="border border-eve-border/70 bg-eve-dark/55 rounded-sm px-2 py-2">
+      <div className="text-[9px] uppercase tracking-wider text-eve-dim">{label}</div>
+      <div className={`mt-0.5 font-mono text-sm ${color}`}>{value}</div>
+    </div>
+  );
+}
+
+function AssumptionRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex gap-2 min-w-0">
+      <span className="shrink-0 w-16 text-eve-dim uppercase tracking-wide text-[10px]">{label}</span>
+      <span className="min-w-0 text-eve-text/90 truncate">{value}</span>
+    </div>
+  );
+}
+
+function formatTradeQty(tr: FlipBacktestResult["ledger"][number]) {
+  const requested = tr.requested_quantity ?? tr.quantity;
+  if (requested > 0 && requested !== tr.quantity) {
+    return `${tr.quantity.toLocaleString()} / ${requested.toLocaleString()}`;
+  }
+  return tr.quantity.toLocaleString();
 }
 
 function OrderbookMaintenancePanel({

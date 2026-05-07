@@ -777,6 +777,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auth/station/command", s.handleAuthStationCommand)
 	mux.HandleFunc("POST /api/auth/station/ai/chat", s.handleAuthStationAIChat)
 	mux.HandleFunc("POST /api/auth/station/ai/chat/stream", s.handleAuthStationAIChatStream)
+	mux.HandleFunc("GET /api/auth/ledger", s.handleAuthLedger)
 	mux.HandleFunc("GET /api/auth/portfolio", s.handleAuthPortfolio)
 	mux.HandleFunc("GET /api/auth/portfolio/optimize", s.handleAuthPortfolioOptimize)
 	mux.HandleFunc("GET /api/auth/structures", s.handleAuthStructures)
@@ -9862,6 +9863,179 @@ func extractAIDelta(raw json.RawMessage) string {
 		return b.String()
 	}
 	return ""
+}
+
+func (s *Server) handleAuthLedger(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromRequest(r)
+
+	characterID, allScope, err := parseAuthScope(r)
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	selectedSessions, err := s.authSessionsForScope(userID, characterID, allScope, true)
+	if err != nil {
+		if strings.Contains(err.Error(), "not logged in") {
+			writeError(w, 401, err.Error())
+		} else {
+			writeError(w, 400, err.Error())
+		}
+		return
+	}
+
+	days := 90
+	if v := r.URL.Query().Get("days"); v != "" {
+		if n, parseErr := strconv.Atoi(v); parseErr == nil && n > 0 && n <= 365 {
+			days = n
+		}
+	}
+	salesTax := 8.0
+	if cfg := s.loadConfigForUser(userID); cfg != nil {
+		salesTax = cfg.SalesTaxPercent
+	}
+	if v := r.URL.Query().Get("sales_tax"); v != "" {
+		if f, parseErr := strconv.ParseFloat(v, 64); parseErr == nil && f >= 0 && f <= 100 {
+			salesTax = f
+		}
+	}
+	brokerFee := 1.0
+	if v := r.URL.Query().Get("broker_fee"); v != "" {
+		if f, parseErr := strconv.ParseFloat(v, 64); parseErr == nil && f >= 0 && f <= 100 {
+			brokerFee = f
+		}
+	}
+
+	var journal []esi.WalletJournalEntry
+	var txns []esi.WalletTransaction
+	var orders []esi.CharacterOrder
+	var assets []esi.CharacterAsset
+	var walletISK float64
+	var warnings []string
+	successfulSessions := 0
+
+	fetchTxns := func(sess *auth.Session, token string) ([]esi.WalletTransaction, error) {
+		if cached, ok := s.getWalletTxnCache(sess.CharacterID); ok {
+			return cached, nil
+		}
+		freshTxns, fetchErr := s.esi.GetWalletTransactions(sess.CharacterID, token)
+		if fetchErr != nil {
+			return nil, fetchErr
+		}
+		s.setWalletTxnCache(sess.CharacterID, freshTxns)
+		return freshTxns, nil
+	}
+
+	for _, sess := range selectedSessions {
+		token, tokenErr := s.sessions.EnsureValidTokenForUserCharacter(s.sso, userID, sess.CharacterID)
+		if tokenErr != nil {
+			log.Printf("[AUTH] Ledger token error (%s): %v", sess.CharacterName, tokenErr)
+			if !allScope {
+				writeError(w, 401, tokenErr.Error())
+				return
+			}
+			warnings = append(warnings, fmt.Sprintf("%s: auth token unavailable", sess.CharacterName))
+			continue
+		}
+		successfulSessions++
+
+		if balance, fetchErr := s.esi.GetWalletBalance(sess.CharacterID, token); fetchErr == nil {
+			walletISK += balance
+		} else {
+			log.Printf("[AUTH] Ledger wallet error (%s): %v", sess.CharacterName, fetchErr)
+			warnings = append(warnings, fmt.Sprintf("%s: wallet balance unavailable", sess.CharacterName))
+		}
+
+		if part, fetchErr := s.esi.GetWalletJournal(sess.CharacterID, token); fetchErr == nil {
+			journal = append(journal, part...)
+		} else {
+			log.Printf("[AUTH] Ledger journal error (%s): %v", sess.CharacterName, fetchErr)
+			warnings = append(warnings, fmt.Sprintf("%s: wallet journal unavailable", sess.CharacterName))
+		}
+
+		if part, fetchErr := fetchTxns(sess, token); fetchErr == nil {
+			txns = append(txns, part...)
+		} else {
+			log.Printf("[AUTH] Ledger transactions error (%s): %v", sess.CharacterName, fetchErr)
+			warnings = append(warnings, fmt.Sprintf("%s: market transactions unavailable", sess.CharacterName))
+		}
+
+		if part, fetchErr := s.esi.GetCharacterOrders(sess.CharacterID, token); fetchErr == nil {
+			orders = append(orders, part...)
+		} else {
+			log.Printf("[AUTH] Ledger orders error (%s): %v", sess.CharacterName, fetchErr)
+			warnings = append(warnings, fmt.Sprintf("%s: active orders unavailable", sess.CharacterName))
+		}
+
+		if part, fetchErr := s.esi.GetCharacterAssets(sess.CharacterID, token); fetchErr == nil {
+			assets = append(assets, part...)
+		} else {
+			log.Printf("[AUTH] Ledger assets error (%s): %v", sess.CharacterName, fetchErr)
+			warnings = append(warnings, fmt.Sprintf("%s: assets unavailable", sess.CharacterName))
+		}
+	}
+	if successfulSessions == 0 {
+		writeError(w, 401, "failed to fetch character data")
+		return
+	}
+
+	s.mu.RLock()
+	sdeData := s.sdeData
+	s.mu.RUnlock()
+	if sdeData != nil {
+		locationIDs := make(map[int64]bool)
+		for _, o := range orders {
+			locationIDs[o.LocationID] = true
+		}
+		for _, t := range txns {
+			locationIDs[t.LocationID] = true
+		}
+		for _, a := range assets {
+			locationIDs[a.LocationID] = true
+		}
+		s.esi.PrefetchStationNames(locationIDs)
+
+		for i := range orders {
+			if t, ok := sdeData.Types[orders[i].TypeID]; ok {
+				orders[i].TypeName = t.Name
+			}
+			orders[i].LocationName = s.esi.StationName(orders[i].LocationID)
+		}
+		for i := range txns {
+			if t, ok := sdeData.Types[txns[i].TypeID]; ok {
+				txns[i].TypeName = t.Name
+			}
+			txns[i].LocationName = s.esi.StationName(txns[i].LocationID)
+		}
+		for i := range assets {
+			if t, ok := sdeData.Types[assets[i].TypeID]; ok {
+				assets[i].TypeName = t.Name
+			}
+			assets[i].LocationName = s.esi.StationName(assets[i].LocationID)
+		}
+	}
+
+	adjustedPrices := map[int32]float64{}
+	var priceCache *esi.IndustryCache
+	if s.industryAnalyzer != nil && s.industryAnalyzer.IndustryCache != nil {
+		priceCache = s.industryAnalyzer.IndustryCache
+	} else {
+		priceCache = esi.NewIndustryCache()
+	}
+	if prices, priceErr := s.esi.GetAllAdjustedPrices(priceCache); priceErr == nil {
+		adjustedPrices = prices
+	} else {
+		log.Printf("[AUTH] Ledger adjusted price error: %v", priceErr)
+		warnings = append(warnings, "adjusted prices unavailable; inventory MTM is partial")
+	}
+
+	result := engine.ComputeEveLedgerDashboard(journal, txns, orders, assets, adjustedPrices, walletISK, engine.EveLedgerOptions{
+		LookbackDays:     days,
+		SalesTaxPercent:  salesTax,
+		BrokerFeePercent: brokerFee,
+		LedgerLimit:      500,
+	})
+	result.Warnings = append(result.Warnings, warnings...)
+	writeJSON(w, result)
 }
 
 func (s *Server) handleAuthPortfolio(w http.ResponseWriter, r *http.Request) {
