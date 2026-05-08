@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+  <title>exposure control</title>
+  <g transform="translate(-1.7647 -2.3382) scale(1.1471)">
+    <rect x="6" y="8" width="9" height="9"></rect><path d="M3.5 6 V19 H5"></path><path d="M20.5 6 V19 H19"></path><path d="M9 11 H12 M9 14 H13" opacity="0.7"></path>
+  </g>
+</svg>

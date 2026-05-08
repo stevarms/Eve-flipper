@@ -11,6 +11,7 @@ import type { CharacterInfo, CharacterOrder, PaperTrade, PaperTradeCreatePayload
 import { formatISK, formatMargin } from "@/lib/format";
 import { Modal } from "./Modal";
 import { useGlobalToast } from "./Toast";
+import { useAchievements } from "./achievements";
 
 type StatusFilter = "active" | "all" | PaperTradeStatus;
 
@@ -268,6 +269,7 @@ function liveDraftSourceLabel(source: LiveTradeDraft["source"]): string {
 
 export function PaperTradeJournalPopup({ open, onClose }: Props) {
   const { addToast } = useGlobalToast();
+  const { trackAchievementEvent } = useAchievements();
   const [filter, setFilter] = useState<StatusFilter>("active");
   const [trades, setTrades] = useState<PaperTrade[]>([]);
   const [drafts, setDrafts] = useState<Record<number, Draft>>({});
@@ -433,6 +435,7 @@ export function PaperTradeJournalPopup({ open, onClose }: Props) {
       setReconcileRows([]);
       setReconcileSummary(null);
       setReconcileWarnings([]);
+      void trackAchievementEvent("journal_trade_created");
       addToast(`Trade added: ${res.trade.type_name}`, "success", 2200);
       await load();
     } catch (e) {
@@ -442,7 +445,7 @@ export function PaperTradeJournalPopup({ open, onClose }: Props) {
     } finally {
       setCreatingTrade(false);
     }
-  }, [addToast, creatingTrade, load, newTradeDraft]);
+  }, [addToast, creatingTrade, load, newTradeDraft, trackAchievementEvent]);
 
   const patchTrade = useCallback(
     async (trade: PaperTrade, patch: PaperTradePatch, success: string): Promise<PaperTrade | null> => {
@@ -483,6 +486,11 @@ export function PaperTradeJournalPopup({ open, onClose }: Props) {
       setReconcileRows(data.rows);
       setReconcileSummary(data.summary);
       setReconcileWarnings(data.warnings ?? []);
+      if (data.summary.matched > 0) {
+        void trackAchievementEvent("journal_reconciled", {
+          expectedVsActualCompared: true,
+        });
+      }
       addToast(`Live sync: ${data.summary.matched}/${data.summary.trades_checked} matched`, "success", 2200);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Live reconciliation failed";
@@ -491,13 +499,22 @@ export function PaperTradeJournalPopup({ open, onClose }: Props) {
     } finally {
       setReconciling(false);
     }
-  }, [addToast, filter, reconcileScope, reconciling]);
+  }, [addToast, filter, reconcileScope, reconciling, trackAchievementEvent]);
 
   const applyLivePatch = useCallback(
     async (trade: PaperTrade, row: PaperTradeReconcileRow) => {
       if (!row.suggested_patch) return;
       const updated = await patchTrade(trade, row.suggested_patch, "Live fact applied");
       if (!updated) return;
+      void trackAchievementEvent("journal_reconciled", {
+        expectedVsActualCompared: true,
+        profitable: updated.realized_profit_isk > 0,
+        losing: updated.realized_profit_isk < 0,
+        realBeatsExpected: updated.realized_profit_isk > updated.expected_profit_isk,
+        slippageLoss: updated.actual_buy_price > updated.planned_buy_price || updated.actual_sell_price < updated.planned_sell_price,
+        marketMoved: Math.abs(updated.actual_sell_price - updated.planned_sell_price) > Math.max(0.01, updated.planned_sell_price * 0.01),
+        undercutLoss: updated.fees_isk > 0 && updated.realized_profit_isk < updated.expected_profit_isk,
+      });
       setReconcileRows((prev) =>
         prev.map((item) =>
           item.trade_id === trade.id
@@ -514,7 +531,7 @@ export function PaperTradeJournalPopup({ open, onClose }: Props) {
         await load();
       }
     },
-    [filter, load, patchTrade],
+    [filter, load, patchTrade, trackAchievementEvent],
   );
 
   const saveTrade = useCallback(
@@ -539,7 +556,7 @@ export function PaperTradeJournalPopup({ open, onClose }: Props) {
   const setStatus = useCallback(
     async (trade: PaperTrade, status: PaperTradeStatus) => {
       const draft = drafts[trade.id] ?? draftFromTrade(trade);
-      await patchTrade(
+      const updated = await patchTrade(
         trade,
         {
           status,
@@ -552,11 +569,22 @@ export function PaperTradeJournalPopup({ open, onClose }: Props) {
         },
         `Status: ${statusLabel(status)}`,
       );
+      if (updated && (status === "sold" || status === "reconciled")) {
+        void trackAchievementEvent("journal_reconciled", {
+          expectedVsActualCompared: true,
+          profitable: updated.realized_profit_isk > 0,
+          losing: updated.realized_profit_isk < 0,
+          realBeatsExpected: updated.realized_profit_isk > updated.expected_profit_isk,
+          slippageLoss: updated.actual_buy_price > updated.planned_buy_price || updated.actual_sell_price < updated.planned_sell_price,
+          marketMoved: Math.abs(updated.actual_sell_price - updated.planned_sell_price) > Math.max(0.01, updated.planned_sell_price * 0.01),
+          undercutLoss: updated.fees_isk > 0 && updated.realized_profit_isk < updated.expected_profit_isk,
+        });
+      }
       if (filter === "active" && (status === "sold" || status === "reconciled" || status === "cancelled")) {
         await load();
       }
     },
-    [drafts, filter, load, patchTrade],
+    [drafts, filter, load, patchTrade, trackAchievementEvent],
   );
 
   const removeTrade = useCallback(

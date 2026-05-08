@@ -34,6 +34,7 @@ import { EmptyState } from "./EmptyState";
 import { TradeExecutionAutopilotPopup } from "./TradeExecutionAutopilotPopup";
 import { useGlobalToast } from "./Toast";
 import { handleEveUIError } from "@/lib/handleEveUIError";
+import { useAchievements } from "./achievements";
 import {
   TabSettingsPanel,
   SettingsField,
@@ -613,6 +614,7 @@ export function StationTrading({
 
   // Watchlist
   const { addToast } = useGlobalToast();
+  const { trackAchievementEvent } = useAchievements();
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
   useEffect(() => {
     getWatchlist()
@@ -1145,6 +1147,7 @@ export function StationTrading({
         setCacheMeta(cacheView);
         setCacheNowTs(scanFinishedAt);
         await refreshHiddenStates(cacheView.currentRevision, normalizedTrades);
+        void trackAchievementEvent("scan_completed", { rowsScanned: Math.max(1, normalizedTrades.length) });
         setProgress(
           `Station Command: ${commandRes.command.summary.new_entry_count} new / ${commandRes.command.summary.reprice_count} reprice / ${commandRes.command.summary.cancel_count} cancel`,
         );
@@ -1183,6 +1186,7 @@ export function StationTrading({
         setCacheMeta(cacheView);
         setCacheNowTs(scanFinishedAt);
         await refreshHiddenStates(cacheView.currentRevision, normalizedResults);
+        void trackAchievementEvent("scan_completed", { rowsScanned: Math.max(1, normalizedResults.length) });
       }
     } catch (e: unknown) {
       if (e instanceof Error && e.name !== "AbortError") {
@@ -1227,6 +1231,7 @@ export function StationTrading({
     operatorMode,
     isLoggedIn,
     refreshHiddenStates,
+    trackAchievementEvent,
     t,
   ]);
 

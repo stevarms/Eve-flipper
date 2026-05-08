@@ -18,6 +18,7 @@ import type {
 } from "@/lib/types";
 import { formatISK, formatMargin } from "@/lib/format";
 import { Modal } from "./Modal";
+import { useAchievements } from "./achievements";
 
 type QuantityMode = "scan" | "fixed" | "budget";
 type BuyPriceSource = "history" | "scan";
@@ -53,6 +54,7 @@ export function BacktestPopup({
   sellSalesTaxPercent,
   cargoCapacity = 0,
 }: Props) {
+  const { trackAchievementEvent } = useAchievements();
   const [holdDays, setHoldDays] = useState(7);
   const [windowDays, setWindowDays] = useState(90);
   const [maxRows, setMaxRows] = useState(100);
@@ -165,6 +167,13 @@ export function BacktestPopup({
     try {
       const data = await runFlipBacktest(buildBacktestPayload());
       setResult(data);
+      void trackAchievementEvent("backtest_run", {
+        snapshotReplay: !!data.assumptions?.uses_recorded_orderbook || recordedBookMode,
+        paperProfitReducedByLiveDepth:
+          !!data.assumptions?.uses_vwap_depth ||
+          (data.diagnostics?.partial_fills ?? 0) > 0 ||
+          (data.diagnostics?.skipped_unfillable ?? 0) > 0,
+      });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Backtest failed");
     } finally {

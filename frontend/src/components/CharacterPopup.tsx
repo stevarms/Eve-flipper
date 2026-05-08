@@ -18,6 +18,7 @@ import {
   TransactionsTab,
   WalletDashboardTab,
 } from "./character-popup/CharacterPopupTabs";
+import { AchievementLibraryPanel, useAchievements } from "./achievements";
 
 interface CharacterPopupProps {
   open: boolean;
@@ -30,7 +31,7 @@ interface CharacterPopupProps {
   onAuthRefresh: () => Promise<void>;
 }
 
-type CharTab = "overview" | "orders" | "transactions" | "ledger" | "industry" | "pnl" | "risk" | "optimizer";
+type CharTab = "overview" | "orders" | "transactions" | "ledger" | "industry" | "pnl" | "risk" | "optimizer" | "achievements";
 const SCOPE_COLLAPSE_KEY = "eve-character-scope-collapsed";
 
 export function CharacterPopup({
@@ -44,6 +45,7 @@ export function CharacterPopup({
   onAuthRefresh,
 }: CharacterPopupProps) {
   const { t } = useI18n();
+  const { pendingCount: achievementPendingCount, trackAchievementEvent, unlockedCount: achievementUnlockedCount } = useAchievements();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<CharacterInfo | null>(null);
@@ -87,6 +89,16 @@ export function CharacterPopup({
   const modalTitle = selectedScope === "all"
     ? t("charAllCharacters")
     : selectedCharacter?.character_name ?? t("charOverview");
+
+  const setTrackedTab = useCallback(
+    (nextTab: CharTab) => {
+      setTab(nextTab);
+      if (nextTab === "ledger") void trackAchievementEvent("ledger_opened");
+      if (nextTab === "pnl" || nextTab === "optimizer") void trackAchievementEvent("portfolio_opened");
+      if (nextTab === "risk") void trackAchievementEvent("risk_opened");
+    },
+    [trackAchievementEvent],
+  );
 
   const loadData = useCallback(() => {
     setLoading(true);
@@ -291,14 +303,23 @@ export function CharacterPopup({
         {/* Tabs + Refresh */}
         <div className="flex items-center border-b border-eve-border bg-eve-panel">
           <div className="flex flex-1 overflow-x-auto scrollbar-thin">
-            <TabBtn active={tab === "overview"} onClick={() => setTab("overview")} label={t("charOverview")} />
-            <TabBtn active={tab === "orders"} onClick={() => setTab("orders")} label={`${t("charOrders")} (${data?.orders.length ?? 0})`} />
-            <TabBtn active={tab === "transactions"} onClick={() => setTab("transactions")} label={`${t("charTransactions")} (${data?.transactions?.length ?? 0})`} />
-            <TabBtn active={tab === "ledger"} onClick={() => setTab("ledger")} label={t("ledgerTab")} />
-            <TabBtn active={tab === "industry"} onClick={() => setTab("industry")} label={`${t("industryJobsTab")} (${data?.industry_jobs?.length ?? 0})`} />
-            <TabBtn active={tab === "pnl"} onClick={() => setTab("pnl")} label={t("charPnlTab")} />
-            <TabBtn active={tab === "risk"} onClick={() => setTab("risk")} label={t("charRiskTab")} />
-            <TabBtn active={tab === "optimizer"} onClick={() => setTab("optimizer")} label={t("charOptimizerTab")} />
+            <TabBtn active={tab === "overview"} onClick={() => setTrackedTab("overview")} label={t("charOverview")} />
+            <TabBtn active={tab === "orders"} onClick={() => setTrackedTab("orders")} label={`${t("charOrders")} (${data?.orders.length ?? 0})`} />
+            <TabBtn active={tab === "transactions"} onClick={() => setTrackedTab("transactions")} label={`${t("charTransactions")} (${data?.transactions?.length ?? 0})`} />
+            <TabBtn active={tab === "ledger"} onClick={() => setTrackedTab("ledger")} label={t("ledgerTab")} />
+            <TabBtn active={tab === "industry"} onClick={() => setTrackedTab("industry")} label={`${t("industryJobsTab")} (${data?.industry_jobs?.length ?? 0})`} />
+            <TabBtn active={tab === "pnl"} onClick={() => setTrackedTab("pnl")} label={t("charPnlTab")} />
+            <TabBtn active={tab === "risk"} onClick={() => setTrackedTab("risk")} label={t("charRiskTab")} />
+            <TabBtn active={tab === "optimizer"} onClick={() => setTrackedTab("optimizer")} label={t("charOptimizerTab")} />
+            <TabBtn
+              active={tab === "achievements"}
+              onClick={() => setTrackedTab("achievements")}
+              label={
+                achievementPendingCount > 0
+                  ? `${t("achievementsTitle")} (${achievementPendingCount} ${t("achievementNewLabel").toLowerCase()})`
+                  : `${t("achievementsTitle")} (${achievementUnlockedCount})`
+              }
+            />
           </div>
           {/* Refresh button */}
           <button
@@ -315,13 +336,14 @@ export function CharacterPopup({
 
         {/* Content */}
         <div className="flex-1 overflow-auto p-4">
-          {loading && !data && (
+          {loading && !data && tab !== "achievements" && (
             <div className="flex items-center justify-center h-full text-eve-dim">{t("loading")}...</div>
           )}
-          {error && !data && (
+          {error && !data && tab !== "achievements" && (
             <div className="flex items-center justify-center h-full text-eve-error">{error}</div>
           )}
-          {data && (
+          {tab === "achievements" && <AchievementLibraryPanel />}
+          {tab !== "achievements" && data && (
             <>
               {tab === "overview" && (
                 <OverviewTab

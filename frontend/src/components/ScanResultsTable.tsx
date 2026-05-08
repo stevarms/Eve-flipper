@@ -34,6 +34,7 @@ import { BatchBuilderPopup } from "./BatchBuilderPopup";
 import { RouteSafetyModal } from "./RouteSafetyModal";
 import { BacktestPopup } from "./BacktestPopup";
 import { PaperTradeJournalPopup } from "./PaperTradeJournalPopup";
+import { useAchievements } from "./achievements";
 
 const PAGE_SIZE = 100;
 const GROUP_PAGE_SIZE = 50; // rows shown per group before "Show all" button
@@ -1010,6 +1011,7 @@ export function ScanResultsTable({
     ? "no_results"
     : "no_scan_yet";
   const { addToast, removeToast } = useGlobalToast();
+  const { trackAchievementEvent } = useAchievements();
 
   const allColumnDefs = useMemo(
     () => buildColumnDefs(showRegions, columnProfile),
@@ -1734,6 +1736,7 @@ export function ScanResultsTable({
           volume_m3: finiteNumber(row.Volume),
           source: "scanner",
         });
+        void trackAchievementEvent("journal_trade_created");
         addToast("Paper trade created", "success", 2000);
         setPaperJournalOpen(true);
       } catch (e) {
@@ -1742,7 +1745,7 @@ export function ScanResultsTable({
         setPaperCreating(false);
       }
     },
-    [addToast, paperCreating],
+    [addToast, paperCreating, trackAchievementEvent],
   );
 
   // Reset page when data/filters/sort change
@@ -2233,6 +2236,7 @@ export function ScanResultsTable({
       const entry = routeSafetyMap[key];
       if (entry && entry.status === "full") {
         setRouteSafetyModal({ systems: entry.systems });
+        void trackAchievementEvent("route_checked", { gankRiskViewed: true });
         return;
       }
       getGankCheck(from, to).then((systems) => {
@@ -2244,9 +2248,10 @@ export function ScanResultsTable({
           return { ...prev, [key]: { status: "full", danger, kills, totalISK, systems } };
         });
         setRouteSafetyModal({ systems });
+        void trackAchievementEvent("route_checked", { gankRiskViewed: true });
       });
     },
-    [routeSafetyMap],
+    [routeSafetyMap, trackAchievementEvent],
   );
 
   const renderDataRow = useCallback(

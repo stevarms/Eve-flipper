@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+  <title>material realist</title>
+  <g transform="translate(-3.8438 -3.8438) scale(1.2188)">
+    <path d="M5 10 L8 6 L11 10 L8 14 Z"></path><path d="M11 12 L14 8 L17 12 L14 16 Z" opacity="0.7"></path><path d="M5 16 L8 12 L11 16 L8 20 Z" opacity="0.5"></path><path d="M14 18 H21" opacity="0.6"></path><path d="M16 20 H21" opacity="0.6"></path>
+  </g>
+</svg>

@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { SystemDanger } from "@/lib/types";
 import { getGankCheck } from "@/lib/api";
 import { RouteSafetyModal } from "./RouteSafetyModal";
+import { useAchievements } from "./achievements";
 
 interface Props {
   from: number;
@@ -13,6 +14,7 @@ export function RouteSafetyBadge({ from, to, minSec = 0 }: Props) {
   const [systems, setSystems] = useState<SystemDanger[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
+  const { trackAchievementEvent } = useAchievements();
 
   if (!from || !to || from === to) return null;
 
@@ -20,6 +22,7 @@ export function RouteSafetyBadge({ from, to, minSec = 0 }: Props) {
     e.stopPropagation();
     if (systems) {
       setModalOpen(true);
+      void trackAchievementEvent("route_checked", { gankRiskViewed: true });
       return;
     }
     setLoading(true);
@@ -27,6 +30,7 @@ export function RouteSafetyBadge({ from, to, minSec = 0 }: Props) {
       setSystems(data);
       setLoading(false);
       setModalOpen(true);
+      void trackAchievementEvent("route_checked", { gankRiskViewed: true });
     });
   };
 

@@ -1432,6 +1432,28 @@ func (d *DB) migrate() error {
 		logger.Info("DB", "Applied migration v32 (route courier collateral fields)")
 	}
 
+	if version < 33 {
+		_, err := d.sql.Exec(`
+			CREATE TABLE IF NOT EXISTS achievements (
+				user_id        TEXT NOT NULL,
+				achievement_id TEXT NOT NULL,
+				progress       INTEGER NOT NULL DEFAULT 0,
+				unlocked_at    TEXT NOT NULL DEFAULT '',
+				seen           INTEGER NOT NULL DEFAULT 0,
+				created_at     TEXT NOT NULL,
+				updated_at     TEXT NOT NULL,
+				PRIMARY KEY (user_id, achievement_id)
+			);
+			CREATE INDEX IF NOT EXISTS idx_achievements_user_unlocked ON achievements(user_id, unlocked_at);
+			CREATE INDEX IF NOT EXISTS idx_achievements_user_seen ON achievements(user_id, seen);
+			INSERT OR IGNORE INTO schema_version (version) VALUES (33);
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v33: %w", err)
+		}
+		logger.Info("DB", "Applied migration v33 (achievements)")
+	}
+
 	return nil
 }
 

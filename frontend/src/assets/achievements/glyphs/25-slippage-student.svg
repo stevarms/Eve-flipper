@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+  <title>slippage student</title>
+  <g transform="translate(-1 -1) scale(1.0833)">
+    <path d="M3 8 H10"></path><path d="M14 12 H21"></path><path d="M3 16 H8"></path><path d="M10 6 L12 8 L10 10" opacity="0.7"></path><path d="M8 14 L10 16 L8 18" opacity="0.5"></path><path d="M3 4 V20" opacity="0.4"></path>
+  </g>
+</svg>

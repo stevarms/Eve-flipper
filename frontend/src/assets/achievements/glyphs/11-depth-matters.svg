@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+  <title>depth matters</title>
+  <g transform="translate(-2.0156 -2.9297) scale(1.2188)">
+    <path d="M3.5 7 H14"></path><path d="M3.5 10 H10"></path><path d="M3.5 13 H17"></path><path d="M3.5 16 H8"></path><path d="M3.5 19 H12" opacity="0.5"></path><path d="M3.5 4.5 V20" opacity="0.6"></path><path d="M19.5 4.5 V20" opacity="0.6"></path>
+  </g>
+</svg>

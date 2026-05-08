@@ -140,6 +140,34 @@ async function handleResponse<T>(res: Response): Promise<T> {
   return res.json();
 }
 
+export interface AchievementState {
+  user_id: string;
+  achievement_id: string;
+  progress: number;
+  unlocked_at: string;
+  seen: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AchievementProgressPatch {
+  achievement_id: string;
+  progress: number;
+  unlocked_at: string;
+  seen?: boolean;
+}
+
+export interface AchievementStatesResponse {
+  states: AchievementState[];
+  count: number;
+}
+
+export interface AchievementPatchResponse {
+  ok: boolean;
+  states: AchievementState[];
+  unlocked: AchievementState[];
+}
+
 // Generic NDJSON message type
 type NdjsonGenericMessage<T> =
   | { type: "progress"; message: string }
@@ -593,6 +621,44 @@ export async function deletePaperTrade(
     method: "DELETE",
   });
   return handleResponse<{ ok: boolean; deleted: number }>(res);
+}
+
+export async function getAchievementStates(): Promise<AchievementStatesResponse> {
+  const res = await apiFetch(`${BASE}/api/auth/achievements`);
+  const data = await handleResponse<AchievementStatesResponse>(res);
+  return {
+    states: Array.isArray(data.states) ? data.states : [],
+    count: Number.isFinite(data.count) ? data.count : 0,
+  };
+}
+
+export async function patchAchievementProgress(
+  patches: AchievementProgressPatch[],
+): Promise<AchievementPatchResponse> {
+  const res = await apiFetch(`${BASE}/api/auth/achievements`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ patches }),
+  });
+  const data = await handleResponse<AchievementPatchResponse>(res);
+  return {
+    ok: !!data.ok,
+    states: Array.isArray(data.states) ? data.states : [],
+    unlocked: Array.isArray(data.unlocked) ? data.unlocked : [],
+  };
+}
+
+export async function markAchievementsSeen(ids: string[]): Promise<{ ok: boolean; states: AchievementState[] }> {
+  const res = await apiFetch(`${BASE}/api/auth/achievements/seen`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids }),
+  });
+  const data = await handleResponse<{ ok: boolean; states: AchievementState[] }>(res);
+  return {
+    ok: !!data.ok,
+    states: Array.isArray(data.states) ? data.states : [],
+  };
 }
 
 // --- Watchlist ---

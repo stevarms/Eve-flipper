@@ -1,0 +1,366 @@
+.achievement-toast-stack {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  pointer-events: none;
+  perspective: 900px;
+}
+
+.achievement-toast {
+  position: relative;
+  width: min(27rem, calc(100vw - 2rem));
+  min-height: 5rem;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.82rem 0.95rem 0.92rem;
+  overflow: hidden;
+  border: 1px solid rgba(245, 158, 11, 0.62);
+  border-left: 3px solid #f59e0b;
+  background:
+    radial-gradient(circle at 10% 50%, rgba(245, 158, 11, 0.18), transparent 34%),
+    linear-gradient(90deg, rgba(10, 10, 11, 0.98), rgba(34, 26, 10, 0.98) 58%, rgba(7, 7, 8, 0.98));
+  box-shadow:
+    0 1.5rem 3.5rem rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba(245, 158, 11, 0.08) inset,
+    0 0 2.5rem rgba(245, 158, 11, 0.18);
+  transform-origin: right center;
+  animation:
+    achievement-toast-in 640ms cubic-bezier(0.16, 1, 0.3, 1),
+    achievement-toast-attention 1450ms ease-out 120ms;
+}
+
+.achievement-toast::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border: 1px solid rgba(245, 158, 11, 0.38);
+  opacity: 0;
+  animation: achievement-toast-ring 1350ms ease-out 120ms;
+}
+
+.achievement-toast__shine {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(105deg, transparent 0%, transparent 34%, rgba(255, 255, 255, 0.28) 48%, transparent 62%, transparent 100%);
+  transform: translateX(-115%);
+  animation: achievement-toast-shine 1150ms ease-out 180ms;
+}
+
+.achievement-toast__timer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: linear-gradient(90deg, #f59e0b, #7dd3fc);
+  transform-origin: left center;
+  animation: achievement-toast-timer 5200ms linear forwards;
+}
+
+.achievement-toast .achievement-badge {
+  animation: achievement-badge-unlock-pop 900ms cubic-bezier(0.16, 1, 0.3, 1) 120ms both;
+}
+
+.achievement-toast__copy {
+  position: relative;
+  min-width: 0;
+  animation: achievement-toast-copy-in 520ms ease-out 230ms both;
+}
+
+.achievement-toast__eyebrow {
+  color: #f59e0b;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.achievement-toast__title {
+  margin-top: 0.12rem;
+  color: #f5f5f4;
+  font-size: 0.98rem;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-shadow: 0 0 1rem rgba(245, 158, 11, 0.24);
+}
+
+.achievement-toast__meta {
+  margin-top: 0.18rem;
+  color: rgba(212, 212, 216, 0.78);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
+@keyframes achievement-toast-in {
+  0% {
+    opacity: 0;
+    transform: translateX(120%) rotateY(-18deg) scale(0.96);
+    filter: blur(2px);
+  }
+  64% {
+    opacity: 1;
+    transform: translateX(-0.8rem) rotateY(2deg) scale(1.02);
+    filter: blur(0);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0) rotateY(0) scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes achievement-toast-attention {
+  0%,
+  100% {
+    box-shadow:
+      0 1.5rem 3.5rem rgba(0, 0, 0, 0.55),
+      0 0 0 1px rgba(245, 158, 11, 0.08) inset,
+      0 0 2.5rem rgba(245, 158, 11, 0.18);
+  }
+  42% {
+    box-shadow:
+      0 1.5rem 3.5rem rgba(0, 0, 0, 0.55),
+      0 0 0 1px rgba(245, 158, 11, 0.28) inset,
+      0 0 3.8rem rgba(245, 158, 11, 0.38);
+  }
+}
+
+@keyframes achievement-toast-ring {
+  0% {
+    opacity: 0.75;
+    transform: scale(0.98);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.08);
+  }
+}
+
+@keyframes achievement-toast-shine {
+  0% {
+    transform: translateX(-115%);
+  }
+  100% {
+    transform: translateX(115%);
+  }
+}
+
+@keyframes achievement-toast-timer {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
+@keyframes achievement-badge-unlock-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.45) rotate(-14deg);
+    filter: drop-shadow(0 0 0 rgba(245, 158, 11, 0));
+  }
+  52% {
+    opacity: 1;
+    transform: scale(1.18) rotate(4deg);
+    filter: drop-shadow(0 0 1rem rgba(245, 158, 11, 0.55));
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(0);
+    filter: drop-shadow(0 0 0.45rem rgba(245, 158, 11, 0.24));
+  }
+}
+
+@keyframes achievement-toast-copy-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.35rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.achievement-library {
+  padding: 1rem;
+  color: #d4d4d8;
+}
+
+.achievement-library__summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.achievement-library__summary > div {
+  border: 1px solid rgba(82, 82, 91, 0.7);
+  background: rgba(14, 14, 15, 0.72);
+  padding: 0.875rem;
+}
+
+.achievement-library__kicker,
+.achievement-library__section-title {
+  color: #a1a1aa;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+}
+
+.achievement-library__score {
+  margin-top: 0.2rem;
+  color: #f59e0b;
+  font-size: 1.35rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.achievement-library__section {
+  margin-top: 1rem;
+}
+
+.achievement-library__section-title {
+  margin-bottom: 0.55rem;
+  color: #f59e0b;
+}
+
+.achievement-library__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(19rem, 1fr));
+  gap: 0.6rem;
+}
+
+.achievement-card {
+  min-height: 7.25rem;
+  display: grid;
+  grid-template-columns: 4.5rem minmax(0, 1fr);
+  gap: 0.8rem;
+  align-items: center;
+  border: 1px solid rgba(63, 63, 70, 0.82);
+  background: rgba(10, 10, 11, 0.76);
+  padding: 0.75rem;
+  transition: border-color 160ms ease, background-color 160ms ease, transform 160ms ease;
+}
+
+.achievement-card:hover {
+  border-color: rgba(245, 158, 11, 0.54);
+  background: rgba(20, 20, 22, 0.9);
+  transform: translateY(-1px);
+}
+
+.achievement-card--unlocked {
+  border-color: rgba(245, 158, 11, 0.44);
+}
+
+.achievement-card--concealed {
+  border-color: rgba(63, 63, 70, 0.74);
+  background:
+    linear-gradient(135deg, rgba(24, 24, 27, 0.78), rgba(9, 9, 11, 0.92)),
+    repeating-linear-gradient(90deg, rgba(245, 158, 11, 0.06) 0 1px, transparent 1px 8px);
+}
+
+.achievement-card--concealed .achievement-badge {
+  filter: blur(2px) grayscale(0.65) saturate(0.6);
+  opacity: 0.52;
+}
+
+.achievement-card--concealed .achievement-card__description,
+.achievement-card--concealed .achievement-card__progress,
+.achievement-card--concealed .achievement-card__meta span:last-child {
+  filter: blur(3px);
+  opacity: 0.45;
+  user-select: none;
+}
+
+.achievement-card__body {
+  min-width: 0;
+}
+
+.achievement-card__topline,
+.achievement-card__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.achievement-card__title {
+  min-width: 0;
+  color: #f5f5f4;
+  font-size: 0.88rem;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.achievement-card__points,
+.achievement-card__meta {
+  color: #a1a1aa;
+  font-size: 0.72rem;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.achievement-card__description {
+  min-height: 2rem;
+  margin-top: 0.25rem;
+  color: rgba(212, 212, 216, 0.8);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.achievement-card__progress {
+  height: 0.28rem;
+  margin-top: 0.55rem;
+  background: rgba(63, 63, 70, 0.72);
+  overflow: hidden;
+}
+
+.achievement-card__progress span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #f59e0b, #7dd3fc);
+}
+
+.achievement-card__meta {
+  margin-top: 0.38rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+@media (max-width: 700px) {
+  .achievement-toast-stack {
+    right: 0.75rem;
+    bottom: 0.75rem;
+  }
+
+  .achievement-library__summary {
+    grid-template-columns: 1fr;
+  }
+
+  .achievement-library__grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .achievement-toast,
+  .achievement-toast::before,
+  .achievement-toast__shine,
+  .achievement-toast__timer,
+  .achievement-toast .achievement-badge,
+  .achievement-toast__copy {
+    animation: none;
+  }
+}

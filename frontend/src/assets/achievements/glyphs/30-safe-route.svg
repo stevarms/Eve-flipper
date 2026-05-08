@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+  <title>safe route</title>
+  <g transform="translate(-1.3714 -1.0929) scale(1.1143)">
+    <path d="M12 3 L19 5.5 V12 C19 16 15.8 19 12 20.5 C8.2 19 5 16 5 12 V5.5 Z"></path><circle cx="12" cy="11.5" r="3" opacity="0.6"></circle><path d="M9.2 11.5 H14.8"></path>
+  </g>
+</svg>

@@ -1,0 +1,175 @@
+.achievement-badge {
+  --achievement-size: 64px;
+  --achievement-color-rgb: 201 136 89;
+  --achievement-surface-rgb: 26 18 12;
+  --achievement-ink-rgb: 12 13 14;
+  --achievement-progress-rgb: 34 181 255;
+  --achievement-state-opacity: 1;
+  --achievement-glyph-opacity: 1;
+  --achievement-glow-opacity: 0.2;
+  --achievement-glyph-scale: 1;
+  --achievement-glyph-offset-x: 0%;
+  --achievement-glyph-offset-y: 0%;
+
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: var(--achievement-size);
+  height: var(--achievement-size);
+  color: rgb(var(--achievement-color-rgb));
+  isolation: isolate;
+  flex: none;
+}
+
+.achievement-badge--sm {
+  --achievement-size: 40px;
+}
+
+.achievement-badge--md {
+  --achievement-size: 64px;
+}
+
+.achievement-badge--lg {
+  --achievement-size: 92px;
+}
+
+.achievement-badge--bronze {
+  --achievement-color-rgb: 201 136 89;
+  --achievement-surface-rgb: 26 18 12;
+}
+
+.achievement-badge--silver {
+  --achievement-color-rgb: 211 216 221;
+  --achievement-surface-rgb: 21 23 26;
+}
+
+.achievement-badge--gold {
+  --achievement-color-rgb: 242 169 0;
+  --achievement-surface-rgb: 31 22 6;
+}
+
+.achievement-badge--platinum {
+  --achievement-color-rgb: 168 226 255;
+  --achievement-surface-rgb: 12 23 30;
+}
+
+.achievement-badge--classified {
+  --achievement-color-rgb: 224 64 64;
+  --achievement-surface-rgb: 28 8 8;
+  --achievement-progress-rgb: 224 64 64;
+}
+
+.achievement-badge--locked {
+  --achievement-state-opacity: 0.2;
+  --achievement-glyph-opacity: 0.42;
+  --achievement-glow-opacity: 0;
+  filter: saturate(0.65);
+}
+
+.achievement-badge--active {
+  --achievement-glow-opacity: 0.32;
+}
+
+.achievement-badge--unlocked {
+  --achievement-progress: 100%;
+  --achievement-glow-opacity: 0.24;
+}
+
+.achievement-badge__hex,
+.achievement-badge__ring,
+.achievement-badge__progress,
+.achievement-badge__glyph,
+.achievement-badge__tick {
+  position: absolute;
+  pointer-events: none;
+}
+
+.achievement-badge__hex {
+  clip-path: polygon(50% 4%, 92% 27%, 92% 73%, 50% 96%, 8% 73%, 8% 27%);
+}
+
+.achievement-badge__hex--outer {
+  inset: 0;
+  background:
+    linear-gradient(145deg, rgb(var(--achievement-color-rgb) / 0.9), rgb(var(--achievement-color-rgb) / 0.38)),
+    rgb(var(--eve-panel));
+  opacity: var(--achievement-state-opacity);
+  filter: drop-shadow(0 0 calc(var(--achievement-size) * 0.15) rgb(var(--achievement-color-rgb) / var(--achievement-glow-opacity)));
+}
+
+.achievement-badge__hex--inner {
+  inset: 6%;
+  background:
+    radial-gradient(circle at 50% 48%, rgb(var(--achievement-surface-rgb) / 0.95), rgb(var(--achievement-ink-rgb) / 0.96) 62%),
+    rgb(var(--eve-dark));
+  opacity: calc(var(--achievement-state-opacity) + 0.18);
+}
+
+.achievement-badge__progress {
+  inset: 0;
+  clip-path: polygon(50% 4%, 92% 27%, 92% 73%, 50% 96%, 8% 73%, 8% 27%);
+  background: conic-gradient(
+    from 0deg,
+    rgb(var(--achievement-progress-rgb) / 0.85) 0 var(--achievement-progress),
+    transparent var(--achievement-progress) 100%
+  );
+  opacity: 0;
+  mix-blend-mode: screen;
+}
+
+.achievement-badge--active .achievement-badge__progress {
+  opacity: 0.34;
+}
+
+.achievement-badge__ring {
+  left: 50%;
+  top: 50%;
+  width: 62%;
+  height: 62%;
+  border: max(1px, calc(var(--achievement-size) * 0.014)) solid rgb(var(--achievement-color-rgb) / calc(var(--achievement-state-opacity) * 0.85));
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  box-shadow:
+    0 0 0 calc(var(--achievement-size) * 0.06) rgb(var(--achievement-color-rgb) / calc(var(--achievement-state-opacity) * 0.08)),
+    inset 0 0 calc(var(--achievement-size) * 0.16) rgb(var(--achievement-color-rgb) / calc(var(--achievement-state-opacity) * 0.18));
+}
+
+.achievement-badge__glyph {
+  left: calc(50% + var(--achievement-glyph-offset-x));
+  top: calc(50% + var(--achievement-glyph-offset-y));
+  width: calc(56% * var(--achievement-glyph-scale));
+  height: calc(56% * var(--achievement-glyph-scale));
+  display: grid;
+  place-items: center;
+  opacity: var(--achievement-glyph-opacity);
+  transform: translate(-50%, -50%);
+  filter: drop-shadow(0 0 calc(var(--achievement-size) * 0.06) rgb(var(--achievement-color-rgb) / var(--achievement-glow-opacity)));
+}
+
+.achievement-badge__glyph svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  color: currentColor;
+  overflow: visible;
+}
+
+.achievement-badge__tick {
+  left: 50%;
+  width: calc(var(--achievement-size) * 0.05);
+  height: calc(var(--achievement-size) * 0.05);
+  background: rgb(var(--achievement-color-rgb) / calc(var(--achievement-state-opacity) * 0.9));
+  transform: translateX(-50%) rotate(45deg);
+}
+
+.achievement-badge__tick--top {
+  top: 4%;
+}
+
+.achievement-badge__tick--bottom {
+  bottom: 4%;
+}
+
+.achievement-badge--locked .achievement-badge__progress {
+  display: none;
+}

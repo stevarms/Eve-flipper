@@ -11,6 +11,7 @@ import {
   setWaypointInGame,
 } from "@/lib/api";
 import { handleEveUIError } from "@/lib/handleEveUIError";
+import { useAchievements } from "./achievements";
 import type {
   CharacterInfo,
   ExecutionPlanResult,
@@ -405,6 +406,7 @@ export function TradeExecutionAutopilotPopup({
 }: TradeExecutionAutopilotPopupProps) {
   const { addToast } = useGlobalToast();
   const { t } = useI18n();
+  const { trackAchievementEvent } = useAchievements();
   const isStationMode = mode === "station";
   const [quantity, setQuantity] = useState(1);
   const [shipKey, setShipKey] = useState<ShipKey>("blockade_runner");
@@ -424,6 +426,7 @@ export function TradeExecutionAutopilotPopup({
   const [createdTrade, setCreatedTrade] = useState<PaperTrade | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const requestSeqRef = useRef(0);
+  const missionTrackedRef = useRef("");
 
   const selectedProfile = useMemo(() => {
     const profile = SHIP_PROFILES.find((item) => item.key === shipKey) ?? SHIP_PROFILES[1];
@@ -757,6 +760,31 @@ export function TradeExecutionAutopilotPopup({
     fetchPlans(intInput(quantity));
   }, [fetchPlans, quantity, row]);
 
+  useEffect(() => {
+    if (!open || !row || !mission || loading) return;
+    const key = `${mode}:${row.TypeID}:${mission.requestedQty}:${mission.executableQty}:${mission.expectedProfit.toFixed(2)}:${mission.worstProfit.toFixed(2)}:${mission.selectedVariant.key}`;
+    if (missionTrackedRef.current === key) return;
+    missionTrackedRef.current = key;
+    const buyBook = finiteNumber(row.ExpectedBuyPrice || row.BuyPrice);
+    const sellBook = finiteNumber(row.ExpectedSellPrice || row.SellPrice);
+    const depthChanged =
+      Math.abs(mission.buyFill.avg - buyBook) > Math.max(0.01, buyBook * 0.001) ||
+      Math.abs(mission.sellFill.avg - sellBook) > Math.max(0.01, sellBook * 0.001);
+    void trackAchievementEvent("mission_control_opened", {
+      quantityReduced: mission.executableQty < mission.requestedQty,
+      depthChangedResult: depthChanged,
+      negativeWorstCase: mission.worstProfit < 0,
+      walletReserveLimited: mission.reserveQty < mission.requestedQty,
+      exposureLimited: mission.exposureQty < mission.requestedQty,
+      feesViewed: mission.totalFees > 0,
+      tooSmallToTrade: mission.tooSmallToTrade,
+      capitalFrozen: mission.capitalFrozen,
+      cargoLimited: !isStationMode && mission.cargoQty < mission.requestedQty,
+      routeMode: mission.selectedVariant.key,
+      gankRiskViewed: !isStationMode && !!row.RouteSafetyDanger,
+    });
+  }, [isStationMode, loading, mission, mode, open, row, trackAchievementEvent]);
+
   const createJournalTrade = useCallback(async () => {
     if (!row || !mission || mission.executableQty <= 0 || creating || createdTrade) return;
     const plannedProfit = mission.expectedProfit;
@@ -804,13 +832,14 @@ export function TradeExecutionAutopilotPopup({
     try {
       const res = await createPaperTrade(payload);
       setCreatedTrade(res.trade);
+      void trackAchievementEvent("journal_trade_created");
       addToast(`Execution plan saved: ${res.trade.type_name}`, "success", 2200);
     } catch (e) {
       addToast(e instanceof Error ? e.message : "Failed to create journal trade", "error", 3200);
     } finally {
       setCreating(false);
     }
-  }, [addToast, characterExposure, createdTrade, creating, isStationMode, mission, row, selectedProfile]);
+  }, [addToast, characterExposure, createdTrade, creating, isStationMode, mission, row, selectedProfile, trackAchievementEvent]);
 
   const openJournal = useCallback(() => {
     onJournalCreated?.();

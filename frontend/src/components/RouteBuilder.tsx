@@ -5,6 +5,7 @@ import type { FlipResult, RouteResult, RouteHop, ScanParams } from "@/lib/types"
 import { TradeExecutionAutopilotPopup } from "./TradeExecutionAutopilotPopup";
 import { useGlobalToast } from "./Toast";
 import { handleEveUIError } from "@/lib/handleEveUIError";
+import { useAchievements } from "./achievements";
 import {
   TabSettingsPanel,
   SettingsCheckbox,
@@ -153,6 +154,7 @@ function RouteRiskText({ route }: { route: RouteResult }) {
 
 export function RouteBuilder({ params, onChange, loadedResults, isLoggedIn = false }: Props) {
   const { t } = useI18n();
+  const { trackAchievementEvent } = useAchievements();
   const initialRouteMode = normalizeRouteMode(params.route_mode);
   const [minHops, setMinHops] = useState<number | "">(params.route_min_hops ?? 2);
   const [maxHops, setMaxHops] = useState<number | "">(params.route_max_hops ?? 5);
@@ -429,6 +431,11 @@ export function RouteBuilder({ params, onChange, loadedResults, isLoggedIn = fal
       };
       const res = await findRoutes(searchParams, searchMinHops, searchMaxHops, setProgress, controller.signal);
       setResults(res);
+      void trackAchievementEvent("route_checked", {
+        cargoLimited: res.some((route) => (route.CargoTrips ?? 1) > 1),
+        routeMode: routeMode === "balanced" ? "isk_hour" : routeMode,
+        gankRiskViewed: res.some((route) => route.HaulingRiskKnown),
+      });
     } catch (e: unknown) {
       if (e instanceof Error && e.name !== "AbortError") {
         setProgress(t("errorPrefix") + e.message);
@@ -450,6 +457,7 @@ export function RouteBuilder({ params, onChange, loadedResults, isLoggedIn = fal
     routeMinutesPerJump,
     routeDockMinutes,
     routeSafetyDelayPercent,
+    trackAchievementEvent,
     t,
   ]);
 

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+  <title>route planner</title>
+  <g transform="translate(-1 -1) scale(1.0833)">
+    <circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="12" r="3"></circle><path d="M9 12 H15"></path><path d="M12 8 V10" opacity="0.6"></path><path d="M12 14 V16" opacity="0.6"></path>
+  </g>
+</svg>

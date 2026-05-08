@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+  <title>capital guard</title>
+  <g transform="translate(-1.7647 -1.7647) scale(1.1471)">
+    <rect x="3.5" y="5" width="17" height="14" rx="0.5"></rect><circle cx="12" cy="12" r="4"></circle><path d="M12 8 V6.5 M12 17.5 V16 M8 12 H6.5 M17.5 12 H16" opacity="0.7"></path><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"></circle>
+  </g>
+</svg>

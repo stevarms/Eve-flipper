@@ -56,6 +56,7 @@ import {
 import { SystemAutocomplete } from "./SystemAutocomplete";
 import { EmptyState } from "./EmptyState";
 import { useGlobalToast } from "./Toast";
+import { useAchievements } from "./achievements";
 import { ExecutionPlannerPopup } from "./ExecutionPlannerPopup";
 import {
   formatUtcShort,
@@ -229,6 +230,7 @@ function industryStepLabel(step: IndustryActivityStep): string {
 export function IndustryTab({ onError, isLoggedIn = false }: Props) {
   const { t } = useI18n();
   const { addToast } = useGlobalToast();
+  const { trackAchievementEvent } = useAchievements();
 
   // Search state
   const [searchQuery, setSearchQuery] = useState("");
@@ -1894,6 +1896,7 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
       }
       setLastLedgerPlanPreview(null);
       setLastLedgerPlanPreviewPatch(null);
+      void trackAchievementEvent("industry_analysis_run", { jobPlanCreated: true });
       addToast(t("industryLedgerPlanApplied"), "success", 1800);
       await refreshLedger(selectedLedgerProjectId);
       await refreshLedgerProjects(selectedLedgerProjectId);
@@ -1914,6 +1917,7 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     refreshLedgerProjects,
     pushPlannerWarnings,
     strictBlueprintApplyBlocked,
+    trackAchievementEvent,
     t,
   ]);
 
@@ -1956,6 +1960,7 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
       }
       setLastLedgerPlanPreview(null);
       setLastLedgerPlanPreviewPatch(null);
+      void trackAchievementEvent("industry_analysis_run", { jobPlanCreated: true });
       addToast(t("industryLedgerPreviewApplied"), "success", 1800);
       await refreshLedger(selectedLedgerProjectId);
       await refreshLedgerProjects(selectedLedgerProjectId);
@@ -1976,6 +1981,7 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     refreshLedgerProjects,
     pushPlannerWarnings,
     strictBlueprintApplyBlocked,
+    trackAchievementEvent,
     t,
   ]);
 
@@ -2325,6 +2331,10 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     try {
       const analysis = await analyzeIndustry(params, setProgress, controller.signal);
       setResult(analysis);
+      void trackAchievementEvent("industry_analysis_run", {
+        blueprintCoverageChecked: (analysis.activity_plan ?? []).some((step) => (step.blueprint_type_id ?? 0) > 0),
+        materialDepthAware: (analysis.flat_materials ?? []).length > 0,
+      });
       setProgress("");
     } catch (e: unknown) {
       if (e instanceof Error && e.name === "AbortError") {
@@ -2336,7 +2346,7 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     } finally {
       setAnalyzing(false);
     }
-  }, [analyzing, selectedItem, runs, activityMode, me, te, systemName, selectedStationId, facilityTax, structureBonus, brokerFee, salesTaxPercent, ownBlueprint, blueprintCost, blueprintIsBPO, inventionChance, decryptorCost, inventionOutputRuns, t, onError]);
+  }, [analyzing, selectedItem, runs, activityMode, me, te, systemName, selectedStationId, facilityTax, structureBonus, brokerFee, salesTaxPercent, ownBlueprint, blueprintCost, blueprintIsBPO, inventionChance, decryptorCost, inventionOutputRuns, t, onError, trackAchievementEvent]);
 
   const clearPlanPreview = useCallback(() => {
     setLastLedgerPlanPreview(null);

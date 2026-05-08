@@ -4,6 +4,7 @@ import { I18nProvider } from "./lib/i18n";
 import { ThemeProvider } from "./lib/useTheme";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ToastProvider } from "./components/Toast";
+import { AchievementsProvider } from "./components/achievements";
 import { installDomSafetyGuards } from "./lib/domSafety";
 import App from "./App";
 import { CorpDashboardApp } from "./components/CorpDashboardApp";
@@ -18,7 +19,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
       <I18nProvider>
         <ErrorBoundary>
           <ToastProvider>
-            {isCorpRoute ? <CorpDashboardApp /> : <App />}
+            <AchievementsProvider>{isCorpRoute ? <CorpDashboardApp /> : <App />}</AchievementsProvider>
           </ToastProvider>
         </ErrorBoundary>
       </I18nProvider>

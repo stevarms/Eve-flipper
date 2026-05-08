@@ -20,6 +20,7 @@ import { ThemeSwitcher } from "./components/ThemeSwitcher";
 import { useGlobalToast } from "./components/Toast";
 import { Modal } from "./components/Modal";
 import { CharacterPopup } from "./components/CharacterPopup";
+import { useAchievements } from "./components/achievements";
 import {
   applyAppUpdate,
   getUpdateCheckStatus,
@@ -454,6 +455,7 @@ function App() {
   const regionAutoRefreshLastRunRef = useRef<number>(0);
   const regionPersistTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const { addToast } = useGlobalToast();
+  const { trackAchievementEvent } = useAchievements();
 
   const openExternalURL = useCallback(async (url: string) => {
     const { runtime, isTauri, isWails } = getDesktopRuntimeFlags();
@@ -985,6 +987,7 @@ function App() {
         setContractResults(results);
         setContractCacheMeta(meta ?? null);
         setContractScanCompleted(true);
+        void trackAchievementEvent("scan_completed", { rowsScanned: Math.max(1, results.length) });
       } else if (currentTab === "radius") {
         let meta: StationCacheMeta | undefined;
         const radiusParams =
@@ -1001,6 +1004,7 @@ function App() {
         );
         setRadiusResults(results);
         setRadiusCacheMeta(meta ?? null);
+        void trackAchievementEvent("scan_completed", { rowsScanned: Math.max(1, results.length) });
         await triggerDesktopAlerts(results);
       } else if (currentTab === "region") {
         let meta: StationCacheMeta | undefined;
@@ -1016,6 +1020,7 @@ function App() {
         setRegionResults(normalizedRows);
         setRegionCacheMeta(meta ?? null);
         queueRegionScanPersistence(normalizedRows);
+        void trackAchievementEvent("scan_completed", { rowsScanned: Math.max(1, normalizedRows.length) });
 
         const flatRows: Array<{
           TypeID: number;
@@ -1052,6 +1057,7 @@ function App() {
         );
         setRegionResults(results);
         setRegionCacheMeta(meta ?? null);
+        void trackAchievementEvent("scan_completed", { rowsScanned: Math.max(1, results.length) });
         await triggerDesktopAlerts(results);
       }
     } catch (e: unknown) {
@@ -1061,7 +1067,7 @@ function App() {
     } finally {
       setScanning(false);
     }
-  }, [scanning, tab, params, t, addToast, alertChannels, queueRegionScanPersistence]);
+  }, [scanning, tab, params, t, addToast, alertChannels, queueRegionScanPersistence, trackAchievementEvent]);
 
   // Auto-refresh: when enabled and radius cache expires, re-trigger scan automatically
   useEffect(() => {
