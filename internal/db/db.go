@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"eve-flipper/internal/logger"
 
@@ -14,7 +15,8 @@ import (
 
 // DB wraps a SQLite database connection.
 type DB struct {
-	sql *sql.DB
+	sql           *sql.DB
+	achievementMu sync.Mutex
 }
 
 func dbPath() string {
@@ -34,6 +36,7 @@ func Open() (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
+	sqlDB.SetMaxOpenConns(1)
 	if err := sqlDB.Ping(); err != nil {
 		return nil, fmt.Errorf("ping db: %w", err)
 	}

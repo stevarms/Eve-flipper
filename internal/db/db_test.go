@@ -17,6 +17,7 @@ func openTestDB(t *testing.T) *DB {
 	if err != nil {
 		t.Fatalf("open in-memory db: %v", err)
 	}
+	sqlDB.SetMaxOpenConns(1)
 	d := &DB{sql: sqlDB}
 	if err := d.migrate(); err != nil {
 		sqlDB.Close()

@@ -2360,7 +2360,7 @@ export function StationTrading({
             </div>
           ) : (
             <div className="min-h-[22px] flex items-center text-eve-dim">
-              {t("scanStarting")}
+              {t("stationPrompt")}
             </div>
           )}
           <div className="flex-1" />

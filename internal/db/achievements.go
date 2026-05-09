@@ -101,6 +101,9 @@ func (d *DB) ApplyAchievementPatchesForUser(userID string, patches []Achievement
 	if len(patches) > 200 {
 		return nil, nil, fmt.Errorf("too many achievement patches")
 	}
+	d.achievementMu.Lock()
+	defer d.achievementMu.Unlock()
+
 	tx, err := d.sql.Begin()
 	if err != nil {
 		return nil, nil, err
@@ -215,6 +218,9 @@ func (d *DB) MarkAchievementsSeenForUser(userID string, ids []string) ([]Achieve
 	if len(ids) > 200 {
 		return nil, fmt.Errorf("too many achievement ids")
 	}
+	d.achievementMu.Lock()
+	defer d.achievementMu.Unlock()
+
 	tx, err := d.sql.Begin()
 	if err != nil {
 		return nil, err
