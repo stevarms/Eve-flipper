@@ -40,18 +40,6 @@ frontend/node_modules/
 # Frontend build output
 frontend/dist/
 
-# Tauri build artifacts
-frontend/src-tauri/target/
-frontend/src-tauri/gen/schemas/
-# Tauri sidecar (Go server binary, built by make.ps1)
-frontend/src-tauri/binaries/
-# SDE data cache created by Go backend during Tauri runs
-frontend/src-tauri/data/
-# SQLite DB created by Go backend during Tauri runs
-frontend/src-tauri/*.db
-frontend/src-tauri/*.db-shm
-frontend/src-tauri/*.db-wal
-
 # TypeScript build cache
 frontend/tsconfig.tsbuildinfo
 

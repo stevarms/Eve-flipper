@@ -88,15 +88,13 @@ const patronsDataURL =
 const REGION_SCAN_RESTORE_MAX_ROWS = 750;
 
 type DesktopRuntimeWindow = Window & {
-  __TAURI_INTERNALS__?: unknown;
   runtime?: { BrowserOpenURL?: (url: string) => void };
 };
 
 function getDesktopRuntimeFlags() {
   const runtime = window as unknown as DesktopRuntimeWindow;
-  const isTauri = !!runtime.__TAURI_INTERNALS__;
   const isWails = typeof runtime.runtime?.BrowserOpenURL === "function";
-  return { runtime, isTauri, isWails, isDesktop: isTauri || isWails };
+  return { runtime, isWails, isDesktop: isWails };
 }
 
 function toRecord(value: unknown): Record<string, unknown> | null {
@@ -458,19 +456,10 @@ function App() {
   const { trackAchievementEvent } = useAchievements();
 
   const openExternalURL = useCallback(async (url: string) => {
-    const { runtime, isTauri, isWails } = getDesktopRuntimeFlags();
+    const { runtime, isWails } = getDesktopRuntimeFlags();
     if (isWails) {
       runtime.runtime?.BrowserOpenURL?.(url);
       return;
-    }
-    if (isTauri) {
-      try {
-        const { openUrl } = await import("@tauri-apps/plugin-opener");
-        await openUrl(url);
-        return;
-      } catch {
-        // fallback below
-      }
     }
     window.open(url, "_blank", "noopener,noreferrer");
   }, []);
@@ -1166,7 +1155,7 @@ function App() {
     };
   }, []);
 
-  // In desktop runtimes (Wails/Tauri), force external links to open in the
+  // In the Wails desktop runtime, force external links to open in the
   // system browser instead of inside the embedded WebView.
   useEffect(() => {
     const onDocumentClick = (event: globalThis.MouseEvent) => {

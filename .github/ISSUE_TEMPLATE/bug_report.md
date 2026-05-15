@@ -28,7 +28,7 @@ If applicable, add screenshots or paste relevant log lines from the app (e.g. te
 
 - **EVE Flipper version:** (e.g. 1.2.7, or "latest from master")
 - **OS:** (e.g. Windows 11, Ubuntu 22.04)
-- **Browser (if GUI):** (e.g. Chrome 120, or "Tauri/embedded")
+- **Browser / runtime (if GUI):** (e.g. Chrome 120, or "Wails desktop")
 
 ## Additional context
 

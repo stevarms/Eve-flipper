@@ -4380,15 +4380,15 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[AUTH] Logged in as %s (ID: %d)", info.CharacterName, info.CharacterID)
 
-	// Check whether the login was initiated from the desktop (Tauri) app.
+	// Check whether the login was initiated from the desktop app.
 	if !entry.Desktop {
 		// Web browser: redirect back to the frontend (original behaviour).
 		http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
 		return
 	}
 
-	// Desktop / Tauri: show a styled success page in the system browser.
-	// The Tauri app detects login via polling /api/auth/status.
+	// Desktop: show a styled success page in the system browser.
+	// The desktop app detects login via polling /api/auth/status.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprintf(w, `<!DOCTYPE html>
 <html lang="en">

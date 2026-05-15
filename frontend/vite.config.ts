@@ -18,11 +18,11 @@ export default defineConfig({
       "/auth": "http://127.0.0.1:13370",
     },
   },
-  envPrefix: ["VITE_", "TAURI_"],
+  envPrefix: ["VITE_"],
   build: {
     target: "esnext",
-    minify: !process.env.TAURI_DEBUG ? "esbuild" : false,
-    sourcemap: !!process.env.TAURI_DEBUG,
+    minify: "esbuild",
+    sourcemap: false,
     outDir: "dist",
     rollupOptions: {
       output: {
@@ -62,9 +62,6 @@ export default defineConfig({
           }
           if (/[\\/]node_modules[\\/](@radix-ui|lucide-react|cmdk)[\\/]/.test(normalizedId)) {
             return "vendor-ui";
-          }
-          if (/[\\/]node_modules[\\/](@tauri-apps)[\\/]/.test(normalizedId)) {
-            return "vendor-runtime";
           }
           return "vendor-misc";
         },

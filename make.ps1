@@ -1,6 +1,6 @@
 param(
     [Parameter(Position=0)]
-    [ValidateSet("build","run","test","frontend","wails","wails-run","cross","tauri","tauri-dev","clean","all","help")]
+    [ValidateSet("build","run","test","frontend","wails","wails-run","cross","clean","all","help")]
     [string]$Command = "help"
 )
 
@@ -145,115 +145,8 @@ function Cross {
     Write-Host "Done! Binaries in $BuildDir/" -ForegroundColor Green
 }
 
-function BuildTauri {
-    # Build the Go backend as a Tauri sidecar binary with the correct target-triple name.
-    # Tauri v2 requires: binaries/<name>-<target-triple>[.exe]
-    Load-DotEnv
-
-    $triple = "x86_64-pc-windows-msvc"
-    $sidecarDir = "frontend/src-tauri/binaries"
-    $sidecarName = "eve-flipper-backend-$triple.exe"
-
-    Write-Host ""
-    Write-Host "=== Step 1/3: Building frontend ===" -ForegroundColor Cyan
-    Push-Location frontend
-    $env:VITE_APP_VERSION = $Version
-    npm install --silent 2>$null
-    npm run build
-    $feExit = $LASTEXITCODE
-    Remove-Item Env:VITE_APP_VERSION -ErrorAction SilentlyContinue
-    Pop-Location
-    if ($feExit -ne 0) { Write-Host "Frontend build failed!" -ForegroundColor Red; return }
-
-    Write-Host ""
-    Write-Host "=== Step 2/3: Building Go sidecar ===" -ForegroundColor Cyan
-    New-Item -ItemType Directory -Path $sidecarDir -Force | Out-Null
-    $env:CGO_ENABLED = "0"
-    go build -ldflags $LdFlags -o "$sidecarDir/$sidecarName" .
-    Remove-Item Env:CGO_ENABLED -ErrorAction SilentlyContinue
-    if ($LASTEXITCODE -ne 0) { Write-Host "Go sidecar build failed!" -ForegroundColor Red; return }
-    Write-Host "  Sidecar: $sidecarDir/$sidecarName" -ForegroundColor Green
-
-    Write-Host ""
-    Write-Host "=== Step 3/3: Building Tauri desktop app ===" -ForegroundColor Cyan
-    Push-Location frontend
-    npx tauri build 2>&1
-    $tauriExit = $LASTEXITCODE
-    Pop-Location
-
-    if ($tauriExit -ne 0) {
-        Write-Host "Tauri build failed!" -ForegroundColor Red
-        return
-    }
-
-    # Create portable zip
-    Write-Host ""
-    Write-Host "=== Packaging portable zip ===" -ForegroundColor Cyan
-    $tauriExe = "frontend/src-tauri/target/release/eve-flipper.exe"
-    if (-not (Test-Path $tauriExe)) {
-        # Try alternate name based on productName
-        $tauriExe = "frontend/src-tauri/target/release/EVE Flipper.exe"
-    }
-    if (-not (Test-Path $tauriExe)) {
-        Write-Host "Warning: Tauri exe not found at expected path. Check target/release/ manually." -ForegroundColor Yellow
-        return
-    }
-
-    $portableDir = "$BuildDir/EVE-Flipper-windows-x64"
-    $portableBin = "$portableDir/binaries"
-    New-Item -ItemType Directory -Path $portableBin -Force | Out-Null
-    Copy-Item $tauriExe "$portableDir/EVE Flipper.exe"
-    Copy-Item "$sidecarDir/$sidecarName" "$portableBin/$sidecarName"
-
-    $zipPath = "$BuildDir/EVE-Flipper-windows-x64.zip"
-    if (Test-Path $zipPath) { Remove-Item $zipPath }
-    Compress-Archive -Path $portableDir -DestinationPath $zipPath
-
-    Write-Host ""
-    Write-Host "Done! Portable package:" -ForegroundColor Green
-    Write-Host "  $zipPath" -ForegroundColor Green
-    Write-Host ""
-    Write-Host "To run: unzip and double-click 'EVE Flipper.exe'" -ForegroundColor Yellow
-    Write-Host "  (requires WebView2, pre-installed on Windows 10/11)" -ForegroundColor Yellow
-}
-
-function BuildTauriDev {
-    # Quick dev mode: build Go sidecar, then run Tauri dev
-    Load-DotEnv
-
-    $triple = "x86_64-pc-windows-msvc"
-    $sidecarDir = "frontend/src-tauri/binaries"
-    $sidecarName = "eve-flipper-backend-$triple.exe"
-
-    Write-Host "Building Go sidecar for dev..." -ForegroundColor Cyan
-
-    # Build frontend first (Go embed needs it)
-    Push-Location frontend
-    $env:VITE_APP_VERSION = $Version
-    npm install --silent 2>$null
-    npm run build
-    $feExit = $LASTEXITCODE
-    Remove-Item Env:VITE_APP_VERSION -ErrorAction SilentlyContinue
-    Pop-Location
-    if ($feExit -ne 0) { Write-Host "Frontend build failed!" -ForegroundColor Red; return }
-
-    New-Item -ItemType Directory -Path $sidecarDir -Force | Out-Null
-    $env:CGO_ENABLED = "0"
-    go build -ldflags $LdFlags -o "$sidecarDir/$sidecarName" .
-    Remove-Item Env:CGO_ENABLED -ErrorAction SilentlyContinue
-    if ($LASTEXITCODE -ne 0) { Write-Host "Go sidecar build failed!" -ForegroundColor Red; return }
-    Write-Host "  Sidecar ready: $sidecarDir/$sidecarName" -ForegroundColor Green
-
-    Write-Host "Starting Tauri dev..." -ForegroundColor Cyan
-    Push-Location frontend
-    npx tauri dev
-    Pop-Location
-}
-
 function Clean {
     if (Test-Path $BuildDir) { Remove-Item -Recurse -Force $BuildDir }
-    if (Test-Path "frontend/src-tauri/binaries") { Remove-Item -Recurse -Force "frontend/src-tauri/binaries" }
-    if (Test-Path "frontend/src-tauri/target") { Remove-Item -Recurse -Force "frontend/src-tauri/target" }
     Write-Host "Cleaned." -ForegroundColor Green
 }
 
@@ -269,9 +162,7 @@ Commands:
   wails        Build Wails desktop variant (.exe)
   wails-run    Build and run Wails desktop variant
   cross        Cross-compile for Windows, Linux, macOS
-  tauri        Build portable Tauri desktop app (Windows x64 zip)
-  tauri-dev    Build sidecar + run Tauri in dev mode
-  clean        Remove build artifacts (including Tauri target/)
+  clean        Remove build artifacts
   all          Test + frontend + cross-compile
   help         Show this help
 "@ -ForegroundColor Yellow
@@ -285,8 +176,6 @@ switch ($Command) {
     "wails"     { BuildWails }
     "wails-run" { RunWails }
     "cross"     { Cross }
-    "tauri"     { BuildTauri }
-    "tauri-dev" { BuildTauriDev }
     "clean"     { Clean }
     "all"       { Test; Frontend; Cross }
     "help"      { ShowHelp }

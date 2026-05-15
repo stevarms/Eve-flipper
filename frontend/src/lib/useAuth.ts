@@ -42,7 +42,7 @@ function authFingerprint(status: AuthStatus): string {
 }
 
 /**
- * Manages EVE SSO authentication state, login polling (Tauri desktop),
+ * Manages EVE SSO authentication state, login polling (Wails desktop),
  * and logout.
  *
  * Call once at the top level of App — the hook fetches initial auth status
@@ -88,31 +88,23 @@ export function useAuth(): UseAuthReturn {
     setAuthStatus(normalizeAuthStatus(status));
   }, []);
 
-  // Open EVE SSO login in system browser (Tauri) or same window (web)
+  // Open EVE SSO login in system browser (Wails) or same window (web)
   const handleLogin = useCallback(async () => {
     const baseline = normalizeAuthStatus(authStatus);
     const baselineFingerprint = authFingerprint(baseline);
     const wasLoggedIn = baseline.logged_in;
     const baseUrl = getLoginUrl();
     const runtime = window as unknown as {
-      __TAURI_INTERNALS__?: unknown;
       runtime?: { BrowserOpenURL?: (url: string) => void };
     };
-    // Detect desktop runtimes
-    const isTauri = !!runtime.__TAURI_INTERNALS__;
     const isWails = typeof runtime.runtime?.BrowserOpenURL === "function";
-    if (isTauri || isWails) {
+    if (isWails) {
       // Request auth URL from the in-app webview first so state is bound to
       // the same user scope as polling /api/auth/status.
       let url = "";
       try {
         url = await getDesktopLoginUrl();
-        if (isTauri) {
-          const { openUrl } = await import("@tauri-apps/plugin-opener");
-          await openUrl(url);
-        } else {
-          runtime.runtime?.BrowserOpenURL?.(url);
-        }
+        runtime.runtime?.BrowserOpenURL?.(url);
       } catch {
         if (!url) {
           // Legacy fallback path (may not sync user scope in desktop mode).

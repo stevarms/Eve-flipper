@@ -76,10 +76,9 @@ const DESKTOP_USER_ID = "eveflipper_desktop";
 
 function isDesktopRuntime(): boolean {
   const runtime = window as unknown as {
-    __TAURI_INTERNALS__?: unknown;
     runtime?: { BrowserOpenURL?: unknown };
   };
-  return !!runtime.__TAURI_INTERNALS__ || typeof runtime.runtime?.BrowserOpenURL === "function";
+  return typeof runtime.runtime?.BrowserOpenURL === "function";
 }
 
 function isValidUserID(value: string): boolean {
