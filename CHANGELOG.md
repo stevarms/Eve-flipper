@@ -2,18 +2,19 @@
 
 ## Unreleased
 
-### Security and Tooling
-
-- Updated frontend security dependencies for Vite and PostCSS.
-- Migrated frontend package management from npm to pnpm.
-- Replaced `frontend/package-lock.json` with `frontend/pnpm-lock.yaml`.
-- Raised the frontend/runtime toolchain baseline to Node.js `24+`.
-- Updated CI and release workflows to install with pnpm and run JavaScript actions on Node 24.
-- Updated Makefile, PowerShell helpers, README, and contributor docs for pnpm/Corepack workflows.
+- No unreleased changes yet.
 
 ## v1.6.4 - 2026-05-17
 
 This release expands Eve Flipper into a configurable trading cockpit and adds several community-requested intelligence and diagnostics tools.
+
+### Re-upload Note
+
+- Re-uploaded the v1.6.4 release build on 2026-05-18 to include small bug fixes found after the initial release.
+- Fixed light-mode shell styling where the app frame/header could stay black while the rest of the UI used the light palette.
+- Fixed PI planet detail decoding when ESI returns route quantities as integer-valued decimals such as `20.0`.
+- Included frontend security dependency patches for Vite and PostCSS.
+- Migrated frontend tooling to Node.js `24+` and pnpm for more reproducible installs and CI builds.
 
 ### Cockpit Engine
 
