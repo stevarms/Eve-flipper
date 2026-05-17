@@ -1,5 +1,103 @@
 # Changelog
 
+## Unreleased
+
+### Security and Tooling
+
+- Updated frontend security dependencies for Vite and PostCSS.
+- Migrated frontend package management from npm to pnpm.
+- Replaced `frontend/package-lock.json` with `frontend/pnpm-lock.yaml`.
+- Raised the frontend/runtime toolchain baseline to Node.js `24+`.
+- Updated CI and release workflows to install with pnpm and run JavaScript actions on Node 24.
+- Updated Makefile, PowerShell helpers, README, and contributor docs for pnpm/Corepack workflows.
+
+## v1.6.4 - 2026-05-17
+
+This release expands Eve Flipper into a configurable trading cockpit and adds several community-requested intelligence and diagnostics tools.
+
+### Cockpit Engine
+
+- Added the Cockpit Interface settings panel behind the header gear button.
+- Added persistent cockpit loadouts for navigation, density, visible panels, quick actions, columns, filters, and startup view.
+- Added profile presets for Station Trader, Regional Hauler, Industry Builder, Ledger/Accountant, New Player, and Power User workflows.
+- Added per-tab layout settings for Scanner, Regional Trade, Station Trading, Route Builder, Industry, Ledger, and related tools.
+- Added import/export support for cockpit profiles as JSON.
+- Added shareable cockpit packs and a remote JSON community layout gallery.
+- Added built-in workspace templates as local fallback when the remote gallery is unavailable.
+- Added role-aware cockpit bindings so different characters can switch to different workspaces.
+- Added context/adaptive cockpit hints and quick action configuration.
+- Added a compact command palette for fast navigation and common actions.
+
+### Item Intelligence
+
+- Added an Item Intelligence modal with item search, market depth context, history signal, owned stock, active orders, and personal trading context.
+- Added reusable item intelligence links from trading tables and top-level navigation.
+- Added item-level diagnostics to connect market data with personal assets, orders, and journal history.
+
+### Regional Trade Diagnostics
+
+- Added Regional Trade diagnostic mode for checking rejected or negative opportunities.
+- Added clearer visibility into market data status, source/destination prices, margin, and filter rejection reasons.
+- Improved nullsec/private-structure troubleshooting by making missing or weak destination data easier to identify.
+
+### Ledger, Watchlist, and Character Data
+
+- Added graph tooltips and clearer date range display for Ledger capital/cashflow/P&L charts.
+- Added PI planets tab in the character popup with ESI-backed planet data and MVP production/profit context.
+- Added reusable tax profile editor as a shared source for fee/tax configuration across modules.
+- Improved Watchlist alert trigger handling and UI flow.
+
+### Industry and Structures
+
+- Improved custom/private structure resolution for Industry where ESI/ACL data is available.
+- Added industry structure awareness hooks for corporation/private station workflows.
+- Added additional SDE and ESI support for PI and industry-oriented item metadata.
+
+### UI and UX
+
+- Moved PLEX+ out of the main navigation and into the character/profile popup as secondary information.
+- Added wider/fullscreen modal support for large workflows.
+- Improved light-mode contrast for warning/info states.
+- Standardized tabs, filters, and action layout across major workflows.
+- Fixed multiple cockpit/layout overflow cases in the header, settings panels, profile presets, workspace gallery, and station trading table tools.
+
+## v1.6.3 - 2026-05-15
+
+This release focuses on wallet history reliability, route responsiveness, DOTLAN navigation, achievement expansion, and removing legacy desktop code.
+
+### Wallet Archive and Ledger Reliability
+
+- Added local wallet transaction and journal archive storage.
+- Added incremental wallet sync so future rows are preserved locally once seen.
+- Added archive fallback when live ESI wallet calls fail or return rate limit errors.
+- Added archive coverage metadata including live rows, archived rows, coverage days, and last sync information.
+- Improved Ledger graph clarity so fixed date ticks are not mistaken for missing history.
+
+### Route and DOTLAN
+
+- Added DOTLAN route opening support from route workflows.
+- Added route history counters for DOTLAN/navigation-related achievement tracking.
+- Changed hauling gank-risk scoring to capped best-effort work with timeouts and partial results so slow zKillboard responses do not block route scans.
+- Added tests for route risk timeout behavior.
+
+### Achievements
+
+- Added advanced ledger, audit, DOTLAN, archive, and discipline achievements.
+- Added new achievement glyph assets and localized EN/RU achievement text.
+- Added classified/hidden achievement handling for unrevealed achievements.
+
+### Backtest and Mission Control
+
+- Improved Paper Backtest result diagnostics and historical snapshot replay handling.
+- Improved Mission Control expected-vs-actual and journal integration details.
+- Added refinements to station and route execution wording around fill assumptions and quantity constraints.
+
+### Cleanup
+
+- Removed the legacy Tauri shell and vendored Tauri/Rust desktop files.
+- Kept the Wails desktop path as the supported desktop runtime.
+- Disabled wiki RAG autostart in API tests to keep CI cleanup stable.
+
 ## v1.6.2 - 2026-05-09
 
 This release turns the new execution workflow into a full decision-support layer: plan the trade, record it, reconcile the result, and track progress through achievements.
