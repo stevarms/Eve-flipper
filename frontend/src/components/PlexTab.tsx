@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getCharacterInfo, getPLEXDashboard, type CharacterScope, type PLEXDashboardParams } from "../lib/api";
 import { useI18n } from "../lib/i18n";
 import { useTheme } from "../lib/useTheme";
-import type { PLEXDashboard, ArbitragePath } from "../lib/types";
+import type { PLEXDashboard, ArbitragePath, ScanParams } from "../lib/types";
+import { normalizeTaxProfile, type TaxProfile } from "../lib/taxProfile";
 import { usePlexAlerts, PlexAlertPanel } from "./PlexAlerts";
 import {
   SignalCard,
@@ -22,6 +23,13 @@ type PlexSubTab = "market" | "spfarm" | "analytics";
 const SKILL_ACCOUNTING = 16622;
 const SKILL_BROKER_RELATIONS = 3446;
 
+interface PlexTabProps {
+  isLoggedIn?: boolean;
+  activeCharacterId?: CharacterScope;
+  taxProfile?: Partial<ScanParams>;
+  onTaxProfileChange?: (profile: TaxProfile) => void;
+}
+
 /** Format seconds as M:SS */
 function formatCountdown(sec: number): string {
   const m = Math.floor(sec / 60);
@@ -29,14 +37,15 @@ function formatCountdown(sec: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-export function PlexTab({ isLoggedIn = false, activeCharacterId }: { isLoggedIn?: boolean; activeCharacterId?: CharacterScope }) {
+export function PlexTab({ isLoggedIn = false, activeCharacterId, taxProfile, onTaxProfileChange }: PlexTabProps) {
   const { t } = useI18n();
   const { themeKey } = useTheme();
+  const tax = useMemo(() => normalizeTaxProfile(taxProfile ?? {}), [taxProfile]);
+  const salesTax = tax.split_trade_fees ? tax.sell_sales_tax_percent : tax.sales_tax_percent;
+  const brokerFee = tax.split_trade_fees ? tax.sell_broker_fee_percent : tax.broker_fee_percent;
   const [dashboard, setDashboard] = useState<PLEXDashboard | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [salesTax, setSalesTax] = useState(3.6);
-  const [brokerFee, setBrokerFee] = useState(1.0);
   const [nesExtractor, setNesExtractor] = useState(293);
   const [nesOmega, setNesOmega] = useState(500);
   const [omegaUSD, setOmegaUSD] = useState(14.99);
@@ -120,8 +129,24 @@ export function PlexTab({ isLoggedIn = false, activeCharacterId }: { isLoggedIn?
   const signal = dashboard?.signal;
   const ind = dashboard?.indicators;
 
+  const updateSellTax = useCallback((nextSalesTax: number) => {
+    onTaxProfileChange?.({
+      ...tax,
+      sales_tax_percent: nextSalesTax,
+      sell_sales_tax_percent: nextSalesTax,
+    });
+  }, [onTaxProfileChange, tax]);
+
+  const updateSellBrokerFee = useCallback((nextBrokerFee: number) => {
+    onTaxProfileChange?.({
+      ...tax,
+      broker_fee_percent: nextBrokerFee,
+      sell_broker_fee_percent: nextBrokerFee,
+    });
+  }, [onTaxProfileChange, tax]);
+
   const handleFetchEsiFees = useCallback(async () => {
-    if (!isLoggedIn) return;
+    if (!isLoggedIn || !onTaxProfileChange) return;
     setEsiFeesLoading(true);
     setEsiFeesMsg(null);
     try {
@@ -131,15 +156,22 @@ export function PlexTab({ isLoggedIn = false, activeCharacterId }: { isLoggedIn?
       const brokerRelations = skills.find((s) => s.skill_id === SKILL_BROKER_RELATIONS)?.active_skill_level ?? 0;
       const nextSalesTax = parseFloat((8 * (1 - 0.11 * accounting)).toFixed(2));
       const nextBrokerFee = parseFloat(Math.max(0, 3 - brokerRelations * 0.3).toFixed(2));
-      setSalesTax(nextSalesTax);
-      setBrokerFee(nextBrokerFee);
+      onTaxProfileChange({
+        ...tax,
+        sales_tax_percent: nextSalesTax,
+        broker_fee_percent: nextBrokerFee,
+        buy_broker_fee_percent: nextBrokerFee,
+        sell_broker_fee_percent: nextBrokerFee,
+        buy_sales_tax_percent: 0,
+        sell_sales_tax_percent: nextSalesTax,
+      });
       setEsiFeesMsg(t("plexSpfarmEsiFeesLoaded", { accounting, tax: nextSalesTax, broker: brokerRelations, fee: nextBrokerFee }));
     } catch {
       setEsiFeesMsg(t("plexSpfarmEsiError"));
     } finally {
       setEsiFeesLoading(false);
     }
-  }, [activeCharacterId, isLoggedIn, t]);
+  }, [activeCharacterId, isLoggedIn, onTaxProfileChange, tax, t]);
 
   return (
     <div className="flex flex-col gap-3 h-full overflow-y-auto pr-1 scrollbar-thin">
@@ -154,7 +186,8 @@ export function PlexTab({ isLoggedIn = false, activeCharacterId }: { isLoggedIn?
             min="0"
             max="100"
             value={salesTax}
-            onChange={(e) => setSalesTax(parseFloat(e.target.value) || 0)}
+            onChange={(e) => updateSellTax(parseFloat(e.target.value) || 0)}
+            disabled={!onTaxProfileChange}
             className="w-16 px-1.5 py-1 bg-eve-input border border-eve-border rounded-sm text-xs text-eve-text"
           />
           <label className="text-eve-dim">{t("paramsBrokerFee")}</label>
@@ -164,12 +197,13 @@ export function PlexTab({ isLoggedIn = false, activeCharacterId }: { isLoggedIn?
             min="0"
             max="100"
             value={brokerFee}
-            onChange={(e) => setBrokerFee(parseFloat(e.target.value) || 0)}
+            onChange={(e) => updateSellBrokerFee(parseFloat(e.target.value) || 0)}
+            disabled={!onTaxProfileChange}
             className="w-16 px-1.5 py-1 bg-eve-input border border-eve-border rounded-sm text-xs text-eve-text"
           />
           <button
             type="button"
-            disabled={!isLoggedIn || esiFeesLoading}
+            disabled={!isLoggedIn || !onTaxProfileChange || esiFeesLoading}
             onClick={() => void handleFetchEsiFees()}
             title={isLoggedIn ? t("plexSpfarmEsiSkillsTitleLoggedIn") : t("plexSpfarmEsiSkillsTitleLoggedOut")}
             className="flex items-center gap-1 px-2 py-1 rounded-sm text-[11px] border border-eve-accent/40 text-eve-accent bg-eve-accent/10 hover:bg-eve-accent/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"

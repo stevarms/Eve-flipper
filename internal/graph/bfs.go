@@ -13,10 +13,10 @@ type pathCacheKey struct {
 // EVE universe has ~8000 systems; caching the most frequently queried pairs
 // avoids redundant BFS runs during scans (hundreds of results × BFS each).
 type pathCache struct {
-	mu       sync.RWMutex
-	entries  map[pathCacheKey]int
-	order    []pathCacheKey // insertion order (oldest first)
-	maxSize  int
+	mu      sync.RWMutex
+	entries map[pathCacheKey]int
+	order   []pathCacheKey // insertion order (oldest first)
+	maxSize int
 }
 
 const defaultPathCacheSize = 50_000

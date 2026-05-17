@@ -1191,6 +1191,15 @@ export const en = {
 
     // Theme switcher
     themeTitle: "Theme & Display",
+    settingsHubTitle: "Settings",
+    settingsHubTheme: "Theme",
+    settingsHubInterface: "Interface",
+    settingsHubSettings: "Settings",
+    settingsHubDisplay: "Display",
+    settingsHubAccount: "Account",
+    settingsHubTaxProfile: "Tax profile",
+    settingsHubTaxTitle: "Global tax profile",
+    settingsHubTaxSubtitle: "Used by scanner, Station Trader, Route Builder, PLEX, Backtest and Mission Control. Edit it here once instead of maintaining separate fee values per module.",
     themeMode: "Mode",
     themeDark: "Dark",
     themeLight: "Light",

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Search } from "lucide-react";
 import { useKeyboardShortcuts } from "./lib/useKeyboardShortcuts";
 import { StatusBar } from "./components/StatusBar";
 import { ParametersPanel } from "./components/ParametersPanel";
@@ -10,35 +11,64 @@ import { WatchlistTab } from "./components/WatchlistTab";
 import { StationTrading } from "./components/StationTrading";
 import { IndustryTab } from "./components/IndustryTab";
 import { WarTracker } from "./components/WarTracker";
-import { PlexTab } from "./components/PlexTab";
+import { ItemIntelligenceModal } from "./components/ItemIntelligenceModal";
+import { TabActionBar, TabPanel, tabWorkspaceClass } from "./components/TabWorkspace";
 // import { MarketMakingTab } from "./components/MarketMakingTab";
 import { ScanHistory } from "./components/ScanHistory";
 import { CommandPalette } from "./components/CommandPalette";
 import { KeyboardShortcutsHelp } from "./components/KeyboardShortcutsHelp";
 import { LanguageSwitcher } from "./components/LanguageSwitcher";
 import { ThemeSwitcher } from "./components/ThemeSwitcher";
+import { CockpitInterfaceTab } from "./components/CockpitInterfaceTab";
+import { cockpitInterfacePages, type InterfacePage } from "./lib/cockpitInterfacePages";
+import { TaxProfileEditor } from "./components/TaxProfileEditor";
 import { useGlobalToast } from "./components/Toast";
 import { Modal } from "./components/Modal";
 import { CharacterPopup } from "./components/CharacterPopup";
+import { PaperTradeJournalPopup } from "./components/PaperTradeJournalPopup";
 import { useAchievements } from "./components/achievements";
 import {
   applyAppUpdate,
+  activateCockpitLoadoutRemote,
+  createCockpitLoadoutRemote,
+  deleteCockpitLoadoutRemote,
+  getCockpitPreferencesRemote,
   getUpdateCheckStatus,
   getConfig,
   skipAppUpdateForSession,
   updateConfig,
+  updateCockpitLoadoutRemote,
+  updateCockpitPreferencesRemote,
   scan,
   scanMultiRegion,
   scanRegionalDayTrader,
   scanContracts,
   testAlertChannels,
   getWatchlist,
+  type CockpitLoadoutsResponse,
+  type CockpitPreferencesResponse,
 } from "./lib/api";
 import { useI18n } from "./lib/i18n";
 import { formatISK } from "./lib/format";
 import { useAuth } from "./lib/useAuth";
 import { useVersionCheck } from "./lib/useVersionCheck";
 import { useEsiStatus } from "./lib/useEsiStatus";
+import {
+  getCockpitTabLayout,
+  getEffectiveCockpitDensity,
+  getVisibleMainTabs,
+  isCockpitQuickActionVisible,
+  isMainTabId,
+  loadCockpitPreferences,
+  MAIN_TAB_META,
+  sanitizeCockpitPreferences,
+  saveCockpitPreferences as saveCockpitPreferencesLocal,
+  trackCockpitActivity,
+  type CockpitQuickAction,
+  type CockpitLoadout,
+  type CockpitPreferences,
+  type MainTabId,
+} from "./lib/cockpit";
 import type {
   ContractResult,
   FlipResult,
@@ -51,15 +81,7 @@ import type {
 } from "./lib/types";
 import logo from "./assets/logo.svg";
 
-type Tab =
-  | "radius"
-  | "region"
-  | "contracts"
-  | "station"
-  | "route"
-  | "industry"
-  | "demand"
-  | "plex";
+type Tab = MainTabId;
 
 type AlertChannels = {
   telegram: boolean;
@@ -259,6 +281,12 @@ function legacyRegionalItemToFlip(
         : 0,
     DayTradeScore: toNumber(item.trade_score, 0),
     DayTargetLowestSell: toNumber(item.target_lowest_sell, 0),
+    DayDiagnosticRejected: Boolean(item.diagnostic_rejected),
+    DayDiagnosticReason: toText(item.diagnostic_reason, ""),
+    DayDiagnosticDetails: Array.isArray(item.diagnostic_details)
+      ? item.diagnostic_details.map((v: unknown) => toText(v, "")).filter(Boolean)
+      : undefined,
+    DayMarketDataStatus: toText(item.market_data_status, ""),
   };
   const priceHistory = toNumberArray(item.target_price_history);
   if (priceHistory) row.DayPriceHistory = priceHistory;
@@ -342,27 +370,28 @@ function App() {
     route_dock_minutes: 4,
     route_safety_delay_percent: 0,
     sell_order_mode: false,
+    regional_diagnostic_mode: false,
   });
   const configLoadedRef = useRef(false);
   const regionDefaultsAppliedRef = useRef(false);
+  const [cockpitPreferences, setCockpitPreferences] = useState<CockpitPreferences>(() => loadCockpitPreferences());
+  const [cockpitLoadouts, setCockpitLoadouts] = useState<CockpitLoadout[]>([]);
+  const [activeCockpitLoadoutID, setActiveCockpitLoadoutID] = useState("default");
+  const [cockpitSyncStatus, setCockpitSyncStatus] = useState<"local" | "loading" | "saved" | "saving" | "error">("local");
+  const cockpitPreferencesRef = useRef<CockpitPreferences>(cockpitPreferences);
+  const cockpitRemoteReadyRef = useRef(false);
+  const cockpitSaveTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const visibleMainTabs = useMemo(() => getVisibleMainTabs(cockpitPreferences), [cockpitPreferences]);
 
   const [tab, setTabRaw] = useState<Tab>(() => {
+    const startupTab = cockpitPreferences.startupTab;
+    if (startupTab !== "last" && isMainTabId(startupTab)) {
+      return startupTab;
+    }
     try {
       const saved = localStorage.getItem("eve-flipper-active-tab");
-      if (
-        saved &&
-        [
-          "radius",
-          "region",
-          "contracts",
-          "station",
-          "route",
-          "industry",
-          "demand",
-          "plex",
-        ].includes(saved)
-      ) {
-        return saved as Tab;
+      if (isMainTabId(saved)) {
+        return saved;
       }
     } catch {
       /* ignore */
@@ -423,7 +452,11 @@ function App() {
   const [showWatchlist, setShowWatchlist] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [showPatrons, setShowPatrons] = useState(false);
+  const [showItemIntelligence, setShowItemIntelligence] = useState(false);
   const [showCharacter, setShowCharacter] = useState(false);
+  const [characterInitialTab, setCharacterInitialTab] = useState<"overview" | "ledger">("overview");
+  const [showPaperTradeJournal, setShowPaperTradeJournal] = useState(false);
+  const [settingsInterfacePage, setSettingsInterfacePage] = useState<InterfacePage>("overview");
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
@@ -463,6 +496,279 @@ function App() {
     }
     window.open(url, "_blank", "noopener,noreferrer");
   }, []);
+  const effectiveCockpitDensity = useMemo(
+    () => getEffectiveCockpitDensity(cockpitPreferences, tab),
+    [cockpitPreferences, tab],
+  );
+  const regionColumnProfile = useMemo(
+    () => getCockpitTabLayout(cockpitPreferences, "region").columnPreset === "default" ? "default" : "region_eveguru",
+    [cockpitPreferences],
+  );
+  const showQuickAction = useCallback(
+    (action: CockpitQuickAction) => isCockpitQuickActionVisible(cockpitPreferences, action),
+    [cockpitPreferences],
+  );
+  const openCharacterProfile = useCallback((initialTab: "overview" | "ledger" = "overview") => {
+    setCharacterInitialTab(initialTab);
+    setShowCharacter(true);
+  }, []);
+  const showTabActionBars = !cockpitPreferences.hiddenPanels.tabActionBars;
+
+  const applyCockpitLoadoutState = useCallback((response: CockpitPreferencesResponse | CockpitLoadoutsResponse) => {
+    const clean = sanitizeCockpitPreferences(response.preferences);
+    const loadouts = (response.loadouts ?? []).map((loadout) => ({
+      ...loadout,
+      preferences: sanitizeCockpitPreferences(loadout.preferences),
+    }));
+    const activeID =
+      response.active_loadout_id ||
+      loadouts.find((loadout) => loadout.active)?.id ||
+      ("loadout" in response ? response.loadout?.id : undefined) ||
+      "default";
+
+    cockpitPreferencesRef.current = clean;
+    setCockpitPreferences((prev) =>
+      JSON.stringify(sanitizeCockpitPreferences(prev)) === JSON.stringify(clean) ? prev : clean,
+    );
+    setCockpitLoadouts(loadouts);
+    setActiveCockpitLoadoutID(activeID);
+    saveCockpitPreferencesLocal(clean);
+  }, []);
+
+  const activateLocalCockpitLoadout = useCallback((loadout: CockpitLoadout) => {
+    const clean = sanitizeCockpitPreferences(loadout.preferences);
+    const now = new Date().toISOString();
+    cockpitPreferencesRef.current = clean;
+    setCockpitPreferences(clean);
+    setCockpitLoadouts((prev) => {
+      const found = prev.some((item) => item.id === loadout.id);
+      const next = found
+        ? prev.map((item) =>
+            item.id === loadout.id
+              ? { ...item, name: loadout.name, preferences: clean, active: true, updated_at: now }
+              : { ...item, active: false },
+          )
+        : [
+            ...prev.map((item) => ({ ...item, active: false })),
+            { ...loadout, preferences: clean, active: true, updated_at: now, created_at: loadout.created_at ?? now },
+          ];
+      return next;
+    });
+    setActiveCockpitLoadoutID(loadout.id);
+    saveCockpitPreferencesLocal(clean);
+  }, []);
+
+  const createLocalCockpitLoadout = useCallback((name: string, preferences: CockpitPreferences, activate = true) => {
+    const clean = sanitizeCockpitPreferences({ ...preferences, name });
+    const now = new Date().toISOString();
+    const id = `local-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    const loadout: CockpitLoadout = {
+      id,
+      name: clean.name,
+      preferences: clean,
+      active: activate,
+      created_at: now,
+      updated_at: now,
+    };
+    setCockpitLoadouts((prev) => [
+      ...prev.map((item) => ({ ...item, active: activate ? false : item.active })),
+      loadout,
+    ]);
+    if (activate) {
+      cockpitPreferencesRef.current = clean;
+      setCockpitPreferences(clean);
+      setActiveCockpitLoadoutID(id);
+      saveCockpitPreferencesLocal(clean);
+    }
+    return loadout;
+  }, []);
+
+  const handleCockpitPreferencesChange = useCallback((nextPreferences: CockpitPreferences) => {
+    const clean = sanitizeCockpitPreferences(nextPreferences);
+    cockpitPreferencesRef.current = clean;
+    setCockpitPreferences(clean);
+    setCockpitLoadouts((prev) =>
+      prev.map((loadout) =>
+        loadout.id === activeCockpitLoadoutID
+          ? { ...loadout, name: clean.name, preferences: clean, active: true }
+          : { ...loadout, active: false },
+      ),
+    );
+  }, [activeCockpitLoadoutID]);
+
+  const handleCockpitActivateLoadout = useCallback(async (loadoutID: string) => {
+    setCockpitSyncStatus("saving");
+    try {
+      const response = await activateCockpitLoadoutRemote(loadoutID);
+      applyCockpitLoadoutState(response);
+      const startupTab = sanitizeCockpitPreferences(response.preferences).startupTab;
+      if (startupTab !== "last" && isMainTabId(startupTab)) {
+        setTab(startupTab);
+      }
+      setCockpitSyncStatus("saved");
+    } catch (error) {
+      const local = cockpitLoadouts.find((loadout) => loadout.id === loadoutID);
+      if (local) {
+        activateLocalCockpitLoadout(local);
+        setCockpitSyncStatus("local");
+        return;
+      }
+      setCockpitSyncStatus("error");
+      throw error;
+    }
+  }, [activateLocalCockpitLoadout, applyCockpitLoadoutState, cockpitLoadouts, setTab]);
+
+  const handleCockpitCreateLoadout = useCallback(async (name: string, source?: CockpitPreferences, activate = true) => {
+    setCockpitSyncStatus("saving");
+    const preferences = sanitizeCockpitPreferences({ ...(source ?? cockpitPreferencesRef.current), name });
+    try {
+      const response = await createCockpitLoadoutRemote({ name: preferences.name, preferences, activate });
+      applyCockpitLoadoutState(response);
+      setCockpitSyncStatus("saved");
+    } catch (error) {
+      createLocalCockpitLoadout(preferences.name, preferences, activate);
+      setCockpitSyncStatus("local");
+    }
+  }, [applyCockpitLoadoutState, createLocalCockpitLoadout]);
+
+  const handleCockpitDuplicateLoadout = useCallback(async (loadoutID: string) => {
+    const source = cockpitLoadouts.find((loadout) => loadout.id === loadoutID)?.preferences ?? cockpitPreferencesRef.current;
+    const name = `${source.name || "Cockpit"} copy`;
+    await handleCockpitCreateLoadout(name, source);
+  }, [cockpitLoadouts, handleCockpitCreateLoadout]);
+
+  const handleCockpitDeleteLoadout = useCallback(async (loadoutID: string) => {
+    setCockpitSyncStatus("saving");
+    try {
+      const response = await deleteCockpitLoadoutRemote(loadoutID);
+      applyCockpitLoadoutState(response);
+      setCockpitSyncStatus("saved");
+    } catch (error) {
+      const local = cockpitLoadouts.find((loadout) => loadout.id === loadoutID);
+      if (local) {
+        const remaining = cockpitLoadouts.filter((loadout) => loadout.id !== loadoutID);
+        setCockpitLoadouts(remaining);
+        const nextActive = remaining.find((loadout) => loadout.active) ?? remaining[0];
+        if (nextActive) {
+          activateLocalCockpitLoadout(nextActive);
+        } else {
+          setActiveCockpitLoadoutID("default");
+        }
+        setCockpitSyncStatus("local");
+        return;
+      }
+      setCockpitSyncStatus("error");
+      throw error;
+    }
+  }, [activateLocalCockpitLoadout, applyCockpitLoadoutState, cockpitLoadouts]);
+
+  useEffect(() => {
+    setCockpitSyncStatus("loading");
+    let cancelled = false;
+    getCockpitPreferencesRemote()
+      .then((response) => {
+        if (cancelled) return;
+        if (response.stored) {
+          applyCockpitLoadoutState(response);
+          setCockpitSyncStatus("saved");
+          return;
+        }
+        updateCockpitPreferencesRemote(cockpitPreferencesRef.current)
+          .then((saved) => {
+            if (!cancelled) {
+              applyCockpitLoadoutState(saved);
+              setCockpitSyncStatus("saved");
+            }
+          })
+          .catch(() => {
+            if (!cancelled) setCockpitSyncStatus("local");
+          });
+      })
+      .catch(() => {
+        if (!cancelled) setCockpitSyncStatus("local");
+      })
+      .finally(() => {
+        if (!cancelled) {
+          cockpitRemoteReadyRef.current = true;
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const clean = sanitizeCockpitPreferences(cockpitPreferences);
+    cockpitPreferencesRef.current = clean;
+    saveCockpitPreferencesLocal(clean);
+    if (!cockpitRemoteReadyRef.current) return;
+    setCockpitSyncStatus("saving");
+    clearTimeout(cockpitSaveTimerRef.current);
+    cockpitSaveTimerRef.current = setTimeout(() => {
+      const activeID = activeCockpitLoadoutID;
+      const save =
+        activeID && activeID !== "default"
+          ? updateCockpitLoadoutRemote(activeID, { name: clean.name, preferences: clean, activate: true })
+          : updateCockpitPreferencesRemote(clean);
+      save
+        .then((response) => {
+          applyCockpitLoadoutState(response);
+          setCockpitSyncStatus("saved");
+        })
+        .catch(() => setCockpitSyncStatus("local"));
+    }, 500);
+    return () => clearTimeout(cockpitSaveTimerRef.current);
+  }, [activeCockpitLoadoutID, applyCockpitLoadoutState, cockpitPreferences]);
+
+  useEffect(() => {
+    if (!visibleMainTabs.includes(tab)) {
+      setTab(visibleMainTabs[0] ?? "radius");
+    }
+  }, [setTab, tab, visibleMainTabs]);
+
+  useEffect(() => {
+    trackCockpitActivity(`tab:${tab}`);
+  }, [tab]);
+
+  const activeCockpitTask = useMemo(() => {
+    if (tab === "region") return "regional";
+    if (tab === "route") return "route";
+    if (tab === "industry") return "industry";
+    if (tab === "station" || tab === "radius") return "station";
+    return "any";
+  }, [tab]);
+
+  const activeRouteMode = useMemo(() => {
+    const raw = String(params.route_mode ?? "any");
+    return raw === "fastest" || raw === "safest" || raw === "balanced" || raw === "max_isk_hour"
+      ? raw
+      : "any";
+  }, [params.route_mode]);
+
+  useEffect(() => {
+    const characterID = authStatus.character_id ? String(authStatus.character_id) : "";
+    if (!characterID) return;
+    const binding = cockpitPreferences.roleBindings[characterID];
+    if (!binding) return;
+    const contextRule = [...(binding.contextRules ?? [])]
+      .sort((a, b) => b.priority - a.priority)
+      .find((rule) =>
+        (rule.task === "any" || rule.task === activeCockpitTask) &&
+        (rule.routeMode === "any" || rule.routeMode === activeRouteMode),
+      );
+    const targetLoadoutID = contextRule?.loadoutId || binding.loadoutId;
+    if (!targetLoadoutID || targetLoadoutID === activeCockpitLoadoutID) return;
+    if (!cockpitLoadouts.some((loadout) => loadout.id === targetLoadoutID)) return;
+    void handleCockpitActivateLoadout(targetLoadoutID);
+  }, [
+    activeCockpitLoadoutID,
+    activeCockpitTask,
+    activeRouteMode,
+    authStatus.character_id,
+    cockpitLoadouts,
+    cockpitPreferences.roleBindings,
+    handleCockpitActivateLoadout,
+  ]);
 
   const [contractScanCompleted, setContractScanCompleted] = useState(false);
   const contractFilterHints = useMemo(() => {
@@ -793,6 +1099,8 @@ function App() {
             cfg.target_market_location_id ?? prev.target_market_location_id,
           category_ids: cfg.category_ids ?? prev.category_ids,
           sell_order_mode: cfg.sell_order_mode ?? prev.sell_order_mode,
+          regional_diagnostic_mode:
+            cfg.regional_diagnostic_mode ?? prev.regional_diagnostic_mode,
         }));
         setAlertChannels({
           telegram: cfg.alert_telegram ?? false,
@@ -902,17 +1210,22 @@ function App() {
                 : threshold > 0;
             if (!enabled || threshold <= 0) continue;
 
-            const match = rows.find((r) => r.TypeID === item.type_id);
+            const matches = rows.filter((r) => r.TypeID === item.type_id);
+            const valueForMetric = (row: (typeof rows)[number]) =>
+              metric === "margin_percent"
+                ? row.MarginPercent
+                : metric === "total_profit"
+                  ? row.TotalProfit
+                  : metric === "profit_per_unit"
+                    ? row.ProfitPerUnit
+                    : row.DailyVolume;
+            const match = matches.reduce<(typeof rows)[number] | undefined>(
+              (best, row) => (!best || valueForMetric(row) > valueForMetric(best) ? row : best),
+              undefined,
+            );
             if (!match) continue;
 
-            const current =
-              metric === "margin_percent"
-                ? match.MarginPercent
-                : metric === "total_profit"
-                  ? match.TotalProfit
-                  : metric === "profit_per_unit"
-                    ? match.ProfitPerUnit
-                    : match.DailyVolume;
+            const current = valueForMetric(match);
 
             if (current < threshold) continue;
 
@@ -1219,15 +1532,15 @@ function App() {
   return (
     <>
       <div
-        className={`h-screen flex flex-col gap-1.5 sm:gap-3 p-1.5 sm:p-4 select-none overflow-hidden transition-[opacity,transform,filter] duration-500 ease-out ${
+        className={`cockpit-density-${effectiveCockpitDensity} h-screen flex flex-col gap-1.5 sm:gap-3 p-1.5 sm:p-4 select-none overflow-hidden transition-[opacity,transform,filter] duration-500 ease-out ${
           bootSplashState === "hidden"
             ? "opacity-100 scale-100 blur-0"
             : "opacity-0 scale-[0.995] blur-[1px]"
         } ${bootSplashState !== "hidden" ? "pointer-events-none" : ""}`}
       >
       {/* Header */}
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+      <div className="flex items-center gap-2 min-w-0">
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0 shrink-0">
           <div className="min-w-0 flex items-center gap-2 sm:gap-2.5 px-2 sm:px-2.5 py-1 bg-eve-panel border border-eve-border rounded-sm">
             <div className="flex items-center justify-center w-6 h-6 rounded-sm bg-eve-dark border border-eve-border/70">
               <img
@@ -1327,7 +1640,7 @@ function App() {
               href="https://discord.gg/rnR2bw6XXX"
               target="_blank"
               rel="noreferrer"
-              className="group inline-flex items-center gap-1.5 h-7 px-2 rounded-sm border border-[#5865F2]/45 bg-[#5865F2]/12 text-[#9ca8ff] hover:bg-[#5865F2]/20 hover:text-[#c7ceff] transition-colors"
+              className="eve-header-discord-cta group inline-flex items-center gap-1.5 h-7 px-2 rounded-sm border border-[#5865F2]/45 bg-[#5865F2]/12 text-[#9ca8ff] hover:bg-[#5865F2]/20 hover:text-[#c7ceff] transition-colors"
               aria-label={t("discordCta")}
               title={t("discordPitch")}
             >
@@ -1335,35 +1648,128 @@ function App() {
             </a>
           </div>
         </div>
-        <div className="flex items-center gap-1 sm:gap-2 shrink-0">
+        <div className="flex min-w-0 flex-1 items-center justify-end gap-1 sm:gap-2">
           {/* Desktop controls — hidden on mobile */}
-          <div className="hidden sm:flex items-center gap-2">
-            {/* Watchlist button */}
-            <button
-              onClick={() => setShowWatchlist(true)}
-              className="flex items-center gap-1.5 h-[34px] px-3 bg-eve-panel border border-eve-border rounded-sm text-xs text-eve-dim hover:text-eve-accent hover:border-eve-accent/50 transition-colors"
-              title={t("tabWatchlist")}
-              aria-label={t("tabWatchlist")}
-            >
-              <span aria-hidden="true">&#11088;</span>
-              <span>{t("tabWatchlist")}</span>
-            </button>
-            {/* History button */}
-            <button
-              onClick={() => setShowHistory(true)}
-              className="flex items-center gap-1.5 h-[34px] px-3 bg-eve-panel border border-eve-border rounded-sm text-xs text-eve-dim hover:text-eve-accent hover:border-eve-accent/50 transition-colors"
-              title={t("tabHistory")}
-              aria-label={t("tabHistory")}
-            >
-              <span aria-hidden="true">&#128203;</span>
-              <span>{t("tabHistory")}</span>
-            </button>
+          <div className="eve-header-actions hidden min-w-0 flex-1 items-center justify-end gap-2 overflow-x-auto overflow-y-hidden sm:flex">
+            {showQuickAction("watchlist") && (
+              <button
+                onClick={() => {
+                  trackCockpitActivity("command:watchlist");
+                  setShowWatchlist(true);
+                }}
+                className="eve-header-action flex items-center gap-1.5 h-[34px] px-3 bg-eve-panel border border-eve-border rounded-sm text-xs text-eve-dim hover:text-eve-accent hover:border-eve-accent/50 transition-colors"
+                title={t("tabWatchlist")}
+                aria-label={t("tabWatchlist")}
+              >
+                <span aria-hidden="true">&#11088;</span>
+                <span className="eve-header-action-label">{t("tabWatchlist")}</span>
+              </button>
+            )}
+            {showQuickAction("history") && (
+              <button
+                onClick={() => {
+                  trackCockpitActivity("command:history");
+                  setShowHistory(true);
+                }}
+                className="eve-header-action flex items-center gap-1.5 h-[34px] px-3 bg-eve-panel border border-eve-border rounded-sm text-xs text-eve-dim hover:text-eve-accent hover:border-eve-accent/50 transition-colors"
+                title={t("tabHistory")}
+                aria-label={t("tabHistory")}
+              >
+                <span aria-hidden="true">&#128203;</span>
+                <span className="eve-header-action-label">{t("tabHistory")}</span>
+              </button>
+            )}
+            {showQuickAction("itemIntel") && (
+              <button
+                onClick={() => {
+                  trackCockpitActivity("command:itemIntel");
+                  setShowItemIntelligence(true);
+                }}
+                className="eve-header-action flex items-center gap-1.5 h-[34px] px-3 bg-eve-panel border border-eve-border rounded-sm text-xs text-eve-dim hover:text-eve-accent hover:border-eve-accent/50 transition-colors"
+                title="Item Intelligence"
+                aria-label="Item Intelligence"
+              >
+                <Search className="h-3.5 w-3.5" aria-hidden="true" />
+                <span className="eve-header-action-label">Item Intel</span>
+              </button>
+            )}
+            {showQuickAction("missionControl") && (
+              <button
+                onClick={() => {
+                  trackCockpitActivity("command:missionControl");
+                  setTab(tab === "region" || tab === "route" ? tab : "station");
+                  addToast("Select a result row and click Build Execution Plan.", "info", 2800);
+                }}
+                className="eve-header-action flex items-center gap-1.5 h-[34px] px-3 bg-eve-panel border border-eve-border rounded-sm text-xs text-eve-dim hover:text-eve-accent hover:border-eve-accent/50 transition-colors"
+                title="Mission Control"
+                aria-label="Mission Control"
+              >
+                <span aria-hidden="true">&#9873;</span>
+                <span className="eve-header-action-label">Mission</span>
+              </button>
+            )}
+            {showQuickAction("ledger") && (
+              <button
+                onClick={() => {
+                  trackCockpitActivity("command:ledger");
+                  openCharacterProfile("ledger");
+                }}
+                className="eve-header-action flex items-center gap-1.5 h-[34px] px-3 bg-eve-panel border border-eve-border rounded-sm text-xs text-eve-dim hover:text-eve-accent hover:border-eve-accent/50 transition-colors"
+                title="Ledger"
+                aria-label="Ledger"
+              >
+                <span aria-hidden="true">&#128202;</span>
+                <span className="eve-header-action-label">Ledger</span>
+              </button>
+            )}
+            {showQuickAction("dotlan") && (
+              <button
+                onClick={() => {
+                  trackCockpitActivity("command:dotlan");
+                  void openExternalURL("https://evemaps.dotlan.net/route");
+                }}
+                className="eve-header-action flex items-center gap-1.5 h-[34px] px-3 bg-eve-panel border border-eve-border rounded-sm text-xs text-eve-dim hover:text-eve-accent hover:border-eve-accent/50 transition-colors"
+                title="Open DOTLAN"
+                aria-label="Open DOTLAN"
+              >
+                <span aria-hidden="true">&#9711;</span>
+                <span className="eve-header-action-label">DOTLAN</span>
+              </button>
+            )}
+            {showQuickAction("commandPalette") && (
+              <button
+                onClick={() => {
+                  trackCockpitActivity("command:commandPalette");
+                  setShowCommandPalette(true);
+                }}
+                className="eve-header-action flex items-center gap-1.5 h-[34px] px-3 bg-eve-panel border border-eve-border rounded-sm text-xs text-eve-dim hover:text-eve-accent hover:border-eve-accent/50 transition-colors"
+                title="Command Palette"
+                aria-label="Command Palette"
+              >
+                <span aria-hidden="true">K</span>
+                <span className="eve-header-action-label">Command</span>
+              </button>
+            )}
+            {showQuickAction("shortcuts") && (
+              <button
+                onClick={() => {
+                  trackCockpitActivity("command:shortcuts");
+                  setShowShortcutsHelp(true);
+                }}
+                className="eve-header-action flex items-center gap-1.5 h-[34px] px-3 bg-eve-panel border border-eve-border rounded-sm text-xs text-eve-dim hover:text-eve-accent hover:border-eve-accent/50 transition-colors"
+                title="Keyboard shortcuts"
+                aria-label="Keyboard shortcuts"
+              >
+                <span aria-hidden="true">?</span>
+                <span className="eve-header-action-label">Keys</span>
+              </button>
+            )}
             {/* Auth chip */}
-            <div className="flex items-center gap-1 h-[34px] px-3 bg-eve-panel border border-eve-border rounded-sm text-xs">
+            <div className="eve-header-auth flex items-center gap-1 h-[34px] px-3 bg-eve-panel border border-eve-border rounded-sm text-xs">
               {authStatus.logged_in ? (
                 <>
                   <button
-                    onClick={() => setShowCharacter(true)}
+                    onClick={() => openCharacterProfile("overview")}
                     className="flex items-center gap-2 hover:bg-eve-dark/50 rounded-sm px-1 py-0.5 transition-colors"
                     title={t("charViewInfo")}
                   >
@@ -1424,9 +1830,44 @@ function App() {
                 </button>
               )}
             </div>
-            <StatusBar />
+            {!cockpitPreferences.hiddenPanels.statusBar && <StatusBar />}
           </div>
-          <ThemeSwitcher />
+          <ThemeSwitcher
+            interfacePages={cockpitInterfacePages}
+            activeInterfacePage={settingsInterfacePage}
+            onInterfacePageChange={setSettingsInterfacePage}
+            interfaceContent={
+              <CockpitInterfaceTab
+                preferences={cockpitPreferences}
+                loadouts={cockpitLoadouts}
+                activeLoadoutID={activeCockpitLoadoutID}
+                syncStatus={cockpitSyncStatus}
+                onChange={handleCockpitPreferencesChange}
+                onActivateLoadout={handleCockpitActivateLoadout}
+                onCreateLoadout={handleCockpitCreateLoadout}
+                onDuplicateLoadout={handleCockpitDuplicateLoadout}
+                onDeleteLoadout={handleCockpitDeleteLoadout}
+                scanParams={params}
+                onScanParamsChange={setParams}
+                activeCharacterId={authStatus.character_id}
+                page={settingsInterfacePage}
+                onPageChange={setSettingsInterfacePage}
+                hideSidebar
+              />
+            }
+            settingsContent={
+              <section className="rounded-sm border border-eve-border/70 bg-eve-panel/70 p-4">
+                <TaxProfileEditor
+                  value={params}
+                  onChange={(profile) => setParams((prev) => ({ ...prev, ...profile }))}
+                  isLoggedIn={authStatus.logged_in}
+                  characterScope={authStatus.character_id}
+                  title={t("settingsHubTaxTitle")}
+                  subtitle={t("settingsHubTaxSubtitle")}
+                />
+              </section>
+            }
+          />
           <LanguageSwitcher />
           {/* Hamburger menu — visible only on mobile */}
           <button
@@ -1483,12 +1924,22 @@ function App() {
             <span>&#128203;</span>
             <span>{t("tabHistory")}</span>
           </button>
+          <button
+            onClick={() => {
+              setShowItemIntelligence(true);
+              setMobileMenuOpen(false);
+            }}
+            className="flex items-center gap-1.5 h-9 px-3 bg-eve-panel border border-eve-border rounded-sm text-xs text-eve-dim"
+          >
+            <Search className="h-3.5 w-3.5" aria-hidden="true" />
+            <span>Item Intel</span>
+          </button>
           <div className="flex items-center gap-1 h-9 px-3 bg-eve-panel border border-eve-border rounded-sm text-xs">
             {authStatus.logged_in ? (
               <>
                 <button
                   onClick={() => {
-                    setShowCharacter(true);
+                    openCharacterProfile("overview");
                     setMobileMenuOpen(false);
                   }}
                   className="flex items-center gap-2"
@@ -1619,19 +2070,6 @@ function App() {
         </div>
       )}
 
-      {/* Parameters - shown for tabs that use global scan params (Flipper, Regional, Contracts, Route) */}
-      {(tab === "radius" ||
-        tab === "region" ||
-        tab === "contracts" ||
-        tab === "route") && (
-        <ParametersPanel
-          params={params}
-          onChange={setParams}
-          isLoggedIn={authStatus.logged_in}
-          tab={tab}
-        />
-      )}
-
       {/* Industry doesn't use global params - has its own settings panel */}
 
       {/* Tabs */}
@@ -1643,51 +2081,26 @@ function App() {
               role="tablist"
               aria-label="Scan modes"
             >
-              <TabButton
-                active={tab === "radius"}
-                onClick={() => setTab("radius")}
-                label={t("tabRadius")}
-              />
-              <TabButton
-                active={tab === "region"}
-                onClick={() => setTab("region")}
-                label={t("tabRegion")}
-              />
-              <TabButton
-                active={tab === "contracts"}
-                onClick={() => setTab("contracts")}
-                label={t("tabContracts")}
-              />
-              <TabButton
-                active={tab === "route"}
-                onClick={() => setTab("route")}
-                label={t("tabRoute")}
-              />
-              {/* Visual separator: scan group vs station/industry */}
-              <div
-                className="h-6 w-px bg-eve-border mx-1 flex-shrink-0"
-                aria-hidden="true"
-              />
-              <TabButton
-                active={tab === "station"}
-                onClick={() => setTab("station")}
-                label={t("tabStation")}
-              />
-              <TabButton
-                active={tab === "industry"}
-                onClick={() => setTab("industry")}
-                label={t("tabIndustry")}
-              />
-              <TabButton
-                active={tab === "demand"}
-                onClick={() => setTab("demand")}
-                label={t("tabDemand") || "War Tracker"}
-              />
-              <TabButton
-                active={tab === "plex"}
-                onClick={() => setTab("plex")}
-                label={t("tabPlex") || "PLEX+"}
-              />
+              {visibleMainTabs.map((tabID, index) => {
+                const prev = visibleMainTabs[index - 1];
+                const needsSeparator = prev && MAIN_TAB_META[prev].group !== MAIN_TAB_META[tabID].group;
+                const meta = MAIN_TAB_META[tabID];
+                return (
+                  <Fragment key={tabID}>
+                    {needsSeparator && (
+                      <div
+                        className="h-6 w-px bg-eve-border mx-1 flex-shrink-0"
+                        aria-hidden="true"
+                      />
+                    )}
+                    <TabButton
+                      active={tab === tabID}
+                      onClick={() => setTab(tabID)}
+                      label={t(meta.labelKey) || meta.fallback}
+                    />
+                  </Fragment>
+                );
+              })}
               <div className="w-2 sm:w-4 shrink-0" />
             </div>
           </div>
@@ -1695,8 +2108,7 @@ function App() {
           {tab !== "route" &&
             tab !== "station" &&
             tab !== "industry" &&
-            tab !== "demand" &&
-            tab !== "plex" && (
+            tab !== "demand" && (
               <div className="shrink-0 border-l border-eve-border px-1.5 sm:px-2 py-1 flex items-center">
                 <button
                   data-scan-button
@@ -1722,12 +2134,25 @@ function App() {
         </div>
 
         {/* Results — all tabs stay mounted to preserve state */}
-        <div className="flex-1 min-h-0 flex flex-col p-1.5 sm:p-2">
-          <div
-            className={`flex-1 min-h-0 flex flex-col ${tab === "radius" ? "" : "hidden"}`}
-          >
-            {tab === "radius" && (
-              <div className="shrink-0 flex items-center gap-2 px-2 py-1 text-xs border-b border-eve-border/20">
+        {(tab === "radius" ||
+          tab === "region" ||
+          tab === "contracts" ||
+          tab === "route") && (
+          <div className="shrink-0 border-b border-eve-border bg-eve-dark/35">
+            <ParametersPanel
+              params={params}
+              onChange={setParams}
+              isLoggedIn={authStatus.logged_in}
+              tab={tab}
+              showAdvancedControls={!cockpitPreferences.hiddenPanels.advancedFilters}
+            />
+          </div>
+        )}
+
+        <div className={tabWorkspaceClass}>
+          <TabPanel active={tab === "radius"}>
+              {tab === "radius" && showTabActionBars && (
+              <TabActionBar>
                 <label className="inline-flex items-center gap-1.5 cursor-pointer select-none text-eve-dim hover:text-eve-text transition-colors">
                   <input
                     type="checkbox"
@@ -1743,7 +2168,7 @@ function App() {
                     active
                   </span>
                 )}
-              </div>
+              </TabActionBar>
             )}
             <ScanResultsTable
               results={radiusResults}
@@ -1761,13 +2186,11 @@ function App() {
               isLoggedIn={authStatus.logged_in}
               cargoLimit={params.cargo_capacity}
             />
-          </div>
-          <div
-            className={`flex-1 min-h-0 flex flex-col ${tab === "region" ? "" : "hidden"}`}
-          >
+          </TabPanel>
+          <TabPanel active={tab === "region"}>
             {/* Auto-refresh toggle for region tab */}
-            {tab === "region" && (
-              <div className="shrink-0 flex items-center gap-2 px-2 py-1 text-xs border-b border-eve-border/20">
+            {tab === "region" && showTabActionBars && (
+              <TabActionBar>
                 <label className="inline-flex items-center gap-1.5 cursor-pointer select-none text-eve-dim hover:text-eve-text transition-colors">
                   <input
                     type="checkbox"
@@ -1783,11 +2206,11 @@ function App() {
                     active
                   </span>
                 )}
-              </div>
+              </TabActionBar>
             )}
             {/* Restore prompt: offer to reload last scan from localStorage */}
-            {regionRestorePrompt && regionResults.length === 0 && !scanning && (
-              <div className="shrink-0 flex items-center gap-3 px-3 py-2 bg-eve-accent/10 border-b border-eve-accent/30 text-xs">
+            {showTabActionBars && regionRestorePrompt && regionResults.length === 0 && !scanning && (
+              <TabActionBar tone="accent" className="gap-3">
                 <span className="text-eve-accent">💾</span>
                 <span className="text-eve-text flex-1">
                   Previous scan saved{" "}
@@ -1815,7 +2238,15 @@ function App() {
                 >
                   Dismiss
                 </button>
-              </div>
+              </TabActionBar>
+            )}
+            {showTabActionBars && params.regional_diagnostic_mode && (
+              <TabActionBar tone="warning" className="text-[11px]">
+                Regional diagnostic mode is active: rejected rows are shown for market-data debugging, capped at 500.{" "}
+                <span className="font-mono text-amber-300">
+                  {regionResults.filter((row) => row.DayDiagnosticRejected).length.toLocaleString()} rejected
+                </span>
+              </TabActionBar>
             )}
             <ScanResultsTable
               results={regionResults}
@@ -1832,15 +2263,13 @@ function App() {
               sellSalesTaxPercent={params.sell_sales_tax_percent}
               isLoggedIn={authStatus.logged_in}
               showRegions
-              columnProfile="region_eveguru"
+              columnProfile={regionColumnProfile}
               cargoLimit={params.cargo_capacity}
             />
-          </div>
-          <div
-            className={`flex-1 min-h-0 flex flex-col ${tab === "contracts" ? "" : "hidden"}`}
-          >
+          </TabPanel>
+          <TabPanel active={tab === "contracts"}>
             {/* Contract-specific settings */}
-            <div className="shrink-0 mb-2">
+            <div className="shrink-0 border-b border-eve-border/30 bg-eve-dark/30">
               <ContractParametersPanel params={params} onChange={setParams} />
             </div>
             <ContractResultsTable
@@ -1853,35 +2282,29 @@ function App() {
               filterHints={contractFilterHints}
               isLoggedIn={authStatus.logged_in}
             />
-          </div>
-          <div
-            className={`flex-1 min-h-0 flex flex-col ${tab === "station" ? "" : "hidden"}`}
-          >
+          </TabPanel>
+          <TabPanel active={tab === "station"}>
             <StationTrading
               params={params}
               onChange={setParams}
               isLoggedIn={authStatus.logged_in}
               loadedResults={stationLoadedResults}
+              showAdvancedControls={!cockpitPreferences.hiddenPanels.advancedFilters}
+              showAIAssistant={!cockpitPreferences.hiddenPanels.stationAiAssistant}
             />
-          </div>
-          <div
-            className={`flex-1 min-h-0 flex flex-col ${tab === "route" ? "" : "hidden"}`}
-          >
+          </TabPanel>
+          <TabPanel active={tab === "route"}>
             <RouteBuilder
               params={params}
               onChange={setParams}
               loadedResults={routeLoadedResults}
               isLoggedIn={authStatus.logged_in}
             />
-          </div>
-          <div
-            className={`flex-1 min-h-0 flex flex-col ${tab === "industry" ? "" : "hidden"}`}
-          >
+          </TabPanel>
+          <TabPanel active={tab === "industry"}>
             <IndustryTab isLoggedIn={authStatus.logged_in} />
-          </div>
-          <div
-            className={`flex-1 min-h-0 flex flex-col ${tab === "demand" ? "" : "hidden"}`}
-          >
+          </TabPanel>
+          <TabPanel active={tab === "demand"}>
             <WarTracker
               onError={(msg) => addToast(msg, "error")}
               onOpenRegionArbitrage={(regionName) => {
@@ -1894,12 +2317,7 @@ function App() {
                 );
               }}
             />
-          </div>
-          <div
-            className={`flex-1 min-h-0 flex flex-col ${tab === "plex" ? "" : "hidden"}`}
-          >
-            <PlexTab isLoggedIn={authStatus.logged_in} activeCharacterId={authStatus.character_id} />
-          </div>
+          </TabPanel>
         </div>
       </div>
 
@@ -1974,6 +2392,7 @@ function App() {
         onClose={() => setShowWatchlist(false)}
         title={t("tabWatchlist")}
         width="max-w-3xl"
+        allowFullscreen
       >
         <WatchlistTab
           latestResults={[...radiusResults, ...regionResults]}
@@ -1996,6 +2415,7 @@ function App() {
         onClose={() => setShowHistory(false)}
         title={t("tabHistory")}
         width="max-w-6xl"
+        allowFullscreen
       >
         <ScanHistory
           onLoadResults={(resultTab, results, loadedParams) => {
@@ -2201,6 +2621,11 @@ function App() {
         </div>
       </Modal>
 
+      <ItemIntelligenceModal
+        open={showItemIntelligence}
+        onClose={() => setShowItemIntelligence(false)}
+      />
+
       {/* Character Info Modal */}
       {authStatus.logged_in && (
         <CharacterPopup
@@ -2212,8 +2637,16 @@ function App() {
           onDeleteCharacter={handleDeleteCharacter}
           onAddCharacter={handleLogin}
           onAuthRefresh={refreshAuthStatus}
+          taxProfile={params}
+          onTaxProfileChange={(profile) => setParams((prev) => ({ ...prev, ...profile }))}
+          initialTab={characterInitialTab}
         />
       )}
+
+      <PaperTradeJournalPopup
+        open={showPaperTradeJournal}
+        onClose={() => setShowPaperTradeJournal(false)}
+      />
 
       {/* Keyboard Shortcuts Help */}
       <KeyboardShortcutsHelp
@@ -2226,10 +2659,39 @@ function App() {
         open={showCommandPalette}
         onClose={() => setShowCommandPalette(false)}
         onSwitchTab={(t) => setTab(t)}
-        onOpenWatchlist={() => setShowWatchlist(true)}
-        onOpenHistory={() => setShowHistory(true)}
-        onOpenCharacter={() => setShowCharacter(true)}
-        onStartScan={() => document.querySelector<HTMLButtonElement>("[data-scan-button]")?.click()}
+        availableTabs={visibleMainTabs}
+        onOpenWatchlist={() => {
+          trackCockpitActivity("command:watchlist");
+          setShowWatchlist(true);
+        }}
+        onOpenHistory={() => {
+          trackCockpitActivity("command:history");
+          setShowHistory(true);
+        }}
+        onOpenCharacter={() => {
+          trackCockpitActivity("command:character");
+          openCharacterProfile("overview");
+        }}
+        onOpenLedger={() => {
+          trackCockpitActivity("command:ledger");
+          openCharacterProfile("ledger");
+        }}
+        onOpenItemIntel={() => {
+          trackCockpitActivity("command:itemIntel");
+          setShowItemIntelligence(true);
+        }}
+        onOpenDotlan={() => {
+          trackCockpitActivity("command:dotlan");
+          void openExternalURL("https://evemaps.dotlan.net/route");
+        }}
+        onCreateJournalTrade={() => {
+          trackCockpitActivity("command:journalTrade");
+          setShowPaperTradeJournal(true);
+        }}
+        onStartScan={() => {
+          trackCockpitActivity("command:scan");
+          document.querySelector<HTMLButtonElement>("[data-scan-button]")?.click();
+        }}
       />
 
       {/* ESI Unavailable Overlay */}

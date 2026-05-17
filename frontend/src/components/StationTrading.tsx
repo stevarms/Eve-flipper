@@ -28,6 +28,7 @@ import {
   setWaypointInGame,
 } from "@/lib/api";
 import { formatISK, formatMargin, formatNumber } from "@/lib/format";
+import { normalizeTaxProfile, sameTaxProfile, taxProfileKey } from "@/lib/taxProfile";
 import { useI18n, type TranslationKey } from "@/lib/i18n";
 import { MetricTooltip } from "./Tooltip";
 import { EmptyState } from "./EmptyState";
@@ -50,6 +51,7 @@ import {
   STATION_BUILTIN_PRESETS,
   type StationTradingSettings,
 } from "@/lib/presets";
+import { TaxProfileEditor } from "./TaxProfileEditor";
 
 type SortKey = keyof StationTrade;
 type SortDir = "asc" | "desc";
@@ -95,6 +97,8 @@ interface Props {
   isLoggedIn?: boolean;
   /** Results loaded externally (e.g. from history); component will display them */
   loadedResults?: StationTrade[] | null;
+  showAdvancedControls?: boolean;
+  showAIAssistant?: boolean;
 }
 
 // Metric tooltip keys mapping
@@ -121,12 +125,16 @@ const metricTooltipKeys: Partial<Record<SortKey, MetricTooltipKey>> = {
   NowROI: "NowROI",
 };
 
-const columnDefs: {
+type StationColumnDef = {
   key: SortKey;
   labelKey: TranslationKey;
   width: string;
+  widthPx?: number;
+  pinned?: boolean;
   numeric: boolean;
-}[] = [
+};
+
+const baseStationColumnDefs: StationColumnDef[] = [
   {
     key: "TypeName",
     labelKey: "colItem",
@@ -189,6 +197,7 @@ const columnDefs: {
 // Sentinel value for "All stations"
 const ALL_STATIONS_ID = 0;
 const STATION_PAGE_SIZE = 100;
+const STATION_COLUMN_PREFS_STORAGE_KEY = "eve-station-columns:v1";
 const OPERATOR_PANEL_STORAGE_KEY = "station.operator_panel_width";
 const OPERATOR_PANEL_COLLAPSED_KEY = "station.operator_panel_collapsed";
 const OPERATOR_PANEL_MIN = 28;
@@ -197,6 +206,20 @@ const OPERATOR_PANEL_DEFAULT = 50;
 const STATION_CACHE_TTL_MS = 20 * 60 * 1000;
 const settingsSectionClass =
   "rounded-sm border border-eve-border/60 bg-gradient-to-br from-eve-panel to-eve-dark/40";
+
+function stationColumnDefaultWidthPx(width: string): number {
+  const parsed = Number(width.match(/min-w-\[(\d+)px\]/)?.[1] ?? 90);
+  return Number.isFinite(parsed) ? Math.max(44, Math.min(420, parsed)) : 90;
+}
+
+function stationColumnWidthStyle(col: StationColumnDef, left?: number) {
+  const widthPx = col.widthPx ?? stationColumnDefaultWidthPx(col.width);
+  return {
+    width: widthPx,
+    minWidth: widthPx,
+    ...(typeof left === "number" ? { left } : {}),
+  };
+}
 
 function clampOperatorPanelWidth(width: number): number {
   if (!Number.isFinite(width)) return OPERATOR_PANEL_DEFAULT;
@@ -404,6 +427,8 @@ export function StationTrading({
   onChange,
   isLoggedIn = false,
   loadedResults,
+  showAdvancedControls = true,
+  showAIAssistant = true,
 }: Props) {
   const { t } = useI18n();
   const operatorModeDevOnly = import.meta.env.DEV;
@@ -412,13 +437,21 @@ export function StationTrading({
   const [selectedStationId, setSelectedStationId] =
     useState<number>(ALL_STATIONS_ID);
   const [minMargin, setMinMargin] = useState(params.min_margin ?? 0);
-  const [brokerFee, setBrokerFee] = useState(3.0);
-  const [salesTaxPercent, setSalesTaxPercent] = useState(8);
-  const [splitTradeFees, setSplitTradeFees] = useState(false);
-  const [buyBrokerFeePercent, setBuyBrokerFeePercent] = useState(3.0);
-  const [sellBrokerFeePercent, setSellBrokerFeePercent] = useState(3.0);
-  const [buySalesTaxPercent, setBuySalesTaxPercent] = useState(0);
-  const [sellSalesTaxPercent, setSellSalesTaxPercent] = useState(8);
+  const [brokerFee, setBrokerFee] = useState(params.broker_fee_percent ?? 0);
+  const [salesTaxPercent, setSalesTaxPercent] = useState(params.sales_tax_percent ?? 8);
+  const [splitTradeFees, setSplitTradeFees] = useState(Boolean(params.split_trade_fees));
+  const [buyBrokerFeePercent, setBuyBrokerFeePercent] = useState(
+    params.buy_broker_fee_percent ?? params.broker_fee_percent ?? 0,
+  );
+  const [sellBrokerFeePercent, setSellBrokerFeePercent] = useState(
+    params.sell_broker_fee_percent ?? params.broker_fee_percent ?? 0,
+  );
+  const [buySalesTaxPercent, setBuySalesTaxPercent] = useState(params.buy_sales_tax_percent ?? 0);
+  const [sellSalesTaxPercent, setSellSalesTaxPercent] = useState(
+    params.sell_sales_tax_percent ?? params.sales_tax_percent ?? 8,
+  );
+  const lastSyncedTaxProfileRef = useRef(taxProfileKey(params));
+  const taxSyncInProgressRef = useRef<string | null>(null);
   const [ctsProfile, setCTSProfile] = useState<CTSProfile>("balanced");
   const [radius, setRadius] = useState(0);
   const [minDailyVolume, setMinDailyVolume] = useState(5);
@@ -530,6 +563,11 @@ export function StationTrading({
   const [sortKey, setSortKey] = useState<SortKey>("CTS");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [page, setPage] = useState(0);
+  const [showColumnPanel, setShowColumnPanel] = useState(false);
+  const [stationColumnOrder, setStationColumnOrder] = useState<SortKey[]>(() => baseStationColumnDefs.map((col) => col.key));
+  const [stationHiddenColumns, setStationHiddenColumns] = useState<Set<SortKey>>(new Set());
+  const [stationColumnWidths, setStationColumnWidths] = useState<Partial<Record<SortKey, number>>>({});
+  const [stationPinnedColumns, setStationPinnedColumns] = useState<Set<SortKey>>(new Set());
 
   // Execution plan popup
   const [execPlanRow, setExecPlanRow] = useState<StationTrade | null>(null);
@@ -625,6 +663,146 @@ export function StationTrading({
     () => new Set(watchlist.map((w) => w.type_id)),
     [watchlist],
   );
+
+  useEffect(() => {
+    const available = new Set(baseStationColumnDefs.map((col) => col.key));
+    const defaultOrder = baseStationColumnDefs.map((col) => col.key);
+    const nextHidden = new Set<SortKey>();
+    const nextPinned = new Set<SortKey>();
+    const nextWidths: Partial<Record<SortKey, number>> = {};
+    let nextOrder = defaultOrder;
+    try {
+      const raw = localStorage.getItem(STATION_COLUMN_PREFS_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as { order?: string[]; hidden?: string[]; widths?: Record<string, number>; pinned?: string[] };
+        if (Array.isArray(parsed.order)) {
+          const saved = parsed.order.filter((key): key is SortKey => available.has(key as SortKey));
+          nextOrder = [...saved, ...defaultOrder.filter((key) => !saved.includes(key))];
+        }
+        for (const key of parsed.hidden ?? []) {
+          if (available.has(key as SortKey)) nextHidden.add(key as SortKey);
+        }
+        for (const key of parsed.pinned ?? []) {
+          if (available.has(key as SortKey)) nextPinned.add(key as SortKey);
+        }
+        for (const [key, value] of Object.entries(parsed.widths ?? {})) {
+          if (available.has(key as SortKey) && Number.isFinite(value)) {
+            nextWidths[key as SortKey] = Math.max(44, Math.min(420, Math.round(value)));
+          }
+        }
+      }
+    } catch {
+      // Ignore malformed column settings.
+    }
+    if (nextHidden.size >= defaultOrder.length && defaultOrder.length > 0) nextHidden.delete(defaultOrder[0]);
+    setStationColumnOrder(nextOrder);
+    setStationHiddenColumns(nextHidden);
+    setStationPinnedColumns(nextPinned);
+    setStationColumnWidths(nextWidths);
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        STATION_COLUMN_PREFS_STORAGE_KEY,
+        JSON.stringify({
+          order: stationColumnOrder,
+          hidden: [...stationHiddenColumns],
+          widths: stationColumnWidths,
+          pinned: [...stationPinnedColumns],
+        }),
+      );
+    } catch {
+      // Ignore localStorage quota/access failures.
+    }
+  }, [stationColumnOrder, stationHiddenColumns, stationColumnWidths, stationPinnedColumns]);
+
+  const showOperatorColumns = operatorModeDevOnly && operatorMode && isLoggedIn;
+
+  const columnDefs = useMemo(() => {
+    const byKey = new Map(baseStationColumnDefs.map((col) => [col.key, col] as const));
+    const ordered = stationColumnOrder
+      .map((key) => byKey.get(key))
+      .filter((col): col is StationColumnDef => Boolean(col));
+    for (const col of baseStationColumnDefs) {
+      if (!ordered.some((item) => item.key === col.key)) ordered.push(col);
+    }
+    return ordered
+      .filter((col) => !stationHiddenColumns.has(col.key))
+      .map((col) => ({
+        ...col,
+        widthPx: stationColumnWidths[col.key] ?? stationColumnDefaultWidthPx(col.width),
+        pinned: stationPinnedColumns.has(col.key),
+      }))
+      .sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)));
+  }, [stationColumnOrder, stationColumnWidths, stationHiddenColumns, stationPinnedColumns]);
+
+  const stationPinnedLeftByKey = useMemo(() => {
+    const lefts = new Map<SortKey, number>();
+    let left = showOperatorColumns ? 280 : 64;
+    for (const col of columnDefs) {
+      if (!col.pinned) continue;
+      lefts.set(col.key, left);
+      left += col.widthPx ?? stationColumnDefaultWidthPx(col.width);
+    }
+    return lefts;
+  }, [columnDefs, showOperatorColumns]);
+
+  const setStationColumnWidth = useCallback((key: SortKey, widthPx: number) => {
+    setStationColumnWidths((prev) => ({ ...prev, [key]: Math.max(44, Math.min(420, Math.round(widthPx))) }));
+  }, []);
+
+  const resetStationColumns = useCallback(() => {
+    setStationColumnOrder(baseStationColumnDefs.map((col) => col.key));
+    setStationHiddenColumns(new Set());
+    setStationColumnWidths({});
+    setStationPinnedColumns(new Set());
+  }, []);
+
+  const moveStationColumn = useCallback((key: SortKey, delta: -1 | 1) => {
+    setStationColumnOrder((prev) => {
+      const idx = prev.indexOf(key);
+      const nextIdx = idx + delta;
+      if (idx < 0 || nextIdx < 0 || nextIdx >= prev.length) return prev;
+      const next = [...prev];
+      [next[idx], next[nextIdx]] = [next[nextIdx], next[idx]];
+      return next;
+    });
+  }, []);
+
+  const toggleStationColumnVisibility = useCallback((key: SortKey, visible: boolean) => {
+    setStationHiddenColumns((prev) => {
+      const next = new Set(prev);
+      if (visible) next.delete(key);
+      else if (columnDefs.length > 1) next.add(key);
+      return next;
+    });
+  }, [columnDefs.length]);
+
+  const toggleStationColumnPin = useCallback((key: SortKey) => {
+    setStationPinnedColumns((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const startStationColumnResize = useCallback((key: SortKey, event: import("react").MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const startX = event.clientX;
+    const startWidth = stationColumnWidths[key] ?? stationColumnDefaultWidthPx(baseStationColumnDefs.find((col) => col.key === key)?.width ?? "");
+    const onMove = (moveEvent: MouseEvent) => setStationColumnWidth(key, startWidth + moveEvent.clientX - startX);
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.style.userSelect = "";
+    };
+    document.body.style.userSelect = "none";
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, [setStationColumnWidth, stationColumnWidths]);
 
   // Current settings object for preset system
   const stationSettings = useMemo<StationTradingSettings>(
@@ -736,11 +914,64 @@ export function StationTrading({
       setFlagExtremePrices(st.flagExtremePrices);
   }, [onChange, params]);
 
-  // Keep station sales-tax aligned with global params.
+  // Keep Station Trader on the same tax profile as the global scanner params.
   useEffect(() => {
-    const pct = params.sales_tax_percent ?? 8;
-    setSalesTaxPercent(pct);
-  }, [params.sales_tax_percent]);
+    const tax = normalizeTaxProfile(params);
+    const key = taxProfileKey(tax);
+    lastSyncedTaxProfileRef.current = key;
+    taxSyncInProgressRef.current = key;
+    setBrokerFee(tax.broker_fee_percent);
+    setSalesTaxPercent(tax.sales_tax_percent);
+    setSplitTradeFees(tax.split_trade_fees);
+    setBuyBrokerFeePercent(tax.buy_broker_fee_percent);
+    setSellBrokerFeePercent(tax.sell_broker_fee_percent);
+    setBuySalesTaxPercent(tax.buy_sales_tax_percent);
+    setSellSalesTaxPercent(tax.sell_sales_tax_percent);
+  }, [
+    params.broker_fee_percent,
+    params.sales_tax_percent,
+    params.split_trade_fees,
+    params.buy_broker_fee_percent,
+    params.sell_broker_fee_percent,
+    params.buy_sales_tax_percent,
+    params.sell_sales_tax_percent,
+  ]);
+
+  // Push Station Trader fee edits back to the shared params so every module uses the same profile.
+  useEffect(() => {
+    if (!onChange) return;
+    const next = {
+      split_trade_fees: splitTradeFees,
+      broker_fee_percent: brokerFee,
+      sales_tax_percent: salesTaxPercent,
+      buy_broker_fee_percent: buyBrokerFeePercent,
+      sell_broker_fee_percent: sellBrokerFeePercent,
+      buy_sales_tax_percent: buySalesTaxPercent,
+      sell_sales_tax_percent: sellSalesTaxPercent,
+    };
+    const nextKey = taxProfileKey(next);
+    if (taxSyncInProgressRef.current) {
+      if (nextKey === taxSyncInProgressRef.current) {
+        taxSyncInProgressRef.current = null;
+      }
+      return;
+    }
+    if (nextKey === lastSyncedTaxProfileRef.current || sameTaxProfile(params, next)) {
+      return;
+    }
+    lastSyncedTaxProfileRef.current = nextKey;
+    onChange({ ...params, ...next });
+  }, [
+    brokerFee,
+    buyBrokerFeePercent,
+    buySalesTaxPercent,
+    onChange,
+    params,
+    salesTaxPercent,
+    sellBrokerFeePercent,
+    sellSalesTaxPercent,
+    splitTradeFees,
+  ]);
 
   // Load stations when system changes
   useEffect(() => {
@@ -1378,7 +1609,7 @@ export function StationTrading({
 
   useEffect(() => {
     if (!(operatorMode && isLoggedIn)) {
-      setSelectedBatchKeys(new Set());
+      setSelectedBatchKeys((prev) => (prev.size === 0 ? prev : new Set()));
       return;
     }
     const visible = new Set(displayRows.map((r) => stationRowKey(r)));
@@ -1410,7 +1641,6 @@ export function StationTrading({
       displayRows.reduce((sum, r) => sum + r.CTS, 0) / displayRows.length;
     return { totalProfit, avgMargin, avgCTS, count: displayRows.length };
   }, [displayRows]);
-  const showOperatorColumns = operatorModeDevOnly && operatorMode && isLoggedIn;
   const operatorPanelAvailable = showOperatorColumns && displayRows.length > 0;
   const operatorPanelVisible =
     operatorPanelAvailable && !operatorPanelCollapsed;
@@ -2026,6 +2256,15 @@ export function StationTrading({
               </section>
 
               <section className={`${settingsSectionClass} xl:col-span-4 p-3`}>
+                <TaxProfileEditor
+                  value={params}
+                  onChange={(profile) => onChange?.({ ...params, ...profile })}
+                  isLoggedIn={isLoggedIn}
+                  compact
+                  title="Fees"
+                  subtitle="Global tax profile"
+                />
+                <div className="hidden">
                 <PanelSectionHeader
                   icon="∑"
                   title={t("splitTradeFees")}
@@ -2134,9 +2373,11 @@ export function StationTrading({
                     </SettingsField>
                   </div>
                 )}
+                </div>
               </section>
             </div>
 
+            {showAdvancedControls && (
             <section className={`${settingsSectionClass} p-3`}>
               <button
                 type="button"
@@ -2274,6 +2515,7 @@ export function StationTrading({
                 </div>
               )}
             </section>
+            )}
           </div>
 
           {/* Scan button inside settings */}
@@ -2796,7 +3038,7 @@ export function StationTrading({
 
         {/* Table */}
         <div
-          className={`min-h-0 min-w-0 overflow-x-auto overflow-y-auto border border-eve-border rounded-sm table-scroll-wrapper table-scroll-no-fade table-scroll-container eve-scrollbar ${
+          className={`min-h-0 min-w-0 flex flex-col ${
             operatorPanelVisible ? "" : "flex-1"
           }`}
           style={
@@ -2805,6 +3047,70 @@ export function StationTrading({
               : undefined
           }
         >
+        <div className="shrink-0 flex flex-wrap items-center justify-end gap-2 mb-2 text-xs">
+          <button
+            type="button"
+            onClick={() => setShowColumnPanel((value) => !value)}
+            className={`px-2 py-1 rounded-sm border transition-colors ${
+              showColumnPanel
+                ? "border-eve-accent text-eve-accent bg-eve-accent/10"
+                : "border-eve-border text-eve-dim hover:text-eve-accent"
+            }`}
+          >
+            Columns
+          </button>
+          <button
+            type="button"
+            onClick={resetStationColumns}
+            className="px-2 py-1 rounded-sm border border-eve-border text-eve-dim hover:text-eve-accent transition-colors"
+          >
+            Reset columns
+          </button>
+        </div>
+        {showColumnPanel && (
+          <div className="shrink-0 mb-2 border border-eve-border/60 bg-eve-dark/45 rounded-sm p-2">
+            <div className="flex flex-wrap gap-2">
+              {baseStationColumnDefs
+                .slice()
+                .sort((a, b) => stationColumnOrder.indexOf(a.key) - stationColumnOrder.indexOf(b.key))
+                .map((col) => {
+                  const visible = !stationHiddenColumns.has(col.key);
+                  const pinned = stationPinnedColumns.has(col.key);
+                  return (
+                    <div key={col.key} className="flex items-center gap-1.5 rounded-sm border border-eve-border/50 bg-eve-panel/60 px-2 py-1">
+                      <input
+                        type="checkbox"
+                        checked={visible}
+                        onChange={(event) => toggleStationColumnVisibility(col.key, event.target.checked)}
+                        className="accent-eve-accent w-3 h-3"
+                      />
+                      <span className={`text-[11px] ${visible ? "text-eve-text" : "text-eve-dim/50 line-through"}`}>
+                        {t(col.labelKey)}
+                      </span>
+                      <button type="button" onClick={() => moveStationColumn(col.key, -1)} className="text-eve-dim hover:text-eve-accent">‹</button>
+                      <button type="button" onClick={() => moveStationColumn(col.key, 1)} className="text-eve-dim hover:text-eve-accent">›</button>
+                      <button
+                        type="button"
+                        onClick={() => toggleStationColumnPin(col.key)}
+                        className={`px-1 py-0.5 rounded-sm border text-[10px] ${pinned ? "border-eve-accent/70 text-eve-accent bg-eve-accent/10" : "border-eve-border/50 text-eve-dim hover:text-eve-accent"}`}
+                      >
+                        PIN
+                      </button>
+                      <input
+                        type="number"
+                        min={44}
+                        max={420}
+                        value={stationColumnWidths[col.key] ?? stationColumnDefaultWidthPx(col.width)}
+                        onChange={(event) => setStationColumnWidth(col.key, Number(event.target.value))}
+                        className="w-14 px-1 py-0.5 bg-eve-input border border-eve-border rounded-sm text-[10px] text-eve-text font-mono"
+                      />
+                    </div>
+                  );
+                })}
+            </div>
+          </div>
+        )}
+        <div className="min-h-0 min-w-0 flex-1 overflow-x-auto overflow-y-auto border border-eve-border rounded-sm table-scroll-wrapper table-scroll-no-fade table-scroll-container eve-scrollbar">
         <table className="w-full min-w-max text-sm">
           <thead className="sticky top-0 z-10">
             <tr className="bg-eve-dark border-b border-eve-border">
@@ -2846,11 +3152,12 @@ export function StationTrading({
                   <th
                     key={col.key}
                     onClick={() => toggleSort(col.key)}
+                    style={stationColumnWidthStyle(col, col.pinned ? stationPinnedLeftByKey.get(col.key) : undefined)}
                     className={`${col.width} px-2 py-2 text-left text-[10px] uppercase tracking-wider
                       text-eve-dim font-medium cursor-pointer select-none
                       hover:text-eve-accent transition-colors ${
                         sortKey === col.key ? "text-eve-accent" : ""
-                      }`}
+                      } ${col.pinned ? "sticky z-20 bg-eve-dark shadow-[2px_0_0_rgba(230,149,0,0.16)]" : ""} relative`}
                   >
                     <span className="inline-flex items-center">
                       {t(col.labelKey)}
@@ -2863,6 +3170,13 @@ export function StationTrading({
                         <MetricTooltipContent metricKey={tooltipKey} t={t} />
                       )}
                     </span>
+                    <button
+                      type="button"
+                      onMouseDown={(event) => startStationColumnResize(col.key, event)}
+                      onClick={(event) => event.stopPropagation()}
+                      className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize bg-transparent hover:bg-eve-accent/30"
+                      title="Resize column"
+                    />
                   </th>
                 );
               })}
@@ -2945,7 +3259,8 @@ export function StationTrading({
                   {columnDefs.map((col) => (
                   <td
                     key={col.key}
-                    className={`px-2 py-1 ${col.width} truncate ${
+                    style={stationColumnWidthStyle(col, col.pinned ? stationPinnedLeftByKey.get(col.key) : undefined)}
+                    className={`px-2 py-1 ${col.width} truncate ${col.pinned ? "sticky z-10 bg-inherit shadow-[2px_0_0_rgba(230,149,0,0.12)]" : ""} ${
                       col.key === "CTS"
                         ? `font-mono font-bold ${getCTSColor(row.CTS)}`
                         : col.key === "SDS"
@@ -3007,6 +3322,7 @@ export function StationTrading({
             )}
           </tbody>
         </table>
+        </div>
         </div>
       </div>
 
@@ -3417,16 +3733,18 @@ export function StationTrading({
         buySalesTaxPercent={splitTradeFees ? buySalesTaxPercent : undefined}
         sellSalesTaxPercent={splitTradeFees ? sellSalesTaxPercent : undefined}
       />
-      <StationAIAssistant
-        params={params}
-        rows={displayRows}
-        totalRows={results.length}
-        commandRowsByKey={commandRowsByKey}
-        regionID={regionId}
-        selectedStationLabel={selectedStationLabel}
-        scanSnapshot={aiScanSnapshot}
-        disabled={scanning}
-      />
+      {showAIAssistant && (
+        <StationAIAssistant
+          params={params}
+          rows={displayRows}
+          totalRows={results.length}
+          commandRowsByKey={commandRowsByKey}
+          regionID={regionId}
+          selectedStationLabel={selectedStationLabel}
+          scanSnapshot={aiScanSnapshot}
+          disabled={scanning}
+        />
+      )}
     </div>
   );
 }

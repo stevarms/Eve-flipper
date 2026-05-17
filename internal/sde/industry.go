@@ -51,6 +51,22 @@ type ReprocessingMaterial struct {
 	Yields []MaterialYield
 }
 
+// PlanetSchematic represents a PI factory schematic from the SDE.
+type PlanetSchematic struct {
+	ID         int32
+	Name       string
+	CycleTime  int32
+	PinTypeIDs []int32
+	Inputs     []PlanetSchematicMaterial
+	Outputs    []PlanetSchematicMaterial
+}
+
+// PlanetSchematicMaterial is one input or output row in a PI schematic.
+type PlanetSchematicMaterial struct {
+	TypeID   int32
+	Quantity int64
+}
+
 // MaterialYield represents a single material output from reprocessing.
 type MaterialYield struct {
 	TypeID   int32 // Output material type
@@ -62,6 +78,7 @@ type IndustryData struct {
 	Blueprints         map[int32]*Blueprint            // blueprintTypeID -> Blueprint
 	ProductToBlueprint map[int32]int32                 // productTypeID -> blueprintTypeID
 	Reprocessing       map[int32]*ReprocessingMaterial // oreTypeID -> yields
+	PlanetSchematics   map[int32]*PlanetSchematic      // schematicID -> PI schematic
 	BaseCategories     map[int32]bool                  // categoryIDs that are "base" materials (minerals, PI, etc.)
 }
 
@@ -71,6 +88,7 @@ func NewIndustryData() *IndustryData {
 		Blueprints:         make(map[int32]*Blueprint),
 		ProductToBlueprint: make(map[int32]int32),
 		Reprocessing:       make(map[int32]*ReprocessingMaterial),
+		PlanetSchematics:   make(map[int32]*PlanetSchematic),
 		BaseCategories:     make(map[int32]bool),
 	}
 }
@@ -85,6 +103,10 @@ func (d *Data) LoadIndustry(extractDir string) (*IndustryData, error) {
 
 	if err := ind.loadReprocessing(extractDir); err != nil {
 		return nil, fmt.Errorf("load reprocessing: %w", err)
+	}
+
+	if err := ind.loadPlanetSchematics(extractDir); err != nil {
+		return nil, fmt.Errorf("load planet schematics: %w", err)
 	}
 
 	return ind, nil
@@ -326,6 +348,62 @@ func (ind *IndustryData) loadReprocessing(dir string) error {
 
 		return nil
 	})
+}
+
+func (ind *IndustryData) loadPlanetSchematics(dir string) error {
+	count := 0
+	err := readJSONL(dir, "planetSchematics", func(raw json.RawMessage) error {
+		var row struct {
+			Key       int32             `json:"_key"`
+			CycleTime int32             `json:"cycleTime"`
+			Name      map[string]string `json:"name"`
+			Pins      []int32           `json:"pins"`
+			Types     []struct {
+				Key      int32 `json:"_key"`
+				IsInput  bool  `json:"isInput"`
+				Quantity int64 `json:"quantity"`
+			} `json:"types"`
+		}
+		if err := json.Unmarshal(raw, &row); err != nil {
+			return err
+		}
+		if row.Key <= 0 || row.CycleTime <= 0 {
+			return nil
+		}
+		schematic := &PlanetSchematic{
+			ID:         row.Key,
+			Name:       row.Name["en"],
+			CycleTime:  row.CycleTime,
+			PinTypeIDs: append([]int32(nil), row.Pins...),
+		}
+		for _, material := range row.Types {
+			if material.Key <= 0 || material.Quantity <= 0 {
+				continue
+			}
+			entry := PlanetSchematicMaterial{
+				TypeID:   material.Key,
+				Quantity: material.Quantity,
+			}
+			if material.IsInput {
+				schematic.Inputs = append(schematic.Inputs, entry)
+			} else {
+				schematic.Outputs = append(schematic.Outputs, entry)
+			}
+		}
+		if len(schematic.Inputs) == 0 && len(schematic.Outputs) == 0 {
+			return nil
+		}
+		ind.PlanetSchematics[row.Key] = schematic
+		count++
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if count > 0 {
+		logger.Info("SDE", fmt.Sprintf("Loaded %d PI schematics", count))
+	}
+	return nil
 }
 
 // GetBlueprintForProduct returns the blueprint that produces the given type.

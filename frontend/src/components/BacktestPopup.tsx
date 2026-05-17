@@ -245,7 +245,7 @@ export function BacktestPopup({
   const ledger = result?.ledger?.slice(-14).reverse() ?? [];
 
   return (
-    <Modal open={open} onClose={onClose} title="Paper Backtest" width="max-w-6xl">
+    <Modal open={open} onClose={onClose} title="Paper Backtest" width="max-w-7xl" allowFullscreen>
       <div className="p-4 space-y-4 text-xs text-eve-text">
         <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-3">
           <SelectControl

@@ -8,10 +8,11 @@ import { SystemBlacklistButton } from "./SystemBlacklistButton";
 import { getPresetsForTab } from "@/lib/presets";
 import { getStations, getStructures, getCharacterInfo } from "@/lib/api";
 import type { ScanParams, StationInfo } from "@/lib/types";
+import { TaxProfileEditor } from "./TaxProfileEditor";
 
 // EVE skill IDs for trade fee calculation
-const SKILL_ACCOUNTING = 16622;      // Accounting: reduces sales tax by 11% per level
-const SKILL_BROKER_RELATIONS = 3446; // Broker Relations: reduces broker fee by 0.3% per level (NPC stations)
+const SKILL_ACCOUNTING = 16622;
+const SKILL_BROKER_RELATIONS = 3446;
 
 type TabForParams = "radius" | "region" | "contracts" | "route";
 
@@ -20,6 +21,7 @@ interface Props {
   onChange: (params: ScanParams) => void;
   isLoggedIn?: boolean;
   tab?: TabForParams;
+  showAdvancedControls?: boolean;
 }
 
 const HELP_STEPS: Record<TabForParams, { steps: string[]; wiki: string }> = {
@@ -97,6 +99,7 @@ export function ParametersPanel({
   onChange,
   isLoggedIn = false,
   tab = "radius",
+  showAdvancedControls = true,
 }: Props) {
   const { t } = useI18n();
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -156,7 +159,8 @@ export function ParametersPanel({
         Number(tab === "region" && (params.min_period_roi ?? 0) > 0) +
         Number(tab === "region" && (params.max_dos ?? 0) > 0) +
         Number(tab === "region" && (params.min_demand_per_day ?? 0) > 0) +
-        Number(tab === "region" && (params.category_ids ?? []).length > 0)
+        Number(tab === "region" && (params.category_ids ?? []).length > 0) +
+        Number(tab === "region" && Boolean(params.regional_diagnostic_mode))
       : 0) +
     Number(tab === "radius" && (params.restrict_to_target_market ?? true) === false);
 
@@ -596,11 +600,36 @@ export function ParametersPanel({
                       Revenue = lowest ask at destination
                     </span>
                   )}
+                  <label
+                    className={`ml-auto inline-flex items-center gap-1.5 px-2 py-1 rounded-sm border text-[10px] cursor-pointer transition-colors ${
+                      params.regional_diagnostic_mode
+                        ? "border-amber-400/60 bg-amber-400/10 text-amber-300"
+                        : "border-eve-border text-eve-dim hover:text-eve-light"
+                    }`}
+                    title="Show capped rejected rows with filter reason and market-data status. Diagnostic only, not trade advice."
+                  >
+                    <input
+                      type="checkbox"
+                      checked={Boolean(params.regional_diagnostic_mode)}
+                      onChange={(e) => set("regional_diagnostic_mode", e.target.checked)}
+                      className="accent-eve-accent"
+                    />
+                    Diagnostic mode
+                  </label>
                 </div>
               </div>
 
               {/* Card 3 — Fees (compact inline bar) */}
               <div className={`${sectionClass} p-2.5`}>
+                <TaxProfileEditor
+                  value={params}
+                  onChange={(profile) => onChange({ ...params, ...profile })}
+                  isLoggedIn={isLoggedIn}
+                  compact
+                  title="Fees"
+                  subtitle="Global tax profile"
+                />
+                <div className="hidden">
                 <div className="flex flex-wrap items-end gap-x-5 gap-y-2">
                   <span className="text-[9px] uppercase tracking-widest text-eve-accent/70 font-bold self-center shrink-0">
                     ∑ Fees
@@ -673,9 +702,11 @@ export function ParametersPanel({
                     {esiSkillsMsg}
                   </div>
                 )}
+                </div>
               </div>
 
               {/* Advanced — region */}
+              {showAdvancedControls && (
               <section className={`${sectionClass} p-2.5`}>
                 <button
                   type="button"
@@ -767,6 +798,7 @@ export function ParametersPanel({
                   </div>
                 )}
               </section>
+              )}
             </>
           ) : (
             /* ══ NON-REGION TABS: original layout ══ */
@@ -843,6 +875,14 @@ export function ParametersPanel({
             </section>
 
             <section className={`${sectionClass} xl:col-span-4 p-3`}>
+              <TaxProfileEditor
+                value={params}
+                onChange={(profile) => onChange({ ...params, ...profile })}
+                isLoggedIn={isLoggedIn}
+                title="Fees"
+                subtitle="Global tax profile"
+              />
+              <div className="hidden">
               <SectionHeader
                 title={t("splitTradeFees")}
                 subtitle={t("splitTradeFeesHint")}
@@ -963,10 +1003,12 @@ export function ParametersPanel({
                   </span>
                 )}
               </div>
+              </div>
             </section>
           </div>
 
           {/* Advanced filters */}
+          {showAdvancedControls && (
           <section className={`${sectionClass} p-3`}>
             <button
               type="button"
@@ -1102,6 +1144,7 @@ export function ParametersPanel({
               </div>
             )}
           </section>
+          )}
             </>
           )}
         </div>

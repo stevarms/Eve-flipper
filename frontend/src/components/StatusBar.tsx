@@ -59,7 +59,7 @@ export function StatusBar() {
     ((status?.sde_systems ?? 0) > 0 && (status?.sde_types ?? 0) > 0);
 
   return (
-    <div className="flex items-center gap-2 sm:gap-4 h-[34px] px-2 sm:px-4 bg-eve-panel border border-eve-border rounded-sm">
+    <div className="eve-header-status flex min-w-0 items-center gap-2 h-[34px] px-2 bg-eve-panel border border-eve-border rounded-sm">
       <StatusDot
         ok={sdeOk}
         loading={status === null}
@@ -82,7 +82,7 @@ export function StatusBar() {
 
 function StatusDot({ ok, loading, label, warning }: { ok: boolean; loading: boolean; label: string; warning?: boolean }) {
   return (
-    <div className="flex items-center gap-2 text-xs">
+    <div className="flex min-w-0 items-center gap-2 text-xs">
       <div
         className={`w-2 h-2 rounded-full ${
           loading
@@ -94,7 +94,7 @@ function StatusDot({ ok, loading, label, warning }: { ok: boolean; loading: bool
                 : "bg-eve-error"
         }`}
       />
-      <span className={ok ? "text-eve-text" : warning ? "text-eve-error" : "text-eve-dim"}>{label}</span>
+      <span className={`${ok ? "text-eve-text" : warning ? "text-eve-error" : "text-eve-dim"} min-w-0 truncate`}>{label}</span>
     </div>
   );
 }

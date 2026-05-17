@@ -356,6 +356,30 @@ func (c *Client) StructureName(structureID int64, accessToken string) string {
 	return name
 }
 
+// StructureDetails fetches a player structure name and solar system id using
+// authenticated ESI. It is used when a cached name exists but the system cache
+// does not, which matters for private/corp structure selectors.
+func (c *Client) StructureDetails(structureID int64, accessToken string) (string, int32, error) {
+	var info struct {
+		Name          string `json:"name"`
+		SolarSystemID int32  `json:"solar_system_id"`
+	}
+	url := fmt.Sprintf("%s/universe/structures/%d/?datasource=tranquility", baseURL, structureID)
+	if err := c.AuthGetJSON(url, accessToken, &info); err != nil {
+		return "", 0, fmt.Errorf("structure details %d: %w", structureID, err)
+	}
+	if info.Name != "" {
+		c.stationCache.Store(structureID, info.Name)
+		if c.stationStore != nil {
+			c.stationStore.SetStation(structureID, info.Name)
+		}
+	}
+	if info.SolarSystemID > 0 {
+		c.structureSystems.Store(structureID, info.SolarSystemID)
+	}
+	return info.Name, info.SolarSystemID, nil
+}
+
 // StructureSystemID returns known solar_system_id for a structure from local caches.
 func (c *Client) StructureSystemID(structureID int64) (int32, bool) {
 	if structureID <= 0 {

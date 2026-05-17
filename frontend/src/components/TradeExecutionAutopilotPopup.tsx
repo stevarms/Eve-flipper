@@ -11,6 +11,7 @@ import {
   setWaypointInGame,
 } from "@/lib/api";
 import { handleEveUIError } from "@/lib/handleEveUIError";
+import { loadCockpitPreferences } from "@/lib/cockpit";
 import { useAchievements } from "./achievements";
 import type {
   CharacterInfo,
@@ -427,6 +428,7 @@ export function TradeExecutionAutopilotPopup({
   const abortRef = useRef<AbortController | null>(null);
   const requestSeqRef = useRef(0);
   const missionTrackedRef = useRef("");
+  const contextHintsEnabled = useMemo(() => loadCockpitPreferences().contextHintsEnabled, [open]);
 
   const selectedProfile = useMemo(() => {
     const profile = SHIP_PROFILES.find((item) => item.key === shipKey) ?? SHIP_PROFILES[1];
@@ -755,6 +757,41 @@ export function TradeExecutionAutopilotPopup({
     walletOverride,
   ]);
 
+  const contextHints = useMemo(() => {
+    if (!contextHintsEnabled || !mission || !row) return [];
+    const hints: { title: string; body: string; tone: "good" | "warn" | "neutral" }[] = [];
+    if (!isStationMode) {
+      hints.push({
+        title: "Hauling context",
+        body: `${shortNumber(mission.itemVolume)} m3/unit, ${shortNumber(mission.unitsPerTrip)} units/trip, ${mission.trips} trip(s). Use DOTLAN/safety checks before hauling.`,
+        tone: mission.trips > 1 || mission.unitsPerTrip <= 0 ? "warn" : "neutral",
+      });
+    }
+    const groupName = (row.DayGroupName || "").toLowerCase();
+    if (groupName.includes("reaction") || groupName.includes("component") || groupName.includes("blueprint") || groupName.includes("material")) {
+      hints.push({
+        title: "Industry context",
+        body: "This looks production-related. Check build-vs-buy, owned materials and blueprint coverage before treating it as pure trade.",
+        tone: "neutral",
+      });
+    }
+    if (mission.executableQty < mission.requestedQty || mission.capitalFrozen > mission.tradeCap * 0.85) {
+      hints.push({
+        title: "Capital context",
+        body: `Qty is gated by ${mission.qtyReductionReason}. Capital frozen: ${formatISK(mission.capitalFrozen)}.`,
+        tone: "warn",
+      });
+    }
+    if (isStationMode) {
+      hints.push({
+        title: "Station context",
+        body: "Maker-order mode is sensitive to fill time and undercuts. Compare fast-fill vs safer-spread before creating the journal trade.",
+        tone: mission.fillAssumption.days > 2 ? "warn" : "neutral",
+      });
+    }
+    return hints.slice(0, 3);
+  }, [contextHintsEnabled, isStationMode, mission, row]);
+
   const handleCalculate = useCallback(() => {
     if (!row) return;
     fetchPlans(intInput(quantity));
@@ -871,7 +908,7 @@ export function TradeExecutionAutopilotPopup({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={`${isStationMode ? "Station Mission Control" : "Trade Execution Autopilot"}: ${row.TypeName}`} width="max-w-6xl">
+    <Modal open={open} onClose={onClose} title={`${isStationMode ? "Station Mission Control" : "Trade Execution Autopilot"}: ${row.TypeName}`} width="max-w-7xl" allowFullscreen>
       <div className="p-4 space-y-4">
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-3">
           <Field label="Quantity">
@@ -1036,6 +1073,26 @@ export function TradeExecutionAutopilotPopup({
               <Metric label={isStationMode ? "Cycle time" : "Travel time"} value={`${mission.selectedVariant.minutes.toFixed(0)} min`} />
               <Metric label="ISK/hour" value={formatISK(mission.selectedVariant.iskPerHour)} tone={mission.selectedVariant.iskPerHour >= 0 ? "good" : "bad"} />
             </div>
+
+            {contextHints.length > 0 && (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                {contextHints.map((hint) => (
+                  <div
+                    key={hint.title}
+                    className={`border rounded-sm px-3 py-2 ${
+                      hint.tone === "warn"
+                        ? "border-amber-500/40 bg-amber-950/20"
+                        : hint.tone === "good"
+                          ? "border-emerald-500/40 bg-emerald-950/20"
+                          : "border-eve-border bg-eve-dark/45"
+                    }`}
+                  >
+                    <div className="text-[10px] uppercase tracking-wider text-eve-accent">{hint.title}</div>
+                    <div className="mt-1 text-xs text-eve-dim leading-relaxed">{hint.body}</div>
+                  </div>
+                ))}
+              </div>
+            )}
 
             <div className="grid grid-cols-1 lg:grid-cols-4 gap-3">
               <Panel title="Trade math">

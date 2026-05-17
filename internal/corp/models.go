@@ -17,16 +17,16 @@ type CorpWalletDivision struct {
 
 // CorpJournalEntry mirrors ESI GET /corporations/{id}/wallets/{division}/journal/.
 type CorpJournalEntry struct {
-	ID             int64   `json:"id"`
-	Date           string  `json:"date"` // ISO 8601
-	RefType        string  `json:"ref_type"`
-	Amount         float64 `json:"amount"`
-	Balance        float64 `json:"balance"`
-	Description    string  `json:"description"`
-	FirstPartyID   int64   `json:"first_party_id,omitempty"`
-	SecondPartyID  int64   `json:"second_party_id,omitempty"`
-	FirstPartyName string  `json:"first_party_name,omitempty"`  // enriched
-	SecondPartyName string `json:"second_party_name,omitempty"` // enriched
+	ID              int64   `json:"id"`
+	Date            string  `json:"date"` // ISO 8601
+	RefType         string  `json:"ref_type"`
+	Amount          float64 `json:"amount"`
+	Balance         float64 `json:"balance"`
+	Description     string  `json:"description"`
+	FirstPartyID    int64   `json:"first_party_id,omitempty"`
+	SecondPartyID   int64   `json:"second_party_id,omitempty"`
+	FirstPartyName  string  `json:"first_party_name,omitempty"`  // enriched
+	SecondPartyName string  `json:"second_party_name,omitempty"` // enriched
 }
 
 // CorpTransaction mirrors ESI GET /corporations/{id}/wallets/{division}/transactions/.
@@ -85,7 +85,7 @@ type CorpMiningEntry struct {
 	Date          string `json:"date"`                     // YYYY-MM-DD
 	TypeID        int32  `json:"type_id"`
 	TypeName      string `json:"type_name,omitempty"` // enriched from SDE
-	Quantity      int64  `json:"quantity"`             // units mined
+	Quantity      int64  `json:"quantity"`            // units mined
 }
 
 // CorpMarketOrder mirrors ESI GET /corporations/{id}/orders/.
@@ -113,30 +113,30 @@ type CorpMarketOrder struct {
 // CorpDashboard is the top-level response for GET /api/corp/dashboard.
 type CorpDashboard struct {
 	Info    CorpInfo             `json:"info"`
-	IsDemo  bool                `json:"is_demo"`
+	IsDemo  bool                 `json:"is_demo"`
 	Wallets []CorpWalletDivision `json:"wallets"`
 	// Aggregated financials
-	TotalBalance   float64              `json:"total_balance"`
-	Revenue30d     float64              `json:"revenue_30d"`
-	Expenses30d    float64              `json:"expenses_30d"`
-	NetIncome30d   float64              `json:"net_income_30d"`
-	Revenue7d      float64              `json:"revenue_7d"`
-	Expenses7d     float64              `json:"expenses_7d"`
-	NetIncome7d    float64              `json:"net_income_7d"`
+	TotalBalance float64 `json:"total_balance"`
+	Revenue30d   float64 `json:"revenue_30d"`
+	Expenses30d  float64 `json:"expenses_30d"`
+	NetIncome30d float64 `json:"net_income_30d"`
+	Revenue7d    float64 `json:"revenue_7d"`
+	Expenses7d   float64 `json:"expenses_7d"`
+	NetIncome7d  float64 `json:"net_income_7d"`
 	// Breakdown by income source
-	IncomeBySource []IncomeSource       `json:"income_by_source"`
+	IncomeBySource []IncomeSource `json:"income_by_source"`
 	// Daily P&L for chart (last 90 days)
-	DailyPnL       []DailyPnLEntry      `json:"daily_pnl"`
+	DailyPnL []DailyPnLEntry `json:"daily_pnl"`
 	// Top contributors
 	TopContributors []MemberContribution `json:"top_contributors"`
 	// Member summary
-	MemberSummary   MemberSummary        `json:"member_summary"`
+	MemberSummary MemberSummary `json:"member_summary"`
 	// Active industry
-	IndustrySummary IndustrySummary      `json:"industry_summary"`
+	IndustrySummary IndustrySummary `json:"industry_summary"`
 	// Mining summary
-	MiningSummary   MiningSummary        `json:"mining_summary"`
+	MiningSummary MiningSummary `json:"mining_summary"`
 	// Market orders summary
-	MarketSummary   MarketSummary        `json:"market_summary"`
+	MarketSummary MarketSummary `json:"market_summary"`
 }
 
 // IncomeSource represents a category of income/expense.
@@ -161,9 +161,9 @@ type DailyPnLEntry struct {
 type MemberContribution struct {
 	CharacterID int64   `json:"character_id"`
 	Name        string  `json:"name"`
-	TotalISK    float64 `json:"total_isk"`    // total ISK generated for corp
-	Category    string  `json:"category"`     // primary role: miner, ratter, trader, etc.
-	IsOnline    bool    `json:"is_online"`    // recently active
+	TotalISK    float64 `json:"total_isk"` // total ISK generated for corp
+	Category    string  `json:"category"`  // primary role: miner, ratter, trader, etc.
+	IsOnline    bool    `json:"is_online"` // recently active
 }
 
 // MemberSummary holds aggregated member activity stats.
@@ -173,19 +173,19 @@ type MemberSummary struct {
 	ActiveLast30d int `json:"active_last_30d"`
 	Inactive30d   int `json:"inactive_30d"`
 	// Role breakdown
-	Miners        int `json:"miners"`
-	Ratters       int `json:"ratters"`
-	Traders       int `json:"traders"`
+	Miners         int `json:"miners"`
+	Ratters        int `json:"ratters"`
+	Traders        int `json:"traders"`
 	Industrialists int `json:"industrialists"`
-	PvPers        int `json:"pvpers"`
-	Other         int `json:"other"`
+	PvPers         int `json:"pvpers"`
+	Other          int `json:"other"`
 }
 
 // IndustrySummary holds aggregated industry stats.
 type IndustrySummary struct {
-	ActiveJobs       int     `json:"active_jobs"`
-	CompletedJobs30d int     `json:"completed_jobs_30d"`
-	ProductionValue  float64 `json:"production_value"` // estimated ISK value
+	ActiveJobs       int            `json:"active_jobs"`
+	CompletedJobs30d int            `json:"completed_jobs_30d"`
+	ProductionValue  float64        `json:"production_value"` // estimated ISK value
 	TopProducts      []ProductEntry `json:"top_products"`
 }
 
@@ -200,9 +200,9 @@ type ProductEntry struct {
 
 // MiningSummary holds aggregated mining stats.
 type MiningSummary struct {
-	TotalVolume30d int64   `json:"total_volume_30d"` // units
-	EstimatedISK   float64 `json:"estimated_isk"`    // estimated ISK value
-	ActiveMiners   int     `json:"active_miners"`
+	TotalVolume30d int64      `json:"total_volume_30d"` // units
+	EstimatedISK   float64    `json:"estimated_isk"`    // estimated ISK value
+	ActiveMiners   int        `json:"active_miners"`
 	TopOres        []OreEntry `json:"top_ores"`
 }
 
@@ -225,7 +225,7 @@ type MarketSummary struct {
 
 // CharacterRoles holds a character's corporation roles.
 type CharacterRoles struct {
-	Roles        []string `json:"roles"`
-	IsDirector   bool     `json:"is_director"`
-	CorporationID int32   `json:"corporation_id"`
+	Roles         []string `json:"roles"`
+	IsDirector    bool     `json:"is_director"`
+	CorporationID int32    `json:"corporation_id"`
 }

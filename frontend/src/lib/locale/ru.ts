@@ -1191,6 +1191,15 @@ export const ru = {
 
     // Theme switcher
     themeTitle: "Тема и отображение",
+    settingsHubTitle: "Настройки",
+    settingsHubTheme: "Тема",
+    settingsHubInterface: "Интерфейс",
+    settingsHubSettings: "Параметры",
+    settingsHubDisplay: "Отображение",
+    settingsHubAccount: "Аккаунт",
+    settingsHubTaxProfile: "Налоги",
+    settingsHubTaxTitle: "Глобальный профиль налогов",
+    settingsHubTaxSubtitle: "Используется сканером, Station Trader, Route Builder, PLEX, Backtest и Mission Control. Настраивается здесь один раз вместо отдельных комиссий в каждом модуле.",
     themeMode: "Режим",
     themeDark: "Тёмная",
     themeLight: "Светлая",

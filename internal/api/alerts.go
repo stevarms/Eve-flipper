@@ -100,8 +100,7 @@ func (s *Server) CheckWatchlistAlerts(userID string, results interface{}) []Aler
 
 // processWatchlistAlerts evaluates alerts for a result set and sends all triggered alerts.
 func (s *Server) processWatchlistAlerts(userID string, cfg *config.Config, results interface{}, scanID *int64) {
-	// Desktop notifications are handled on frontend; backend processes only external channels.
-	if cfg == nil || (!cfg.AlertTelegram && !cfg.AlertDiscord) {
+	if cfg == nil || (!cfg.AlertTelegram && !cfg.AlertDiscord && !cfg.AlertDesktop) {
 		return
 	}
 	alerts := s.CheckWatchlistAlerts(userID, results)
@@ -123,6 +122,9 @@ func (s *Server) SendAlert(userID string, cfg *config.Config, alert AlertCheckRe
 	// Record in history
 	channelsSent := result.Sent
 	channelsFailed := result.Failed
+	if cfg != nil && cfg.AlertDesktop {
+		channelsSent = append(channelsSent, "desktop")
+	}
 
 	entry := db.AlertHistoryEntry{
 		WatchlistTypeID: alert.TypeID,
@@ -152,18 +154,38 @@ func (s *Server) extractMetricValue(typeID int32, metric string, results interfa
 	// Try to cast results to different types
 	switch r := results.(type) {
 	case []engine.FlipResult:
+		found := false
+		bestValue := 0.0
+		bestName := ""
 		for _, item := range r {
 			if item.TypeID == typeID {
 				value := extractFlipMetric(item, metric)
-				return value, item.TypeName, true
+				if !found || value > bestValue {
+					found = true
+					bestValue = value
+					bestName = item.TypeName
+				}
 			}
 		}
+		if found {
+			return bestValue, bestName, true
+		}
 	case []engine.StationTrade:
+		found := false
+		bestValue := 0.0
+		bestName := ""
 		for _, item := range r {
 			if item.TypeID == typeID {
 				value := extractStationMetric(item, metric)
-				return value, item.TypeName, true
+				if !found || value > bestValue {
+					found = true
+					bestValue = value
+					bestName = item.TypeName
+				}
 			}
+		}
+		if found {
+			return bestValue, bestName, true
 		}
 	case []engine.ContractResult:
 		// Contracts don't have type_id, skip for now

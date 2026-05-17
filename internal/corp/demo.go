@@ -462,7 +462,7 @@ var demoSystems = []struct {
 	systemID int32
 	name     string
 }{
-	{30004759, "Y-2ANO"},   // main staging
+	{30004759, "Y-2ANO"}, // main staging
 	{30004608, "J5A-IX"},
 	{30004762, "3-DMQT"},
 	{30004775, "7X-02R"},
@@ -636,8 +636,8 @@ func (d *DemoCorpProvider) GetIndustryJobs() ([]CorpIndustryJob, error) {
 // ============================================================
 
 var miningOres = []struct {
-	typeID   int32
-	name     string
+	typeID     int32
+	name       string
 	iskPerUnit float64 // approximate adjusted price for demo ISK estimation
 }{
 	{1230, "Veldspar", 4.5},

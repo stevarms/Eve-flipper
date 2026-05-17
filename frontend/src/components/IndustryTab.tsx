@@ -2669,6 +2669,13 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
                 </SettingsField>
               )}
             </SettingsGrid>
+            {includeStructures && (
+              <div className="mt-2 text-[10px] text-eve-dim">
+                {structureStations.length > 0
+                  ? `${structureStations.length} accessible structure(s) resolved for this system.`
+                  : "Private/corp structures depend on ESI ACL visibility; if none appear, verify character access and scopes."}
+              </div>
+            )}
           </div>
 
           {/* Production parameters (Runs, ME, TE, Facility Tax) */}

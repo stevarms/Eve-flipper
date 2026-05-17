@@ -11,6 +11,7 @@ import {
   CombinedOrdersTab,
   IndustryJobsTab,
   OptimizerTab,
+  PIPlanetsTab,
   OverviewTab,
   PnLTab,
   RiskTab,
@@ -19,6 +20,9 @@ import {
   WalletDashboardTab,
 } from "./character-popup/CharacterPopupTabs";
 import { AchievementLibraryPanel, useAchievements } from "./achievements";
+import { PlexTab } from "./PlexTab";
+import type { ScanParams } from "../lib/types";
+import type { TaxProfile } from "../lib/taxProfile";
 
 interface CharacterPopupProps {
   open: boolean;
@@ -29,9 +33,12 @@ interface CharacterPopupProps {
   onDeleteCharacter: (characterId: number) => Promise<void>;
   onAddCharacter: () => Promise<void>;
   onAuthRefresh: () => Promise<void>;
+  taxProfile: Partial<ScanParams>;
+  onTaxProfileChange: (profile: TaxProfile) => void;
+  initialTab?: CharTab;
 }
 
-type CharTab = "overview" | "orders" | "transactions" | "ledger" | "industry" | "pnl" | "risk" | "optimizer" | "achievements";
+type CharTab = "overview" | "orders" | "transactions" | "ledger" | "industry" | "pi" | "pnl" | "risk" | "optimizer" | "achievements" | "plex";
 const SCOPE_COLLAPSE_KEY = "eve-character-scope-collapsed";
 
 export function CharacterPopup({
@@ -43,6 +50,9 @@ export function CharacterPopup({
   onDeleteCharacter,
   onAddCharacter,
   onAuthRefresh,
+  taxProfile,
+  onTaxProfileChange,
+  initialTab,
 }: CharacterPopupProps) {
   const { t } = useI18n();
   const { pendingCount: achievementPendingCount, trackAchievementEvent, unlockedCount: achievementUnlockedCount } = useAchievements();
@@ -99,6 +109,12 @@ export function CharacterPopup({
     },
     [trackAchievementEvent],
   );
+
+  useEffect(() => {
+    if (open && initialTab) {
+      setTrackedTab(initialTab);
+    }
+  }, [open, initialTab, setTrackedTab]);
 
   const loadData = useCallback(() => {
     setLoading(true);
@@ -207,8 +223,8 @@ export function CharacterPopup({
   const totalSold = sellTxns.reduce((sum, t) => sum + t.unit_price * t.quantity, 0);
 
   return (
-    <Modal open={open} onClose={onClose} title={modalTitle} width="max-w-5xl">
-      <div className="flex flex-col h-[70vh]">
+    <Modal open={open} onClose={onClose} title={modalTitle} width="max-w-6xl" allowFullscreen>
+      <div className="flex flex-col h-[78vh]">
         {/* Character selector */}
         <div className="border-b border-eve-border bg-gradient-to-r from-eve-panel/90 to-eve-dark/70 px-4 py-3 space-y-2.5">
           <div className="flex items-center justify-between gap-2">
@@ -308,6 +324,7 @@ export function CharacterPopup({
             <TabBtn active={tab === "transactions"} onClick={() => setTrackedTab("transactions")} label={`${t("charTransactions")} (${data?.transactions?.length ?? 0})`} />
             <TabBtn active={tab === "ledger"} onClick={() => setTrackedTab("ledger")} label={t("ledgerTab")} />
             <TabBtn active={tab === "industry"} onClick={() => setTrackedTab("industry")} label={`${t("industryJobsTab")} (${data?.industry_jobs?.length ?? 0})`} />
+            <TabBtn active={tab === "pi"} onClick={() => setTrackedTab("pi")} label="PI" />
             <TabBtn active={tab === "pnl"} onClick={() => setTrackedTab("pnl")} label={t("charPnlTab")} />
             <TabBtn active={tab === "risk"} onClick={() => setTrackedTab("risk")} label={t("charRiskTab")} />
             <TabBtn active={tab === "optimizer"} onClick={() => setTrackedTab("optimizer")} label={t("charOptimizerTab")} />
@@ -320,6 +337,7 @@ export function CharacterPopup({
                   : `${t("achievementsTitle")} (${achievementUnlockedCount})`
               }
             />
+            <TabBtn active={tab === "plex"} onClick={() => setTrackedTab("plex")} label="PLEX+" />
           </div>
           {/* Refresh button */}
           <button
@@ -336,14 +354,24 @@ export function CharacterPopup({
 
         {/* Content */}
         <div className="flex-1 overflow-auto p-4">
-          {loading && !data && tab !== "achievements" && (
+          {loading && !data && tab !== "achievements" && tab !== "plex" && (
             <div className="flex items-center justify-center h-full text-eve-dim">{t("loading")}...</div>
           )}
-          {error && !data && tab !== "achievements" && (
+          {error && !data && tab !== "achievements" && tab !== "plex" && (
             <div className="flex items-center justify-center h-full text-eve-error">{error}</div>
           )}
           {tab === "achievements" && <AchievementLibraryPanel />}
-          {tab !== "achievements" && data && (
+          {tab === "plex" && (
+            <div className="h-full min-h-[520px]">
+              <PlexTab
+                isLoggedIn={selectedScope !== "all"}
+                activeCharacterId={selectedScope === "all" ? activeCharacterId : selectedScope}
+                taxProfile={taxProfile}
+                onTaxProfileChange={onTaxProfileChange}
+              />
+            </div>
+          )}
+          {tab !== "achievements" && tab !== "plex" && data && (
             <>
               {tab === "overview" && (
                 <OverviewTab
@@ -389,6 +417,12 @@ export function CharacterPopup({
                   formatIsk={formatIsk}
                   formatDate={formatDate}
                   t={t}
+                />
+              )}
+              {tab === "pi" && (
+                <PIPlanetsTab
+                  characterScope={selectedScope}
+                  formatIsk={formatIsk}
                 />
               )}
               {tab === "pnl" && (

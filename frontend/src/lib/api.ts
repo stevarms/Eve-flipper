@@ -34,6 +34,8 @@ import type {
   IndustryProjectSnapshot,
   IndustryTaskRecord,
   IndustryTaskStatus,
+  ItemIntelligence,
+  ItemSearchResult,
   OptimizerDiagnostic,
   OrderBookCleanupPlan,
   OrderBookCoverageResult,
@@ -43,6 +45,7 @@ import type {
   PaperTradeCreatePayload,
   PaperTradePatch,
   PaperTradeReconcileResponse,
+  PIPlanetsResponse,
   PLEXDashboard,
   PortfolioPnL,
   PortfolioOptimization,
@@ -67,6 +70,7 @@ import type {
   KillSummary,
   RouteSafetySummary,
 } from "./types";
+import type { CockpitLoadout, CockpitPreferences } from "./cockpit";
 
 const BASE = import.meta.env.VITE_API_URL || "";
 
@@ -304,6 +308,86 @@ export async function updateConfig(patch: Partial<AppConfig>): Promise<AppConfig
     body: JSON.stringify(patch),
   });
   return handleResponse<AppConfig>(res);
+}
+
+export interface CockpitPreferencesResponse {
+  preferences: CockpitPreferences;
+  stored: boolean;
+  updated_at?: string;
+  active_loadout_id?: string;
+  loadout?: CockpitLoadout;
+  loadouts?: CockpitLoadout[];
+}
+
+export interface CockpitLoadoutsResponse {
+  loadouts: CockpitLoadout[];
+  active_loadout_id: string;
+  preferences: CockpitPreferences;
+  stored: boolean;
+}
+
+export interface CockpitLoadoutRequest {
+  name: string;
+  preferences?: CockpitPreferences;
+  activate?: boolean;
+}
+
+export async function getCockpitPreferencesRemote(): Promise<CockpitPreferencesResponse> {
+  const res = await apiFetch(`${BASE}/api/cockpit/preferences`);
+  return handleResponse<CockpitPreferencesResponse>(res);
+}
+
+export async function updateCockpitPreferencesRemote(
+  preferences: CockpitPreferences,
+): Promise<CockpitPreferencesResponse> {
+  const res = await apiFetch(`${BASE}/api/cockpit/preferences`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(preferences),
+  });
+  return handleResponse<CockpitPreferencesResponse>(res);
+}
+
+export async function getCockpitLoadoutsRemote(): Promise<CockpitLoadoutsResponse> {
+  const res = await apiFetch(`${BASE}/api/cockpit/loadouts`);
+  return handleResponse<CockpitLoadoutsResponse>(res);
+}
+
+export async function createCockpitLoadoutRemote(
+  payload: CockpitLoadoutRequest,
+): Promise<CockpitPreferencesResponse> {
+  const res = await apiFetch(`${BASE}/api/cockpit/loadouts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return handleResponse<CockpitPreferencesResponse>(res);
+}
+
+export async function updateCockpitLoadoutRemote(
+  loadoutID: string,
+  payload: CockpitLoadoutRequest,
+): Promise<CockpitPreferencesResponse> {
+  const res = await apiFetch(`${BASE}/api/cockpit/loadouts/${encodeURIComponent(loadoutID)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return handleResponse<CockpitPreferencesResponse>(res);
+}
+
+export async function activateCockpitLoadoutRemote(loadoutID: string): Promise<CockpitPreferencesResponse> {
+  const res = await apiFetch(`${BASE}/api/cockpit/loadouts/${encodeURIComponent(loadoutID)}/activate`, {
+    method: "POST",
+  });
+  return handleResponse<CockpitPreferencesResponse>(res);
+}
+
+export async function deleteCockpitLoadoutRemote(loadoutID: string): Promise<CockpitLoadoutsResponse> {
+  const res = await apiFetch(`${BASE}/api/cockpit/loadouts/${encodeURIComponent(loadoutID)}`, {
+    method: "DELETE",
+  });
+  return handleResponse<CockpitLoadoutsResponse>(res);
 }
 
 export async function testAlertChannels(message?: string): Promise<{ sent: string[]; failed?: Record<string, string> }> {
@@ -1528,6 +1612,19 @@ export async function getCharacterLocation(characterId?: number): Promise<Charac
   return handleResponse<CharacterLocation>(res);
 }
 
+export async function getPIPlanets(characterId?: CharacterScope, signal?: AbortSignal): Promise<PIPlanetsResponse> {
+  const params = new URLSearchParams();
+  appendCharacterScope(params, characterId);
+  const query = params.toString();
+  const res = await apiFetch(`${BASE}/api/auth/pi/planets${query ? `?${query}` : ""}`, { signal });
+  const data = await handleResponse<PIPlanetsResponse>(res);
+  return {
+    planets: Array.isArray(data.planets) ? data.planets : [],
+    count: Number.isFinite(data.count) ? data.count : 0,
+    warnings: Array.isArray(data.warnings) ? data.warnings : [],
+  };
+}
+
 export async function getUndercuts(characterId?: CharacterScope): Promise<UndercutStatus[]> {
   const params = new URLSearchParams();
   appendCharacterScope(params, characterId);
@@ -1862,6 +1959,22 @@ export async function getCorpIndustryJobs(mode: "demo" | "live" = "demo", signal
 export async function getCorpMiningLedger(mode: "demo" | "live" = "demo", signal?: AbortSignal): Promise<CorpMiningEntry[]> {
   const res = await apiFetch(`${BASE}/api/corp/mining?mode=${mode}`, { signal });
   return handleResponse<CorpMiningEntry[]>(res);
+}
+
+export async function searchItems(query: string, limit = 25, signal?: AbortSignal): Promise<ItemSearchResult[]> {
+  const qp = new URLSearchParams();
+  qp.set("q", query);
+  qp.set("limit", String(limit));
+  const res = await apiFetch(`${BASE}/api/items/search?${qp.toString()}`, { signal });
+  return handleResponse<ItemSearchResult[]>(res);
+}
+
+export async function getItemIntelligence(typeID: number, regionID = 10000002, signal?: AbortSignal): Promise<ItemIntelligence> {
+  const qp = new URLSearchParams();
+  qp.set("type_id", String(typeID));
+  qp.set("region_id", String(regionID));
+  const res = await apiFetch(`${BASE}/api/items/intelligence?${qp.toString()}`, { signal });
+  return handleResponse<ItemIntelligence>(res);
 }
 
 // --- UI Operations (in-game actions) ---

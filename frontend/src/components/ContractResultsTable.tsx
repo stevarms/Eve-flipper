@@ -54,7 +54,34 @@ interface Props {
   isLoggedIn?: boolean;
 }
 
-const columnDefs: { key: SortKey; labelKey: TranslationKey; width: string; numeric: boolean }[] = [
+type ContractColumnDef = {
+  key: SortKey;
+  labelKey: TranslationKey;
+  width: string;
+  widthPx?: number;
+  pinned?: boolean;
+  numeric: boolean;
+};
+
+const CONTRACT_COLUMN_PREFS_STORAGE_KEY = "eve-contract-columns:v1";
+
+function contractColumnDefaultWidthPx(width: string): number {
+  const exact = width.match(/w-\[(\d+)px\]/)?.[1];
+  const min = width.match(/min-w-\[(\d+)px\]/)?.[1];
+  const parsed = Number(exact ?? min ?? 110);
+  return Number.isFinite(parsed) ? Math.max(44, Math.min(520, parsed)) : 110;
+}
+
+function contractColumnWidthStyle(col: ContractColumnDef, left?: number) {
+  const widthPx = col.widthPx ?? contractColumnDefaultWidthPx(col.width);
+  return {
+    width: widthPx,
+    minWidth: widthPx,
+    ...(typeof left === "number" ? { left } : {}),
+  };
+}
+
+const baseColumnDefs: ContractColumnDef[] = [
   { key: "Title", labelKey: "colTitle", width: "min-w-[200px]", numeric: false },
   { key: "Price", labelKey: "colContractPrice", width: "min-w-[120px]", numeric: true },
   { key: "MarketValue", labelKey: "colMarketValue", width: "min-w-[120px]", numeric: true },
@@ -204,6 +231,12 @@ export function ContractResultsTable({
   const [lastScanTs, setLastScanTs] = useState<number>(Date.now());
   const [cacheRebooting, setCacheRebooting] = useState(false);
   const [resolvedTitles, setResolvedTitles] = useState<Record<number, string>>({});
+  const [showColumnPanel, setShowColumnPanel] = useState(false);
+  const [columnOrder, setColumnOrder] = useState<SortKey[]>(() => baseColumnDefs.map((col) => col.key));
+  const [hiddenColumns, setHiddenColumns] = useState<Set<SortKey>>(new Set());
+  const [columnWidths, setColumnWidths] = useState<Partial<Record<SortKey, number>>>({});
+  const [pinnedColumns, setPinnedColumns] = useState<Set<SortKey>>(new Set());
+  const [draggedColumnKey, setDraggedColumnKey] = useState<SortKey | null>(null);
 
   // Contract details popup
   const [selectedContract, setSelectedContract] = useState<ContractResult | null>(null);
@@ -263,6 +296,55 @@ export function ContractResultsTable({
   }, [ignoredModalOpen]);
 
   useEffect(() => {
+    try {
+      const raw = localStorage.getItem(CONTRACT_COLUMN_PREFS_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as {
+        order?: SortKey[];
+        hidden?: SortKey[];
+        widths?: Partial<Record<SortKey, number>>;
+        pinned?: SortKey[];
+      };
+      const available = new Set(baseColumnDefs.map((col) => col.key));
+      const defaultOrder = baseColumnDefs.map((col) => col.key);
+      const nextOrder = (parsed.order ?? []).filter((key) => available.has(key));
+      for (const key of defaultOrder) {
+        if (!nextOrder.includes(key)) nextOrder.push(key);
+      }
+      const nextHidden = new Set((parsed.hidden ?? []).filter((key) => available.has(key)));
+      const nextPinned = new Set((parsed.pinned ?? []).filter((key) => available.has(key)));
+      const nextWidths: Partial<Record<SortKey, number>> = {};
+      for (const [key, value] of Object.entries(parsed.widths ?? {}) as [SortKey, number][]) {
+        if (available.has(key) && Number.isFinite(value)) {
+          nextWidths[key] = Math.max(44, Math.min(520, Math.round(value)));
+        }
+      }
+      setColumnOrder(nextOrder);
+      setHiddenColumns(nextHidden);
+      setPinnedColumns(nextPinned);
+      setColumnWidths(nextWidths);
+    } catch {
+      // ignore broken local preferences
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        CONTRACT_COLUMN_PREFS_STORAGE_KEY,
+        JSON.stringify({
+          order: columnOrder,
+          hidden: [...hiddenColumns],
+          widths: columnWidths,
+          pinned: [...pinnedColumns],
+        }),
+      );
+    } catch {
+      // ignore storage failures
+    }
+  }, [columnOrder, hiddenColumns, columnWidths, pinnedColumns]);
+
+  useEffect(() => {
     setIgnoredSelectedKeys((prev) => {
       if (prev.size === 0) return prev;
       const next = new Set<string>();
@@ -277,6 +359,112 @@ export function ContractResultsTable({
     (row: ContractResult) => resolvedTitles[row.ContractID] ?? row.Title,
     [resolvedTitles],
   );
+
+  const columnDefs = useMemo(() => {
+    const byKey = new Map(baseColumnDefs.map((col) => [col.key, col] as const));
+    const ordered = columnOrder
+      .map((key) => byKey.get(key))
+      .filter((col): col is ContractColumnDef => Boolean(col));
+    for (const col of baseColumnDefs) {
+      if (!ordered.some((existing) => existing.key === col.key)) ordered.push(col);
+    }
+    return ordered
+      .filter((col) => !hiddenColumns.has(col.key))
+      .map((col) => ({
+        ...col,
+        widthPx: columnWidths[col.key] ?? contractColumnDefaultWidthPx(col.width),
+        pinned: pinnedColumns.has(col.key),
+      }))
+      .sort((a, b) => {
+        if (a.pinned === b.pinned) return 0;
+        return a.pinned ? -1 : 1;
+      });
+  }, [columnOrder, columnWidths, hiddenColumns, pinnedColumns]);
+
+  const pinnedLeftByKey = useMemo(() => {
+    let left = 0;
+    const offsets = new Map<SortKey, number>();
+    for (const col of columnDefs) {
+      if (!col.pinned) continue;
+      offsets.set(col.key, left);
+      left += col.widthPx ?? contractColumnDefaultWidthPx(col.width);
+    }
+    return offsets;
+  }, [columnDefs]);
+
+  const setColumnWidth = useCallback((key: SortKey, widthPx: number) => {
+    setColumnWidths((prev) => ({
+      ...prev,
+      [key]: Math.max(44, Math.min(520, Math.round(widthPx))),
+    }));
+  }, []);
+
+  const resetColumns = useCallback(() => {
+    setColumnOrder(baseColumnDefs.map((col) => col.key));
+    setHiddenColumns(new Set());
+    setColumnWidths({});
+    setPinnedColumns(new Set());
+  }, []);
+
+  const toggleColumnVisibility = useCallback((key: SortKey, visible: boolean) => {
+    setHiddenColumns((prev) => {
+      const next = new Set(prev);
+      if (visible) next.delete(key);
+      else if (columnDefs.length > 1) next.add(key);
+      return next;
+    });
+  }, [columnDefs.length]);
+
+  const toggleColumnPin = useCallback((key: SortKey) => {
+    setPinnedColumns((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const moveColumn = useCallback((key: SortKey, delta: -1 | 1) => {
+    setColumnOrder((prev) => {
+      const next = [...prev];
+      const idx = next.indexOf(key);
+      if (idx < 0) return prev;
+      const target = Math.max(0, Math.min(next.length - 1, idx + delta));
+      if (target === idx) return prev;
+      next.splice(idx, 1);
+      next.splice(target, 0, key);
+      return next;
+    });
+  }, []);
+
+  const dropColumn = useCallback((fromKey: SortKey, toKey: SortKey) => {
+    if (fromKey === toKey) return;
+    setColumnOrder((prev) => {
+      const next = [...prev];
+      const from = next.indexOf(fromKey);
+      const to = next.indexOf(toKey);
+      if (from < 0 || to < 0) return prev;
+      next.splice(from, 1);
+      next.splice(to, 0, fromKey);
+      return next;
+    });
+  }, []);
+
+  const startColumnResize = useCallback((key: SortKey, event: import("react").MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const startX = event.clientX;
+    const startWidth =
+      columnWidths[key] ??
+      contractColumnDefaultWidthPx(baseColumnDefs.find((col) => col.key === key)?.width ?? "");
+    const onMove = (moveEvent: MouseEvent) => setColumnWidth(key, startWidth + moveEvent.clientX - startX);
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [columnWidths, setColumnWidth]);
 
   const filtered = useMemo(() => {
     if (Object.values(filters).every((v) => !v)) return results;
@@ -322,7 +510,7 @@ export function ContractResultsTable({
       }
       return true;
     });
-  }, [effectiveTitle, filters, results]);
+  }, [columnDefs, effectiveTitle, filters, results]);
 
   const sorted = useMemo(() => {
     const copy = [...filtered];
@@ -341,7 +529,7 @@ export function ContractResultsTable({
         : String(bv).localeCompare(String(av));
     });
     return copy;
-  }, [effectiveTitle, filtered, sortDir, sortKey]);
+  }, [columnDefs, effectiveTitle, filtered, sortDir, sortKey]);
 
   const displaySorted = useMemo(() => {
     if (showHiddenRows) return sorted;
@@ -799,7 +987,92 @@ export function ContractResultsTable({
             CSV
           </button>
         )}
+        <button
+          type="button"
+          onClick={() => setShowColumnPanel((value) => !value)}
+          className={`px-2 py-0.5 rounded-sm text-xs font-medium border cursor-pointer transition-colors ${
+            showColumnPanel
+              ? "border-eve-accent/50 bg-eve-accent/10 text-eve-accent"
+              : "border-eve-border text-eve-dim hover:text-eve-text"
+          }`}
+        >
+          Columns
+        </button>
       </div>
+
+      {showColumnPanel && (
+        <div className="mx-2 mb-2 border border-eve-border bg-eve-panel/80 p-2 text-xs">
+          <div className="mb-2 flex items-center gap-2">
+            <span className="text-[10px] uppercase tracking-widest text-eve-dim">Contract columns</span>
+            <div className="flex-1" />
+            <button
+              type="button"
+              onClick={() => setHiddenColumns(new Set())}
+              className="border border-eve-border px-2 py-0.5 text-[10px] uppercase tracking-wider text-eve-dim hover:text-eve-text"
+            >
+              Show all
+            </button>
+            <button
+              type="button"
+              onClick={resetColumns}
+              className="border border-eve-border px-2 py-0.5 text-[10px] uppercase tracking-wider text-eve-dim hover:text-eve-text"
+            >
+              Reset
+            </button>
+          </div>
+          <div className="grid gap-1 md:grid-cols-2 xl:grid-cols-3">
+            {baseColumnDefs
+              .slice()
+              .sort((a, b) => columnOrder.indexOf(a.key) - columnOrder.indexOf(b.key))
+              .map((col) => {
+                const visible = !hiddenColumns.has(col.key);
+                const pinned = pinnedColumns.has(col.key);
+                return (
+                  <div
+                    key={col.key}
+                    draggable
+                    onDragStart={() => setDraggedColumnKey(col.key)}
+                    onDragOver={(event) => event.preventDefault()}
+                    onDrop={() => {
+                      if (draggedColumnKey) dropColumn(draggedColumnKey, col.key);
+                      setDraggedColumnKey(null);
+                    }}
+                    onDragEnd={() => setDraggedColumnKey(null)}
+                    className="flex items-center gap-2 border border-eve-border/70 bg-eve-dark/60 px-2 py-1"
+                  >
+                    <span className="cursor-grab text-eve-dim">::</span>
+                    <input
+                      type="checkbox"
+                      checked={visible}
+                      onChange={(event) => toggleColumnVisibility(col.key, event.target.checked)}
+                      className="accent-eve-accent"
+                    />
+                    <button type="button" onClick={() => moveColumn(col.key, -1)} className="text-eve-dim hover:text-eve-accent">&lt;</button>
+                    <button type="button" onClick={() => moveColumn(col.key, 1)} className="text-eve-dim hover:text-eve-accent">&gt;</button>
+                    <span className="min-w-0 flex-1 truncate text-eve-text">{t(col.labelKey)}</span>
+                    <button
+                      type="button"
+                      onClick={() => toggleColumnPin(col.key)}
+                      className={`border px-1.5 py-0.5 text-[10px] uppercase tracking-wider ${
+                        pinned ? "border-eve-accent text-eve-accent" : "border-eve-border text-eve-dim"
+                      }`}
+                    >
+                      Pin
+                    </button>
+                    <input
+                      type="number"
+                      min={44}
+                      max={520}
+                      value={columnWidths[col.key] ?? contractColumnDefaultWidthPx(col.width)}
+                      onChange={(event) => setColumnWidth(col.key, Number(event.target.value))}
+                      className="w-16 border border-eve-border bg-eve-input px-1 py-0.5 text-right font-mono text-eve-text"
+                    />
+                  </div>
+                );
+              })}
+          </div>
+        </div>
+      )}
 
       {/* Table */}
       <div className="flex-1 min-h-0 overflow-auto border border-eve-border rounded-sm table-scroll-wrapper table-scroll-container">
@@ -810,9 +1083,12 @@ export function ContractResultsTable({
                 <th
                   key={col.key}
                   onClick={() => toggleSort(col.key)}
-                  className={`${col.width} px-3 py-2 text-left text-[11px] uppercase tracking-wider
+                  style={contractColumnWidthStyle(col, col.pinned ? pinnedLeftByKey.get(col.key) : undefined)}
+                  className={`relative px-3 py-2 text-left text-[11px] uppercase tracking-wider
                              text-eve-dim font-medium cursor-pointer select-none
                              hover:text-eve-accent transition-colors ${
+                               col.pinned ? "sticky z-20 bg-eve-dark shadow-[4px_0_0_rgba(0,0,0,0.25)]" : ""
+                             } ${
                                sortKey === col.key ? "text-eve-accent" : ""
                              }`}
                 >
@@ -820,13 +1096,23 @@ export function ContractResultsTable({
                   {sortKey === col.key && (
                     <span className="ml-1">{sortDir === "asc" ? "▲" : "▼"}</span>
                   )}
+                  <span
+                    role="separator"
+                    aria-orientation="vertical"
+                    onMouseDown={(event) => startColumnResize(col.key, event)}
+                    className="absolute right-0 top-1/2 h-5 w-1 -translate-y-1/2 cursor-col-resize hover:bg-eve-accent/50"
+                  />
                 </th>
               ))}
             </tr>
             {showFilters && (
               <tr className="bg-eve-dark/80 border-b border-eve-border">
                 {columnDefs.map((col) => (
-                  <th key={col.key} className={`${col.width} px-1 py-1`}>
+                  <th
+                    key={col.key}
+                    style={contractColumnWidthStyle(col, col.pinned ? pinnedLeftByKey.get(col.key) : undefined)}
+                    className={`px-1 py-1 ${col.pinned ? "sticky z-20 bg-eve-dark/95 shadow-[4px_0_0_rgba(0,0,0,0.25)]" : ""}`}
+                  >
                     <input
                       type="text"
                       value={filters[col.key] ?? ""}
@@ -854,7 +1140,10 @@ export function ContractResultsTable({
                 {columnDefs.map((col) => (
                   <td
                     key={col.key}
-                    className={`px-3 py-1.5 ${col.width} truncate ${
+                    style={contractColumnWidthStyle(col, col.pinned ? pinnedLeftByKey.get(col.key) : undefined)}
+                    className={`px-3 py-1.5 truncate ${
+                      col.pinned ? "sticky z-10 bg-inherit shadow-[4px_0_0_rgba(0,0,0,0.25)]" : ""
+                    } ${
                       col.numeric ? "text-eve-accent font-mono" : "text-eve-text"
                     }`}
                   >

@@ -60,7 +60,9 @@ export function PresetPicker({ params, onApply, tab, builtinPresets, align = "le
     }
 
     if (stored) {
-      setActivePresetIdRaw(stored);
+      if (stored !== activePresetId) {
+        setActivePresetIdRaw(stored);
+      }
       return;
     }
 
@@ -68,13 +70,17 @@ export function PresetPicker({ params, onApply, tab, builtinPresets, align = "le
     const defaultBuiltin =
       builtinPresets.find((p) => p.id.includes("normal")) ?? builtinPresets[0];
     if (defaultBuiltin) {
-      setActivePresetId(defaultBuiltin.id);
-      autoAppliedRef.current = null;
+      if (activePresetId !== defaultBuiltin.id) {
+        setActivePresetId(defaultBuiltin.id);
+        autoAppliedRef.current = null;
+      }
       return;
     }
 
-    setActivePresetIdRaw(null);
-  }, [activeKey, builtinPresets, setActivePresetId]);
+    if (activePresetId !== null) {
+      setActivePresetIdRaw(null);
+    }
+  }, [activeKey, activePresetId, builtinPresets, setActivePresetId]);
 
   // Close on outside click
   useEffect(() => {

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../lib/i18n";
 
-type TabKey = "radius" | "region" | "contracts" | "station" | "route" | "industry" | "demand" | "plex";
+type TabKey = "radius" | "region" | "contracts" | "station" | "route" | "industry" | "demand";
 
 interface CommandItem {
   id: string;
@@ -14,31 +14,53 @@ interface Props {
   open: boolean;
   onClose: () => void;
   onSwitchTab: (tab: TabKey) => void;
+  availableTabs?: readonly TabKey[];
   onOpenWatchlist: () => void;
   onOpenHistory: () => void;
   onOpenCharacter: () => void;
+  onOpenLedger?: () => void;
+  onOpenItemIntel?: () => void;
+  onOpenDotlan?: () => void;
+  onCreateJournalTrade?: () => void;
   onStartScan: () => void;
 }
 
-export function CommandPalette({ open, onClose, onSwitchTab, onOpenWatchlist, onOpenHistory, onOpenCharacter, onStartScan }: Props) {
+export function CommandPalette({
+  open,
+  onClose,
+  onSwitchTab,
+  availableTabs,
+  onOpenWatchlist,
+  onOpenHistory,
+  onOpenCharacter,
+  onOpenLedger,
+  onOpenItemIntel,
+  onOpenDotlan,
+  onCreateJournalTrade,
+  onStartScan,
+}: Props) {
   const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [focused, setFocused] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
 
+  const canSwitch = (tab: TabKey) => !availableTabs || availableTabs.includes(tab);
   const commands: CommandItem[] = [
-    { id: "tab-radius",    label: t("cmdSwitchToRadius"),    shortcut: "Alt+1", action: () => { onSwitchTab("radius");    onClose(); } },
-    { id: "tab-region",    label: t("cmdSwitchToRegion"),    shortcut: "Alt+2", action: () => { onSwitchTab("region");    onClose(); } },
-    { id: "tab-contracts", label: t("cmdSwitchToContracts"), shortcut: "Alt+3", action: () => { onSwitchTab("contracts"); onClose(); } },
-    { id: "tab-station",   label: t("cmdSwitchToStation"),   shortcut: "Alt+4", action: () => { onSwitchTab("station");   onClose(); } },
-    { id: "tab-route",     label: t("cmdSwitchToRoute"),     shortcut: "Alt+5", action: () => { onSwitchTab("route");     onClose(); } },
-    { id: "tab-industry",  label: t("cmdSwitchToIndustry"),  action: () => { onSwitchTab("industry");  onClose(); } },
-    { id: "tab-demand",    label: t("cmdSwitchToDemand"),    action: () => { onSwitchTab("demand");    onClose(); } },
-    { id: "tab-plex",      label: t("cmdSwitchToPlex"),      action: () => { onSwitchTab("plex");      onClose(); } },
+    ...(canSwitch("radius") ? [{ id: "tab-radius",    label: t("cmdSwitchToRadius"),    shortcut: "Alt+1", action: () => { onSwitchTab("radius");    onClose(); } }] : []),
+    ...(canSwitch("region") ? [{ id: "tab-region",    label: t("cmdSwitchToRegion"),    shortcut: "Alt+2", action: () => { onSwitchTab("region");    onClose(); } }] : []),
+    ...(canSwitch("contracts") ? [{ id: "tab-contracts", label: t("cmdSwitchToContracts"), shortcut: "Alt+3", action: () => { onSwitchTab("contracts"); onClose(); } }] : []),
+    ...(canSwitch("station") ? [{ id: "tab-station",   label: t("cmdSwitchToStation"),   shortcut: "Alt+4", action: () => { onSwitchTab("station");   onClose(); } }] : []),
+    ...(canSwitch("route") ? [{ id: "tab-route",     label: t("cmdSwitchToRoute"),     shortcut: "Alt+5", action: () => { onSwitchTab("route");     onClose(); } }] : []),
+    ...(canSwitch("industry") ? [{ id: "tab-industry",  label: t("cmdSwitchToIndustry"),  action: () => { onSwitchTab("industry");  onClose(); } }] : []),
+    ...(canSwitch("demand") ? [{ id: "tab-demand",    label: t("cmdSwitchToDemand"),    action: () => { onSwitchTab("demand");    onClose(); } }] : []),
     { id: "watchlist",     label: t("cmdOpenWatchlist"),     shortcut: "Alt+W", action: () => { onOpenWatchlist(); onClose(); } },
     { id: "history",       label: t("cmdOpenHistory"),       shortcut: "Alt+H", action: () => { onOpenHistory();  onClose(); } },
     { id: "character",     label: t("cmdOpenCharacter"),     action: () => { onOpenCharacter(); onClose(); } },
+    { id: "ledger",        label: "Open Ledger",             action: () => { (onOpenLedger ?? onOpenCharacter)(); onClose(); } },
+    ...(onOpenItemIntel ? [{ id: "item-intel", label: "Open Item Intel", action: () => { onOpenItemIntel(); onClose(); } }] : []),
+    ...(onOpenDotlan ? [{ id: "dotlan", label: "Open DOTLAN", action: () => { onOpenDotlan(); onClose(); } }] : []),
+    ...(onCreateJournalTrade ? [{ id: "journal-trade", label: "Create journal trade", action: () => { onCreateJournalTrade(); onClose(); } }] : []),
     { id: "scan",          label: t("cmdStartScan"),         shortcut: "Ctrl+S", action: () => { onStartScan();   onClose(); } },
   ];
 

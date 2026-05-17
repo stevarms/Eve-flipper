@@ -109,6 +109,24 @@ function buildDotlanRouteURL(route: RouteResult): string | null {
   return `https://evemaps.dotlan.net/route/${systems.map(dotlanRouteSegment).join(":")}`;
 }
 
+const DOTLAN_HISTORY_KEY = "eve-flipper-dotlan-route-open-count:v1";
+
+function readDotlanOpenCount(): number {
+  try {
+    return Number(localStorage.getItem(DOTLAN_HISTORY_KEY) || "0") || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeDotlanOpenCount(value: number) {
+  try {
+    localStorage.setItem(DOTLAN_HISTORY_KEY, String(value));
+  } catch {
+    // ignore storage failures
+  }
+}
+
 function openExternalURL(url: string) {
   const runtime = (window as any).runtime;
   if (runtime?.runtime?.BrowserOpenURL) {
@@ -781,6 +799,7 @@ function RouteDetailPopup({
   const { addToast } = useGlobalToast();
   const { trackAchievementEvent } = useAchievements();
   const [execPlanHop, setExecPlanHop] = useState<RouteHop | null>(null);
+  const [dotlanOpenCount, setDotlanOpenCount] = useState(() => readDotlanOpenCount());
   const dotlanURL = useMemo(() => buildDotlanRouteURL(route), [route]);
 
   const handleSetWaypoint = async (systemID: number) => {
@@ -842,9 +861,27 @@ function RouteDetailPopup({
       return;
     }
     openExternalURL(dotlanURL);
+    setDotlanOpenCount((prev) => {
+      const next = prev + 1;
+      writeDotlanOpenCount(next);
+      return next;
+    });
     void trackAchievementEvent("dotlan_opened", {
       redRouteRisk: route.HaulingDanger === "red",
     });
+  };
+
+  const handleCopyDotlanURL = async () => {
+    if (!dotlanURL) {
+      addToast(t("routeDotlanUnavailable"), "error", 2200);
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(dotlanURL);
+      addToast(t("copied"), "success", 1400);
+    } catch {
+      addToast(t("errorSomethingWentWrong"), "error", 2200);
+    }
   };
 
   return (
@@ -1007,6 +1044,15 @@ function RouteDetailPopup({
             >
               <span className="text-[11px] leading-none">{"\u2197"}</span>
               <span>{t("openDotlanRoute")}</span>
+              {dotlanOpenCount > 0 && <span className="text-eve-dim">({dotlanOpenCount})</span>}
+            </button>
+            <button
+              onClick={handleCopyDotlanURL}
+              disabled={!dotlanURL}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-[11px] font-semibold uppercase tracking-wider text-eve-dim border border-eve-border bg-eve-dark/60 hover:text-eve-text hover:border-eve-accent/30 hover:bg-eve-dark transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <span className="text-[11px] leading-none">⎘</span>
+              <span>DOTLAN URL</span>
             </button>
             <button
               onClick={handleCopySystems}

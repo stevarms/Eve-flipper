@@ -1550,6 +1550,50 @@ func (d *DB) migrate() error {
 		logger.Info("DB", "Applied migration v35 (orderbook stats cache)")
 	}
 
+	if version < 36 {
+		_, err := d.sql.Exec(`
+			CREATE TABLE IF NOT EXISTS cockpit_preferences (
+				user_id      TEXT PRIMARY KEY,
+				payload_json TEXT NOT NULL,
+				updated_at   TEXT NOT NULL
+			);
+
+			INSERT OR IGNORE INTO schema_version (version) VALUES (36);
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v36: %w", err)
+		}
+		logger.Info("DB", "Applied migration v36 (cockpit preferences)")
+	}
+
+	if version < 37 {
+		_, err := d.sql.Exec(`
+			CREATE TABLE IF NOT EXISTS cockpit_loadouts (
+				user_id      TEXT NOT NULL,
+				loadout_id   TEXT NOT NULL,
+				name         TEXT NOT NULL,
+				payload_json TEXT NOT NULL,
+				is_active    INTEGER NOT NULL DEFAULT 0,
+				created_at   TEXT NOT NULL,
+				updated_at   TEXT NOT NULL,
+				PRIMARY KEY (user_id, loadout_id)
+			);
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_cockpit_loadouts_active
+				ON cockpit_loadouts(user_id)
+				WHERE is_active = 1;
+
+			INSERT OR IGNORE INTO cockpit_loadouts (user_id, loadout_id, name, payload_json, is_active, created_at, updated_at)
+			SELECT user_id, 'default', 'Default cockpit', payload_json, 1, updated_at, updated_at
+			FROM cockpit_preferences;
+
+			INSERT OR IGNORE INTO schema_version (version) VALUES (37);
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v37: %w", err)
+		}
+		logger.Info("DB", "Applied migration v37 (cockpit loadouts)")
+	}
+
 	return nil
 }
 

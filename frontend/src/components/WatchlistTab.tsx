@@ -48,6 +48,33 @@ type AlertMetric =
   | "profit_per_unit"
   | "daily_volume";
 
+type WatchlistColumnDef = {
+  key: SortKey;
+  label: string;
+  align: string;
+  width: string;
+  widthPx?: number;
+  pinned?: boolean;
+};
+
+const WATCHLIST_COLUMN_PREFS_STORAGE_KEY = "eve-watchlist-columns:v1";
+
+function watchlistColumnDefaultWidthPx(width: string): number {
+  const exact = width.match(/w-\[(\d+)px\]/)?.[1];
+  const min = width.match(/min-w-\[(\d+)px\]/)?.[1];
+  const parsed = Number(exact ?? min ?? 110);
+  return Number.isFinite(parsed) ? Math.max(44, Math.min(420, parsed)) : 110;
+}
+
+function watchlistColumnWidthStyle(col: WatchlistColumnDef, left?: number) {
+  const widthPx = col.widthPx ?? watchlistColumnDefaultWidthPx(col.width);
+  return {
+    width: widthPx,
+    minWidth: widthPx,
+    ...(typeof left === "number" ? { left } : {}),
+  };
+}
+
 function getAlertMetric(item: WatchlistItem): AlertMetric {
   const metric = item.alert_metric;
   if (
@@ -91,6 +118,20 @@ function metricValue(match: FlipResult | undefined, metric: AlertMetric): number
   }
 }
 
+function bestMatchForMetric(rows: FlipResult[], typeID: number, metric: AlertMetric): FlipResult | undefined {
+  let best: FlipResult | undefined;
+  let bestValue = 0;
+  for (const row of rows) {
+    if (row.TypeID !== typeID) continue;
+    const value = metricValue(row, metric);
+    if (!best || value > bestValue) {
+      best = row;
+      bestValue = value;
+    }
+  }
+  return best;
+}
+
 function formatMetricValue(metric: AlertMetric, value: number): string {
   switch (metric) {
     case "margin_percent":
@@ -124,6 +165,20 @@ export function WatchlistTab({
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("added_at");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [showColumnPanel, setShowColumnPanel] = useState(false);
+  const [columnOrder, setColumnOrder] = useState<SortKey[]>([
+    "type_name",
+    "alert_min_margin",
+    "margin",
+    "profit",
+    "buy",
+    "sell",
+    "added_at",
+  ]);
+  const [hiddenColumns, setHiddenColumns] = useState<Set<SortKey>>(new Set());
+  const [columnWidths, setColumnWidths] = useState<Partial<Record<SortKey, number>>>({});
+  const [pinnedColumns, setPinnedColumns] = useState<Set<SortKey>>(new Set());
+  const [draggedColumnKey, setDraggedColumnKey] = useState<SortKey | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<{
     id: number;
     name: string;
@@ -140,7 +195,7 @@ export function WatchlistTab({
   const [editorThreshold, setEditorThreshold] = useState("0");
   const editorMatch = useMemo(() => {
     if (!editorItem) return undefined;
-    return latestResults.find((r) => r.TypeID === editorItem.type_id);
+    return bestMatchForMetric(latestResults, editorItem.type_id, getAlertMetric(editorItem));
   }, [editorItem, latestResults]);
 
   const reload = useCallback(() => {
@@ -158,6 +213,55 @@ export function WatchlistTab({
   useEffect(() => {
     reload();
   }, [reload]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(WATCHLIST_COLUMN_PREFS_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as {
+        order?: SortKey[];
+        hidden?: SortKey[];
+        widths?: Partial<Record<SortKey, number>>;
+        pinned?: SortKey[];
+      };
+      const defaults: SortKey[] = ["type_name", "alert_min_margin", "margin", "profit", "buy", "sell", "added_at"];
+      const available = new Set(defaults);
+      const nextOrder = (parsed.order ?? []).filter((key) => available.has(key));
+      for (const key of defaults) {
+        if (!nextOrder.includes(key)) nextOrder.push(key);
+      }
+      const nextHidden = new Set((parsed.hidden ?? []).filter((key) => available.has(key)));
+      const nextPinned = new Set((parsed.pinned ?? []).filter((key) => available.has(key)));
+      const nextWidths: Partial<Record<SortKey, number>> = {};
+      for (const [key, value] of Object.entries(parsed.widths ?? {}) as [SortKey, number][]) {
+        if (available.has(key) && Number.isFinite(value)) {
+          nextWidths[key] = Math.max(44, Math.min(420, Math.round(value)));
+        }
+      }
+      setColumnOrder(nextOrder);
+      setHiddenColumns(nextHidden);
+      setPinnedColumns(nextPinned);
+      setColumnWidths(nextWidths);
+    } catch {
+      // ignore broken local preferences
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        WATCHLIST_COLUMN_PREFS_STORAGE_KEY,
+        JSON.stringify({
+          order: columnOrder,
+          hidden: [...hiddenColumns],
+          widths: columnWidths,
+          pinned: [...pinnedColumns],
+        }),
+      );
+    } catch {
+      // ignore storage failures
+    }
+  }, [columnOrder, hiddenColumns, columnWidths, pinnedColumns]);
 
   const handleRemove = (typeId: number) => {
     removeFromWatchlist(typeId)
@@ -219,8 +323,8 @@ export function WatchlistTab({
   const enriched = useMemo(
     () =>
       items.map((item) => {
-        const match = latestResults.find((r) => r.TypeID === item.type_id);
         const metric = getAlertMetric(item);
+        const match = bestMatchForMetric(latestResults, item.type_id, metric);
         const threshold = getAlertThreshold(item);
         const enabled = isAlertEnabled(item);
         const current = metricValue(match, metric);
@@ -344,50 +448,157 @@ export function WatchlistTab({
     { value: "daily_volume", label: t("watchlistMetricDailyVolume"), unit: t("watchlistMetricDailyVolumeUnit") },
   ];
 
-  const columns: { key: SortKey; label: string; align: string; width: string }[] = [
-    {
-      key: "type_name",
-      label: t("colItem"),
-      align: "text-left",
-      width: "min-w-[150px]",
-    },
-    {
-      key: "alert_min_margin",
-      label: t("watchlistThreshold"),
-      align: "text-right",
-      width: "min-w-[130px]",
-    },
-    {
-      key: "margin",
-      label: t("watchlistAlertCurrentValue"),
-      align: "text-right",
-      width: "min-w-[80px]",
-    },
-    {
-      key: "profit",
-      label: t("watchlistCurrentProfit"),
-      align: "text-right",
-      width: "min-w-[90px]",
-    },
-    {
-      key: "buy",
-      label: t("watchlistBuyAt"),
-      align: "text-right",
-      width: "min-w-[90px]",
-    },
-    {
-      key: "sell",
-      label: t("watchlistSellAt"),
-      align: "text-right",
-      width: "min-w-[90px]",
-    },
-    {
-      key: "added_at",
-      label: t("watchlistAdded"),
-      align: "text-center",
-      width: "min-w-[80px]",
-    },
-  ];
+  const baseColumns = useMemo<WatchlistColumnDef[]>(
+    () => [
+      { key: "type_name", label: t("colItem"), align: "text-left", width: "min-w-[150px]" },
+      { key: "alert_min_margin", label: t("watchlistThreshold"), align: "text-right", width: "min-w-[130px]" },
+      { key: "margin", label: t("watchlistAlertCurrentValue"), align: "text-right", width: "min-w-[80px]" },
+      { key: "profit", label: t("watchlistCurrentProfit"), align: "text-right", width: "min-w-[90px]" },
+      { key: "buy", label: t("watchlistBuyAt"), align: "text-right", width: "min-w-[90px]" },
+      { key: "sell", label: t("watchlistSellAt"), align: "text-right", width: "min-w-[90px]" },
+      { key: "added_at", label: t("watchlistAdded"), align: "text-center", width: "min-w-[80px]" },
+    ],
+    [t],
+  );
+
+  const columns = useMemo(() => {
+    const byKey = new Map(baseColumns.map((col) => [col.key, col] as const));
+    const ordered = columnOrder
+      .map((key) => byKey.get(key))
+      .filter((col): col is WatchlistColumnDef => Boolean(col));
+    for (const col of baseColumns) {
+      if (!ordered.some((existing) => existing.key === col.key)) ordered.push(col);
+    }
+    return ordered
+      .filter((col) => !hiddenColumns.has(col.key))
+      .map((col) => ({
+        ...col,
+        widthPx: columnWidths[col.key] ?? watchlistColumnDefaultWidthPx(col.width),
+        pinned: pinnedColumns.has(col.key),
+      }))
+      .sort((a, b) => {
+        if (a.pinned === b.pinned) return 0;
+        return a.pinned ? -1 : 1;
+      });
+  }, [baseColumns, columnOrder, columnWidths, hiddenColumns, pinnedColumns]);
+
+  const pinnedLeftByKey = useMemo(() => {
+    let left = 0;
+    const offsets = new Map<SortKey, number>();
+    for (const col of columns) {
+      if (!col.pinned) continue;
+      offsets.set(col.key, left);
+      left += col.widthPx ?? watchlistColumnDefaultWidthPx(col.width);
+    }
+    return offsets;
+  }, [columns]);
+
+  const setColumnWidth = useCallback((key: SortKey, widthPx: number) => {
+    setColumnWidths((prev) => ({ ...prev, [key]: Math.max(44, Math.min(420, Math.round(widthPx))) }));
+  }, []);
+
+  const resetColumns = useCallback(() => {
+    setColumnOrder(baseColumns.map((col) => col.key));
+    setHiddenColumns(new Set());
+    setColumnWidths({});
+    setPinnedColumns(new Set());
+  }, [baseColumns]);
+
+  const toggleColumnVisibility = useCallback((key: SortKey, visible: boolean) => {
+    setHiddenColumns((prev) => {
+      const next = new Set(prev);
+      if (visible) next.delete(key);
+      else if (columns.length > 1) next.add(key);
+      return next;
+    });
+  }, [columns.length]);
+
+  const toggleColumnPin = useCallback((key: SortKey) => {
+    setPinnedColumns((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const moveColumn = useCallback((key: SortKey, delta: -1 | 1) => {
+    setColumnOrder((prev) => {
+      const next = [...prev];
+      const idx = next.indexOf(key);
+      if (idx < 0) return prev;
+      const target = Math.max(0, Math.min(next.length - 1, idx + delta));
+      if (target === idx) return prev;
+      next.splice(idx, 1);
+      next.splice(target, 0, key);
+      return next;
+    });
+  }, []);
+
+  const dropColumn = useCallback((fromKey: SortKey, toKey: SortKey) => {
+    if (fromKey === toKey) return;
+    setColumnOrder((prev) => {
+      const next = [...prev];
+      const from = next.indexOf(fromKey);
+      const to = next.indexOf(toKey);
+      if (from < 0 || to < 0) return prev;
+      next.splice(from, 1);
+      next.splice(to, 0, fromKey);
+      return next;
+    });
+  }, []);
+
+  const startColumnResize = useCallback((key: SortKey, event: import("react").MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const startX = event.clientX;
+    const startWidth = columnWidths[key] ?? watchlistColumnDefaultWidthPx(baseColumns.find((col) => col.key === key)?.width ?? "");
+    const onMove = (moveEvent: MouseEvent) => setColumnWidth(key, startWidth + moveEvent.clientX - startX);
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [baseColumns, columnWidths, setColumnWidth]);
+
+  const renderWatchlistCell = (col: WatchlistColumnDef, item: (typeof displayed)[number]) => {
+    switch (col.key) {
+      case "type_name":
+        return (
+          <>
+            {item.isAlert && <span className="mr-1 text-green-400">!</span>}
+            {item.type_name}
+          </>
+        );
+      case "alert_min_margin":
+        return item.enabled && item.threshold > 0 ? (
+          <span className="text-eve-accent">
+            {`${metricOptions.find((m) => m.value === item.metric)?.label ?? item.metric}: ${formatMetricValue(item.metric, item.threshold)}`}
+          </span>
+        ) : (
+          <span className="text-eve-dim">{t("watchlistAlertOff")}</span>
+        );
+      case "margin":
+        return item.match ? (
+          <span className={item.isAlert ? "text-green-400" : "text-eve-accent"}>
+            {formatMetricValue(item.metric, item.current)}
+          </span>
+        ) : (
+          <span className="text-eve-dim">-</span>
+        );
+      case "profit":
+        return item.match ? <span className="text-green-400">{formatISK(item.match.TotalProfit)}</span> : <span className="text-eve-dim">-</span>;
+      case "buy":
+        return item.match ? formatISK(item.match.BuyPrice) : "-";
+      case "sell":
+        return item.match ? formatISK(item.match.SellPrice) : "-";
+      case "added_at":
+        return new Date(item.added_at).toLocaleDateString();
+      default:
+        return "";
+    }
+  };
 
   return (
     <div className="flex h-full flex-col">
@@ -442,6 +653,19 @@ export function WatchlistTab({
           >
             {t("presetImport" as TranslationKey) || "Import"}
           </button>
+          {items.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowColumnPanel((value) => !value)}
+              className={`px-2 py-1 rounded-sm text-[11px] border transition-colors ${
+                showColumnPanel
+                  ? "border-eve-accent/50 bg-eve-accent/10 text-eve-accent"
+                  : "border-eve-border text-eve-dim hover:text-eve-text"
+              }`}
+            >
+              Columns
+            </button>
+          )}
           <button
             onClick={reload}
             className="px-3 py-1 rounded-sm text-xs text-eve-dim hover:text-eve-accent border border-eve-border hover:border-eve-accent/30 transition-colors cursor-pointer"
@@ -450,6 +674,72 @@ export function WatchlistTab({
           </button>
         </div>
       </div>
+
+      {showColumnPanel && items.length > 0 && (
+        <div className="border-b border-eve-border bg-eve-panel/80 px-3 py-2 text-xs">
+          <div className="mb-2 flex items-center gap-2">
+            <span className="text-[10px] uppercase tracking-widest text-eve-dim">Watchlist columns</span>
+            <div className="flex-1" />
+            <button type="button" onClick={() => setHiddenColumns(new Set())} className="border border-eve-border px-2 py-0.5 text-[10px] uppercase tracking-wider text-eve-dim hover:text-eve-text">
+              Show all
+            </button>
+            <button type="button" onClick={resetColumns} className="border border-eve-border px-2 py-0.5 text-[10px] uppercase tracking-wider text-eve-dim hover:text-eve-text">
+              Reset
+            </button>
+          </div>
+          <div className="grid gap-1 md:grid-cols-2 xl:grid-cols-3">
+            {baseColumns
+              .slice()
+              .sort((a, b) => columnOrder.indexOf(a.key) - columnOrder.indexOf(b.key))
+              .map((col) => {
+                const visible = !hiddenColumns.has(col.key);
+                const pinned = pinnedColumns.has(col.key);
+                return (
+                  <div
+                    key={col.key}
+                    draggable
+                    onDragStart={() => setDraggedColumnKey(col.key)}
+                    onDragOver={(event) => event.preventDefault()}
+                    onDrop={() => {
+                      if (draggedColumnKey) dropColumn(draggedColumnKey, col.key);
+                      setDraggedColumnKey(null);
+                    }}
+                    onDragEnd={() => setDraggedColumnKey(null)}
+                    className="flex items-center gap-2 border border-eve-border/70 bg-eve-dark/60 px-2 py-1"
+                  >
+                    <span className="cursor-grab text-eve-dim">::</span>
+                    <input
+                      type="checkbox"
+                      checked={visible}
+                      onChange={(event) => toggleColumnVisibility(col.key, event.target.checked)}
+                      className="accent-eve-accent"
+                    />
+                    <button type="button" onClick={() => moveColumn(col.key, -1)} className="text-eve-dim hover:text-eve-accent">&lt;</button>
+                    <button type="button" onClick={() => moveColumn(col.key, 1)} className="text-eve-dim hover:text-eve-accent">&gt;</button>
+                    <span className="min-w-0 flex-1 truncate text-eve-text">{col.label}</span>
+                    <button
+                      type="button"
+                      onClick={() => toggleColumnPin(col.key)}
+                      className={`border px-1.5 py-0.5 text-[10px] uppercase tracking-wider ${
+                        pinned ? "border-eve-accent text-eve-accent" : "border-eve-border text-eve-dim"
+                      }`}
+                    >
+                      Pin
+                    </button>
+                    <input
+                      type="number"
+                      min={44}
+                      max={420}
+                      value={columnWidths[col.key] ?? watchlistColumnDefaultWidthPx(col.width)}
+                      onChange={(event) => setColumnWidth(col.key, Number(event.target.value))}
+                      className="w-16 border border-eve-border bg-eve-input px-1 py-0.5 text-right font-mono text-eve-text"
+                    />
+                  </div>
+                );
+              })}
+          </div>
+        </div>
+      )}
 
       <div className="flex-1 min-h-0 overflow-auto table-scroll-wrapper table-scroll-container">
         {items.length === 0 ? (
@@ -466,11 +756,20 @@ export function WatchlistTab({
                 {columns.map((col) => (
                   <th
                     key={col.key}
-                    className={`px-3 py-2 font-medium cursor-pointer hover:text-eve-accent transition-colors select-none ${col.align} ${col.width}`}
+                    style={watchlistColumnWidthStyle(col, col.pinned ? pinnedLeftByKey.get(col.key) : undefined)}
+                    className={`relative px-3 py-2 font-medium cursor-pointer hover:text-eve-accent transition-colors select-none ${col.align} ${
+                      col.pinned ? "sticky z-20 bg-eve-panel shadow-[4px_0_0_rgba(0,0,0,0.25)]" : ""
+                    }`}
                     onClick={() => toggleSort(col.key)}
                   >
                     {col.label}
                     {sortIndicator(col.key)}
+                    <span
+                      role="separator"
+                      aria-orientation="vertical"
+                      onMouseDown={(event) => startColumnResize(col.key, event)}
+                      className="absolute right-0 top-1/2 h-5 w-1 -translate-y-1/2 cursor-col-resize hover:bg-eve-accent/50"
+                    />
                   </th>
                 ))}
                 <th className="px-3 py-2 text-center text-[10px] text-eve-dim w-16">{t("watchlistAlertActions")}</th>
@@ -490,11 +789,22 @@ export function WatchlistTab({
                   }`}
                   title={t("watchlistDoubleClickHint")}
                 >
-                  <td className="px-3 py-2 text-eve-text font-medium">
+                  {columns.map((col) => (
+                    <td
+                      key={col.key}
+                      style={watchlistColumnWidthStyle(col, col.pinned ? pinnedLeftByKey.get(col.key) : undefined)}
+                      className={`px-3 py-2 truncate ${
+                        col.key === "type_name" ? "text-eve-text font-medium" : `${col.align} font-mono text-eve-text`
+                      } ${col.pinned ? "sticky z-10 bg-inherit shadow-[4px_0_0_rgba(0,0,0,0.25)]" : ""}`}
+                    >
+                      {renderWatchlistCell(col, item)}
+                    </td>
+                  ))}
+                  <td className="hidden">
                     {item.isAlert && <span className="mr-1">🔔</span>}
                     {item.type_name}
                   </td>
-                  <td className="px-3 py-2 text-right font-mono">
+                  <td className="hidden">
                     {item.enabled && item.threshold > 0 ? (
                       <span className="text-eve-accent">
                         {`${metricOptions.find((m) => m.value === item.metric)?.label ?? item.metric}: ${formatMetricValue(item.metric, item.threshold)}`}
@@ -503,7 +813,7 @@ export function WatchlistTab({
                       <span className="text-eve-dim">{t("watchlistAlertOff")}</span>
                     )}
                   </td>
-                  <td className="px-3 py-2 text-right font-mono">
+                  <td className="hidden">
                     {item.match ? (
                       <span
                         className={
@@ -516,20 +826,20 @@ export function WatchlistTab({
                       <span className="text-eve-dim">—</span>
                     )}
                   </td>
-                  <td className="px-3 py-2 text-right font-mono">
+                  <td className="hidden">
                     {item.match ? (
                       <span className="text-green-400">{formatISK(item.match.TotalProfit)}</span>
                     ) : (
                       <span className="text-eve-dim">—</span>
                     )}
                   </td>
-                  <td className="px-3 py-2 text-right font-mono text-eve-text">
+                  <td className="hidden">
                     {item.match ? formatISK(item.match.BuyPrice) : "—"}
                   </td>
-                  <td className="px-3 py-2 text-right font-mono text-eve-text">
+                  <td className="hidden">
                     {item.match ? formatISK(item.match.SellPrice) : "—"}
                   </td>
-                  <td className="px-3 py-2 text-center text-eve-dim">
+                  <td className="hidden">
                     {new Date(item.added_at).toLocaleDateString()}
                   </td>
                   <td className="px-3 py-2 text-center">

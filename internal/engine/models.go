@@ -99,6 +99,10 @@ type FlipResult struct {
 	DayTradeScore         float64   `json:"DayTradeScore,omitempty"`
 	DayPriceHistory       []float64 `json:"DayPriceHistory,omitempty"`
 	DayTargetLowestSell   float64   `json:"DayTargetLowestSell,omitempty"`
+	DayDiagnosticRejected bool      `json:"DayDiagnosticRejected,omitempty"`
+	DayDiagnosticReason   string    `json:"DayDiagnosticReason,omitempty"`
+	DayDiagnosticDetails  []string  `json:"DayDiagnosticDetails,omitempty"`
+	DayMarketDataStatus   string    `json:"DayMarketDataStatus,omitempty"`
 }
 
 // ContractResult represents a profitable public contract compared to market value.
@@ -272,6 +276,9 @@ type ScanParams struct {
 	// instead of TargetBuyOrderPrice (highest bid). Reflects listing a sell order
 	// rather than instantly hitting a buy order. Higher profit, higher risk.
 	SellOrderMode bool
+	// RegionalDiagnosticMode returns regional-day rows rejected by filters with
+	// reason/status metadata. It is capped and not intended as recommendations.
+	RegionalDiagnosticMode bool
 	// IncludeStructures keeps Upwell structure orders in scope.
 	IncludeStructures bool
 	// AccessToken is used for authenticated structure-market reads.

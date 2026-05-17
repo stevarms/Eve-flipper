@@ -92,6 +92,10 @@ export interface FlipResult {
   DayPriceHistory?: number[];
   /** Lowest sell order price at the destination — populated in sell-order mode */
   DayTargetLowestSell?: number;
+  DayDiagnosticRejected?: boolean;
+  DayDiagnosticReason?: string;
+  DayDiagnosticDetails?: string[];
+  DayMarketDataStatus?: string;
 }
 
 export interface FlipBacktestTrade {
@@ -239,7 +243,14 @@ export interface FlipBacktestResult {
 export interface OrderBookCoverageRow {
   type_id: number;
   type_name: string;
-  status: "ready" | "missing_source" | "missing_target" | "no_pairs" | "invalid_scope" | "query_error" | string;
+  status:
+    | "ready"
+    | "missing_source"
+    | "missing_target"
+    | "no_pairs"
+    | "invalid_scope"
+    | "query_error"
+    | string;
   reason: string;
   source_books: number;
   target_books: number;
@@ -315,7 +326,14 @@ export interface OrderBookCleanupPlan {
   newest_remaining: string;
 }
 
-export type PaperTradeStatus = "planned" | "bought" | "hauled" | "listed" | "sold" | "reconciled" | "cancelled";
+export type PaperTradeStatus =
+  | "planned"
+  | "bought"
+  | "hauled"
+  | "listed"
+  | "sold"
+  | "reconciled"
+  | "cancelled";
 
 export interface PaperTrade {
   id: number;
@@ -493,6 +511,10 @@ export interface RegionalDayTradeItem {
   trade_score?: number;
   target_price_history?: number[];
   target_lowest_sell?: number;
+  diagnostic_rejected?: boolean;
+  diagnostic_reason?: string;
+  diagnostic_details?: string[];
+  market_data_status?: string;
 }
 
 export interface RegionalDayTradeHub {
@@ -557,9 +579,9 @@ export interface ContractItem {
   material_efficiency?: number;
   time_efficiency?: number;
   runs?: number;
-  flag?: number;      // Item location flag (46-53 = fitted rigs, 0/1/5 = cargo/hangar)
+  flag?: number; // Item location flag (46-53 = fitted rigs, 0/1/5 = cargo/hangar)
   singleton?: boolean; // True for fitted items
-  damage?: number;    // Damage level 0.0-1.0 (0.1 = 10% damaged)
+  damage?: number; // Damage level 0.0-1.0 (0.1 = 10% damaged)
 }
 
 export interface ContractDetails {
@@ -569,7 +591,12 @@ export interface ContractDetails {
 
 export type NdjsonContractMessage =
   | { type: "progress"; message: string }
-  | { type: "result"; data: ContractResult[]; count: number; cache_meta?: StationCacheMeta }
+  | {
+      type: "result";
+      data: ContractResult[];
+      count: number;
+      cache_meta?: StationCacheMeta;
+    }
   | { type: "error"; message: string };
 
 export interface RouteHop {
@@ -640,7 +667,11 @@ export interface WatchlistItem {
   added_at: string;
   alert_min_margin: number;
   alert_enabled?: boolean;
-  alert_metric?: "margin_percent" | "total_profit" | "profit_per_unit" | "daily_volume";
+  alert_metric?:
+    | "margin_percent"
+    | "total_profit"
+    | "profit_per_unit"
+    | "daily_volume";
   alert_threshold?: number;
 }
 
@@ -736,7 +767,12 @@ export interface StationTrade {
 
 export type NdjsonStationMessage =
   | { type: "progress"; message: string }
-  | { type: "result"; data: StationTrade[]; count: number; cache_meta?: StationCacheMeta }
+  | {
+      type: "result";
+      data: StationTrade[];
+      count: number;
+      cache_meta?: StationCacheMeta;
+    }
   | { type: "error"; message: string };
 
 export interface StationInfo {
@@ -867,6 +903,155 @@ export interface ScanParams {
   sell_order_mode?: boolean;
   /** Flipper only: when true restrict sell-side to target_market_system only; when false allow any buy order within sell radius. Default true. */
   restrict_to_target_market?: boolean;
+  /** Regional Trade only: include capped rejected rows with filter reasons for market-data debugging. */
+  regional_diagnostic_mode?: boolean;
+}
+
+export interface ItemSearchResult {
+  type_id: number;
+  type_name: string;
+  volume: number;
+  group_id: number;
+  group_name?: string;
+  category_id: number;
+}
+
+export interface ItemMarketSummary {
+  region_id: number;
+  region_name: string;
+  best_ask: number;
+  best_ask_volume: number;
+  best_bid: number;
+  best_bid_volume: number;
+  spread: number;
+  spread_percent: number;
+  sell_order_count: number;
+  buy_order_count: number;
+  sell_units: number;
+  buy_units: number;
+  sell_value_isk: number;
+  buy_value_isk: number;
+  sell_units_within_5_pct: number;
+  buy_units_within_5_pct: number;
+  buy_pressure_pct: number;
+  liquidity_score: number;
+  estimated_spread_value: number;
+  depth_bands?: ItemDepthBand[];
+}
+
+export interface ItemDepthBand {
+  band: string;
+  sell_units: number;
+  sell_value_isk: number;
+  buy_units: number;
+  buy_value_isk: number;
+}
+
+export interface ItemHistorySummary {
+  days: number;
+  avg_price: number;
+  avg_volume: number;
+  avg_value_isk: number;
+  low_price: number;
+  high_price: number;
+  price_change_pct: number;
+  volume_change_pct: number;
+  volatility_pct: number;
+  liquidity_days_5_pct: number;
+}
+
+export interface ItemCharacterSummary {
+  assets: number;
+  active_buy_orders: number;
+  active_sell_orders: number;
+  asset_value_isk: number;
+  active_buy_isk: number;
+  active_sell_isk: number;
+  exposure_isk: number;
+  coverage_days: number;
+}
+
+export interface ItemPersonalTradeSummary {
+  buy_quantity: number;
+  sell_quantity: number;
+  buy_isk: number;
+  sell_isk: number;
+  matched_quantity: number;
+  realized_pnl: number;
+  realized_roi_pct: number;
+  turnover_isk: number;
+  last_trade_date?: string;
+  archived_rows_used: number;
+}
+
+export interface ItemRestockSummary {
+  signal: string;
+  reason: string;
+  suggested_action: string;
+  recommended_max_units: number;
+  recommended_max_isk: number;
+  current_coverage: number;
+  coverage_days: number;
+  target_coverage_days: number;
+  missing_units: number;
+  max_entry_price: number;
+  target_sell_price: number;
+  worst_case_exit_price: number;
+  min_spread_pct: number;
+  edge_score: number;
+  confidence_pct: number;
+  risk_flags?: string[];
+}
+
+export interface ItemPeerTradeSummary {
+  scope: string;
+  label: string;
+  archived_rows_used: number;
+  buy_quantity: number;
+  sell_quantity: number;
+  matched_quantity: number;
+  turnover_isk: number;
+  realized_pnl: number;
+  realized_roi_pct: number;
+  last_trade_date?: string;
+}
+
+export interface ItemEdgeSummary {
+  label: string;
+  score: number;
+  confidence_pct: number;
+  recommendation: string;
+  max_position_units: number;
+  max_position_isk: number;
+  daily_capacity: number;
+  reason: string;
+}
+
+export interface ItemRecentTrade {
+  date: string;
+  side: string;
+  quantity: number;
+  unit_price: number;
+  value_isk: number;
+  location_name?: string;
+}
+
+export interface ItemIntelligence {
+  type_id: number;
+  type_name: string;
+  volume: number;
+  group_id: number;
+  group_name?: string;
+  category_id: number;
+  market: ItemMarketSummary;
+  history: ItemHistorySummary;
+  character: ItemCharacterSummary;
+  personal: ItemPersonalTradeSummary;
+  peer: ItemPeerTradeSummary;
+  edge: ItemEdgeSummary;
+  restock: ItemRestockSummary;
+  recent_trades?: ItemRecentTrade[];
+  warnings?: string[];
 }
 
 export interface AppConfig {
@@ -903,6 +1088,7 @@ export interface AppConfig {
   target_market_location_id?: number;
   category_ids?: number[];
   sell_order_mode?: boolean;
+  regional_diagnostic_mode?: boolean;
   route_min_hops?: number;
   route_max_hops?: number;
   route_target_system_name?: string;
@@ -965,6 +1151,61 @@ export interface CharacterInfo {
   industry_jobs: CharacterIndustryJob[];
   skills: SkillSheet | null;
   risk?: CharacterRiskSummary | null;
+}
+
+export interface PIPlanetRow {
+  character_id: number;
+  character_name: string;
+  planet_id: number;
+  planet_type: string;
+  solar_system_id: number;
+  solar_system_name: string;
+  upgrade_level: number;
+  num_pins: number;
+  extractor_pins: number;
+  factory_pins: number;
+  storage_pins: number;
+  idle_factory_pins: number;
+  expired_extractor_pins: number;
+  routed_pins: number;
+  routed_quantity: number;
+  extractor_units_per_day: number;
+  extractor_value_isk_per_day: number;
+  factory_input_isk_per_day: number;
+  factory_output_isk_per_day: number;
+  factory_net_isk_per_day: number;
+  gross_isk_per_day: number;
+  net_isk_per_day: number;
+  missing_input_isk_per_day: number;
+  cycle_health_score: number;
+  production_chains: number;
+  stored_quantity: number;
+  stored_value_isk: number;
+  estimated_daily_value_isk: number;
+  estimated_monthly_value_isk: number;
+  last_update: string;
+  next_expiry: string;
+  status: string;
+  estimate_basis: string;
+  product_flows?: PIProductFlow[];
+  warnings?: string[];
+}
+
+export interface PIProductFlow {
+  type_id: number;
+  type_name: string;
+  direction: string;
+  source: string;
+  units_per_day: number;
+  value_isk_per_day: number;
+  quantity_per_cycle: number;
+  pin_count: number;
+}
+
+export interface PIPlanetsResponse {
+  planets: PIPlanetRow[];
+  count: number;
+  warnings?: string[];
 }
 
 export interface CharacterOrder {
@@ -1518,7 +1759,12 @@ export interface IndustrySystem {
   invention: number;
 }
 
-export type IndustryProjectStatus = "draft" | "planned" | "active" | "completed" | "archived";
+export type IndustryProjectStatus =
+  | "draft"
+  | "planned"
+  | "active"
+  | "completed"
+  | "archived";
 
 export type IndustryTaskStatus =
   | "planned"
@@ -1824,7 +2070,14 @@ export interface IndustryCoverageBlueprintRow {
 
 export interface IndustryCoverageAction {
   step: number;
-  action: "use_stock" | "buy_missing" | "use_blueprint" | "acquire_blueprint" | "start_jobs" | "resolve_blockers" | string;
+  action:
+    | "use_stock"
+    | "buy_missing"
+    | "use_blueprint"
+    | "acquire_blueprint"
+    | "start_jobs"
+    | "resolve_blockers"
+    | string;
   status: "ready" | "needed" | "partial" | "missing" | "blocked" | string;
   label: string;
   detail?: string;
@@ -2697,5 +2950,16 @@ export interface RouteSafetySummary {
 
 export type RouteState =
   | { status: "loading" }
-  | { status: "summary"; danger: "green" | "yellow" | "red"; kills: number; totalISK: number }
-  | { status: "full"; danger: "green" | "yellow" | "red"; kills: number; totalISK: number; systems: SystemDanger[] };
+  | {
+      status: "summary";
+      danger: "green" | "yellow" | "red";
+      kills: number;
+      totalISK: number;
+    }
+  | {
+      status: "full";
+      danger: "green" | "yellow" | "red";
+      kills: number;
+      totalISK: number;
+      systems: SystemDanger[];
+    };

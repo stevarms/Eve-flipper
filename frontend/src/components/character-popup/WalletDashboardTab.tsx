@@ -13,6 +13,16 @@ import { StatCard } from "./shared";
 type LedgerWindow = 30 | 90 | 180 | 365;
 type LedgerPeriod = "daily" | "weekly" | "monthly";
 type LedgerChartMode = "capital" | "cashflow" | "pnl";
+type LedgerTooltipTone = "good" | "bad" | "warn" | "info" | "dim";
+
+interface LedgerChartTooltip {
+  x: number;
+  leftPct: number;
+  topPct: number;
+  period: string;
+  subtitle: string;
+  rows: Array<{ label: string; value: string; tone?: LedgerTooltipTone }>;
+}
 
 interface WalletDashboardTabProps {
   characterScope: CharacterScope;
@@ -314,6 +324,8 @@ function LedgerCurveChart({
   mode: LedgerChartMode;
   formatIsk: (v: number) => string;
 }) {
+  const [tooltip, setTooltip] = useState<LedgerChartTooltip | null>(null);
+
   if (data.length === 0) {
     return <div className="h-56 flex items-center justify-center text-eve-dim text-xs">No ledger data</div>;
   }
@@ -334,15 +346,62 @@ function LedgerCurveChart({
   const maxVal = Math.max(1, ...values);
   const range = maxVal - minVal || 1;
   const xStep = data.length > 1 ? (width - padX * 2) / (data.length - 1) : 0;
+  const pointX = (index: number) => padX + index * xStep;
   const y = (value: number) => padTop + (1 - (value - minVal) / range) * (chartBottom - padTop);
   const zeroY = y(0);
   const barWidth = Math.max(3, Math.min(18, (width - padX * 2) / Math.max(1, data.length) - 3));
-  const capitalLine = data.map((d, i) => `${padX + i * xStep},${y(d.capital_isk)}`).join(" ");
-  const tradingLine = data.map((d, i) => `${padX + i * xStep},${y(d.trading_pnl_isk)}`).join(" ");
-  const otherLine = data.map((d, i) => `${padX + i * xStep},${y(d.other_net_isk)}`).join(" ");
+  const capitalLine = data.map((d, i) => `${pointX(i)},${y(d.capital_isk)}`).join(" ");
+  const tradingLine = data.map((d, i) => `${pointX(i)},${y(d.trading_pnl_isk)}`).join(" ");
+  const otherLine = data.map((d, i) => `${pointX(i)},${y(d.other_net_isk)}`).join(" ");
+  const hitWidth = data.length > 1 ? Math.min(Math.max(12, xStep), width - padX * 2) : width - padX * 2;
+  const clampPct = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+  const valueWithIsk = (value: number) => `${formatIsk(value)} ISK`;
+  const signedWithIsk = (value: number) => `${value >= 0 ? "+" : ""}${formatIsk(value)} ISK`;
+  const tooltipSubtitle = (d: EveLedgerCurvePoint) => {
+    if (d.start_date && d.end_date && d.start_date !== d.end_date) return `${d.start_date} -> ${d.end_date}`;
+    return d.start_date || d.end_date || d.period;
+  };
+  const buildTooltip = (d: EveLedgerCurvePoint, index: number): LedgerChartTooltip => {
+    let anchorY = y(d.capital_isk);
+    let rows: LedgerChartTooltip["rows"];
+    if (mode === "capital") {
+      rows = [
+        { label: "Estimated capital", value: valueWithIsk(d.capital_isk), tone: "info" },
+        { label: "Net cashflow", value: signedWithIsk(d.net_cashflow_isk), tone: d.net_cashflow_isk >= 0 ? "good" : "bad" },
+        { label: "Transactions", value: d.transactions.toLocaleString(), tone: "dim" },
+        { label: "Journal entries", value: d.journal_entries.toLocaleString(), tone: "dim" },
+      ];
+    } else if (mode === "cashflow") {
+      anchorY = Math.min(y(d.income_isk), y(-d.outgoing_isk), zeroY);
+      rows = [
+        { label: "Income", value: valueWithIsk(d.income_isk), tone: "good" },
+        { label: "Outgoing", value: valueWithIsk(d.outgoing_isk), tone: "bad" },
+        { label: "Net cashflow", value: signedWithIsk(d.net_cashflow_isk), tone: d.net_cashflow_isk >= 0 ? "good" : "bad" },
+        { label: "Transactions", value: d.transactions.toLocaleString(), tone: "dim" },
+      ];
+    } else {
+      anchorY = Math.min(y(d.trading_pnl_isk), y(d.other_net_isk));
+      const combined = d.trading_pnl_isk + d.other_net_isk;
+      rows = [
+        { label: "Trading P&L", value: signedWithIsk(d.trading_pnl_isk), tone: d.trading_pnl_isk >= 0 ? "good" : "bad" },
+        { label: "Other net", value: signedWithIsk(d.other_net_isk), tone: d.other_net_isk >= 0 ? "good" : "bad" },
+        { label: "Combined", value: signedWithIsk(combined), tone: combined >= 0 ? "good" : "bad" },
+        { label: "Journal entries", value: d.journal_entries.toLocaleString(), tone: "dim" },
+      ];
+    }
+    const x = pointX(index);
+    return {
+      x,
+      leftPct: clampPct((x / width) * 100, 9, 91),
+      topPct: clampPct((anchorY / height) * 100, 13, 92),
+      period: d.period,
+      subtitle: tooltipSubtitle(d),
+      rows,
+    };
+  };
 
   return (
-    <div className="relative w-full overflow-hidden">
+    <div className="relative w-full overflow-visible" onMouseLeave={() => setTooltip(null)}>
       <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-64">
         <line x1={padX} x2={width - padX} y1={zeroY} y2={zeroY} stroke="rgba(120,120,120,0.5)" strokeDasharray="3 4" />
         {[0.25, 0.5, 0.75].map((p) => (
@@ -360,25 +419,19 @@ function LedgerCurveChart({
           <>
             <polyline points={capitalLine} fill="none" stroke="#e69500" strokeWidth="2.5" />
             {data.map((d, i) => (
-              <circle key={d.period} cx={padX + i * xStep} cy={y(d.capital_isk)} r={2.3} fill="#e69500">
-                <title>{`${d.period}: ${formatIsk(d.capital_isk)} ISK`}</title>
-              </circle>
+              <circle key={d.period} cx={pointX(i)} cy={y(d.capital_isk)} r={2.3} fill="#e69500" />
             ))}
           </>
         )}
 
         {mode === "cashflow" && data.map((d, i) => {
-          const x = padX + i * xStep - barWidth / 2;
+          const x = pointX(i) - barWidth / 2;
           const incTop = y(d.income_isk);
           const outBottom = y(-d.outgoing_isk);
           return (
             <g key={d.period}>
-              <rect x={x} y={incTop} width={barWidth} height={Math.max(1, zeroY - incTop)} fill="rgba(34,197,94,0.65)">
-                <title>{`${d.period} income: ${formatIsk(d.income_isk)} ISK`}</title>
-              </rect>
-              <rect x={x} y={zeroY} width={barWidth} height={Math.max(1, outBottom - zeroY)} fill="rgba(239,68,68,0.68)">
-                <title>{`${d.period} outgoing: ${formatIsk(d.outgoing_isk)} ISK`}</title>
-              </rect>
+              <rect x={x} y={incTop} width={barWidth} height={Math.max(1, zeroY - incTop)} fill="rgba(34,197,94,0.65)" />
+              <rect x={x} y={zeroY} width={barWidth} height={Math.max(1, outBottom - zeroY)} fill="rgba(239,68,68,0.68)" />
             </g>
           );
         })}
@@ -388,12 +441,39 @@ function LedgerCurveChart({
             <polyline points={tradingLine} fill="none" stroke="#22c55e" strokeWidth="2" />
             <polyline points={otherLine} fill="none" stroke="#60a5fa" strokeWidth="2" strokeDasharray="5 4" />
             {data.map((d, i) => (
-              <circle key={d.period} cx={padX + i * xStep} cy={y(d.trading_pnl_isk)} r={2} fill="#22c55e">
-                <title>{`${d.period} trading: ${formatIsk(d.trading_pnl_isk)} ISK / other: ${formatIsk(d.other_net_isk)} ISK`}</title>
-              </circle>
+              <circle key={d.period} cx={pointX(i)} cy={y(d.trading_pnl_isk)} r={2} fill="#22c55e" />
             ))}
           </>
         )}
+
+        {tooltip && (
+          <line
+            x1={tooltip.x}
+            x2={tooltip.x}
+            y1={padTop}
+            y2={chartBottom}
+            stroke="rgba(230,149,0,0.45)"
+            strokeDasharray="3 3"
+          />
+        )}
+
+        {data.map((d, i) => {
+          const x = pointX(i);
+          const hitX = Math.max(padX, Math.min(width - padX - hitWidth, x - hitWidth / 2));
+          return (
+            <rect
+              key={`${d.period}-hit`}
+              x={hitX}
+              y={padTop}
+              width={hitWidth}
+              height={chartBottom - padTop}
+              fill="transparent"
+              cursor="crosshair"
+              onPointerEnter={() => setTooltip(buildTooltip(d, i))}
+              onPointerMove={() => setTooltip(buildTooltip(d, i))}
+            />
+          );
+        })}
 
         <g fill="rgba(170,170,170,0.9)" fontSize="10" fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace">
           <text x={padX} y={height - 9} textAnchor="start">{data[0]?.period}</text>
@@ -403,8 +483,51 @@ function LedgerCurveChart({
           <text x={width - padX} y={height - 9} textAnchor="end">{data[data.length - 1]?.period}</text>
         </g>
       </svg>
+      {tooltip && (
+        <div
+          className="pointer-events-none absolute z-30 min-w-[210px] border border-eve-border bg-eve-dark/95 px-3 py-2 text-[10px] shadow-[0_14px_34px_rgba(0,0,0,0.55)] backdrop-blur-sm"
+          style={{
+            left: `${tooltip.leftPct}%`,
+            top: `${tooltip.topPct}%`,
+            transform: "translate(-50%, calc(-100% - 10px))",
+          }}
+        >
+          <div className="mb-1 flex items-start justify-between gap-3">
+            <div className="font-mono text-[11px] text-eve-text">{tooltip.period}</div>
+            <div className="text-right text-[9px] uppercase tracking-wider text-eve-accent">
+              {mode === "pnl" ? "P&L" : mode}
+            </div>
+          </div>
+          <div className="mb-2 border-b border-eve-border/60 pb-1 text-[9px] text-eve-dim">{tooltip.subtitle}</div>
+          <div className="space-y-1">
+            {tooltip.rows.map((row) => (
+              <div key={row.label} className="flex items-center justify-between gap-4">
+                <span className="text-eve-dim">{row.label}</span>
+                <span className={`font-mono ${ledgerTooltipToneClass(row.tone)}`}>{row.value}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
+}
+
+function ledgerTooltipToneClass(tone?: LedgerTooltipTone) {
+  switch (tone) {
+    case "good":
+      return "text-eve-profit";
+    case "bad":
+      return "text-eve-error";
+    case "warn":
+      return "text-eve-warning";
+    case "info":
+      return "text-eve-accent";
+    case "dim":
+      return "text-eve-dim";
+    default:
+      return "text-eve-text";
+  }
 }
 
 function curveRange(data: EveLedgerCurvePoint[]) {
@@ -412,7 +535,7 @@ function curveRange(data: EveLedgerCurvePoint[]) {
   const first = data[0]?.period || data[0]?.start_date;
   const last = data[data.length - 1]?.period || data[data.length - 1]?.end_date;
   if (!first || !last || first === last) return "";
-  return ` · ${first} -> ${last}`;
+  return ` | ${first} -> ${last}`;
 }
 
 function CategoryTable({

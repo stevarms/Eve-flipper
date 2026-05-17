@@ -711,6 +711,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/internal/wiki/gollum", s.handleInternalWikiGollumWebhook)
 	mux.HandleFunc("GET /api/config", s.handleGetConfig)
 	mux.HandleFunc("POST /api/config", s.handleSetConfig)
+	mux.HandleFunc("GET /api/cockpit/preferences", s.handleGetCockpitPreferences)
+	mux.HandleFunc("PUT /api/cockpit/preferences", s.handlePutCockpitPreferences)
+	mux.HandleFunc("GET /api/cockpit/loadouts", s.handleGetCockpitLoadouts)
+	mux.HandleFunc("POST /api/cockpit/loadouts", s.handleCreateCockpitLoadout)
+	mux.HandleFunc("PUT /api/cockpit/loadouts/{loadoutID}", s.handleUpdateCockpitLoadout)
+	mux.HandleFunc("POST /api/cockpit/loadouts/{loadoutID}/activate", s.handleActivateCockpitLoadout)
+	mux.HandleFunc("DELETE /api/cockpit/loadouts/{loadoutID}", s.handleDeleteCockpitLoadout)
 	mux.HandleFunc("POST /api/alerts/test", s.handleAlertsTest)
 	mux.HandleFunc("GET /api/systems", s.handleGetSystems)
 	mux.HandleFunc("GET /api/systems/autocomplete", s.handleAutocomplete)
@@ -747,6 +754,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/auth/characters/{characterID}", s.handleAuthCharacterDelete)
 	mux.HandleFunc("GET /api/auth/character", s.handleAuthCharacter)
 	mux.HandleFunc("GET /api/auth/location", s.handleAuthLocation)
+	mux.HandleFunc("GET /api/auth/pi/planets", s.handleAuthPIPlanets)
 	mux.HandleFunc("GET /api/auth/undercuts", s.handleAuthUndercuts)
 	mux.HandleFunc("GET /api/auth/orders/desk", s.handleAuthOrderDesk)
 	mux.HandleFunc("GET /api/auth/station/trade-states", s.handleAuthGetStationTradeStates)
@@ -790,6 +798,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/ui/open-contract", s.handleUIOpenContract)
 	// Contracts
 	mux.HandleFunc("GET /api/contracts/{contract_id}/items", s.handleGetContractItems)
+	// Item intelligence
+	mux.HandleFunc("GET /api/items/search", s.handleItemSearch)
+	mux.HandleFunc("GET /api/items/intelligence", s.handleItemIntelligence)
 	// Industry
 	mux.HandleFunc("POST /api/industry/analyze", s.handleIndustryAnalyze)
 	mux.HandleFunc("GET /api/industry/search", s.handleIndustrySearch)
@@ -2135,6 +2146,8 @@ type scanRequest struct {
 	CategoryIDs []int32 `json:"category_ids"`
 	// Sell-order mode: use target lowest sell price instead of highest buy order price
 	SellOrderMode bool `json:"sell_order_mode"`
+	// Regional diagnostic mode: include capped rejected regional-day rows with reason/status metadata.
+	RegionalDiagnosticMode bool `json:"regional_diagnostic_mode"`
 	// Player structures
 	IncludeStructures bool `json:"include_structures"`
 }
@@ -2244,6 +2257,7 @@ func (s *Server) parseScanParams(req scanRequest) (engine.ScanParams, error) {
 		ExcludeRigsWithShip:        req.ExcludeRigsWithShip,
 		CategoryIDs:                req.CategoryIDs,
 		SellOrderMode:              req.SellOrderMode,
+		RegionalDiagnosticMode:     req.RegionalDiagnosticMode,
 		IncludeStructures:          req.IncludeStructures,
 	}, nil
 }
@@ -2657,7 +2671,13 @@ func (s *Server) handleScanRegionalDay(w http.ResponseWriter, r *http.Request) {
 
 	startTime := time.Now()
 
-	results, err := scanner.ScanMultiRegion(params, sendProgress)
+	scanParams := params
+	if params.RegionalDiagnosticMode {
+		scanParams.MinMargin = 0
+		scanParams.MaxInvestment = 0
+		scanParams.MinDailyVolume = 0
+	}
+	results, err := scanner.ScanMultiRegion(scanParams, sendProgress)
 	if err != nil {
 		log.Printf("[API] ScanRegionalDay error: %v", err)
 		line, _ := json.Marshal(map[string]string{"type": "error", "message": err.Error()})
@@ -3819,13 +3839,6 @@ func (s *Server) handleAuthStructures(w http.ResponseWriter, r *http.Request) {
 	systemID := int32(systemID64)
 	regionID := int32(regionID64)
 
-	structures, err := s.esi.FetchSystemStructures(systemID, regionID, token)
-	if err != nil {
-		log.Printf("[API] FetchSystemStructures error: %v", err)
-		writeJSON(w, []interface{}{})
-		return
-	}
-
 	type stationInfo struct {
 		ID          int64  `json:"id"`
 		Name        string `json:"name"`
@@ -3834,22 +3847,103 @@ func (s *Server) handleAuthStructures(w http.ResponseWriter, r *http.Request) {
 		IsStructure bool   `json:"is_structure,omitempty"`
 	}
 
-	result := make([]stationInfo, 0, len(structures))
+	structureByID := make(map[int64]stationInfo)
+	addStructure := func(id int64, accessToken string) {
+		if id <= 0 || !isPlayerStructure(id) {
+			return
+		}
+		name := s.esi.StructureName(id, accessToken)
+		structureSystemID, ok := s.esi.StructureSystemID(id)
+		if !ok {
+			if resolvedName, resolvedSystemID, detailsErr := s.esi.StructureDetails(id, accessToken); detailsErr == nil {
+				if resolvedName != "" {
+					name = resolvedName
+				}
+				if resolvedSystemID > 0 {
+					structureSystemID = resolvedSystemID
+					ok = true
+				}
+			}
+		}
+		if ok && structureSystemID > 0 && structureSystemID != systemID {
+			return
+		}
+		if !ok {
+			// Without a resolved system id we cannot safely attach the structure
+			// to this Industry system selector.
+			return
+		}
+		structureByID[id] = stationInfo{
+			ID:          id,
+			Name:        name,
+			SystemID:    structureSystemID,
+			RegionID:    regionID,
+			IsStructure: true,
+		}
+	}
+
+	structures, err := s.esi.FetchSystemStructures(systemID, regionID, token)
+	if err != nil {
+		log.Printf("[API] FetchSystemStructures error: %v", err)
+	} else {
+		for _, st := range structures {
+			if st.SystemID == systemID {
+				structureByID[st.ID] = stationInfo{
+					ID:          st.ID,
+					Name:        st.Name,
+					SystemID:    st.SystemID,
+					RegionID:    st.RegionID,
+					IsStructure: true,
+				}
+			}
+		}
+	}
+
+	// Also discover accessible character structures that may not expose public
+	// market orders: asset locations, active order locations and industry jobs.
+	for _, scopedSess := range selectedSessions {
+		scopedToken := token
+		if scopedSess.CharacterID != sess.CharacterID {
+			if refreshed, refreshErr := s.sessions.EnsureValidTokenForUserCharacter(s.sso, userID, scopedSess.CharacterID); refreshErr == nil {
+				scopedToken = refreshed
+			} else {
+				continue
+			}
+		}
+		if orders, orderErr := s.esi.GetCharacterOrders(scopedSess.CharacterID, scopedToken); orderErr == nil {
+			for _, o := range orders {
+				if o.RegionID != 0 && o.RegionID != regionID {
+					continue
+				}
+				addStructure(o.LocationID, scopedToken)
+			}
+		}
+		if assets, assetsErr := s.esi.GetCharacterAssets(scopedSess.CharacterID, scopedToken); assetsErr == nil {
+			for _, a := range assets {
+				addStructure(a.LocationID, scopedToken)
+			}
+		}
+		if jobs, jobsErr := s.esi.GetCharacterIndustryJobs(scopedSess.CharacterID, scopedToken, false); jobsErr == nil {
+			for _, job := range jobs {
+				addStructure(job.FacilityID, scopedToken)
+				addStructure(job.StationID, scopedToken)
+				addStructure(job.BlueprintLocationID, scopedToken)
+				addStructure(job.OutputLocationID, scopedToken)
+			}
+		}
+	}
+
+	result := make([]stationInfo, 0, len(structureByID))
 	skipped := 0
-	for _, st := range structures {
+	for _, st := range structureByID {
 		// Skip structures with placeholder names (no access or not in EVERef)
 		if st.Name == "" || strings.HasPrefix(st.Name, "Structure ") || strings.HasPrefix(st.Name, "Location ") {
 			skipped++
 			continue
 		}
-		result = append(result, stationInfo{
-			ID:          st.ID,
-			Name:        st.Name,
-			SystemID:    st.SystemID,
-			RegionID:    st.RegionID,
-			IsStructure: true,
-		})
+		result = append(result, st)
 	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
 	if skipped > 0 {
 		log.Printf("[API] Filtered out %d inaccessible structures from dropdown", skipped)
 	}

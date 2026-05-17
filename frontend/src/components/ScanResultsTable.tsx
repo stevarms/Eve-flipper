@@ -95,9 +95,28 @@ type ColumnDef = {
   key: SortKey;
   labelKey: TranslationKey;
   width: string;
+  widthPx?: number;
+  pinned?: boolean;
+  frozen?: boolean;
   numeric: boolean;
   tooltipKey?: TranslationKey;
 };
+
+function columnDefaultWidthPx(width: string): number {
+  const exact = width.match(/w-\[(\d+)px\]/)?.[1];
+  const min = width.match(/min-w-\[(\d+)px\]/)?.[1];
+  const parsed = Number(exact ?? min ?? 110);
+  return Number.isFinite(parsed) ? Math.max(44, Math.min(520, parsed)) : 110;
+}
+
+function columnWidthStyle(col: ColumnDef, left?: number) {
+  const widthPx = col.widthPx ?? columnDefaultWidthPx(col.width);
+  return {
+    width: widthPx,
+    minWidth: widthPx,
+    ...(typeof left === "number" ? { left } : {}),
+  };
+}
 
 /* ─── Column definitions ─── */
 
@@ -1035,6 +1054,8 @@ export function ScanResultsTable({
     allColumnDefs.map((col) => col.key),
   );
   const [hiddenColumns, setHiddenColumns] = useState<Set<SortKey>>(new Set());
+  const [columnWidths, setColumnWidths] = useState<Partial<Record<SortKey, number>>>({});
+  const [pinnedColumns, setPinnedColumns] = useState<Set<SortKey>>(new Set());
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [pinnedIds, setPinnedIds] = useState<Set<number>>(new Set());
   const [page, setPage] = useState(0);
@@ -1110,13 +1131,31 @@ export function ScanResultsTable({
         ordered.push(col);
       }
     }
-    return ordered;
-  }, [allColumnDefs, columnOrder]);
+    return ordered
+      .map((col) => ({
+        ...col,
+        widthPx: columnWidths[col.key] ?? columnDefaultWidthPx(col.width),
+        pinned: pinnedColumns.has(col.key),
+        frozen: pinnedColumns.has(col.key),
+      }))
+      .sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)));
+  }, [allColumnDefs, columnOrder, columnWidths, pinnedColumns]);
 
   const columnDefs = useMemo(
     () => orderedColumnDefs.filter((col) => !hiddenColumns.has(col.key)),
     [orderedColumnDefs, hiddenColumns],
   );
+
+  const pinnedLeftByKey = useMemo(() => {
+    const lefts = new Map<SortKey, number>();
+    let left = 64;
+    for (const col of columnDefs) {
+      if (!col.pinned) continue;
+      lefts.set(col.key, left);
+      left += col.widthPx ?? columnDefaultWidthPx(col.width);
+    }
+    return lefts;
+  }, [columnDefs]);
 
   // Watchlist
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
@@ -1252,12 +1291,16 @@ export function ScanResultsTable({
     const available = new Set(defaultOrder);
     let nextOrder = defaultOrder;
     const nextHidden = new Set<SortKey>();
+    const nextWidths: Partial<Record<SortKey, number>> = {};
+    const nextPinned = new Set<SortKey>();
     try {
       const raw = localStorage.getItem(columnPrefsKey);
       if (raw) {
         const parsed = JSON.parse(raw) as {
           order?: string[];
           hidden?: string[];
+          widths?: Record<string, number>;
+          pinned?: string[];
         };
         if (Array.isArray(parsed.order)) {
           const saved = parsed.order
@@ -1272,6 +1315,20 @@ export function ScanResultsTable({
             }
           }
         }
+        if (parsed.widths && typeof parsed.widths === "object") {
+          for (const [key, value] of Object.entries(parsed.widths)) {
+            if (available.has(key as SortKey) && typeof value === "number" && Number.isFinite(value)) {
+              nextWidths[key as SortKey] = Math.max(44, Math.min(520, Math.round(value)));
+            }
+          }
+        }
+        if (Array.isArray(parsed.pinned)) {
+          for (const key of parsed.pinned) {
+            if (available.has(key as SortKey)) {
+              nextPinned.add(key as SortKey);
+            }
+          }
+        }
       }
     } catch {
       // Ignore malformed local settings.
@@ -1281,6 +1338,8 @@ export function ScanResultsTable({
     }
     setColumnOrder(nextOrder);
     setHiddenColumns(nextHidden);
+    setColumnWidths(nextWidths);
+    setPinnedColumns(nextPinned);
   }, [columnPrefsKey, allColumnDefs]);
 
   useEffect(() => {
@@ -1291,12 +1350,14 @@ export function ScanResultsTable({
         JSON.stringify({
           order: columnOrder,
           hidden: [...hiddenColumns],
+          widths: columnWidths,
+          pinned: [...pinnedColumns],
         }),
       );
     } catch {
       // Ignore storage quota errors.
     }
-  }, [columnPrefsKey, columnOrder, hiddenColumns]);
+  }, [columnPrefsKey, columnOrder, hiddenColumns, columnWidths, pinnedColumns]);
 
   useEffect(() => {
     try {
@@ -1359,7 +1420,46 @@ export function ScanResultsTable({
 
   const resetColumns = useCallback(() => {
     setColumnOrder(allColumnDefs.map((col) => col.key));
+    setHiddenColumns(new Set());
+    setColumnWidths({});
+    setPinnedColumns(new Set());
   }, [allColumnDefs]);
+
+  const setColumnWidth = useCallback((key: SortKey, widthPx: number) => {
+    setColumnWidths((prev) => ({
+      ...prev,
+      [key]: Math.max(44, Math.min(520, Math.round(widthPx))),
+    }));
+  }, []);
+
+  const toggleColumnPin = useCallback((key: SortKey) => {
+    setPinnedColumns((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const startColumnResize = useCallback((key: SortKey, event: import("react").MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const startX = event.clientX;
+    const startWidth =
+      columnWidths[key] ??
+      columnDefaultWidthPx(allColumnDefs.find((col) => col.key === key)?.width ?? "");
+    const onMove = (moveEvent: MouseEvent) => {
+      setColumnWidth(key, startWidth + moveEvent.clientX - startX);
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.style.userSelect = "";
+    };
+    document.body.style.userSelect = "none";
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, [allColumnDefs, columnWidths, setColumnWidth]);
 
   const insertColumn = useCallback((fromKey: SortKey, toKey: SortKey, side: "before" | "after") => {
     if (fromKey === toKey) return;
@@ -2265,6 +2365,7 @@ export function ScanResultsTable({
         ir={ir}
         globalIdx={globalIdx}
         columnDefs={columnDefs}
+        pinnedLeftByKey={pinnedLeftByKey}
         compactMode={compactMode}
         isPinned={pinnedIds.has(ir.id)}
         isSelected={selectedIds.has(ir.id)}
@@ -2303,6 +2404,7 @@ export function ScanResultsTable({
       variantByRowId,
       routeSafetyMap,
       handleRouteSafetyClick,
+      pinnedLeftByKey,
     ],
   );
 
@@ -2800,6 +2902,32 @@ export function ScanResultsTable({
                           {t(col.labelKey)}
                         </span>
                       </label>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          toggleColumnPin(col.key);
+                        }}
+                        className={`px-1 py-0.5 rounded-sm border text-[10px] ${
+                          pinnedColumns.has(col.key)
+                            ? "border-eve-accent/70 text-eve-accent bg-eve-accent/10"
+                            : "border-eve-border/50 text-eve-dim hover:text-eve-accent"
+                        }`}
+                        title="Pin/freeze column"
+                      >
+                        PIN
+                      </button>
+                      <input
+                        type="number"
+                        min={44}
+                        max={520}
+                        value={columnWidths[col.key] ?? columnDefaultWidthPx(col.width)}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => setColumnWidth(col.key, Number(e.target.value))}
+                        className="w-14 px-1 py-0.5 bg-eve-input border border-eve-border rounded-sm text-[10px] text-eve-text font-mono"
+                        title="Column width in pixels"
+                      />
                     </div>
 
                     {/* Drop gap — after */}
@@ -2822,7 +2950,7 @@ export function ScanResultsTable({
         <table className="w-full text-sm">
           <thead className="sticky top-0 z-10">
             <tr className="bg-eve-dark border-b border-eve-border">
-              <th className="w-8 px-1 py-2 text-center">
+              <th className="sticky left-0 z-30 w-8 px-1 py-2 text-center bg-eve-dark">
                 <input
                   type="checkbox"
                   checked={
@@ -2833,17 +2961,18 @@ export function ScanResultsTable({
                   className="accent-eve-accent cursor-pointer"
                 />
               </th>
-              <th className="w-8 px-1 py-2" />
+              <th className="sticky left-8 z-30 w-8 px-1 py-2 bg-eve-dark" />
               {columnDefs.map((col) => (
                 <th
                   key={col.key}
                   onClick={() => toggleSort(col.key)}
+                  style={columnWidthStyle(col, col.pinned ? pinnedLeftByKey.get(col.key) : undefined)}
                   title={
                     col.tooltipKey
                       ? `${t(col.labelKey)}: ${t(col.tooltipKey)}`
                       : t(col.labelKey)
                   }
-                  className={`${col.width} px-3 py-2 text-left text-[11px] uppercase tracking-wider text-eve-dim font-medium cursor-pointer select-none hover:text-eve-accent transition-colors ${sortKey === col.key ? "text-eve-accent" : ""}`}
+                  className={`${col.width} relative px-3 py-2 text-left text-[11px] uppercase tracking-wider text-eve-dim font-medium cursor-pointer select-none hover:text-eve-accent transition-colors ${sortKey === col.key ? "text-eve-accent" : ""} ${col.pinned ? "sticky z-20 bg-eve-dark shadow-[2px_0_0_rgba(230,149,0,0.18)]" : ""}`}
                 >
                   <span className="inline-flex items-center gap-1">
                     {t(col.labelKey)}
@@ -2856,15 +2985,26 @@ export function ScanResultsTable({
                       {sortDir === "asc" ? "▲" : "▼"}
                     </span>
                   )}
+                  <button
+                    type="button"
+                    onMouseDown={(e) => startColumnResize(col.key, e)}
+                    onClick={(e) => e.stopPropagation()}
+                    className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize bg-transparent hover:bg-eve-accent/30"
+                    title="Resize column"
+                  />
                 </th>
               ))}
             </tr>
             {showFilters && (
               <tr className="bg-eve-dark/80 border-b border-eve-border">
-                <th className="w-8" />
-                <th className="w-8" />
+                <th className="sticky left-0 z-30 w-8 bg-eve-dark/80" />
+                <th className="sticky left-8 z-30 w-8 bg-eve-dark/80" />
                 {columnDefs.map((col) => (
-                  <th key={col.key} className={`${col.width} px-1 py-1`}>
+                  <th
+                    key={col.key}
+                    style={columnWidthStyle(col, col.pinned ? pinnedLeftByKey.get(col.key) : undefined)}
+                    className={`${col.width} px-1 py-1 ${col.pinned ? "sticky z-20 bg-eve-dark/90 shadow-[2px_0_0_rgba(230,149,0,0.14)]" : ""}`}
+                  >
                     <input
                       type="text"
                       value={filters[col.key] ?? ""}
@@ -3521,6 +3661,7 @@ interface DataRowProps {
   ir: IndexedRow;
   globalIdx: number;
   columnDefs: ColumnDef[];
+  pinnedLeftByKey: Map<SortKey, number>;
   compactMode: boolean;
   isPinned: boolean;
   isSelected: boolean;
@@ -3606,7 +3747,7 @@ function RouteSafetyCell({
 
 const DataRow = memo(
   function DataRow({
-    ir, globalIdx, columnDefs, compactMode,
+    ir, globalIdx, columnDefs, pinnedLeftByKey, compactMode,
     isPinned, isSelected, isFocused, variant, rowHidden,
     isItemGrouped, isRegionGrouped, variantExpandable, variantExpanded,
     onToggleVariantGroup, onContextMenu, onLmbClick,
@@ -3630,12 +3771,14 @@ const DataRow = memo(
               ? "bg-eve-accent/10 border-l-2 border-l-eve-accent"
               : isSelected
                 ? "bg-eve-accent/5"
-                : globalIdx % 2 === 0
-                  ? "bg-eve-panel"
-                  : "bg-eve-dark"
+                : ir.row.DayDiagnosticRejected
+                  ? "bg-red-950/20 border-l-2 border-l-red-500/60"
+                  : globalIdx % 2 === 0
+                    ? "bg-eve-panel"
+                    : "bg-eve-dark"
         } ${rowHidden ? "opacity-60" : ""}`}
       >
-        <td className={`w-8 px-1 text-center ${compactMode ? "py-1" : "py-1.5"}`}>
+        <td className={`sticky left-0 z-10 w-8 px-1 text-center bg-inherit ${compactMode ? "py-1" : "py-1.5"}`}>
           <input
             type="checkbox"
             checked={isSelected}
@@ -3643,7 +3786,7 @@ const DataRow = memo(
             className="accent-eve-accent cursor-pointer"
           />
         </td>
-        <td className={`w-8 px-1 text-center ${compactMode ? "py-1" : "py-1.5"}`}>
+        <td className={`sticky left-8 z-10 w-8 px-1 text-center bg-inherit ${compactMode ? "py-1" : "py-1.5"}`}>
           <button
             onClick={() => onTogglePin(ir.id)}
             className={`text-xs cursor-pointer transition-opacity ${isPinned ? "opacity-100" : "opacity-30 hover:opacity-70"}`}
@@ -3655,7 +3798,8 @@ const DataRow = memo(
         {columnDefs.map((col) => (
           <td
             key={col.key}
-            className={`px-3 ${compactMode ? "py-1" : "py-1.5"} ${col.width} ${col.key === "TypeName" ? "" : "truncate"} ${col.numeric ? "text-eve-accent font-mono" : "text-eve-text"}`}
+            style={columnWidthStyle(col, col.pinned ? pinnedLeftByKey.get(col.key) : undefined)}
+            className={`px-3 ${compactMode ? "py-1" : "py-1.5"} ${col.width} ${col.key === "TypeName" ? "" : "truncate"} ${col.numeric ? "text-eve-accent font-mono" : "text-eve-text"} ${col.pinned ? "sticky z-10 bg-inherit shadow-[2px_0_0_rgba(230,149,0,0.12)]" : ""}`}
           >
             {col.key === "TypeName" ? (
               <div className="flex items-center gap-1.5 min-w-0">
@@ -3670,6 +3814,22 @@ const DataRow = memo(
                   />
                 )}
                 <span className="truncate">{ir.row.TypeName}</span>
+                {ir.row.DayDiagnosticRejected && (
+                  <span
+                    title={`Rejected by diagnostic filter: ${ir.row.DayDiagnosticReason || "unknown"}`}
+                    className="shrink-0 inline-flex items-center px-1 py-px rounded-[2px] border border-red-500/50 bg-red-500/10 text-red-300 text-[9px] leading-none font-medium uppercase"
+                  >
+                    REJECTED
+                  </span>
+                )}
+                {ir.row.DayMarketDataStatus && ir.row.DayMarketDataStatus !== "ok" && (
+                  <span
+                    title={`Market data status: ${ir.row.DayMarketDataStatus}`}
+                    className="shrink-0 inline-flex items-center px-1 py-px rounded-[2px] border border-amber-400/50 bg-amber-400/10 text-amber-300 text-[9px] leading-none font-medium uppercase"
+                  >
+                    DATA
+                  </span>
+                )}
                 {/* Price-spike warning: now-profit > 0 but period-profit < 0 means temp spike */}
                 {(ir.row.DayNowProfit ?? 0) > 0 && (ir.row.DayPeriodProfit ?? 0) < 0 && (
                   <span
@@ -3867,6 +4027,25 @@ function DayDetailPanel({ row, onClose }: { row: FlipResult; onClose: () => void
                   ⚠ {s.label}
                 </span>
               ))}
+            </div>
+          )}
+
+          {(row.DayDiagnosticRejected || (row.DayMarketDataStatus && row.DayMarketDataStatus !== "ok")) && (
+            <div className="rounded-sm border border-amber-400/40 bg-amber-400/10 p-2 space-y-1 text-[11px]">
+              <div className="text-[10px] uppercase tracking-wider text-amber-300 font-semibold">Diagnostic</div>
+              {row.DayDiagnosticRejected && (
+                <DRRow label="Rejected by" value={row.DayDiagnosticReason || "unknown"} dim />
+              )}
+              {row.DayDiagnosticDetails && row.DayDiagnosticDetails.length > 0 && (
+                <div className="space-y-0.5">
+                  {row.DayDiagnosticDetails.slice(1, 5).map((detail, index) => (
+                    <DRRow key={`${detail}-${index}`} label={index === 0 ? "Reason detail" : ""} value={detail} dim />
+                  ))}
+                </div>
+              )}
+              {row.DayMarketDataStatus && (
+                <DRRow label="Market data" value={row.DayMarketDataStatus} dim={row.DayMarketDataStatus !== "ok"} />
+              )}
             </div>
           )}
 

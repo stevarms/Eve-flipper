@@ -1,8 +1,10 @@
 package engine
 
 import (
+	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"sync"
 
 	"eve-flipper/internal/esi"
@@ -53,6 +55,10 @@ type RegionalDayTradeItem struct {
 	TradeScore         float64   `json:"trade_score"`
 	TargetPriceHistory []float64 `json:"target_price_history"`
 	TargetLowestSell   float64   `json:"target_lowest_sell"`
+	DiagnosticRejected bool      `json:"diagnostic_rejected,omitempty"`
+	DiagnosticReason   string    `json:"diagnostic_reason,omitempty"`
+	DiagnosticDetails  []string  `json:"diagnostic_details,omitempty"`
+	MarketDataStatus   string    `json:"market_data_status,omitempty"`
 }
 
 type RegionalDayTradeHub struct {
@@ -256,17 +262,86 @@ func (s *Scanner) BuildRegionalDayTrader(
 	hubDOSWeighted := make(map[int32]float64)
 	hubDOSWeight := make(map[int32]float64)
 	totalItems := 0
+	diagnosticRows := 0
+	diagnosticLimitReached := false
+	const maxRegionalDiagnosticRows = 500
+
+	addItem := func(row FlipResult, item RegionalDayTradeItem) {
+		if item.DiagnosticRejected {
+			if !params.RegionalDiagnosticMode {
+				return
+			}
+			if diagnosticRows >= maxRegionalDiagnosticRows {
+				diagnosticLimitReached = true
+				return
+			}
+			diagnosticRows++
+		}
+
+		if s.SDE != nil {
+			if typeInfo, ok := s.SDE.Types[row.TypeID]; ok {
+				item.CategoryID = typeInfo.CategoryID
+				item.GroupID = typeInfo.GroupID
+				if grp, ok := s.SDE.Groups[typeInfo.GroupID]; ok {
+					item.GroupName = grp.Name
+				}
+			}
+		}
+
+		hub := hubMap[row.BuySystemID]
+		if hub == nil {
+			hub = &RegionalDayTradeHub{
+				SourceSystemID:   row.BuySystemID,
+				SourceSystemName: row.BuySystemName,
+				SourceRegionID:   row.BuyRegionID,
+				SourceRegionName: row.BuyRegionName,
+			}
+			if s.SDE != nil {
+				if sys, ok := s.SDE.Systems[row.BuySystemID]; ok {
+					hub.Security = sanitizeFloat(sys.Security)
+				}
+			}
+			hubMap[row.BuySystemID] = hub
+		}
+
+		hub.Items = append(hub.Items, item)
+		hub.PurchaseUnits += int64(item.PurchaseUnits)
+		hub.SourceUnits += int64(item.SourceUnits)
+		hub.TargetDemandPerDay = sanitizeFloat(hub.TargetDemandPerDay + item.TargetDemandPerDay)
+		hub.TargetSupplyUnits += item.TargetSupplyUnits
+		hub.Assets += item.Assets
+		hub.ActiveOrders += item.ActiveOrders
+		hub.TargetNowProfit = sanitizeFloat(hub.TargetNowProfit + item.TargetNowProfit)
+		hub.TargetPeriodProfit = sanitizeFloat(hub.TargetPeriodProfit + item.TargetPeriodProfit)
+		hub.CapitalRequired = sanitizeFloat(hub.CapitalRequired + item.CapitalRequired)
+		hub.ShippingCost = sanitizeFloat(hub.ShippingCost + item.ShippingCost)
+		hub.ItemCount++
+		dosWeight := item.CapitalRequired
+		if dosWeight <= 0 {
+			dosWeight = float64(item.PurchaseUnits)
+		}
+		if dosWeight <= 0 {
+			dosWeight = 1
+		}
+		hubDOSWeighted[row.BuySystemID] += item.TargetDOS * dosWeight
+		hubDOSWeight[row.BuySystemID] += dosWeight
+		totalItems++
+	}
 
 	for _, row := range flips {
 		if row.TypeID <= 0 || row.UnitsToBuy <= 0 {
 			continue
 		}
 
+		rejectionReason := ""
 		// Category filter: early exit before any costly calculations.
 		if len(params.CategoryIDs) > 0 && s.SDE != nil {
 			if typeInfo, ok := s.SDE.Types[row.TypeID]; ok {
 				if !containsInt32(params.CategoryIDs, typeInfo.CategoryID) {
-					continue
+					if !params.RegionalDiagnosticMode {
+						continue
+					}
+					rejectionReason = "category_filter"
 				}
 			}
 		}
@@ -317,7 +392,12 @@ func (s *Scanner) BuildRegionalDayTrader(
 		referenceSellPrice := minPositivePrice(targetNowPrice, targetPeriodPrice)
 		referenceSellPrice = minPositivePrice(referenceSellPrice, row.TargetLowestSell)
 		if rejectUntrustedMicroSourcePrice(sourceAvgPrice, referenceSellPrice, sourceStats, periodDays) {
-			continue
+			if !params.RegionalDiagnosticMode {
+				continue
+			}
+			if rejectionReason == "" {
+				rejectionReason = "untrusted_source_price"
+			}
 		}
 
 		targetDemandPerDay := blendedRegionalDemandPerDay(row, targetStats, periodDays)
@@ -343,14 +423,21 @@ func (s *Scanner) BuildRegionalDayTrader(
 		if params.CargoCapacity > 0 && row.Volume > 0 {
 			maxByCargoF := math.Floor(params.CargoCapacity / row.Volume)
 			if maxByCargoF <= 0 {
-				continue
-			}
-			if maxByCargoF > float64(math.MaxInt32) {
-				maxByCargoF = float64(math.MaxInt32)
-			}
-			maxByCargo := int32(maxByCargoF)
-			if purchaseUnits > maxByCargo {
-				purchaseUnits = maxByCargo
+				if !params.RegionalDiagnosticMode {
+					continue
+				}
+				if rejectionReason == "" {
+					rejectionReason = "cargo_too_small"
+				}
+				purchaseUnits = 0
+			} else {
+				if maxByCargoF > float64(math.MaxInt32) {
+					maxByCargoF = float64(math.MaxInt32)
+				}
+				maxByCargo := int32(maxByCargoF)
+				if purchaseUnits > maxByCargo {
+					purchaseUnits = maxByCargo
+				}
 			}
 		}
 		if params.MaxInvestment > 0 {
@@ -358,15 +445,25 @@ func (s *Scanner) BuildRegionalDayTrader(
 			if effectiveUnitCost > 0 {
 				maxByCapital := int32(params.MaxInvestment / effectiveUnitCost)
 				if maxByCapital <= 0 {
-					continue
-				}
-				if purchaseUnits > maxByCapital {
+					if !params.RegionalDiagnosticMode {
+						continue
+					}
+					if rejectionReason == "" {
+						rejectionReason = "capital_limit"
+					}
+					purchaseUnits = 0
+				} else if purchaseUnits > maxByCapital {
 					purchaseUnits = maxByCapital
 				}
 			}
 		}
 		if purchaseUnits <= 0 {
-			continue
+			if !params.RegionalDiagnosticMode {
+				continue
+			}
+			if rejectionReason == "" {
+				rejectionReason = "no_purchase_quantity"
+			}
 		}
 
 		coveredByAssets := int64(0)
@@ -392,7 +489,12 @@ func (s *Scanner) BuildRegionalDayTrader(
 			}
 		}
 		if purchaseUnits <= 0 {
-			continue
+			if !params.RegionalDiagnosticMode {
+				continue
+			}
+			if rejectionReason == "" {
+				rejectionReason = "covered_by_existing_assets_orders"
+			}
 		}
 
 		jumps := row.SellJumps
@@ -410,7 +512,12 @@ func (s *Scanner) BuildRegionalDayTrader(
 		periodProfit := unitPeriodProfit*float64(purchaseUnits) - shippingCost
 
 		if params.MinItemProfit > 0 && nowProfit < params.MinItemProfit && periodProfit < params.MinItemProfit {
-			continue
+			if !params.RegionalDiagnosticMode {
+				continue
+			}
+			if rejectionReason == "" {
+				rejectionReason = "below_min_profit"
+			}
 		}
 
 		capitalRequired := sourceAvgPrice * buyCostMult * float64(purchaseUnits)
@@ -456,13 +563,28 @@ func (s *Scanner) BuildRegionalDayTrader(
 		}
 		// MinOrderMargin must be executable "now" margin, not period expectation.
 		if params.MinMargin > 0 && marginNow < params.MinMargin {
-			continue
+			if !params.RegionalDiagnosticMode {
+				continue
+			}
+			if rejectionReason == "" {
+				rejectionReason = "below_min_margin"
+			}
 		}
 		if params.MinPeriodROI > 0 && roiPeriod < params.MinPeriodROI {
-			continue
+			if !params.RegionalDiagnosticMode {
+				continue
+			}
+			if rejectionReason == "" {
+				rejectionReason = "below_min_period_roi"
+			}
 		}
 		if params.MinDemandPerDay > 0 && targetDemandPerDay < params.MinDemandPerDay {
-			continue
+			if !params.RegionalDiagnosticMode {
+				continue
+			}
+			if rejectionReason == "" {
+				rejectionReason = "below_min_demand"
+			}
 		}
 
 		targetSupplyUnits := regionalFallbackSupplyUnits(row, periodDays)
@@ -478,8 +600,35 @@ func (s *Scanner) BuildRegionalDayTrader(
 		}
 		// MaxDOS=0 means filter disabled.
 		if params.MaxDOS > 0 && targetDOS > params.MaxDOS {
-			continue
+			if !params.RegionalDiagnosticMode {
+				continue
+			}
+			if rejectionReason == "" {
+				rejectionReason = "above_max_dos"
+			}
 		}
+		diagnosticDetails := regionalDiagnosticDetails(regionalDiagnosticInput{
+			Reason:             rejectionReason,
+			SourceAvgPrice:     sourceAvgPrice,
+			TargetNowPrice:     targetNowPrice,
+			TargetPeriodPrice:  targetPeriodPrice,
+			TargetDemandPerDay: targetDemandPerDay,
+			TargetDOS:          targetDOS,
+			PurchaseUnits:      purchaseUnits,
+			NowProfit:          nowProfit,
+			PeriodProfit:       periodProfit,
+			MarginNow:          marginNow,
+			ROIPeriod:          roiPeriod,
+			CapitalRequired:    capitalRequired,
+			CargoCapacity:      params.CargoCapacity,
+			ItemVolume:         row.Volume,
+			MinMargin:          params.MinMargin,
+			MinPeriodROI:       params.MinPeriodROI,
+			MinDemandPerDay:    params.MinDemandPerDay,
+			MinItemProfit:      params.MinItemProfit,
+			MaxDOS:             params.MaxDOS,
+			MaxInvestment:      params.MaxInvestment,
+		})
 
 		tradeScore := computeTradeScore(regionalTradeScoreInput{
 			ROIPeriod:           roiPeriod,
@@ -532,56 +681,17 @@ func (s *Scanner) BuildRegionalDayTrader(
 			TradeScore:         tradeScore,
 			TargetPriceHistory: priceHistory,
 			TargetLowestSell:   sanitizeFloat(row.TargetLowestSell),
+			DiagnosticRejected: rejectionReason != "",
+			DiagnosticReason:   rejectionReason,
+			DiagnosticDetails:  diagnosticDetails,
+			MarketDataStatus:   regionalMarketDataStatus(sourceStats, targetStats, targetNowPrice, targetPeriodPrice, row.TargetLowestSell, params.SellOrderMode),
 		}
 
-		if s.SDE != nil {
-			if typeInfo, ok := s.SDE.Types[row.TypeID]; ok {
-				item.CategoryID = typeInfo.CategoryID
-				item.GroupID = typeInfo.GroupID
-				if grp, ok := s.SDE.Groups[typeInfo.GroupID]; ok {
-					item.GroupName = grp.Name
-				}
-			}
-		}
+		addItem(row, item)
+	}
 
-		hub := hubMap[row.BuySystemID]
-		if hub == nil {
-			hub = &RegionalDayTradeHub{
-				SourceSystemID:   row.BuySystemID,
-				SourceSystemName: row.BuySystemName,
-				SourceRegionID:   row.BuyRegionID,
-				SourceRegionName: row.BuyRegionName,
-			}
-			if s.SDE != nil {
-				if sys, ok := s.SDE.Systems[row.BuySystemID]; ok {
-					hub.Security = sanitizeFloat(sys.Security)
-				}
-			}
-			hubMap[row.BuySystemID] = hub
-		}
-
-		hub.Items = append(hub.Items, item)
-		hub.PurchaseUnits += int64(item.PurchaseUnits)
-		hub.SourceUnits += int64(item.SourceUnits)
-		hub.TargetDemandPerDay = sanitizeFloat(hub.TargetDemandPerDay + item.TargetDemandPerDay)
-		hub.TargetSupplyUnits += item.TargetSupplyUnits
-		hub.Assets += item.Assets
-		hub.ActiveOrders += item.ActiveOrders
-		hub.TargetNowProfit = sanitizeFloat(hub.TargetNowProfit + item.TargetNowProfit)
-		hub.TargetPeriodProfit = sanitizeFloat(hub.TargetPeriodProfit + item.TargetPeriodProfit)
-		hub.CapitalRequired = sanitizeFloat(hub.CapitalRequired + item.CapitalRequired)
-		hub.ShippingCost = sanitizeFloat(hub.ShippingCost + item.ShippingCost)
-		hub.ItemCount++
-		dosWeight := item.CapitalRequired
-		if dosWeight <= 0 {
-			dosWeight = float64(item.PurchaseUnits)
-		}
-		if dosWeight <= 0 {
-			dosWeight = 1
-		}
-		hubDOSWeighted[row.BuySystemID] += item.TargetDOS * dosWeight
-		hubDOSWeight[row.BuySystemID] += dosWeight
-		totalItems++
+	if diagnosticLimitReached && progress != nil {
+		progress("Regional diagnostic rows capped at 500 rejected candidates.")
 	}
 
 	hubs := make([]RegionalDayTradeHub, 0, len(hubMap))
@@ -698,6 +808,10 @@ func FlattenRegionalDayHubs(hubs []RegionalDayTradeHub) []FlipResult {
 				DayTradeScore:         sanitizeFloat(item.TradeScore),
 				DayPriceHistory:       item.TargetPriceHistory,
 				DayTargetLowestSell:   sanitizeFloat(item.TargetLowestSell),
+				DayDiagnosticRejected: item.DiagnosticRejected,
+				DayDiagnosticReason:   item.DiagnosticReason,
+				DayDiagnosticDetails:  item.DiagnosticDetails,
+				DayMarketDataStatus:   item.MarketDataStatus,
 			}
 			rows = append(rows, row)
 		}
@@ -718,6 +832,128 @@ func chooseNonEmpty(primary string, fallback string) string {
 		return primary
 	}
 	return fallback
+}
+
+func regionalMarketDataStatus(
+	sourceStats regionalHistoryStats,
+	targetStats regionalHistoryStats,
+	targetNowPrice float64,
+	targetPeriodPrice float64,
+	targetLowestSell float64,
+	sellOrderMode bool,
+) string {
+	flags := make([]string, 0, 4)
+	if sourceStats.windowEntries == 0 {
+		flags = append(flags, "missing_source_history")
+	}
+	if targetStats.windowEntries == 0 {
+		flags = append(flags, "missing_target_history")
+	}
+	if targetNowPrice <= 0 {
+		flags = append(flags, "missing_target_now_price")
+	}
+	if targetPeriodPrice <= 0 {
+		flags = append(flags, "missing_target_period_price")
+	}
+	if sellOrderMode && targetLowestSell <= 0 {
+		flags = append(flags, "no_destination_sell_orders")
+	}
+	if len(flags) == 0 {
+		return "ok"
+	}
+	return strings.Join(flags, ",")
+}
+
+type regionalDiagnosticInput struct {
+	Reason             string
+	SourceAvgPrice     float64
+	TargetNowPrice     float64
+	TargetPeriodPrice  float64
+	TargetDemandPerDay float64
+	TargetDOS          float64
+	PurchaseUnits      int32
+	NowProfit          float64
+	PeriodProfit       float64
+	MarginNow          float64
+	ROIPeriod          float64
+	CapitalRequired    float64
+	CargoCapacity      float64
+	ItemVolume         float64
+	MinMargin          float64
+	MinPeriodROI       float64
+	MinDemandPerDay    float64
+	MinItemProfit      float64
+	MaxDOS             float64
+	MaxInvestment      float64
+}
+
+func regionalDiagnosticDetails(in regionalDiagnosticInput) []string {
+	if in.Reason == "" {
+		return nil
+	}
+	details := []string{in.Reason}
+	add := func(label string, value float64, threshold float64) {
+		details = append(details, fmt.Sprintf("%s %s / limit %s", label, formatRegionalDiagNumber(value), formatRegionalDiagNumber(threshold)))
+	}
+	switch in.Reason {
+	case "below_min_margin":
+		add("now margin", in.MarginNow, in.MinMargin)
+	case "below_min_period_roi":
+		add("period ROI", in.ROIPeriod, in.MinPeriodROI)
+	case "below_min_demand":
+		add("target demand/day", in.TargetDemandPerDay, in.MinDemandPerDay)
+	case "below_min_profit":
+		details = append(details,
+			fmt.Sprintf("now profit %s / min %s", formatRegionalDiagNumber(in.NowProfit), formatRegionalDiagNumber(in.MinItemProfit)),
+			fmt.Sprintf("period profit %s / min %s", formatRegionalDiagNumber(in.PeriodProfit), formatRegionalDiagNumber(in.MinItemProfit)),
+		)
+	case "above_max_dos":
+		add("target DOS", in.TargetDOS, in.MaxDOS)
+	case "cargo_too_small":
+		details = append(details,
+			fmt.Sprintf("item volume %s m3", formatRegionalDiagNumber(in.ItemVolume)),
+			fmt.Sprintf("cargo %s m3", formatRegionalDiagNumber(in.CargoCapacity)),
+		)
+	case "capital_limit":
+		details = append(details,
+			fmt.Sprintf("capital required %s", formatRegionalDiagNumber(in.CapitalRequired)),
+			fmt.Sprintf("max investment %s", formatRegionalDiagNumber(in.MaxInvestment)),
+		)
+	case "no_purchase_quantity":
+		details = append(details, "purchase units 0")
+	case "untrusted_source_price":
+		details = append(details,
+			fmt.Sprintf("source price %s", formatRegionalDiagNumber(in.SourceAvgPrice)),
+			fmt.Sprintf("target price %s", formatRegionalDiagNumber(in.TargetNowPrice)),
+		)
+	}
+	if in.SourceAvgPrice <= 0 {
+		details = append(details, "source price unavailable")
+	}
+	if in.TargetNowPrice <= 0 && in.TargetPeriodPrice <= 0 {
+		details = append(details, "target price unavailable")
+	}
+	if in.PurchaseUnits <= 0 {
+		details = append(details, "executable quantity reduced to zero")
+	}
+	if len(details) > 6 {
+		return details[:6]
+	}
+	return details
+}
+
+func formatRegionalDiagNumber(v float64) string {
+	abs := math.Abs(v)
+	switch {
+	case abs >= 1_000_000_000:
+		return fmt.Sprintf("%.2fB", v/1_000_000_000)
+	case abs >= 1_000_000:
+		return fmt.Sprintf("%.2fM", v/1_000_000)
+	case abs >= 1_000:
+		return fmt.Sprintf("%.1fK", v/1_000)
+	default:
+		return fmt.Sprintf("%.2f", v)
+	}
 }
 
 // extractLastNAvgPrices returns the last n daily average prices from history entries,

@@ -4,6 +4,62 @@
 @tailwind components;
 @tailwind utilities;
 
+.eve-header-actions {
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.eve-header-actions::-webkit-scrollbar {
+  display: none;
+}
+
+.eve-header-actions > * {
+  flex: 0 0 auto;
+}
+
+.eve-header-action,
+.eve-header-auth,
+.eve-header-status {
+  white-space: nowrap;
+}
+
+.eve-header-auth,
+.eve-header-status {
+  max-width: min(360px, 28vw);
+  overflow: hidden;
+}
+
+@media (max-width: 1680px) {
+  .eve-header-action {
+    width: 34px;
+    justify-content: center;
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  .eve-header-action-label {
+    display: none;
+  }
+
+  .eve-header-auth {
+    max-width: 240px;
+  }
+
+  .eve-header-status {
+    max-width: 310px;
+  }
+}
+
+@media (max-width: 1280px) {
+  .eve-header-discord-cta {
+    display: none;
+  }
+
+  .eve-header-status {
+    max-width: 260px;
+  }
+}
+
 /* ===================================================================
    Theme system: palette × mode (dark/light)
    Color vars are RGB triplets so Tailwind opacity modifiers work:
@@ -319,6 +375,33 @@
   button, a, [role="tab"], input, select {
     touch-action: manipulation;
   }
+}
+
+/* Light mode safety pass for old warning/error utility combinations.
+   Some legacy panels use dark-theme yellow/red utilities directly; these
+   overrides keep alert boxes readable without rewriting every call site. */
+[data-mode="light"] :where(.bg-eve-warning\/5, .bg-eve-warning\/10, .bg-yellow-500\/10, .bg-yellow-900\/20, .bg-yellow-950\/20) {
+  background-color: rgb(255 248 224 / 0.92) !important;
+}
+
+[data-mode="light"] :where(.border-eve-warning\/30, .border-eve-warning\/35, .border-eve-warning\/40, .border-yellow-500\/30, .border-yellow-500\/40, .border-yellow-700\/50) {
+  border-color: rgb(176 112 0 / 0.55) !important;
+}
+
+[data-mode="light"] :where(.text-eve-warning, .text-yellow-200, .text-yellow-300, .text-yellow-400, .text-yellow-500) {
+  color: rgb(124 78 0) !important;
+}
+
+[data-mode="light"] :where(.bg-eve-error\/10, .bg-red-500\/10, .bg-red-900\/20, .bg-red-950\/30) {
+  background-color: rgb(255 235 235 / 0.94) !important;
+}
+
+[data-mode="light"] :where(.border-eve-error\/40, .border-eve-error\/50, .border-red-500\/30, .border-red-500\/40, .border-red-500\/50, .border-red-700, .border-red-700\/50) {
+  border-color: rgb(185 28 28 / 0.52) !important;
+}
+
+[data-mode="light"] :where(.text-eve-error, .text-red-300, .text-red-400, .text-red-500) {
+  color: rgb(154 20 20) !important;
 }
 
 /* ===================================================================
@@ -721,6 +804,28 @@
   .ai-ivy-mascot-grid {
     animation: none;
   }
+}
+
+.cockpit-density-compact {
+  gap: 0.5rem;
+}
+
+.cockpit-density-compact .eve-tab-workspace {
+  padding: 0.375rem;
+}
+
+.cockpit-density-dense {
+  gap: 0.25rem;
+}
+
+.cockpit-density-dense .eve-tab-workspace {
+  padding: 0.25rem;
+}
+
+.cockpit-density-dense input,
+.cockpit-density-dense select,
+.cockpit-density-dense button {
+  font-size: 0.75rem;
 }
 
 /* ===================================================================
