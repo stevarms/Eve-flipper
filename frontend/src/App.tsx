@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Search } from "lucide-react";
+import { ClipboardList, Search } from "lucide-react";
 import { useKeyboardShortcuts } from "./lib/useKeyboardShortcuts";
 import { StatusBar } from "./components/StatusBar";
 import { ParametersPanel } from "./components/ParametersPanel";
@@ -1722,6 +1722,20 @@ function App() {
                 <span className="eve-header-action-label">Ledger</span>
               </button>
             )}
+            {showQuickAction("journal") && (
+              <button
+                onClick={() => {
+                  trackCockpitActivity("command:journalTrade");
+                  setShowPaperTradeJournal(true);
+                }}
+                className="eve-header-action flex items-center gap-1.5 h-[34px] px-3 bg-eve-panel border border-eve-border rounded-sm text-xs text-eve-dim hover:text-eve-accent hover:border-eve-accent/50 transition-colors"
+                title="Paper Trade Journal"
+                aria-label="Paper Trade Journal"
+              >
+                <ClipboardList className="h-3.5 w-3.5" aria-hidden="true" />
+                <span className="eve-header-action-label">Journal</span>
+              </button>
+            )}
             {showQuickAction("dotlan") && (
               <button
                 onClick={() => {
@@ -2640,6 +2654,7 @@ function App() {
           taxProfile={params}
           onTaxProfileChange={(profile) => setParams((prev) => ({ ...prev, ...profile }))}
           initialTab={characterInitialTab}
+          onOpenPaperTradeJournal={() => setShowPaperTradeJournal(true)}
         />
       )}
 
@@ -2684,7 +2699,7 @@ function App() {
           trackCockpitActivity("command:dotlan");
           void openExternalURL("https://evemaps.dotlan.net/route");
         }}
-        onCreateJournalTrade={() => {
+        onOpenPaperTradeJournal={() => {
           trackCockpitActivity("command:journalTrade");
           setShowPaperTradeJournal(true);
         }}

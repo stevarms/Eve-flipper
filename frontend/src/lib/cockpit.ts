@@ -27,6 +27,7 @@ export type CockpitQuickAction =
   | "itemIntel"
   | "missionControl"
   | "ledger"
+  | "journal"
   | "dotlan"
   | "commandPalette"
   | "shortcuts";
@@ -265,6 +266,7 @@ export const COCKPIT_QUICK_ACTIONS: CockpitQuickAction[] = [
   "itemIntel",
   "missionControl",
   "ledger",
+  "journal",
   "dotlan",
   "commandPalette",
   "shortcuts",
@@ -326,7 +328,7 @@ export const defaultCockpitPreferences: CockpitPreferences = {
   roleBindings: {},
   mainTabOrder: [...MAIN_TAB_IDS],
   hiddenMainTabs: [],
-  quickActions: ["watchlist", "history", "itemIntel"],
+  quickActions: ["watchlist", "history", "itemIntel", "journal"],
   tabLayouts: defaultTabLayouts(),
   hiddenPanels: {
     advancedFilters: false,
@@ -371,7 +373,7 @@ export const COCKPIT_PROFILE_PRESETS: CockpitProfilePreset[] = [
         startupTab: "station",
         mainTabOrder: ["station", "radius", "region", "route", "contracts", "industry", "demand"],
         hiddenMainTabs: ["demand"],
-        quickActions: ["watchlist", "history", "itemIntel", "missionControl", "ledger", "commandPalette"],
+        quickActions: ["watchlist", "history", "itemIntel", "missionControl", "ledger", "journal", "commandPalette"],
       },
       {
         station: { density: "dense", columnPreset: "trader", filterPreset: "jita" },
@@ -397,7 +399,7 @@ export const COCKPIT_PROFILE_PRESETS: CockpitProfilePreset[] = [
         startupTab: "region",
         mainTabOrder: ["region", "route", "radius", "station", "contracts", "industry", "demand"],
         hiddenMainTabs: ["demand"],
-        quickActions: ["watchlist", "history", "itemIntel", "missionControl", "ledger", "dotlan", "commandPalette"],
+        quickActions: ["watchlist", "history", "itemIntel", "missionControl", "ledger", "journal", "dotlan", "commandPalette"],
       },
       {
         region: { density: "dense", columnPreset: "hauling", filterPreset: "hauling" },
@@ -425,7 +427,7 @@ export const COCKPIT_PROFILE_PRESETS: CockpitProfilePreset[] = [
         startupTab: "industry",
         mainTabOrder: ["industry", "station", "radius", "region", "route", "contracts", "demand"],
         hiddenMainTabs: [],
-        quickActions: ["history", "itemIntel", "missionControl", "ledger", "commandPalette"],
+        quickActions: ["history", "itemIntel", "missionControl", "ledger", "journal", "commandPalette"],
       },
       {
         industry: { density: "compact", columnPreset: "trader", filterPreset: "industry" },
@@ -451,7 +453,7 @@ export const COCKPIT_PROFILE_PRESETS: CockpitProfilePreset[] = [
         startupTab: "last",
         mainTabOrder: ["station", "radius", "region", "contracts", "industry", "route", "demand"],
         hiddenMainTabs: ["demand"],
-        quickActions: ["history", "itemIntel", "ledger", "commandPalette"],
+        quickActions: ["history", "itemIntel", "ledger", "journal", "commandPalette"],
       },
       {
         station: { density: "comfortable", columnPreset: "accounting", filterPreset: "manual" },
@@ -476,7 +478,7 @@ export const COCKPIT_PROFILE_PRESETS: CockpitProfilePreset[] = [
         startupTab: "radius",
         mainTabOrder: ["radius", "station", "region", "route", "contracts", "industry", "demand"],
         hiddenMainTabs: ["contracts", "industry", "demand"],
-        quickActions: ["watchlist", "history", "itemIntel", "ledger", "shortcuts"],
+        quickActions: ["watchlist", "history", "itemIntel", "journal", "ledger", "shortcuts"],
       },
       {
         radius: { density: "comfortable", columnPreset: "compact", filterPreset: "low_capital" },
@@ -502,7 +504,7 @@ export const COCKPIT_PROFILE_PRESETS: CockpitProfilePreset[] = [
         startupTab: "last",
         mainTabOrder: ["radius", "region", "station", "route", "industry", "contracts", "demand"],
         hiddenMainTabs: [],
-        quickActions: ["watchlist", "history", "itemIntel", "missionControl", "ledger", "dotlan", "commandPalette", "shortcuts"],
+        quickActions: ["watchlist", "history", "itemIntel", "missionControl", "ledger", "journal", "dotlan", "commandPalette", "shortcuts"],
       },
       {
         radius: { density: "dense", columnPreset: "trader", filterPreset: "manual" },

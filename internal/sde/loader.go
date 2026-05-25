@@ -3,19 +3,29 @@ package sde
 import (
 	"archive/zip"
 	"bufio"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"eve-flipper/internal/graph"
 	"eve-flipper/internal/logger"
 )
 
 const sdeURL = "https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip"
+
+const (
+	sdeDownloadAttempts        = 3
+	sdeDownloadTimeout         = 5 * time.Minute
+	sdeDownloadTLSHandshake    = 60 * time.Second
+	sdeDownloadResponseTimeout = 2 * time.Minute
+)
 
 // Data holds all parsed SDE data.
 type Data struct {
@@ -76,7 +86,7 @@ func Load(dataDir string) (*Data, error) {
 	extractDir := filepath.Join(dataDir, "sde")
 
 	if _, err := os.Stat(extractDir); os.IsNotExist(err) {
-		logger.Info("SDE", "Downloading data...")
+		logger.Info("SDE", "Downloading data... first launch can take a few minutes")
 		if err := downloadFile(zipPath, sdeURL); err != nil {
 			return nil, fmt.Errorf("download SDE: %w", err)
 		}
@@ -322,10 +332,32 @@ func (d *Data) loadStargates(dir string) error {
 
 // readJSONL finds and reads a .jsonl file by base name from the extracted SDE directory.
 func readJSONL(dir, baseName string, fn func(json.RawMessage) error) error {
-	// Search for the file recursively
+	filePath, err := findJSONLPath(dir, baseName)
+	if err != nil {
+		return err
+	}
+	if filePath == "" {
+		logger.Warn("SDE", fmt.Sprintf("File %s.jsonl not found, skipping", baseName))
+		return nil
+	}
+	return readJSONLFile(filePath, fn)
+}
+
+func readOptionalJSONL(dir, baseName string, fn func(json.RawMessage) error) (bool, error) {
+	filePath, err := findJSONLPath(dir, baseName)
+	if err != nil {
+		return false, err
+	}
+	if filePath == "" {
+		return false, nil
+	}
+	return true, readJSONLFile(filePath, fn)
+}
+
+func findJSONLPath(dir, baseName string) (string, error) {
 	var filePath string
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
+		if err != nil || info == nil {
 			return nil
 		}
 		name := strings.TrimSuffix(info.Name(), ".jsonl")
@@ -336,13 +368,12 @@ func readJSONL(dir, baseName string, fn func(json.RawMessage) error) error {
 		return nil
 	})
 	if err != nil && err != filepath.SkipAll {
-		return err
+		return "", err
 	}
-	if filePath == "" {
-		logger.Warn("SDE", fmt.Sprintf("File %s.jsonl not found, skipping", baseName))
-		return nil
-	}
+	return filePath, nil
+}
 
+func readJSONLFile(filePath string, fn func(json.RawMessage) error) error {
 	f, err := os.Open(filePath)
 	if err != nil {
 		return err
@@ -365,21 +396,80 @@ func readJSONL(dir, baseName string, fn func(json.RawMessage) error) error {
 
 func downloadFile(dst, url string) error {
 	os.MkdirAll(filepath.Dir(dst), 0755)
-	resp, err := http.Get(url)
+
+	client := &http.Client{
+		Timeout: sdeDownloadTimeout,
+		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   45 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
+			TLSHandshakeTimeout:   sdeDownloadTLSHandshake,
+			ResponseHeaderTimeout: sdeDownloadResponseTimeout,
+			ExpectContinueTimeout: 10 * time.Second,
+			IdleConnTimeout:       90 * time.Second,
+		},
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= sdeDownloadAttempts; attempt++ {
+		if attempt > 1 {
+			delay := time.Duration(attempt*attempt) * time.Second
+			logger.Warn("SDE", fmt.Sprintf("Retrying SDE download in %s (attempt %d/%d)", delay, attempt, sdeDownloadAttempts))
+			time.Sleep(delay)
+		}
+		if err := downloadFileOnce(client, dst, url); err != nil {
+			lastErr = err
+			logger.Warn("SDE", fmt.Sprintf("SDE download attempt %d/%d failed: %v", attempt, sdeDownloadAttempts, err))
+			continue
+		}
+		return nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("unknown download error")
+	}
+	return fmt.Errorf("%w; retry later or download the SDE manually into %s", lastErr, dst)
+}
+
+func downloadFileOnce(client *http.Client, dst, url string) error {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "eve-flipper/1.0 (github.com)")
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	f, err := os.Create(dst)
+
+	tmp := dst + ".tmp"
+	_ = os.Remove(tmp)
+	f, err := os.Create(tmp)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	_, err = io.Copy(f, resp.Body)
-	return err
+	_, copyErr := io.Copy(f, resp.Body)
+	closeErr := f.Close()
+	if copyErr != nil {
+		_ = os.Remove(tmp)
+		return copyErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(tmp)
+		return closeErr
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func extractZip(src, dst string) error {

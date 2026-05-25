@@ -334,6 +334,7 @@ const quickActionLabels: Record<CockpitQuickAction, { label: string; description
   itemIntel: { label: "Item Intel", description: "Open personal item intelligence." },
   missionControl: { label: "Mission Control", description: "Jump to execution planning workflow; rows still open their own trade plan." },
   ledger: { label: "Ledger", description: "Open the character ledger / cashflow dashboard." },
+  journal: { label: "Trade Journal", description: "Open saved Mission Control plans and paper/live trade tracking." },
   dotlan: { label: "DOTLAN", description: "Open DOTLAN route tools from the top bar." },
   commandPalette: { label: "Command palette", description: "Expose Ctrl+K as a visible action." },
   shortcuts: { label: "Shortcuts", description: "Open keyboard shortcut reference." },

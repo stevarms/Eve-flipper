@@ -28,9 +28,10 @@ interface WalletDashboardTabProps {
   characterScope: CharacterScope;
   formatIsk: (v: number) => string;
   t: (key: TranslationKey, params?: Record<string, string | number>) => string;
+  onOpenPaperTradeJournal?: () => void;
 }
 
-export function WalletDashboardTab({ characterScope, formatIsk, t }: WalletDashboardTabProps) {
+export function WalletDashboardTab({ characterScope, formatIsk, t, onOpenPaperTradeJournal }: WalletDashboardTabProps) {
   const [windowDays, setWindowDays] = useState<LedgerWindow>(90);
   const [period, setPeriod] = useState<LedgerPeriod>("daily");
   const [chartMode, setChartMode] = useState<LedgerChartMode>("capital");
@@ -132,6 +133,16 @@ export function WalletDashboardTab({ characterScope, formatIsk, t }: WalletDashb
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {onOpenPaperTradeJournal && (
+            <button
+              type="button"
+              onClick={onOpenPaperTradeJournal}
+              className="h-7 px-3 border border-eve-accent/60 bg-eve-accent/10 text-eve-accent hover:bg-eve-accent hover:text-black transition-colors text-[10px] uppercase tracking-wider font-semibold"
+              title="Open saved Mission Control trades"
+            >
+              Paper Trade Journal
+            </button>
+          )}
           <Segmented
             values={[30, 90, 180, 365] as const}
             active={windowDays}

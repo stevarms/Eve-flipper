@@ -21,7 +21,7 @@ interface Props {
   onOpenLedger?: () => void;
   onOpenItemIntel?: () => void;
   onOpenDotlan?: () => void;
-  onCreateJournalTrade?: () => void;
+  onOpenPaperTradeJournal?: () => void;
   onStartScan: () => void;
 }
 
@@ -36,7 +36,7 @@ export function CommandPalette({
   onOpenLedger,
   onOpenItemIntel,
   onOpenDotlan,
-  onCreateJournalTrade,
+  onOpenPaperTradeJournal,
   onStartScan,
 }: Props) {
   const { t } = useI18n();
@@ -60,7 +60,7 @@ export function CommandPalette({
     { id: "ledger",        label: "Open Ledger",             action: () => { (onOpenLedger ?? onOpenCharacter)(); onClose(); } },
     ...(onOpenItemIntel ? [{ id: "item-intel", label: "Open Item Intel", action: () => { onOpenItemIntel(); onClose(); } }] : []),
     ...(onOpenDotlan ? [{ id: "dotlan", label: "Open DOTLAN", action: () => { onOpenDotlan(); onClose(); } }] : []),
-    ...(onCreateJournalTrade ? [{ id: "journal-trade", label: "Create journal trade", action: () => { onCreateJournalTrade(); onClose(); } }] : []),
+    ...(onOpenPaperTradeJournal ? [{ id: "journal-trade", label: "Open Paper Trade Journal", action: () => { onOpenPaperTradeJournal(); onClose(); } }] : []),
     { id: "scan",          label: t("cmdStartScan"),         shortcut: "Ctrl+S", action: () => { onStartScan();   onClose(); } },
   ];
 

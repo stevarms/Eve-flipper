@@ -717,6 +717,11 @@ export function PaperTradeJournalPopup({ open, onClose }: Props) {
           </button>
         </div>
 
+        <div className="border border-eve-accent/35 bg-eve-accent/10 px-3 py-2 text-[11px] text-eve-dim">
+          <span className="font-semibold text-eve-accent">Mission Control trades land here.</span>{" "}
+          Use this journal to track planned deals through bought, hauled, listed, sold and reconciled states. Live sync checks ESI transactions, active orders and assets; it never places market orders.
+        </div>
+
         {newTradeOpen && (
           <div className="border border-eve-border rounded-sm bg-eve-dark/50 p-3 space-y-3">
             {liveDrafts.length > 0 && (
@@ -936,7 +941,10 @@ export function PaperTradeJournalPopup({ open, onClose }: Props) {
               {!loading && trades.length === 0 && (
                 <tr>
                   <td colSpan={11} className="px-3 py-12 text-center text-eve-dim">
-                    No paper trades for this filter.
+                    <div className="text-eve-text">No saved trades for this filter.</div>
+                    <div className="mt-1 text-[11px]">
+                      Create one from Mission Control with Create Journal Trade, or use New trade / Live drafts here.
+                    </div>
                   </td>
                 </tr>
               )}

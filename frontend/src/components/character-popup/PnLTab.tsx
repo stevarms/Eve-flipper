@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { getPortfolioPnL, type CharacterScope } from "../../lib/api";
 import { type TranslationKey } from "../../lib/i18n";
-import type { ItemPnL, PortfolioPnL, StationPnL } from "../../lib/types";
+import type { ItemPnL, PortfolioPnL, PortfolioSlotEfficiency, StationPnL } from "../../lib/types";
 import { StatCard } from "./shared";
 type PnLPeriod = 7 | 30 | 90 | 180;
 
@@ -20,7 +20,7 @@ export function PnLTab({ formatIsk, characterScope, t }: PnLTabProps) {
   const [brokerFee, setBrokerFee] = useState(1);
   const [chartMode, setChartMode] = useState<"daily" | "cumulative" | "drawdown">("daily");
   const [itemView, setItemView] = useState<"profit" | "loss">("profit");
-  const [bottomView, setBottomView] = useState<"items" | "stations">("items");
+  const [bottomView, setBottomView] = useState<"slots" | "items" | "stations">("slots");
 
   useEffect(() => {
     setLoading(true);
@@ -44,7 +44,7 @@ export function PnLTab({ formatIsk, characterScope, t }: PnLTabProps) {
     return <div className="flex items-center justify-center h-full text-eve-error text-xs">{error}</div>;
   }
 
-  if (!data || data.daily_pnl.length === 0) {
+  if (!data || (data.daily_pnl.length === 0 && (data.slot_efficiency?.length ?? 0) === 0 && (data.open_positions?.length ?? 0) === 0)) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-eve-dim text-xs space-y-2">
         <div>{t("pnlNoData")}</div>
@@ -54,6 +54,9 @@ export function PnLTab({ formatIsk, characterScope, t }: PnLTabProps) {
   }
 
   const { summary } = data;
+  const slotRows = data.slot_efficiency ?? [];
+  const activeSlotCount = slotRows.reduce((sum, row) => sum + (row.active_orders ?? 0), 0);
+  const bestSlot = slotRows[0];
 
   // Separate top items into profit and loss
   const profitItems = data.top_items.filter((item) => item.net_pnl > 0).sort((a, b) => b.net_pnl - a.net_pnl);
@@ -211,6 +214,33 @@ export function PnLTab({ formatIsk, characterScope, t }: PnLTabProps) {
         />
       </div>
 
+      {/* Slot efficiency summary */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <StatCard
+          label="Active order slots"
+          value={activeSlotCount.toLocaleString()}
+          subvalue="Current market order slots used"
+          color={activeSlotCount > 0 ? "text-eve-accent" : "text-eve-dim"}
+        />
+        <StatCard
+          label="Best ISK / slot"
+          value={bestSlot ? `${bestSlot.isk_per_slot >= 0 ? "+" : ""}${formatIsk(bestSlot.isk_per_slot)} ISK` : "--"}
+          subvalue={bestSlot?.type_name || "No reviewed positions"}
+          color={(bestSlot?.isk_per_slot ?? 0) >= 0 ? "text-eve-profit" : "text-eve-error"}
+        />
+        <StatCard
+          label="Capital / slot"
+          value={bestSlot ? `${formatIsk(bestSlot.capital_per_slot ?? 0)} ISK` : "--"}
+          subvalue={bestSlot?.slot_source || "Active orders + inventory"}
+        />
+        <StatCard
+          label="Slot score"
+          value={bestSlot ? `${(bestSlot.slot_efficiency_score ?? 0).toFixed(0)}/100` : "--"}
+          subvalue={bestSlot?.review || "Review order-slot efficiency"}
+          color={(bestSlot?.slot_efficiency_score ?? 0) >= 70 ? "text-eve-profit" : (bestSlot?.slot_efficiency_score ?? 0) >= 45 ? "text-eve-accent" : "text-eve-error"}
+        />
+      </div>
+
       {/* Daily P&L Chart */}
       <div className="bg-eve-panel border border-eve-border rounded-sm p-3">
         <div className="flex items-center justify-between mb-3">
@@ -258,6 +288,16 @@ export function PnLTab({ formatIsk, characterScope, t }: PnLTabProps) {
         <div className="flex items-center justify-between mb-3">
           <div className="flex gap-2">
             <button
+              onClick={() => setBottomView("slots")}
+              className={`px-2 py-0.5 text-[10px] rounded-sm border transition-colors ${
+                bottomView === "slots"
+                  ? "bg-eve-accent/20 border-eve-accent text-eve-accent"
+                  : "bg-eve-dark border-eve-border text-eve-dim hover:text-eve-text"
+              }`}
+            >
+              Slot Efficiency ({slotRows.length})
+            </button>
+            <button
               onClick={() => setBottomView("items")}
               className={`px-2 py-0.5 text-[10px] rounded-sm border transition-colors ${
                 bottomView === "items"
@@ -303,7 +343,9 @@ export function PnLTab({ formatIsk, characterScope, t }: PnLTabProps) {
             </div>
           )}
         </div>
-        {bottomView === "items" ? (
+        {bottomView === "slots" ? (
+          <SlotEfficiencyTable rows={slotRows} formatIsk={formatIsk} />
+        ) : bottomView === "items" ? (
           <PnLItemsTable
             items={itemView === "profit" ? profitItems : lossItems}
             formatIsk={formatIsk}
@@ -546,6 +588,116 @@ function PnLChart({
 }
 
 // --- P&L Items Table ---
+
+function SlotEfficiencyTable({
+  rows,
+  formatIsk,
+}: {
+  rows: PortfolioSlotEfficiency[];
+  formatIsk: (v: number) => string;
+}) {
+  if (!rows || rows.length === 0) {
+    return (
+      <div className="text-center text-eve-dim text-xs py-4">
+        No slot efficiency data yet. Sync active orders and wallet transactions to review ISK per market slot.
+      </div>
+    );
+  }
+
+  const maxAbs = Math.max(...rows.map((row) => Math.abs(row.isk_per_slot ?? 0)), 1);
+
+  return (
+    <div className="border border-eve-border rounded-sm overflow-x-auto">
+      <table className="w-full min-w-[980px] text-xs">
+        <thead className="bg-eve-panel">
+          <tr className="text-eve-dim">
+            <th className="px-3 py-2 text-left">Item</th>
+            <th className="px-3 py-2 text-right">ISK / slot</th>
+            <th className="px-3 py-2 text-right">Score</th>
+            <th className="px-3 py-2 text-right">Slots</th>
+            <th className="px-3 py-2 text-right">Realized</th>
+            <th className="px-3 py-2 text-right">Turnover / slot</th>
+            <th className="px-3 py-2 text-right">Capital / slot</th>
+            <th className="px-3 py-2 text-right">Avg entry</th>
+            <th className="px-3 py-2 text-right">Avg exit</th>
+            <th className="px-3 py-2 text-right">Win</th>
+            <th className="px-3 py-2 text-right">Hold</th>
+            <th className="px-3 py-2 text-left">Review</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0, 30).map((row) => {
+            const isProfit = (row.isk_per_slot ?? 0) >= 0;
+            const barPct = Math.max(4, Math.min(100, Math.abs(row.isk_per_slot ?? 0) / maxAbs * 100));
+            return (
+              <tr key={`${row.type_id}-${row.slot_source}`} className="border-t border-eve-border/50 hover:bg-eve-panel/50">
+                <td className="px-3 py-2 text-eve-text">
+                  <div className="flex items-center gap-2">
+                    <img
+                      src={`https://images.evetech.net/types/${row.type_id}/icon?size=32`}
+                      alt=""
+                      className="w-5 h-5"
+                    />
+                    <div className="min-w-0">
+                      <div className="truncate max-w-[220px]" title={row.type_name}>
+                        {row.type_name || `Type #${row.type_id}`}
+                      </div>
+                      <div className="text-[10px] text-eve-dim">
+                        {row.active_buy_orders} buy / {row.active_sell_orders} sell, {row.slot_source}
+                      </div>
+                    </div>
+                  </div>
+                </td>
+                <td className="px-3 py-2 text-right">
+                  <div className="flex items-center justify-end gap-2">
+                    <div className="w-16 h-1.5 bg-eve-dark rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full ${isProfit ? "bg-emerald-500" : "bg-red-500"}`}
+                        style={{ width: `${barPct}%` }}
+                      />
+                    </div>
+                    <span className={isProfit ? "text-eve-profit" : "text-eve-error"}>
+                      {isProfit ? "+" : ""}{formatIsk(row.isk_per_slot ?? 0)}
+                    </span>
+                  </div>
+                </td>
+                <td className={`px-3 py-2 text-right ${(row.slot_efficiency_score ?? 0) >= 70 ? "text-eve-profit" : (row.slot_efficiency_score ?? 0) >= 45 ? "text-eve-accent" : "text-eve-error"}`}>
+                  {(row.slot_efficiency_score ?? 0).toFixed(0)}
+                </td>
+                <td className="px-3 py-2 text-right text-eve-dim">{row.order_slots}</td>
+                <td className={`px-3 py-2 text-right ${(row.realized_pnl ?? 0) >= 0 ? "text-eve-profit" : "text-eve-error"}`}>
+                  {(row.realized_pnl ?? 0) >= 0 ? "+" : ""}{formatIsk(row.realized_pnl ?? 0)}
+                </td>
+                <td className="px-3 py-2 text-right text-eve-dim">{formatIsk(row.turnover_per_slot ?? 0)}</td>
+                <td className="px-3 py-2 text-right text-eve-dim">{formatIsk(row.capital_per_slot ?? 0)}</td>
+                <td className="px-3 py-2 text-right text-eve-dim">{formatIsk(row.avg_entry_price ?? 0)}</td>
+                <td className="px-3 py-2 text-right text-eve-dim">{formatIsk(row.avg_exit_price ?? 0)}</td>
+                <td className="px-3 py-2 text-right text-eve-dim">{(row.win_rate_pct ?? 0).toFixed(0)}%</td>
+                <td className="px-3 py-2 text-right text-eve-dim">{(row.avg_holding_days ?? 0).toFixed(1)}d</td>
+                <td className="px-3 py-2 text-left">
+                  <span className={`inline-flex rounded-sm border px-2 py-0.5 text-[10px] uppercase tracking-wider ${
+                    (row.slot_efficiency_score ?? 0) >= 70
+                      ? "border-eve-profit/40 text-eve-profit bg-eve-profit/10"
+                      : (row.slot_efficiency_score ?? 0) >= 45
+                        ? "border-eve-accent/40 text-eve-accent bg-eve-accent/10"
+                        : "border-eve-error/40 text-eve-error bg-eve-error/10"
+                  }`}>
+                    {row.review}
+                  </span>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {rows.length > 30 && (
+        <div className="text-center text-eve-dim text-xs py-2 bg-eve-panel">
+          +{rows.length - 30} more reviewed positions
+        </div>
+      )}
+    </div>
+  );
+}
 
 function PnLItemsTable({
   items,

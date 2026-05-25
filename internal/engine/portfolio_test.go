@@ -92,6 +92,35 @@ func TestComputePortfolioPnL_SingleDay(t *testing.T) {
 	}
 }
 
+func TestComputePortfolioSlotEfficiency_ActiveOrderSlots(t *testing.T) {
+	txns := []esi.WalletTransaction{
+		txn(-2, 34, "Tritanium", 60003760, "Jita", true, 100, 10),
+		txn(-1, 34, "Tritanium", 60003760, "Jita", false, 150, 10),
+	}
+	pnl := ComputePortfolioPnLWithOptions(txns, PortfolioPnLOptions{
+		LookbackDays:     30,
+		BrokerFeePercent: 0,
+		SalesTaxPercent:  0,
+	})
+	rows := ComputePortfolioSlotEfficiency(pnl, []esi.CharacterOrder{
+		{OrderID: 1, TypeID: 34, TypeName: "Tritanium", Price: 90, VolumeRemain: 100, IsBuyOrder: true},
+		{OrderID: 2, TypeID: 34, TypeName: "Tritanium", Price: 160, VolumeRemain: 100, IsBuyOrder: false},
+	})
+	if len(rows) != 1 {
+		t.Fatalf("slot rows len = %d, want 1", len(rows))
+	}
+	row := rows[0]
+	if row.OrderSlots != 2 || row.ActiveBuyOrders != 1 || row.ActiveSellOrders != 1 {
+		t.Fatalf("slot/order counts = slots %d buy %d sell %d, want 2/1/1", row.OrderSlots, row.ActiveBuyOrders, row.ActiveSellOrders)
+	}
+	if math.Abs(row.PnLPerSlot-250) > 1e-6 {
+		t.Fatalf("PnLPerSlot = %.2f, want 250", row.PnLPerSlot)
+	}
+	if row.SlotSource != "active orders" {
+		t.Fatalf("SlotSource = %q, want active orders", row.SlotSource)
+	}
+}
+
 func TestComputePortfolioPnL_SharpeRatio(t *testing.T) {
 	// Create 5 days of transactions with known daily PnL:
 	// Day 1: sell 1500, buy 1000 => +500

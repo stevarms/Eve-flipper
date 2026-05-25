@@ -120,12 +120,15 @@ func (ind *IndustryData) loadBlueprints(dir string) error {
 
 	for _, name := range fileNames {
 		count := 0
-		err := readJSONL(dir, name, func(raw json.RawMessage) error {
+		found, err := readOptionalJSONL(dir, name, func(raw json.RawMessage) error {
 			count++
 			return ind.parseBlueprintLine(raw)
 		})
 		if err != nil {
 			return err
+		}
+		if !found {
+			continue
 		}
 		if count > 0 {
 			logger.Info("SDE", fmt.Sprintf("Loaded %d blueprints from %s.jsonl", count, name))

@@ -85,6 +85,21 @@ func NewClient(store StationStore) *Client {
 	return c
 }
 
+func (c *Client) ensureLightweightHTTP() error {
+	if c == nil {
+		return fmt.Errorf("esi client is nil")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.sem == nil {
+		c.sem = make(chan struct{}, 50)
+	}
+	if c.http == nil {
+		c.http = &http.Client{Timeout: 30 * time.Second}
+	}
+	return nil
+}
+
 // SetMarketOrderRecorder configures persistence for live market order snapshots.
 func (c *Client) SetMarketOrderRecorder(recorder MarketOrderRecorder) {
 	if c == nil {

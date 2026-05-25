@@ -2179,6 +2179,37 @@ export interface ItemPnL {
   transactions: number;
 }
 
+export interface PortfolioSlotEfficiency {
+  type_id: number;
+  type_name: string;
+  order_slots: number;
+  active_orders: number;
+  active_buy_orders: number;
+  active_sell_orders: number;
+  slot_source: string;
+  realized_pnl: number;
+  unrealized_pnl: number;
+  total_pnl: number;
+  turnover_isk: number;
+  capital_tied_isk: number;
+  open_cost_basis_isk: number;
+  active_order_value_isk: number;
+  buy_order_value_isk: number;
+  sell_order_value_isk: number;
+  isk_per_slot: number;
+  pnl_per_slot: number;
+  turnover_per_slot: number;
+  capital_per_slot: number;
+  avg_entry_price: number;
+  avg_exit_price: number;
+  fees_taxes_isk: number;
+  trades: number;
+  win_rate_pct: number;
+  avg_holding_days: number;
+  slot_efficiency_score: number;
+  review: string;
+}
+
 export interface RealizedTrade {
   type_id: number;
   type_name: string;
@@ -2243,6 +2274,7 @@ export interface PortfolioPnL {
   top_stations: StationPnL[];
   ledger: RealizedTrade[];
   open_positions: OpenPosition[];
+  slot_efficiency: PortfolioSlotEfficiency[];
   coverage: MatchingCoverage;
   settings: PortfolioSettings;
 }

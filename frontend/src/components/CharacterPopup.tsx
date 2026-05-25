@@ -36,6 +36,7 @@ interface CharacterPopupProps {
   taxProfile: Partial<ScanParams>;
   onTaxProfileChange: (profile: TaxProfile) => void;
   initialTab?: CharTab;
+  onOpenPaperTradeJournal?: () => void;
 }
 
 type CharTab = "overview" | "orders" | "transactions" | "ledger" | "industry" | "pi" | "pnl" | "risk" | "optimizer" | "achievements" | "plex";
@@ -53,6 +54,7 @@ export function CharacterPopup({
   taxProfile,
   onTaxProfileChange,
   initialTab,
+  onOpenPaperTradeJournal,
 }: CharacterPopupProps) {
   const { t } = useI18n();
   const { pendingCount: achievementPendingCount, trackAchievementEvent, unlockedCount: achievementUnlockedCount } = useAchievements();
@@ -409,6 +411,7 @@ export function CharacterPopup({
                   characterScope={selectedScope}
                   formatIsk={formatIsk}
                   t={t}
+                  onOpenPaperTradeJournal={onOpenPaperTradeJournal}
                 />
               )}
               {tab === "industry" && (

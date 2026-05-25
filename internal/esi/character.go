@@ -156,6 +156,9 @@ type CharacterLocation struct {
 // transport (connection pooling, keep-alive). Uses the lightweight semaphore so that
 // character API calls never compete with bulk scan page fetches.
 func (c *Client) AuthGetJSON(url, accessToken string, dst interface{}) error {
+	if err := c.ensureLightweightHTTP(); err != nil {
+		return err
+	}
 	c.sem <- struct{}{} // acquire lightweight semaphore
 
 	req, err := http.NewRequest("GET", url, nil)

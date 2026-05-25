@@ -11,14 +11,15 @@ import (
 // PortfolioPnL is the full P&L analytics response for the character popup.
 // It now includes a realized FIFO ledger and open inventory positions.
 type PortfolioPnL struct {
-	DailyPnL      []DailyPnLEntry   `json:"daily_pnl"`
-	Summary       PortfolioPnLStats `json:"summary"`
-	TopItems      []ItemPnL         `json:"top_items"`
-	TopStations   []StationPnL      `json:"top_stations"`
-	Ledger        []RealizedTrade   `json:"ledger"`
-	OpenPositions []OpenPosition    `json:"open_positions"`
-	Coverage      MatchingCoverage  `json:"coverage"`
-	Settings      PortfolioSettings `json:"settings"`
+	DailyPnL       []DailyPnLEntry           `json:"daily_pnl"`
+	Summary        PortfolioPnLStats         `json:"summary"`
+	TopItems       []ItemPnL                 `json:"top_items"`
+	TopStations    []StationPnL              `json:"top_stations"`
+	Ledger         []RealizedTrade           `json:"ledger"`
+	OpenPositions  []OpenPosition            `json:"open_positions"`
+	SlotEfficiency []PortfolioSlotEfficiency `json:"slot_efficiency"`
+	Coverage       MatchingCoverage          `json:"coverage"`
+	Settings       PortfolioSettings         `json:"settings"`
 }
 
 // PortfolioPnLOptions controls realized P&L matching behavior.
@@ -163,6 +164,39 @@ type ItemPnL struct {
 	Transactions  int     `json:"transactions"`
 }
 
+// PortfolioSlotEfficiency reviews whether each traded item is worth the market
+// order slots and capital it consumes.
+type PortfolioSlotEfficiency struct {
+	TypeID              int32   `json:"type_id"`
+	TypeName            string  `json:"type_name"`
+	OrderSlots          int     `json:"order_slots"`
+	ActiveOrders        int     `json:"active_orders"`
+	ActiveBuyOrders     int     `json:"active_buy_orders"`
+	ActiveSellOrders    int     `json:"active_sell_orders"`
+	SlotSource          string  `json:"slot_source"`
+	RealizedPnL         float64 `json:"realized_pnl"`
+	UnrealizedPnL       float64 `json:"unrealized_pnl"`
+	TotalPnL            float64 `json:"total_pnl"`
+	TurnoverISK         float64 `json:"turnover_isk"`
+	CapitalTiedISK      float64 `json:"capital_tied_isk"`
+	OpenCostBasisISK    float64 `json:"open_cost_basis_isk"`
+	ActiveOrderValueISK float64 `json:"active_order_value_isk"`
+	BuyOrderValueISK    float64 `json:"buy_order_value_isk"`
+	SellOrderValueISK   float64 `json:"sell_order_value_isk"`
+	ISKPerSlot          float64 `json:"isk_per_slot"`
+	PnLPerSlot          float64 `json:"pnl_per_slot"`
+	TurnoverPerSlot     float64 `json:"turnover_per_slot"`
+	CapitalPerSlot      float64 `json:"capital_per_slot"`
+	AvgEntryPrice       float64 `json:"avg_entry_price"`
+	AvgExitPrice        float64 `json:"avg_exit_price"`
+	FeesTaxesISK        float64 `json:"fees_taxes_isk"`
+	Trades              int     `json:"trades"`
+	WinRatePct          float64 `json:"win_rate_pct"`
+	AvgHoldingDays      float64 `json:"avg_holding_days"`
+	SlotEfficiencyScore float64 `json:"slot_efficiency_score"`
+	Review              string  `json:"review"`
+}
+
 type portfolioTx struct {
 	tx esi.WalletTransaction
 	t  time.Time
@@ -224,11 +258,12 @@ func ComputePortfolioPnL(txns []esi.WalletTransaction, lookbackDays int) *Portfo
 func ComputePortfolioPnLWithOptions(txns []esi.WalletTransaction, opt PortfolioPnLOptions) *PortfolioPnL {
 	opt = normalizePortfolioOptions(opt)
 	out := &PortfolioPnL{
-		DailyPnL:      []DailyPnLEntry{},
-		TopItems:      []ItemPnL{},
-		TopStations:   []StationPnL{},
-		Ledger:        []RealizedTrade{},
-		OpenPositions: []OpenPosition{},
+		DailyPnL:       []DailyPnLEntry{},
+		TopItems:       []ItemPnL{},
+		TopStations:    []StationPnL{},
+		Ledger:         []RealizedTrade{},
+		OpenPositions:  []OpenPosition{},
+		SlotEfficiency: []PortfolioSlotEfficiency{},
 		Settings: PortfolioSettings{
 			LookbackDays:         opt.LookbackDays,
 			SalesTaxPercent:      opt.SalesTaxPercent,
@@ -786,7 +821,164 @@ func ComputePortfolioPnLWithOptions(txns []esi.WalletTransaction, opt PortfolioP
 	out.TopStations = stations
 	out.Ledger = ledger
 	out.OpenPositions = openPositions
+	out.SlotEfficiency = ComputePortfolioSlotEfficiency(out, nil)
 	return out
+}
+
+// ComputePortfolioSlotEfficiency builds per-item slot/capital review metrics.
+// Active orders provide the real slot count; historical items without active
+// orders use one proxy slot so older positions are still reviewable.
+func ComputePortfolioSlotEfficiency(pnl *PortfolioPnL, orders []esi.CharacterOrder) []PortfolioSlotEfficiency {
+	if pnl == nil {
+		return nil
+	}
+
+	type agg struct {
+		row          PortfolioSlotEfficiency
+		winTrades    int
+		holdingSum   float64
+		holdingCount int
+	}
+	rows := make(map[int32]*agg)
+	get := func(typeID int32, typeName string) *agg {
+		a := rows[typeID]
+		if a == nil {
+			a = &agg{row: PortfolioSlotEfficiency{TypeID: typeID, TypeName: typeName}}
+			rows[typeID] = a
+		}
+		if a.row.TypeName == "" && typeName != "" {
+			a.row.TypeName = typeName
+		}
+		return a
+	}
+
+	for _, item := range pnl.TopItems {
+		a := get(item.TypeID, item.TypeName)
+		a.row.RealizedPnL += item.NetPnL
+		a.row.TotalPnL += item.NetPnL
+		a.row.TurnoverISK += item.TotalBought + item.TotalSold
+		a.row.AvgEntryPrice = item.AvgBuyPrice
+		a.row.AvgExitPrice = item.AvgSellPrice
+		a.row.Trades += item.Transactions
+	}
+
+	for _, pos := range pnl.OpenPositions {
+		a := get(pos.TypeID, pos.TypeName)
+		a.row.OpenCostBasisISK += pos.CostBasis
+	}
+
+	for _, tr := range pnl.Ledger {
+		a := get(tr.TypeID, tr.TypeName)
+		a.row.FeesTaxesISK += tr.BuyFee + tr.SellBrokerFee + tr.SellTax
+		if tr.RealizedPnL > 0 {
+			a.winTrades++
+		}
+		if tr.HoldingDays > 0 {
+			a.holdingSum += float64(tr.HoldingDays)
+			a.holdingCount++
+		}
+	}
+
+	for _, o := range orders {
+		a := get(o.TypeID, o.TypeName)
+		a.row.ActiveOrders++
+		if o.IsBuyOrder {
+			a.row.ActiveBuyOrders++
+			a.row.BuyOrderValueISK += o.Price * float64(o.VolumeRemain)
+		} else {
+			a.row.ActiveSellOrders++
+			a.row.SellOrderValueISK += o.Price * float64(o.VolumeRemain)
+		}
+	}
+
+	out := make([]PortfolioSlotEfficiency, 0, len(rows))
+	for _, a := range rows {
+		r := a.row
+		r.ActiveOrderValueISK = r.BuyOrderValueISK + r.SellOrderValueISK
+		r.CapitalTiedISK = r.OpenCostBasisISK + r.BuyOrderValueISK
+		r.UnrealizedPnL = estimateOpenPositionPnL(r.OpenCostBasisISK, r.SellOrderValueISK)
+		r.TotalPnL = r.RealizedPnL + r.UnrealizedPnL
+		r.OrderSlots = r.ActiveOrders
+		r.SlotSource = "active orders"
+		if r.OrderSlots <= 0 && (r.TurnoverISK > 0 || r.OpenCostBasisISK > 0) {
+			r.OrderSlots = 1
+			r.SlotSource = "historical proxy"
+		}
+		if r.OrderSlots <= 0 {
+			continue
+		}
+		slots := float64(r.OrderSlots)
+		r.ISKPerSlot = r.TotalPnL / slots
+		r.PnLPerSlot = r.RealizedPnL / slots
+		r.TurnoverPerSlot = r.TurnoverISK / slots
+		r.CapitalPerSlot = r.CapitalTiedISK / slots
+		if r.Trades > 0 {
+			r.WinRatePct = float64(a.winTrades) / float64(r.Trades) * 100
+		}
+		if a.holdingCount > 0 {
+			r.AvgHoldingDays = a.holdingSum / float64(a.holdingCount)
+		}
+		r.SlotEfficiencyScore = scoreSlotEfficiency(r)
+		r.Review = reviewSlotEfficiency(r)
+		out = append(out, r)
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].SlotEfficiencyScore == out[j].SlotEfficiencyScore {
+			return out[i].ISKPerSlot > out[j].ISKPerSlot
+		}
+		return out[i].SlotEfficiencyScore > out[j].SlotEfficiencyScore
+	})
+	if len(out) > 80 {
+		out = out[:80]
+	}
+	return out
+}
+
+func estimateOpenPositionPnL(openCostBasis, sellOrderValue float64) float64 {
+	if openCostBasis <= 0 || sellOrderValue <= 0 {
+		return 0
+	}
+	return sellOrderValue - openCostBasis
+}
+
+func scoreSlotEfficiency(r PortfolioSlotEfficiency) float64 {
+	score := 50.0
+	if r.CapitalTiedISK > 0 {
+		score += clampSlotFloat(r.TotalPnL/r.CapitalTiedISK*100, -30, 35)
+	}
+	score += clampSlotFloat(r.WinRatePct-50, -20, 20) * 0.35
+	score += clampSlotFloat(r.TurnoverPerSlot/1_000_000_000*12, 0, 20)
+	if r.ISKPerSlot < 0 {
+		score += clampSlotFloat(r.ISKPerSlot/100_000_000*20, -35, 0)
+	}
+	if r.ActiveOrders > 0 && r.CapitalPerSlot <= 0 {
+		score -= 10
+	}
+	return clampSlotFloat(score, 0, 100)
+}
+
+func reviewSlotEfficiency(r PortfolioSlotEfficiency) string {
+	if r.ISKPerSlot < 0 || r.SlotEfficiencyScore < 35 {
+		return "weak slot"
+	}
+	if r.SlotEfficiencyScore >= 75 {
+		return "strong slot"
+	}
+	if r.SlotEfficiencyScore >= 55 {
+		return "keep watching"
+	}
+	return "low conviction"
+}
+
+func clampSlotFloat(v, minV, maxV float64) float64 {
+	if v < minV {
+		return minV
+	}
+	if v > maxV {
+		return maxV
+	}
+	return v
 }
 
 func minInt(a, b int) int {

@@ -10407,6 +10407,7 @@ func (s *Server) handleAuthPortfolio(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var txns []esi.WalletTransaction
+	var orders []esi.CharacterOrder
 	successfulFetches := 0
 	txnFetchErrors := make([]string, 0, len(selectedSessions))
 	for _, sess := range selectedSessions {
@@ -10418,6 +10419,19 @@ func (s *Server) handleAuthPortfolio(w http.ResponseWriter, r *http.Request) {
 		}
 		successfulFetches++
 		txns = append(txns, part...)
+	}
+	for _, sess := range selectedSessions {
+		token, tokenErr := s.sessions.EnsureValidTokenForUserCharacter(s.sso, userID, sess.CharacterID)
+		if tokenErr != nil {
+			log.Printf("[AUTH] Portfolio order token error (%s): %v", sess.CharacterName, tokenErr)
+			continue
+		}
+		part, orderErr := s.esi.GetCharacterOrders(sess.CharacterID, token)
+		if orderErr != nil {
+			log.Printf("[AUTH] Portfolio orders error (%s): %v", sess.CharacterName, orderErr)
+			continue
+		}
+		orders = append(orders, part...)
 	}
 	if s.db != nil {
 		if archivedTxns, archiveErr := s.db.ListArchivedWalletTransactions(userID, characterIDsForSessions(selectedSessions), time.Time{}, 100000); archiveErr == nil && len(archivedTxns) > len(txns) {
@@ -10447,6 +10461,18 @@ func (s *Server) handleAuthPortfolio(w http.ResponseWriter, r *http.Request) {
 		LedgerLimit:          ledgerLimit,
 		IncludeUnmatchedSell: false, // strict realized mode for API
 	})
+	s.mu.RLock()
+	sdeData := s.sdeData
+	s.mu.RUnlock()
+	if sdeData != nil {
+		for i := range orders {
+			if t, ok := sdeData.Types[orders[i].TypeID]; ok {
+				orders[i].TypeName = t.Name
+			}
+			orders[i].LocationName = s.esi.StationName(orders[i].LocationID)
+		}
+	}
+	result.SlotEfficiency = engine.ComputePortfolioSlotEfficiency(result, orders)
 	writeJSON(w, result)
 }
 
