@@ -53,6 +53,7 @@ import type {
   RouteResult,
   ScanParams,
   ScanRecord,
+  SecurityVaultStatus,
   SolarSystemInfo,
   StationAIChatRequest,
   StationAIChatResponse,
@@ -64,6 +65,7 @@ import type {
   StationTrade,
   StationTradeState,
   StationTradeStateMode,
+  TradingEdgeSummary,
   UndercutStatus,
   WatchlistItem,
   SystemDanger,
@@ -124,7 +126,9 @@ function getClientUserID(): string {
 
 function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const headers = new Headers(init?.headers ?? undefined);
-  headers.set(USER_ID_HEADER_NAME, getClientUserID());
+  if (isDesktopRuntime()) {
+    headers.set(USER_ID_HEADER_NAME, getClientUserID());
+  }
   return window.fetch(input, { credentials: "include", ...init, headers });
 }
 
@@ -705,6 +709,29 @@ export async function deletePaperTrade(
     method: "DELETE",
   });
   return handleResponse<{ ok: boolean; deleted: number }>(res);
+}
+
+export async function getTradingEdgeSummary(params?: {
+  type_id?: number;
+  group_name?: string;
+  station?: string;
+}): Promise<TradingEdgeSummary> {
+  const qp = new URLSearchParams();
+  if (params?.type_id != null && params.type_id > 0) qp.set("type_id", String(params.type_id));
+  if (params?.group_name) qp.set("group_name", params.group_name);
+  if (params?.station) qp.set("station", params.station);
+  const qs = qp.toString();
+  const res = await apiFetch(`${BASE}/api/auth/trading-edge${qs ? `?${qs}` : ""}`);
+  const data = await handleResponse<TradingEdgeSummary>(res);
+  return {
+    ...data,
+    items: Array.isArray(data.items) ? data.items : [],
+    categories: Array.isArray(data.categories) ? data.categories : [],
+    stations: Array.isArray(data.stations) ? data.stations : [],
+    loss_buckets: Array.isArray(data.loss_buckets) ? data.loss_buckets : [],
+    presets: Array.isArray(data.presets) ? data.presets : [],
+    warnings: Array.isArray(data.warnings) ? data.warnings : [],
+  };
 }
 
 export async function getAchievementStates(): Promise<AchievementStatesResponse> {
@@ -1539,9 +1566,8 @@ export async function getDesktopLoginUrl(): Promise<string> {
   return url;
 }
 
-// Fetches the EVE SSO login URL for web (browser) flows via apiFetch so that
-// the X-EveFlipper-UID header is sent, binding the correct user ID to the
-// OAuth state entry before navigation begins.
+// Fetches the EVE SSO login URL through apiFetch so the server can bind the
+// OAuth state to the signed local user cookie before navigation begins.
 export async function getWebLoginUrl(): Promise<string> {
   const res = await apiFetch(`${BASE}/api/auth/login?mode=json`);
   const data = await handleResponse<{ url?: string }>(res);
@@ -1566,6 +1592,43 @@ function appendCharacterScope(params: URLSearchParams, characterId?: CharacterSc
 export async function getAuthStatus(): Promise<AuthStatus> {
   const res = await apiFetch(`${BASE}/api/auth/status`);
   return handleResponse<AuthStatus>(res);
+}
+
+export async function getSecurityVaultStatus(): Promise<SecurityVaultStatus> {
+  const res = await apiFetch(`${BASE}/api/security/vault/status`);
+  return handleResponse<SecurityVaultStatus>(res);
+}
+
+export async function setupSecurityVault(mode: "standard" | "private", passphrase?: string): Promise<SecurityVaultStatus> {
+  const res = await apiFetch(`${BASE}/api/security/vault/setup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode, passphrase }),
+  });
+  return handleResponse<SecurityVaultStatus>(res);
+}
+
+export async function unlockSecurityVault(passphrase: string): Promise<SecurityVaultStatus> {
+  const res = await apiFetch(`${BASE}/api/security/vault/unlock`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ passphrase }),
+  });
+  return handleResponse<SecurityVaultStatus>(res);
+}
+
+export async function lockSecurityVault(): Promise<SecurityVaultStatus> {
+  const res = await apiFetch(`${BASE}/api/security/vault/lock`, { method: "POST" });
+  return handleResponse<SecurityVaultStatus>(res);
+}
+
+export async function resetSecurityVault(wipePrivateData: boolean): Promise<SecurityVaultStatus> {
+  const res = await apiFetch(`${BASE}/api/security/vault/reset`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ confirm: "RESET", wipe_private_data: wipePrivateData }),
+  });
+  return handleResponse<SecurityVaultStatus>(res);
 }
 
 export async function logout(): Promise<void> {

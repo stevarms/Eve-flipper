@@ -294,11 +294,14 @@ function stationTradeToFlipResult(
   fallbackSystemName: string,
 ): FlipResult | null {
   if (!row) return null;
-  const positiveVolumes = [row.BuyVolume, row.SellVolume, row.DailyVolume]
+  const positiveVolumes = [row.FilledQty, row.BuyVolume, row.SellVolume, row.DailyVolume]
     .map((value) => Math.floor(Number(value ?? 0)))
     .filter((value) => value > 0);
-  const liquidityQty = positiveVolumes.length > 0 ? Math.min(...positiveVolumes) : 100;
-  const units = Math.max(1, Math.min(100, liquidityQty));
+  const liquidityQty = positiveVolumes.length > 0 ? Math.min(...positiveVolumes) : 1;
+  const units = Math.max(1, liquidityQty);
+  const buySupport = Math.max(0, Math.floor(Number(row.BuyVolume ?? 0)));
+  const sellSupport = Math.max(0, Math.floor(Number(row.SellVolume ?? 0)));
+  const filledQty = Math.max(0, Math.floor(Number(row.FilledQty ?? 0)));
   const region = rowRegionID(row, fallbackRegionID);
   const system = rowSystemID(row, fallbackSystemID);
   const systemName = fallbackSystemName || row.StationName;
@@ -310,6 +313,7 @@ function stationTradeToFlipResult(
     TypeID: row.TypeID,
     TypeName: row.TypeName,
     Volume: Number(row.Volume ?? 0),
+    IsContraband: row.IsContraband,
     BuyPrice: buy,
     BuyStation: row.StationName,
     BuySystemName: systemName,
@@ -325,8 +329,8 @@ function stationTradeToFlipResult(
     ProfitPerUnit: profitPerUnit,
     MarginPercent: Number(row.MarginPercent ?? row.ROI ?? 0),
     UnitsToBuy: units,
-    BuyOrderRemain: Math.floor(Number(row.BuyVolume ?? units)),
-    SellOrderRemain: Math.floor(Number(row.SellVolume ?? units)),
+    BuyOrderRemain: buySupport > 0 ? buySupport : units,
+    SellOrderRemain: sellSupport > 0 ? sellSupport : units,
     TotalProfit: totalProfit,
     ProfitPerJump: totalProfit,
     BuyJumps: 0,
@@ -342,8 +346,8 @@ function stationTradeToFlipResult(
     ExpectedSellPrice: sell,
     ExpectedProfit: totalProfit,
     RealProfit: totalProfit,
-    FilledQty: units,
-    CanFill: true,
+    FilledQty: filledQty > 0 ? filledQty : units,
+    CanFill: row.CanFill ?? filledQty > 0,
     FillTimeDays: row.DailyVolume > 0 ? units / row.DailyVolume : Number(row.DOS ?? 0),
     LiquidityScore: Number(row.ConfidenceScore ?? row.CTS ?? 0),
     LiquidityLabel: row.ConfidenceLabel,
@@ -464,6 +468,7 @@ export function StationTrading({
   const scanInFlightRef = useRef(false);
   const autoRefreshSignatureRef = useRef<string>("");
   const autoRefreshLastRunRef = useRef<number>(0);
+  const stationLookupSeqRef = useRef(0);
 
   // System-level metadata (always available even with no NPC stations)
   const [systemRegionId, setSystemRegionId] = useState<number>(0);
@@ -975,12 +980,23 @@ export function StationTrading({
 
   // Load stations when system changes
   useEffect(() => {
-    if (!params.system_name) return;
+    const systemName = (params.system_name ?? "").trim();
+    if (!systemName) {
+      stationLookupSeqRef.current += 1;
+      setStations([]);
+      setSystemRegionId(0);
+      setSystemId(0);
+      setStructureStations([]);
+      setLoadingStations(false);
+      return;
+    }
     const controller = new AbortController();
+    const requestID = ++stationLookupSeqRef.current;
+    const isCurrent = () => !controller.signal.aborted && requestID === stationLookupSeqRef.current;
     setLoadingStations(true);
-    getStations(params.system_name, controller.signal)
+    getStations(systemName, controller.signal)
       .then((resp) => {
-        if (controller.signal.aborted) return;
+        if (!isCurrent()) return;
         setStations(resp.stations);
         setSystemRegionId(resp.region_id);
         setSystemId(resp.system_id);
@@ -988,13 +1004,13 @@ export function StationTrading({
         setStructureStations([]); // reset structures on system change
       })
       .catch(() => {
-        if (controller.signal.aborted) return;
-        setStations([]);
-        setSystemRegionId(0);
-        setSystemId(0);
+        if (!isCurrent()) return;
+        // Keep the last valid station/system state on transient lookup errors.
+        // A tab switch or aborted request should not make a previously selected
+        // system look invalid until the user reselects it.
       })
       .finally(() => {
-        if (!controller.signal.aborted) setLoadingStations(false);
+        if (isCurrent()) setLoadingStations(false);
       });
     return () => controller.abort();
   }, [params.system_name]);
@@ -2115,6 +2131,7 @@ export function StationTrading({
     () => stationTradeToFlipResult(execPlanRow, regionId, systemId, params.system_name || ""),
     [execPlanRow, params.system_name, regionId, systemId],
   );
+  const closeExecPlan = useCallback(() => setExecPlanRow(null), []);
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
@@ -3273,6 +3290,14 @@ export function StationTrading({
                     {col.key === "TypeName" ? (
                       <div className="flex items-center gap-1">
                         <span className="truncate">{formatCell(col, row)}</span>
+                        {row.IsContraband && (
+                          <span
+                            title="Contraband item: hauling through empire space can be unsafe."
+                            className="shrink-0 inline-flex items-center px-1 py-px rounded-[2px] border border-red-500/50 bg-red-500/10 text-red-300 text-[9px] leading-none font-medium uppercase"
+                          >
+                            CONTRA
+                          </span>
+                        )}
                         {isLoggedIn && (
                           <button
                             type="button"
@@ -3400,6 +3425,7 @@ export function StationTrading({
                 window.open(
                   `https://everef.net/type/${contextMenu.row.TypeID}`,
                   "_blank",
+                  "noopener,noreferrer",
                 );
                 setContextMenu(null);
               }}
@@ -3410,6 +3436,7 @@ export function StationTrading({
                 window.open(
                   `https://www.jita.space/market/${contextMenu.row.TypeID}`,
                   "_blank",
+                  "noopener,noreferrer",
                 );
                 setContextMenu(null);
               }}
@@ -3722,7 +3749,7 @@ export function StationTrading({
 
       <TradeExecutionAutopilotPopup
         open={execPlanRow !== null}
-        onClose={() => setExecPlanRow(null)}
+        onClose={closeExecPlan}
         row={execPlanFlipRow}
         mode="station"
         isLoggedIn={isLoggedIn}

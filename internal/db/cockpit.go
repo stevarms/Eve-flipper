@@ -72,6 +72,15 @@ func scanCockpitLoadout(scanner interface {
 	return row, err
 }
 
+func (d *DB) openCockpitLoadoutPrivateFields(row *CockpitLoadout) error {
+	if row == nil {
+		return nil
+	}
+	var err error
+	row.PayloadJSON, err = d.openPrivateString(row.UserID, "cockpit_loadouts.payload_json", row.PayloadJSON)
+	return err
+}
+
 func (d *DB) LoadCockpitPreferencesForUser(userID string) (payloadJSON string, updatedAt string, ok bool, err error) {
 	userID = normalizeUserID(userID)
 	active, ok, err := d.ActiveCockpitLoadoutForUser(userID)
@@ -91,6 +100,10 @@ func (d *DB) LoadCockpitPreferencesForUser(userID string) (payloadJSON string, u
 	if err == sql.ErrNoRows {
 		return "", "", false, nil
 	}
+	if err != nil {
+		return "", "", false, err
+	}
+	payloadJSON, err = d.openPrivateString(userID, "cockpit_preferences.payload_json", payloadJSON)
 	if err != nil {
 		return "", "", false, err
 	}
@@ -129,6 +142,12 @@ func (d *DB) ListCockpitLoadoutsForUser(userID string) ([]CockpitLoadout, error)
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	rows.Close()
+	for i := range out {
+		if err := d.openCockpitLoadoutPrivateFields(&out[i]); err != nil {
+			return nil, err
+		}
+	}
 	return out, nil
 }
 
@@ -154,9 +173,15 @@ func (d *DB) ActiveCockpitLoadoutForUser(userID string) (CockpitLoadout, bool, e
 		if err != nil {
 			return CockpitLoadout{}, false, err
 		}
+		if err := d.openCockpitLoadoutPrivateFields(&row); err != nil {
+			return CockpitLoadout{}, false, err
+		}
 		return row, true, nil
 	}
 	if err != nil {
+		return CockpitLoadout{}, false, err
+	}
+	if err := d.openCockpitLoadoutPrivateFields(&row); err != nil {
 		return CockpitLoadout{}, false, err
 	}
 	return row, true, nil
@@ -183,6 +208,15 @@ func (d *DB) UpsertCockpitLoadoutForUser(userID, loadoutID, name, payloadJSON st
 	name = cleanCockpitLoadoutName(name)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 
+	storedPayloadJSON, err := d.protectPrivateString(userID, "cockpit_loadouts.payload_json", payloadJSON)
+	if err != nil {
+		return CockpitLoadout{}, err
+	}
+	storedPreferencesJSON, err := d.protectPrivateString(userID, "cockpit_preferences.payload_json", payloadJSON)
+	if err != nil {
+		return CockpitLoadout{}, err
+	}
+
 	tx, err := d.sql.Begin()
 	if err != nil {
 		return CockpitLoadout{}, err
@@ -200,7 +234,8 @@ func (d *DB) UpsertCockpitLoadoutForUser(userID, loadoutID, name, payloadJSON st
 		return CockpitLoadout{}, err
 	}
 
-	if err == sql.ErrNoRows {
+	rowMissing := err == sql.ErrNoRows
+	if rowMissing {
 		var count int
 		if countErr := tx.QueryRow(`SELECT COUNT(*) FROM cockpit_loadouts WHERE user_id = ?`, userID).Scan(&count); countErr != nil {
 			return CockpitLoadout{}, countErr
@@ -223,17 +258,17 @@ func (d *DB) UpsertCockpitLoadoutForUser(userID, loadoutID, name, payloadJSON st
 	if activate {
 		activeInt = 1
 	}
-	if err == sql.ErrNoRows {
+	if rowMissing {
 		_, err = tx.Exec(`
 			INSERT INTO cockpit_loadouts (user_id, loadout_id, name, payload_json, is_active, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?)
-		`, userID, loadoutID, name, payloadJSON, activeInt, createdAt, now)
+		`, userID, loadoutID, name, storedPayloadJSON, activeInt, createdAt, now)
 	} else {
 		_, err = tx.Exec(`
 			UPDATE cockpit_loadouts
 			SET name = ?, payload_json = ?, is_active = ?, updated_at = ?
 			WHERE user_id = ? AND loadout_id = ?
-		`, name, payloadJSON, activeInt, now, userID, loadoutID)
+		`, name, storedPayloadJSON, activeInt, now, userID, loadoutID)
 	}
 	if err != nil {
 		return CockpitLoadout{}, err
@@ -244,7 +279,7 @@ func (d *DB) UpsertCockpitLoadoutForUser(userID, loadoutID, name, payloadJSON st
 		ON CONFLICT(user_id) DO UPDATE SET
 			payload_json = excluded.payload_json,
 			updated_at = excluded.updated_at
-	`, userID, payloadJSON, now); err != nil {
+	`, userID, storedPreferencesJSON, now); err != nil {
 		return CockpitLoadout{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -262,6 +297,9 @@ func (d *DB) GetCockpitLoadoutForUser(userID, loadoutID string) (CockpitLoadout,
 		WHERE user_id = ? AND loadout_id = ?
 	`, userID, loadoutID))
 	if err != nil {
+		return CockpitLoadout{}, err
+	}
+	if err := d.openCockpitLoadoutPrivateFields(&row); err != nil {
 		return CockpitLoadout{}, err
 	}
 	return row, nil

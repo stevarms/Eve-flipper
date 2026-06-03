@@ -31,8 +31,26 @@ func (d *DB) LoadConfigForUser(userID string) *config.Config {
 	m := make(map[string]string)
 	for rows.Next() {
 		var k, v string
-		rows.Scan(&k, &v)
+		if err := rows.Scan(&k, &v); err != nil {
+			continue
+		}
 		m[k] = v
+	}
+	if err := rows.Err(); err != nil {
+		return cfg
+	}
+	rows.Close()
+
+	for k, v := range m {
+		if !isPrivateConfigKey(k) {
+			continue
+		}
+		opened, err := d.openPrivateString(userID, "config."+k, v)
+		if err == nil {
+			m[k] = opened
+		} else {
+			m[k] = ""
+		}
 	}
 
 	if len(m) == 0 {
@@ -228,6 +246,19 @@ func (d *DB) SaveConfigForUser(userID string, cfg *config.Config) error {
 		"window_h":                  strconv.Itoa(cfg.WindowH),
 	}
 
+	storedPairs := make(map[string]string, len(pairs))
+	for k, v := range pairs {
+		stored := v
+		if isPrivateConfigKey(k) {
+			var err error
+			stored, err = d.protectPrivateString(userID, "config."+k, v)
+			if err != nil {
+				return err
+			}
+		}
+		storedPairs[k] = stored
+	}
+
 	tx, err := d.sql.Begin()
 	if err != nil {
 		return err
@@ -239,13 +270,22 @@ func (d *DB) SaveConfigForUser(userID string, cfg *config.Config) error {
 	}
 	defer stmt.Close()
 
-	for k, v := range pairs {
-		if _, err := stmt.Exec(userID, k, v); err != nil {
+	for k, stored := range storedPairs {
+		if _, err := stmt.Exec(userID, k, stored); err != nil {
 			tx.Rollback()
 			return err
 		}
 	}
 	return tx.Commit()
+}
+
+func isPrivateConfigKey(key string) bool {
+	switch key {
+	case "alert_telegram_token", "alert_telegram_chat_id", "alert_discord_webhook":
+		return true
+	default:
+		return false
+	}
 }
 
 // MigrateFromJSON checks for config.json and imports it into SQLite.

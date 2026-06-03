@@ -14,6 +14,9 @@ interface ContractDetailsPopupProps {
   contractPrice: number;
   contractMarketValue?: number;
   contractProfit?: number;
+  excludedRigValue?: number;
+  excludedRigQty?: number;
+  excludedRigRows?: number;
   excludeRigPriceIfShip?: boolean;
   pickupStationName?: string;
   pickupSystemName?: string;
@@ -55,6 +58,9 @@ export function ContractDetailsPopup({
   contractPrice,
   contractMarketValue,
   contractProfit,
+  excludedRigValue = 0,
+  excludedRigQty = 0,
+  excludedRigRows = 0,
   excludeRigPriceIfShip = true,
   pickupStationName,
   pickupSystemName,
@@ -113,7 +119,12 @@ export function ContractDetailsPopup({
   const hasShipInContract = includedItems.some(isShipItem);
   const rigItemsInContract = includedItems.filter(isRigItem);
   const rigItemsTotalQty = rigItemsInContract.reduce((sum, item) => sum + item.quantity, 0);
-  const rigExclusionApplied = excludeRigPriceIfShip && hasShipInContract && rigItemsInContract.length > 0;
+  const rigExclusionApplied =
+    excludeRigPriceIfShip &&
+    hasShipInContract &&
+    (rigItemsInContract.length > 0 || excludedRigRows > 0 || excludedRigQty > 0);
+  const excludedRigValueSafe = Math.max(0, excludedRigValue || 0);
+  const rawModelValue = typeof contractMarketValue === "number" ? contractMarketValue + excludedRigValueSafe : null;
   const scanSpread = typeof contractMarketValue === "number" ? contractMarketValue - contractPrice : null;
   const handleOpenContract = async () => {
     try {
@@ -210,10 +221,18 @@ export function ContractDetailsPopup({
                 <div className="text-xs text-yellow-200/90 mt-1">
                   {rigExclusionApplied ? t("contractRigCheckoutAppliedHint") : t("contractRigCheckoutNoRigHint")}
                 </div>
-                <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="mt-3 grid grid-cols-1 md:grid-cols-4 gap-3">
                   <div>
                     <div className="text-[11px] uppercase tracking-wider text-eve-dim">{t("iskPrice")}</div>
                     <div className="mt-1 text-sm font-mono text-eve-accent">{formatISK(contractPrice)}</div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wider text-eve-dim">
+                      {t("contractRigCheckoutRawValueLabel")}
+                    </div>
+                    <div className="mt-1 text-sm font-mono text-eve-dim">
+                      {rawModelValue != null && rawModelValue > 0 ? formatISK(rawModelValue) : "\u2014"}
+                    </div>
                   </div>
                   <div>
                     <div className="text-[11px] uppercase tracking-wider text-eve-dim">
@@ -233,7 +252,11 @@ export function ContractDetailsPopup({
                   </div>
                 </div>
                 <div className="mt-2 text-[11px] text-eve-dim">
-                  {t("contractRigDetectedRows")}: {rigItemsInContract.length} · {t("contractRigDetectedQty")}: {rigItemsTotalQty.toLocaleString()}
+                  {t("contractRigDetectedRows")}: {Math.max(rigItemsInContract.length, excludedRigRows).toLocaleString()} ·{" "}
+                  {t("contractRigDetectedQty")}: {Math.max(rigItemsTotalQty, excludedRigQty).toLocaleString()}
+                  {excludedRigValueSafe > 0 && (
+                    <> · {t("contractRigExcludedValueLabel")}: {formatISK(excludedRigValueSafe)}</>
+                  )}
                   {typeof contractProfit === "number" && (
                     <> · {t("colContractProfit")}: {formatSignedISK(contractProfit)}</>
                   )}
@@ -332,6 +355,14 @@ function ItemRow({ item, highlightRig = false }: { item: ContractItem; highlight
               {highlightRig && (
                 <span className="px-1.5 py-0.5 rounded-sm border border-yellow-600/70 text-[10px] uppercase tracking-wider text-yellow-300">
                   {t("contractRigExcludedTag")}
+                </span>
+              )}
+              {item.is_contraband && (
+                <span
+                  title="Contraband item: hauling through empire space can trigger faction/security penalties."
+                  className="px-1.5 py-0.5 rounded-sm border border-red-500/60 bg-red-500/10 text-[10px] uppercase tracking-wider text-red-300"
+                >
+                  Contraband
                 </span>
               )}
             </div>

@@ -86,6 +86,40 @@ func getRigSizeClass(itemName string) int {
 	return 0 // Unknown size
 }
 
+func isContractRigType(categoryID int32, typeName, groupName string, typeIsRig, groupIsRig bool) bool {
+	if typeIsRig || groupIsRig {
+		return true
+	}
+	if categoryID != 7 {
+		return false
+	}
+	normalizedGroup := strings.ToLower(strings.TrimSpace(groupName))
+	if strings.HasPrefix(normalizedGroup, "rig") {
+		return true
+	}
+	normalizedType := strings.ToLower(strings.TrimSpace(typeName))
+	return strings.Contains(normalizedType, " rig ") || strings.HasPrefix(normalizedType, "rig ")
+}
+
+func estimateContractRigValue(pd *itemPriceData, qty int32, requireHistory bool) float64 {
+	if pd == nil || qty <= 0 || pd.MinSellPrice <= 0 || pd.MinSellPrice == math.MaxFloat64 {
+		return 0
+	}
+	if pd.HasHistory && pd.VWAP > 0 {
+		usePrice := pd.MinSellPrice
+		if pd.MinSellPrice < pd.VWAP*0.5 {
+			usePrice = math.Min(pd.VWAP*0.7, pd.MinSellPrice*2)
+		} else {
+			usePrice = math.Min(pd.VWAP, pd.MinSellPrice)
+		}
+		return usePrice * float64(qty)
+	}
+	if requireHistory {
+		return 0
+	}
+	return pd.MinSellPrice * float64(qty)
+}
+
 // getShipSizeClass returns the size class of a ship based on groupID: 1=Small, 2=Medium, 3=Large, 0=Unknown.
 // Uses EVE ship group IDs from SDE.
 func getShipSizeClass(groupID int32) int {
@@ -756,6 +790,11 @@ func (s *Scanner) ScanContractsWithContext(ctx context.Context, params ScanParam
 		expectedGrossByFill := 0.0
 		var additionalCost float64      // cost of items buyer must provide (PLEX, etc.)
 		var unpricedAdditionalItems int // items buyer must provide that we couldn't price
+		var excludedRigValue float64
+		var excludedRigQty int32
+		var excludedRigRows int
+		var hasContraband bool
+		var contrabandQty int32
 		includedQtyByType := make(map[int32]int32)
 		additionalQtyByType := make(map[int32]int32)
 		liquidationSystemID := int32(0)
@@ -790,6 +829,10 @@ func (s *Scanner) ScanContractsWithContext(ctx context.Context, params ScanParam
 			if item.Quantity <= 0 {
 				continue
 			}
+			if typeInfo, ok := s.SDE.Types[item.TypeID]; ok && typeInfo.IsContraband {
+				hasContraband = true
+				contrabandQty += item.Quantity
+			}
 
 			// Items buyer must provide on top of ISK price.
 			if !item.IsIncluded {
@@ -814,7 +857,17 @@ func (s *Scanner) ScanContractsWithContext(ctx context.Context, params ScanParam
 					continue
 				}
 				// Rig handling (fitted-risk control).
-				if typeInfo.IsRig && shouldExcludeRigWithShip(item, typeInfo.Name, shipSizeClass, params.ExcludeRigsWithShip) {
+				groupName := ""
+				groupIsRig := false
+				if group, ok := s.SDE.Groups[typeInfo.GroupID]; ok {
+					groupName = group.Name
+					groupIsRig = group.IsRig
+				}
+				if isContractRigType(typeInfo.CategoryID, typeInfo.Name, groupName, typeInfo.IsRig, groupIsRig) &&
+					shouldExcludeRigWithShip(item, typeInfo.Name, shipSizeClass, params.ExcludeRigsWithShip) {
+					excludedRigRows++
+					excludedRigQty += item.Quantity
+					excludedRigValue += estimateContractRigValue(priceData[item.TypeID], item.Quantity, params.RequireHistory)
 					continue
 				}
 			}
@@ -863,8 +916,16 @@ func (s *Scanner) ScanContractsWithContext(ctx context.Context, params ScanParam
 			valueFactor := 1.0
 			// Conservative haircut: when a ship is present, module value is uncertain
 			// because public ESI lacks reliable fitted-state flags for all cases.
-			if shipSizeClass > 0 && hasTypeInfo && typeInfo.CategoryID == 7 && !typeInfo.IsRig {
-				valueFactor = ContractShipModuleValueFactor
+			if shipSizeClass > 0 && hasTypeInfo && typeInfo.CategoryID == 7 {
+				groupName := ""
+				groupIsRig := false
+				if group, ok := s.SDE.Groups[typeInfo.GroupID]; ok {
+					groupName = group.Name
+					groupIsRig = group.IsRig
+				}
+				if !isContractRigType(typeInfo.CategoryID, typeInfo.Name, groupName, typeInfo.IsRig, groupIsRig) {
+					valueFactor = ContractShipModuleValueFactor
+				}
 			}
 
 			if contractInstant {
@@ -1102,6 +1163,11 @@ func (s *Scanner) ScanContractsWithContext(ctx context.Context, params ScanParam
 			EstLiquidationDays:    sanitizeFloat(estLiqDays),
 			ConservativeValue:     sanitizeFloat(conservativeValue),
 			CarryCost:             sanitizeFloat(carryCost),
+			ExcludedRigValue:      sanitizeFloat(excludedRigValue),
+			ExcludedRigQty:        excludedRigQty,
+			ExcludedRigRows:       excludedRigRows,
+			HasContraband:         hasContraband,
+			ContrabandQty:         contrabandQty,
 			Volume:                contract.Volume,
 			StationName:           stationName,
 			SystemName:            sysName,

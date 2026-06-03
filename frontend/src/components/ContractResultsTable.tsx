@@ -1147,7 +1147,21 @@ export function ContractResultsTable({
                       col.numeric ? "text-eve-accent font-mono" : "text-eve-text"
                     }`}
                   >
-                    {formatCell(col, row)}
+                    {col.key === "Title" ? (
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className="truncate">{formatCell(col, row)}</span>
+                        {row.HasContraband && (
+                          <span
+                            title={`Contraband item(s) in contract${row.ContrabandQty ? `: ${row.ContrabandQty.toLocaleString()} units` : ""}. Check hauling route before accepting.`}
+                            className="shrink-0 inline-flex items-center px-1 py-px rounded-[2px] border border-red-500/50 bg-red-500/10 text-red-300 text-[9px] leading-none font-medium uppercase"
+                          >
+                            CONTRA
+                          </span>
+                        )}
+                      </div>
+                    ) : (
+                      formatCell(col, row)
+                    )}
                   </td>
                 ))}
               </tr>
@@ -1256,7 +1270,7 @@ export function ContractResultsTable({
             )}
             <ContextItem
               label={t("openInEveref")}
-              onClick={() => { window.open(`https://everef.net/contract/${contextMenu.row.ContractID}`, "_blank"); setContextMenu(null); }}
+              onClick={() => { window.open(`https://everef.net/contract/${contextMenu.row.ContractID}`, "_blank", "noopener,noreferrer"); setContextMenu(null); }}
             />
           </div>
         </>
@@ -1468,6 +1482,9 @@ export function ContractResultsTable({
         contractPrice={selectedContract?.Price ?? 0}
         contractMarketValue={selectedContract?.MarketValue}
         contractProfit={selectedContract?.Profit}
+        excludedRigValue={selectedContract?.ExcludedRigValue}
+        excludedRigQty={selectedContract?.ExcludedRigQty}
+        excludedRigRows={selectedContract?.ExcludedRigRows}
         excludeRigPriceIfShip={excludeRigPriceIfShip}
         pickupStationName={selectedContract?.StationName ?? ""}
         pickupSystemName={selectedContract?.SystemName ?? ""}

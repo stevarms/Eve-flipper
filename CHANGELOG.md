@@ -4,6 +4,33 @@
 
 - No unreleased changes yet.
 
+## v1.6.6 - 2026-06-03
+
+This release introduces the local security vault, expands encrypted storage for sensitive local data, and tightens desktop/web API boundaries.
+
+### Security Vault and Local Privacy
+
+- Added the Security Vault setup and unlock flow with standard machine-protected storage and optional private passphrase mode.
+- Purged legacy plaintext EVE auth sessions during vault setup so new logins are stored through the selected vault.
+- Encrypted EVE auth tokens, sensitive config secrets, paper trade notes/source, wallet journal text fields, industry project/job notes, cockpit payloads, current wallet balance, and current total SP.
+- Migrated legacy plaintext private fields into vault-protected storage where possible, including old current wallet balance values.
+- Added a profile encryption chip so the active vault mode is visible near the character name.
+
+### App and API Hardening
+
+- Added security vault API endpoints and passphrase unlock coverage.
+- Restricted unsigned user-id headers to the desktop flavor, added state-changing request origin checks, body limits, and common security headers.
+- Improved startup/security modal behavior so the loader no longer covers the vault popup and users can continue after vault setup without getting stuck behind a forced auth screen.
+
+### Trading and Workflow Updates
+
+- Added Trading Edge character popup wiring and related backend API support.
+- Improved contract, station trading, cockpit, and station AI workflows with additional UI/API model support.
+
+### Tests
+
+- Added coverage for vault setup, private passphrase unlock, legacy plaintext migration, encrypted private fields, current wallet balance/SP privacy, origin checks, and related archive behavior.
+
 ## v1.6.5 - 2026-05-29
 
 This is a maintenance release focused on stability fixes after v1.6.4.

@@ -6,7 +6,7 @@ import {
   type CharacterScope,
 } from "../lib/api";
 import { useI18n } from "../lib/i18n";
-import type { AuthCharacter, CharacterInfo, CharacterRoles } from "../lib/types";
+import type { AuthCharacter, CharacterInfo, CharacterRoles, SecurityVaultStatus } from "../lib/types";
 import {
   CombinedOrdersTab,
   IndustryJobsTab,
@@ -17,6 +17,7 @@ import {
   RiskTab,
   TabBtn,
   TransactionsTab,
+  TradingEdgeTab,
   WalletDashboardTab,
 } from "./character-popup/CharacterPopupTabs";
 import { AchievementLibraryPanel, useAchievements } from "./achievements";
@@ -37,9 +38,12 @@ interface CharacterPopupProps {
   onTaxProfileChange: (profile: TaxProfile) => void;
   initialTab?: CharTab;
   onOpenPaperTradeJournal?: () => void;
+  tradingEdgeEnabled?: boolean;
+  onTradingEdgeEnabledChange?: (enabled: boolean) => void;
+  securityVault?: SecurityVaultStatus;
 }
 
-type CharTab = "overview" | "orders" | "transactions" | "ledger" | "industry" | "pi" | "pnl" | "risk" | "optimizer" | "achievements" | "plex";
+type CharTab = "overview" | "orders" | "transactions" | "ledger" | "industry" | "pi" | "pnl" | "edge" | "risk" | "optimizer" | "achievements" | "plex";
 const SCOPE_COLLAPSE_KEY = "eve-character-scope-collapsed";
 
 export function CharacterPopup({
@@ -55,6 +59,9 @@ export function CharacterPopup({
   onTaxProfileChange,
   initialTab,
   onOpenPaperTradeJournal,
+  tradingEdgeEnabled = true,
+  onTradingEdgeEnabledChange,
+  securityVault,
 }: CharacterPopupProps) {
   const { t } = useI18n();
   const { pendingCount: achievementPendingCount, trackAchievementEvent, unlockedCount: achievementUnlockedCount } = useAchievements();
@@ -106,7 +113,7 @@ export function CharacterPopup({
     (nextTab: CharTab) => {
       setTab(nextTab);
       if (nextTab === "ledger") void trackAchievementEvent("ledger_opened");
-      if (nextTab === "pnl" || nextTab === "optimizer") void trackAchievementEvent("portfolio_opened");
+      if (nextTab === "pnl" || nextTab === "optimizer" || nextTab === "edge") void trackAchievementEvent("portfolio_opened");
       if (nextTab === "risk") void trackAchievementEvent("risk_opened");
     },
     [trackAchievementEvent],
@@ -328,6 +335,7 @@ export function CharacterPopup({
             <TabBtn active={tab === "industry"} onClick={() => setTrackedTab("industry")} label={`${t("industryJobsTab")} (${data?.industry_jobs?.length ?? 0})`} />
             <TabBtn active={tab === "pi"} onClick={() => setTrackedTab("pi")} label="PI" />
             <TabBtn active={tab === "pnl"} onClick={() => setTrackedTab("pnl")} label={t("charPnlTab")} />
+            <TabBtn active={tab === "edge"} onClick={() => setTrackedTab("edge")} label="Edge" />
             <TabBtn active={tab === "risk"} onClick={() => setTrackedTab("risk")} label={t("charRiskTab")} />
             <TabBtn active={tab === "optimizer"} onClick={() => setTrackedTab("optimizer")} label={t("charOptimizerTab")} />
             <TabBtn
@@ -380,6 +388,7 @@ export function CharacterPopup({
                   data={data}
                   characterId={selectedScope === "all" ? undefined : selectedScope}
                   isAllScope={selectedScope === "all"}
+                  securityVault={securityVault}
                   formatIsk={formatIsk}
                   formatNumber={formatNumber}
                   buyOrders={buyOrders}
@@ -430,6 +439,13 @@ export function CharacterPopup({
               )}
               {tab === "pnl" && (
                 <PnLTab formatIsk={formatIsk} characterScope={selectedScope} t={t} />
+              )}
+              {tab === "edge" && (
+                <TradingEdgeTab
+                  enabled={tradingEdgeEnabled}
+                  onToggleEnabled={(enabled) => onTradingEdgeEnabledChange?.(enabled)}
+                  formatIsk={formatIsk}
+                />
               )}
               {tab === "risk" && (
                 <RiskTab

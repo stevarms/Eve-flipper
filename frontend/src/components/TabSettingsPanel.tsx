@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { TabHelp } from "./TabHelp";
 
 interface TabSettingsPanelProps {
@@ -111,13 +111,46 @@ export function SettingsNumberInput({
   step = 1,
   placeholder,
 }: NumberInputProps) {
+  const [draft, setDraft] = useState(String(value));
+  const [focused, setFocused] = useState(false);
+
+  useEffect(() => {
+    if (!focused) {
+      setDraft(String(value));
+    }
+  }, [focused, value]);
+
+  const commit = (raw: string) => {
+    const trimmed = raw.trim();
+    if (trimmed === "" || trimmed === "-" || trimmed === "." || trimmed === "-.") {
+      setDraft(String(value));
+      return;
+    }
+    const parsed = parseFloat(trimmed);
+    if (!Number.isFinite(parsed)) {
+      setDraft(String(value));
+      return;
+    }
+    const clamped = Math.min(max, Math.max(min, parsed));
+    setDraft(String(clamped));
+    onChange(clamped);
+  };
+
   return (
     <input
       type="number"
-      value={value}
+      value={draft}
       onChange={(e) => {
-        const v = parseFloat(e.target.value);
-        if (!isNaN(v) && v >= min && v <= max) onChange(v);
+        const raw = e.target.value;
+        setDraft(raw);
+        if (raw.trim() === "" || raw === "-" || raw === "." || raw === "-.") return;
+        const v = parseFloat(raw);
+        if (Number.isFinite(v) && v >= min && v <= max) onChange(v);
+      }}
+      onFocus={() => setFocused(true)}
+      onBlur={(e) => {
+        setFocused(false);
+        commit(e.target.value);
       }}
       min={min}
       max={max}

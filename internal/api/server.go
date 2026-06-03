@@ -80,7 +80,8 @@ type Server struct {
 	// Gank check route danger analyzer (initialized on SDE load).
 	ganker *gankcheck.Checker
 
-	userIDCookieSecret []byte
+	userIDCookieSecretMu sync.Mutex
+	userIDCookieSecret   []byte
 
 	authRevisionMu sync.Mutex
 	authRevision   map[string]int64
@@ -120,6 +121,7 @@ const stationAIHistoryMaxMessages = 16
 const stationAIStreamHTTPTimeout = 12 * time.Minute
 const stationAIProviderResponseMaxBodyBytes int64 = 4 * 1024 * 1024
 const stationAIProviderErrorMaxBodyBytes int64 = 64 * 1024
+const defaultAPIRequestBodyMaxBytes int64 = 2 * 1024 * 1024
 const stationAIWikiWebhookSecretEnv = "STATION_AI_WIKI_WEBHOOK_SECRET"
 const stationAIWikiWebhookRefreshTimeout = 2 * time.Minute
 const stationAIMaxTokensLimit = 1_000_000
@@ -412,7 +414,7 @@ func secureCookieFromRequest(r *http.Request) bool {
 func generateUserID() string {
 	var raw [18]byte
 	if _, err := rand.Read(raw[:]); err != nil {
-		return db.DefaultUserID
+		panic(fmt.Sprintf("generate user id: %v", err))
 	}
 	return base64.RawURLEncoding.EncodeToString(raw[:])
 }
@@ -420,7 +422,7 @@ func generateUserID() string {
 func generateUserCookieSecret() []byte {
 	secret := make([]byte, 32)
 	if _, err := rand.Read(secret); err != nil {
-		return []byte("eveflipper-user-cookie-secret-fallback")
+		panic(fmt.Sprintf("generate user cookie secret: %v", err))
 	}
 	return secret
 }
@@ -480,11 +482,22 @@ func isValidUserID(userID string) bool {
 	return true
 }
 
-func (s *Server) userIDCookieSignature(userID string) []byte {
-	secret := s.userIDCookieSecret
-	if len(secret) == 0 {
-		secret = []byte("eveflipper-user-cookie-secret-fallback")
+func (s *Server) ensureUserIDCookieSecret() []byte {
+	if s == nil {
+		panic("server is not initialized")
 	}
+	s.userIDCookieSecretMu.Lock()
+	defer s.userIDCookieSecretMu.Unlock()
+	if len(s.userIDCookieSecret) == 0 {
+		// Safety for tests/manual Server{} construction without falling back to
+		// a deterministic signing key.
+		s.userIDCookieSecret = generateUserCookieSecret()
+	}
+	return append([]byte(nil), s.userIDCookieSecret...)
+}
+
+func (s *Server) userIDCookieSignature(userID string) []byte {
+	secret := s.ensureUserIDCookieSecret()
 	mac := hmac.New(sha256.New, secret)
 	_, _ = mac.Write([]byte(userID))
 	sum := mac.Sum(nil)
@@ -547,7 +560,7 @@ func (s *Server) setUserIDCookie(w http.ResponseWriter, r *http.Request, userID 
 
 func (s *Server) ensureRequestUserID(w http.ResponseWriter, r *http.Request) string {
 	headerUserID := strings.TrimSpace(r.Header.Get(userIDHeaderName))
-	if isValidUserID(headerUserID) {
+	if s.acceptsUserIDHeader() && isValidUserID(headerUserID) {
 		// Keep cookie in sync for browser flows; header remains source of truth.
 		if c, err := r.Cookie(userIDCookieName); err != nil {
 			s.setUserIDCookie(w, r, headerUserID)
@@ -564,6 +577,10 @@ func (s *Server) ensureRequestUserID(w http.ResponseWriter, r *http.Request) str
 	}
 
 	return s.setUserIDCookie(w, r, generateUserID())
+}
+
+func (s *Server) acceptsUserIDHeader() bool {
+	return s != nil && strings.EqualFold(strings.TrimSpace(s.appFlavor), "desktop")
 }
 
 func userIDFromRequest(r *http.Request) string {
@@ -752,6 +769,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auth/logout", s.handleAuthLogout)
 	mux.HandleFunc("POST /api/auth/character/select", s.handleAuthCharacterSelect)
 	mux.HandleFunc("DELETE /api/auth/characters/{characterID}", s.handleAuthCharacterDelete)
+	mux.HandleFunc("GET /api/security/vault/status", s.handleSecurityVaultStatus)
+	mux.HandleFunc("POST /api/security/vault/setup", s.handleSecurityVaultSetup)
+	mux.HandleFunc("POST /api/security/vault/unlock", s.handleSecurityVaultUnlock)
+	mux.HandleFunc("POST /api/security/vault/lock", s.handleSecurityVaultLock)
+	mux.HandleFunc("POST /api/security/vault/reset", s.handleSecurityVaultReset)
 	mux.HandleFunc("GET /api/auth/character", s.handleAuthCharacter)
 	mux.HandleFunc("GET /api/auth/location", s.handleAuthLocation)
 	mux.HandleFunc("GET /api/auth/pi/planets", s.handleAuthPIPlanets)
@@ -767,6 +789,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auth/paper-trades/reconcile", s.handleAuthReconcilePaperTrades)
 	mux.HandleFunc("PATCH /api/auth/paper-trades/{tradeID}", s.handleAuthUpdatePaperTrade)
 	mux.HandleFunc("DELETE /api/auth/paper-trades/{tradeID}", s.handleAuthDeletePaperTrade)
+	mux.HandleFunc("GET /api/auth/trading-edge", s.handleAuthTradingEdge)
 	mux.HandleFunc("GET /api/auth/achievements", s.handleAuthListAchievements)
 	mux.HandleFunc("PATCH /api/auth/achievements", s.handleAuthPatchAchievements)
 	mux.HandleFunc("POST /api/auth/achievements/seen", s.handleAuthMarkAchievementsSeen)
@@ -829,7 +852,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/gankcheck", s.handleGankCheck)
 	mux.HandleFunc("GET /api/gankcheck/detail", s.handleGankCheckDetail)
 	mux.HandleFunc("GET /api/gankcheck/batch", s.handleGankCheckBatch)
-	return corsMiddleware(s.userScopeMiddleware(mux))
+	return securityHeadersMiddleware(corsMiddleware(originGuardMiddleware(requestBodyLimitMiddleware(s.userScopeMiddleware(mux)))))
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
@@ -856,20 +879,115 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+func securityHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "same-origin")
+		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
+		next.ServeHTTP(w, r)
+	})
+}
+
+func originGuardMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isStateChangingMethod(r.Method) {
+			origin := strings.TrimSpace(r.Header.Get("Origin"))
+			if origin != "" && !isAllowedCORSOrigin(origin, r.Host) {
+				writeError(w, http.StatusForbidden, "forbidden origin")
+				return
+			}
+			referer := strings.TrimSpace(r.Header.Get("Referer"))
+			if origin == "" && referer != "" && !isAllowedRequestReferer(referer, r.Host) {
+				writeError(w, http.StatusForbidden, "forbidden referer")
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func requestBodyLimitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil && isStateChangingMethod(r.Method) {
+			r.Body = http.MaxBytesReader(w, r.Body, defaultAPIRequestBodyMaxBytes)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isStateChangingMethod(method string) bool {
+	switch strings.ToUpper(strings.TrimSpace(method)) {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
+}
+
 func isAllowedCORSOrigin(origin, requestHost string) bool {
 	u, err := url.Parse(origin)
-	if err != nil || u.Host == "" {
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return false
+	}
+	originHostPort := normalizeHostPort(u.Host)
+	reqHostPort := normalizeHostPort(requestHost)
+	if originHostPort == "" || reqHostPort == "" {
+		return false
+	}
+	if originHostPort == reqHostPort {
+		return true
+	}
+	if originListContains(strings.TrimSpace(os.Getenv("EVEFLIPPER_ALLOWED_ORIGINS")), origin) {
+		return true
 	}
 	originHost := normalizeHost(u.Host)
 	reqHost := normalizeHost(requestHost)
-	if originHost == "" || reqHost == "" {
+	if !isLoopbackHost(originHost) || !isLoopbackHost(reqHost) {
 		return false
 	}
-	if originHost == reqHost {
-		return true
+	return isAllowedLoopbackDevPort(u.Port())
+}
+
+func isAllowedRequestReferer(referer, requestHost string) bool {
+	u, err := url.Parse(referer)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return false
 	}
-	return isLoopbackHost(originHost) && isLoopbackHost(reqHost)
+	return isAllowedCORSOrigin(u.Scheme+"://"+u.Host, requestHost)
+}
+
+func originListContains(rawList, origin string) bool {
+	origin = strings.TrimRight(strings.TrimSpace(origin), "/")
+	if origin == "" || rawList == "" {
+		return false
+	}
+	for _, part := range strings.Split(rawList, ",") {
+		if strings.EqualFold(strings.TrimRight(strings.TrimSpace(part), "/"), origin) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeHostPort(hostPort string) string {
+	hostPort = strings.TrimSpace(hostPort)
+	if hostPort == "" {
+		return ""
+	}
+	u, err := url.Parse("http://" + hostPort)
+	if err != nil {
+		return strings.ToLower(strings.Trim(hostPort, "[]"))
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		return ""
+	}
+	port := u.Port()
+	if port == "" {
+		return host
+	}
+	return host + ":" + port
 }
 
 func normalizeHost(hostPort string) string {
@@ -890,6 +1008,15 @@ func isLoopbackHost(host string) bool {
 	}
 	ip := net.ParseIP(h)
 	return ip != nil && ip.IsLoopback()
+}
+
+func isAllowedLoopbackDevPort(port string) bool {
+	switch strings.TrimSpace(port) {
+	case "1420", "5173":
+		return true
+	default:
+		return false
+	}
 }
 
 func writeJSON(w http.ResponseWriter, v interface{}) {
@@ -4348,17 +4475,22 @@ func (s *Server) requireIndustryAuthUser(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) authStatusPayload(userID string) map[string]interface{} {
 	revision := s.authRevisionForUser(userID)
+	vaultPayload := s.securityVaultPayload(userID)
 	if s.sessions == nil {
 		return map[string]interface{}{
-			"logged_in":     false,
-			"auth_revision": revision,
+			"logged_in":                   false,
+			"auth_revision":               revision,
+			"security_vault":              vaultPayload,
+			"security_migration_required": vaultPayload["security_migration_required"],
 		}
 	}
 	active := s.sessions.GetForUser(userID)
 	if active == nil {
 		return map[string]interface{}{
-			"logged_in":     false,
-			"auth_revision": revision,
+			"logged_in":                   false,
+			"auth_revision":               revision,
+			"security_vault":              vaultPayload,
+			"security_migration_required": vaultPayload["security_migration_required"],
 		}
 	}
 	all := s.sessions.ListForUser(userID)
@@ -4376,6 +4508,7 @@ func (s *Server) authStatusPayload(userID string) map[string]interface{} {
 		"character_name": active.CharacterName,
 		"characters":     characters,
 		"auth_revision":  revision,
+		"security_vault": vaultPayload,
 	}
 }
 
@@ -4391,6 +4524,17 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	state := auth.GenerateState()
 	desktop := r.URL.Query().Get("desktop") == "1"
 	userID := userIDFromRequest(r)
+	if s.sessions != nil && s.sessions.Vault() != nil && s.sessions.Vault().TableReady() {
+		vaultStatus := s.sessions.Vault().StatusForUser(userID)
+		if !vaultStatus.Configured {
+			writeError(w, http.StatusConflict, "security vault not configured")
+			return
+		}
+		if vaultStatus.Locked {
+			writeError(w, http.StatusLocked, "private security vault locked")
+			return
+		}
+	}
 
 	s.ssoStatesMu.Lock()
 	// Purge expired states
@@ -4440,7 +4584,7 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	tok, err := s.sso.ExchangeCode(code)
 	if err != nil {
 		log.Printf("[AUTH] Exchange error: %v", err)
-		writeError(w, 500, "token exchange failed: "+err.Error())
+		writeError(w, 500, "token exchange failed")
 		return
 	}
 
@@ -4448,7 +4592,7 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	info, err := auth.VerifyToken(tok.AccessToken)
 	if err != nil {
 		log.Printf("[AUTH] Verify error: %v", err)
-		writeError(w, 500, "token verify failed: "+err.Error())
+		writeError(w, 500, "token verify failed")
 		return
 	}
 
@@ -4625,6 +4769,11 @@ func (s *Server) handleAuthCharacter(w http.ResponseWriter, r *http.Request) {
 		go func() {
 			defer wgChar.Done()
 			if balance, fetchErr := s.esi.GetWalletBalance(sess.CharacterID, token); fetchErr == nil {
+				if s.db != nil {
+					if archiveErr := s.db.UpdateWalletArchiveBalance(userID, sess.CharacterID, balance); archiveErr != nil {
+						log.Printf("[AUTH] Wallet balance archive error (%s): %v", sess.CharacterName, archiveErr)
+					}
+				}
 				muChar.Lock()
 				result.Wallet = balance
 				muChar.Unlock()
@@ -4696,6 +4845,11 @@ func (s *Server) handleAuthCharacter(w http.ResponseWriter, r *http.Request) {
 		go func() {
 			defer wgChar.Done()
 			if skills, fetchErr := s.esi.GetSkills(sess.CharacterID, token); fetchErr == nil {
+				if s.db != nil {
+					if archiveErr := s.db.UpdateCharacterTotalSPForUser(userID, sess.CharacterID, skills.TotalSP); archiveErr != nil {
+						log.Printf("[AUTH] Skills archive error (%s): %v", sess.CharacterName, archiveErr)
+					}
+				}
 				muChar.Lock()
 				result.Skills = skills
 				muChar.Unlock()

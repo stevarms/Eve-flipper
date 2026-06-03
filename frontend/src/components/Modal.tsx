@@ -9,6 +9,8 @@ interface ModalProps {
   width?: string;
   allowFullscreen?: boolean;
   defaultFullscreen?: boolean;
+  closeOnBackdrop?: boolean;
+  showClose?: boolean;
 }
 
 export function Modal({
@@ -19,6 +21,8 @@ export function Modal({
   width = "max-w-4xl",
   allowFullscreen = false,
   defaultFullscreen = false,
+  closeOnBackdrop = false,
+  showClose = true,
 }: ModalProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
@@ -53,7 +57,7 @@ export function Modal({
       aria-labelledby={titleId}
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70 backdrop-blur-sm"
       onClick={(e) => {
-        if (e.target === overlayRef.current) onClose();
+        if (closeOnBackdrop && e.target === overlayRef.current) onClose();
       }}
     >
       <div
@@ -80,13 +84,15 @@ export function Modal({
                 {fullscreen ? "□" : "▣"}
               </button>
             )}
-            <button
-              onClick={onClose}
-              aria-label="Close dialog"
-              className="text-eve-dim hover:text-eve-text transition-colors text-lg leading-none p-1"
-            >
-              &#10005;
-            </button>
+            {showClose && (
+              <button
+                onClick={onClose}
+                aria-label="Close dialog"
+                className="text-eve-dim hover:text-eve-text transition-colors text-lg leading-none p-1"
+              >
+                &#10005;
+              </button>
+            )}
           </div>
         </div>
         {/* Content */}

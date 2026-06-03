@@ -20,14 +20,22 @@ type Session struct {
 
 // SessionStore handles session persistence in SQLite.
 type SessionStore struct {
-	db *sql.DB
+	db    *sql.DB
+	vault *TokenVault
 }
 
 const defaultUserID = "default"
 
 // NewSessionStore creates a store backed by the given SQL database.
 func NewSessionStore(db *sql.DB) *SessionStore {
-	return &SessionStore{db: db}
+	return &SessionStore{db: db, vault: NewTokenVault(db)}
+}
+
+func (s *SessionStore) Vault() *TokenVault {
+	if s == nil {
+		return nil
+	}
+	return s.vault
 }
 
 func normalizeUserID(userID string) string {
@@ -51,6 +59,10 @@ func (s *SessionStore) SaveForUser(userID string, sess *Session) error {
 	if sess == nil {
 		return fmt.Errorf("nil session")
 	}
+	stored, err := s.prepareSessionForStorage(userID, sess)
+	if err != nil {
+		return err
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -65,7 +77,7 @@ func (s *SessionStore) SaveForUser(userID string, sess *Session) error {
 			access_token = excluded.access_token,
 			refresh_token = excluded.refresh_token,
 			expires_at = excluded.expires_at`,
-		userID, sess.CharacterID, sess.CharacterName, sess.AccessToken, sess.RefreshToken, sess.ExpiresAt.Unix(),
+		userID, stored.CharacterID, stored.CharacterName, stored.AccessToken, stored.RefreshToken, stored.ExpiresAt.Unix(),
 	)
 	if err != nil {
 		return err
@@ -76,7 +88,7 @@ func (s *SessionStore) SaveForUser(userID string, sess *Session) error {
 		   SET is_active = 1
 		 WHERE user_id = ? AND character_id = ?
 		   AND NOT EXISTS (SELECT 1 FROM auth_session WHERE user_id = ? AND is_active = 1)`,
-		userID, sess.CharacterID, userID,
+		userID, stored.CharacterID, userID,
 	)
 	if err != nil {
 		return err
@@ -95,6 +107,10 @@ func (s *SessionStore) SaveAndActivateForUser(userID string, sess *Session) erro
 	userID = normalizeUserID(userID)
 	if sess == nil {
 		return fmt.Errorf("nil session")
+	}
+	stored, err := s.prepareSessionForStorage(userID, sess)
+	if err != nil {
+		return err
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -115,7 +131,7 @@ func (s *SessionStore) SaveAndActivateForUser(userID string, sess *Session) erro
 			refresh_token = excluded.refresh_token,
 			expires_at = excluded.expires_at,
 			is_active = 1`,
-		userID, sess.CharacterID, sess.CharacterName, sess.AccessToken, sess.RefreshToken, sess.ExpiresAt.Unix(),
+		userID, stored.CharacterID, stored.CharacterName, stored.AccessToken, stored.RefreshToken, stored.ExpiresAt.Unix(),
 	)
 	if err != nil {
 		return err
@@ -132,6 +148,9 @@ func (s *SessionStore) Get() *Session {
 // GetForUser returns the active session for the given user, or nil if none.
 func (s *SessionStore) GetForUser(userID string) *Session {
 	userID = normalizeUserID(userID)
+	if s.vault != nil && s.vault.TableReady() && !s.vault.IsConfiguredForUser(userID) {
+		return nil
+	}
 
 	var count int
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM auth_session WHERE user_id = ?`, userID).Scan(&count); err != nil || count == 0 {
@@ -162,6 +181,9 @@ func (s *SessionStore) GetByCharacterID(characterID int64) *Session {
 // GetByCharacterIDForUser returns a specific character session for the given user.
 func (s *SessionStore) GetByCharacterIDForUser(userID string, characterID int64) *Session {
 	userID = normalizeUserID(userID)
+	if s.vault != nil && s.vault.TableReady() && !s.vault.IsConfiguredForUser(userID) {
+		return nil
+	}
 
 	return s.querySession(`
 		SELECT character_id, character_name, access_token, refresh_token, expires_at, is_active
@@ -178,6 +200,9 @@ func (s *SessionStore) List() []*Session {
 // ListForUser returns all stored character sessions for the given user (active first).
 func (s *SessionStore) ListForUser(userID string) []*Session {
 	userID = normalizeUserID(userID)
+	if s.vault != nil && s.vault.TableReady() && !s.vault.IsConfiguredForUser(userID) {
+		return nil
+	}
 
 	rows, err := s.db.Query(`
 		SELECT character_id, character_name, access_token, refresh_token, expires_at, is_active
@@ -201,7 +226,19 @@ func (s *SessionStore) ListForUser(userID string) []*Session {
 		sess.Active = activeInt == 1
 		out = append(out, &sess)
 	}
-	return out
+	if err := rows.Err(); err != nil {
+		return nil
+	}
+	rows.Close()
+	filtered := out[:0]
+	for _, sess := range out {
+		if err := s.openSessionFromStorage(userID, sess); err != nil {
+			log.Printf("[AUTH] Failed to open stored session for %s: %v", sess.CharacterName, err)
+			continue
+		}
+		filtered = append(filtered, sess)
+	}
+	return filtered
 }
 
 func (s *SessionStore) querySession(query string, args ...interface{}) *Session {
@@ -215,7 +252,58 @@ func (s *SessionStore) querySession(query string, args ...interface{}) *Session 
 	}
 	sess.ExpiresAt = time.Unix(expiresUnix, 0)
 	sess.Active = activeInt == 1
+	userID := defaultUserID
+	if len(args) > 0 {
+		if v, ok := args[0].(string); ok {
+			userID = normalizeUserID(v)
+		}
+	}
+	if err := s.openSessionFromStorage(userID, &sess); err != nil {
+		log.Printf("[AUTH] Failed to open stored session for %s: %v", sess.CharacterName, err)
+		return nil
+	}
 	return &sess
+}
+
+func (s *SessionStore) prepareSessionForStorage(userID string, sess *Session) (*Session, error) {
+	if sess == nil {
+		return nil, fmt.Errorf("nil session")
+	}
+	stored := *sess
+	if s.vault == nil || !s.vault.TableReady() {
+		return &stored, nil
+	}
+	if !s.vault.IsConfiguredForUser(userID) {
+		return nil, fmt.Errorf("security vault not configured")
+	}
+	accessToken, err := s.vault.PrepareTokenForStorage(userID, stored.CharacterID, "access", stored.AccessToken)
+	if err != nil {
+		return nil, fmt.Errorf("encrypt access token: %w", err)
+	}
+	refreshToken, err := s.vault.PrepareTokenForStorage(userID, stored.CharacterID, "refresh", stored.RefreshToken)
+	if err != nil {
+		return nil, fmt.Errorf("encrypt refresh token: %w", err)
+	}
+	stored.AccessToken = accessToken
+	stored.RefreshToken = refreshToken
+	return &stored, nil
+}
+
+func (s *SessionStore) openSessionFromStorage(userID string, sess *Session) error {
+	if sess == nil || s.vault == nil || !s.vault.TableReady() {
+		return nil
+	}
+	accessToken, err := s.vault.OpenTokenFromStorage(userID, sess.CharacterID, "access", sess.AccessToken)
+	if err != nil {
+		return fmt.Errorf("decrypt access token: %w", err)
+	}
+	refreshToken, err := s.vault.OpenTokenFromStorage(userID, sess.CharacterID, "refresh", sess.RefreshToken)
+	if err != nil {
+		return fmt.Errorf("decrypt refresh token: %w", err)
+	}
+	sess.AccessToken = accessToken
+	sess.RefreshToken = refreshToken
+	return nil
 }
 
 // SetActive marks a stored character as active.

@@ -58,6 +58,7 @@ type StationTrade struct {
 	TypeID         int32   `json:"TypeID"`
 	TypeName       string  `json:"TypeName"`
 	Volume         float64 `json:"Volume"`
+	IsContraband   bool    `json:"IsContraband,omitempty"`
 	BuyPrice       float64 `json:"BuyPrice"`  // highest buy order price (we sell to this)
 	SellPrice      float64 `json:"SellPrice"` // lowest sell order price (we buy from this)
 	Spread         float64 `json:"Spread"`    // SellPrice - BuyPrice
@@ -617,6 +618,7 @@ func (s *Scanner) ScanStationTrades(params StationTradeParams, progress func(str
 			TypeID:          typeID,
 			TypeName:        itemType.Name,
 			Volume:          itemType.Volume,
+			IsContraband:    itemType.IsContraband,
 			BuyPrice:        costToBuy,                   // highest buy (we place our buy here; when filled we pay bid)
 			SellPrice:       revenueFromSell,             // lowest sell (we place our sell here; when filled we receive ask)
 			Spread:          revenueFromSell - costToBuy, // ask - bid

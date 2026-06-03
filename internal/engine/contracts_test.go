@@ -327,6 +327,36 @@ func TestShouldExcludeRigWithShip(t *testing.T) {
 	}
 }
 
+func TestIsContractRigType(t *testing.T) {
+	if !isContractRigType(7, "Large Core Defense Field Extender I", "Rig Shield", false, false) {
+		t.Fatalf("rig group name should classify contract item as rig")
+	}
+	if !isContractRigType(7, "Large Core Defense Field Extender I", "Shield Rig", false, true) {
+		t.Fatalf("group IsRig should classify contract item as rig")
+	}
+	if isContractRigType(7, "Gyrostabilizer II", "Weapon Upgrade", false, false) {
+		t.Fatalf("ordinary module should not classify as rig")
+	}
+	if isContractRigType(9, "Large Core Defense Field Extender Blueprint", "Rig Blueprint", false, false) {
+		t.Fatalf("rig blueprint category should not classify as fitted rig")
+	}
+}
+
+func TestEstimateContractRigValue(t *testing.T) {
+	pd := &itemPriceData{MinSellPrice: 100, VWAP: 150, HasHistory: true}
+	if got := estimateContractRigValue(pd, 2, false); got != 200 {
+		t.Fatalf("estimateContractRigValue history = %v, want 200", got)
+	}
+	pd = &itemPriceData{MinSellPrice: 20, VWAP: 100, HasHistory: true}
+	if got := estimateContractRigValue(pd, 3, false); got != 120 {
+		t.Fatalf("estimateContractRigValue deviation = %v, want 120", got)
+	}
+	pd = &itemPriceData{MinSellPrice: 50}
+	if got := estimateContractRigValue(pd, 2, true); got != 0 {
+		t.Fatalf("estimateContractRigValue requireHistory = %v, want 0", got)
+	}
+}
+
 func TestBlockedContractTypeID(t *testing.T) {
 	items := []esi.ContractItem{
 		{TypeID: 34, Quantity: 100},        // Tritanium

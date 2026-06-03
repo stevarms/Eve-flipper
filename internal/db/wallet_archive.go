@@ -3,6 +3,7 @@ package db
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,6 +41,18 @@ type WalletArchiveStats struct {
 	ArchiveJournalLimit     int      `json:"archive_journal_limit"`
 	CharacterIDs            []int64  `json:"character_ids,omitempty"`
 	Warnings                []string `json:"warnings,omitempty"`
+}
+
+// CharacterPrivateMetrics stores small current-account metrics that are
+// sensitive but do not need SQL filtering.
+type CharacterPrivateMetrics struct {
+	CharacterID      int64
+	WalletBalance    float64
+	WalletBalanceAt  string
+	HasWalletBalance bool
+	TotalSP          int64
+	TotalSPAt        string
+	HasTotalSP       bool
 }
 
 // UpsertWalletTransactionsForUser stores the latest ESI wallet transaction page.
@@ -141,6 +154,29 @@ func (d *DB) UpsertWalletJournalForUser(userID string, characterID int64, entrie
 		SyncedAt:    now,
 	}
 
+	storedEntries := make([]esi.WalletJournalEntry, 0, len(entries))
+	for _, row := range entries {
+		if row.ID == 0 || strings.TrimSpace(row.Date) == "" {
+			continue
+		}
+		reason, err := d.protectPrivateString(userID, "wallet_journal_archive.reason", row.Reason)
+		if err != nil {
+			return stats, err
+		}
+		description, err := d.protectPrivateString(userID, "wallet_journal_archive.description", row.Description)
+		if err != nil {
+			return stats, err
+		}
+		contextIDType, err := d.protectPrivateString(userID, "wallet_journal_archive.context_id_type", row.ContextIDType)
+		if err != nil {
+			return stats, err
+		}
+		row.Reason = reason
+		row.Description = description
+		row.ContextIDType = contextIDType
+		storedEntries = append(storedEntries, row)
+	}
+
 	tx, err := d.sql.Begin()
 	if err != nil {
 		return stats, err
@@ -173,10 +209,7 @@ func (d *DB) UpsertWalletJournalForUser(userID string, characterID int64, entrie
 	}
 	defer stmt.Close()
 
-	for _, row := range entries {
-		if row.ID == 0 || strings.TrimSpace(row.Date) == "" {
-			continue
-		}
+	for _, row := range storedEntries {
 		if _, err := stmt.Exec(
 			userID,
 			characterID,
@@ -224,16 +257,102 @@ func (d *DB) UpdateWalletArchiveBalance(userID string, characterID int64, balanc
 		return fmt.Errorf("invalid wallet balance archive scope")
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
+	legacyBalance := balance
+	protectedBalance := ""
+	if d != nil && d.privacy != nil {
+		var err error
+		protectedBalance, err = d.protectPrivateString(userID, "wallet_archive_sync.wallet_balance", strconv.FormatFloat(balance, 'f', -1, 64))
+		if err != nil {
+			return err
+		}
+		legacyBalance = 0
+	}
 	_, err := d.sql.Exec(`
 		INSERT INTO wallet_archive_sync (
-			user_id, character_id, wallet_balance, wallet_balance_at, updated_at
-		) VALUES (?, ?, ?, ?, ?)
+			user_id, character_id, wallet_balance, wallet_balance_private, wallet_balance_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT(user_id, character_id) DO UPDATE SET
 			wallet_balance = excluded.wallet_balance,
+			wallet_balance_private = excluded.wallet_balance_private,
 			wallet_balance_at = excluded.wallet_balance_at,
 			updated_at = excluded.updated_at
-	`, userID, characterID, balance, now, now)
+	`, userID, characterID, legacyBalance, protectedBalance, now, now)
 	return err
+}
+
+// UpdateCharacterTotalSP stores the latest total SP as an encrypted current metric.
+func (d *DB) UpdateCharacterTotalSPForUser(userID string, characterID int64, totalSP int64) error {
+	userID = strings.TrimSpace(userID)
+	if userID == "" || characterID <= 0 {
+		return fmt.Errorf("invalid character SP archive scope")
+	}
+	if d == nil || d.privacy == nil {
+		return nil
+	}
+	protectedSP, err := d.protectPrivateString(userID, "wallet_archive_sync.total_sp", strconv.FormatInt(totalSP, 10))
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err = d.sql.Exec(`
+		INSERT INTO wallet_archive_sync (
+			user_id, character_id, total_sp_private, total_sp_at, updated_at
+		) VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(user_id, character_id) DO UPDATE SET
+			total_sp_private = excluded.total_sp_private,
+			total_sp_at = excluded.total_sp_at,
+			updated_at = excluded.updated_at
+	`, userID, characterID, protectedSP, now, now)
+	return err
+}
+
+func (d *DB) GetCharacterPrivateMetricsForUser(userID string, characterID int64) (CharacterPrivateMetrics, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" || characterID <= 0 {
+		return CharacterPrivateMetrics{}, fmt.Errorf("invalid character private metrics scope")
+	}
+	out := CharacterPrivateMetrics{CharacterID: characterID}
+	var legacyBalance float64
+	var protectedBalance, balanceAt, protectedSP, spAt string
+	err := d.sql.QueryRow(`
+		SELECT wallet_balance, wallet_balance_private, wallet_balance_at, total_sp_private, total_sp_at
+		  FROM wallet_archive_sync
+		 WHERE user_id = ? AND character_id = ?
+	`, userID, characterID).Scan(&legacyBalance, &protectedBalance, &balanceAt, &protectedSP, &spAt)
+	if err != nil {
+		return out, err
+	}
+	if strings.TrimSpace(protectedBalance) != "" {
+		opened, err := d.openPrivateString(userID, "wallet_archive_sync.wallet_balance", protectedBalance)
+		if err != nil {
+			return out, err
+		}
+		parsed, err := strconv.ParseFloat(opened, 64)
+		if err != nil {
+			return out, fmt.Errorf("parse private wallet balance: %w", err)
+		}
+		out.WalletBalance = parsed
+		out.WalletBalanceAt = balanceAt
+		out.HasWalletBalance = true
+	} else if legacyBalance != 0 {
+		out.WalletBalance = legacyBalance
+		out.WalletBalanceAt = balanceAt
+		out.HasWalletBalance = true
+	}
+	if strings.TrimSpace(protectedSP) != "" {
+		opened, err := d.openPrivateString(userID, "wallet_archive_sync.total_sp", protectedSP)
+		if err != nil {
+			return out, err
+		}
+		parsed, err := strconv.ParseInt(opened, 10, 64)
+		if err != nil {
+			return out, fmt.Errorf("parse private total SP: %w", err)
+		}
+		out.TotalSP = parsed
+		out.TotalSPAt = spAt
+		out.HasTotalSP = true
+	}
+	return out, nil
 }
 
 // ListArchivedWalletTransactions returns archived transactions for selected characters.
@@ -293,8 +412,9 @@ func (d *DB) ListArchivedWalletTransactions(userID string, characterIDs []int64,
 
 // ListArchivedWalletJournal returns archived journal rows for selected characters.
 func (d *DB) ListArchivedWalletJournal(userID string, characterIDs []int64, since time.Time, limit int) ([]esi.WalletJournalEntry, error) {
-	args := []interface{}{strings.TrimSpace(userID)}
-	if args[0] == "" {
+	queryUserID := strings.TrimSpace(userID)
+	args := []interface{}{queryUserID}
+	if queryUserID == "" {
 		return nil, fmt.Errorf("user id is required")
 	}
 	where := "user_id = ?"
@@ -346,7 +466,26 @@ func (d *DB) ListArchivedWalletJournal(userID string, characterIDs []int64, sinc
 		}
 		out = append(out, row)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	for i := range out {
+		var err error
+		out[i].Reason, err = d.openPrivateString(queryUserID, "wallet_journal_archive.reason", out[i].Reason)
+		if err != nil {
+			return nil, err
+		}
+		out[i].Description, err = d.openPrivateString(queryUserID, "wallet_journal_archive.description", out[i].Description)
+		if err != nil {
+			return nil, err
+		}
+		out[i].ContextIDType, err = d.openPrivateString(queryUserID, "wallet_journal_archive.context_id_type", out[i].ContextIDType)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // GetWalletArchiveStats summarizes full local archive coverage for selected characters.

@@ -7,6 +7,7 @@ import {
   createPaperTrade,
   getCharacterInfo,
   getExecutionPlan,
+  getTradingEdgeSummary,
   openMarketInGame,
   setWaypointInGame,
 } from "@/lib/api";
@@ -19,6 +20,7 @@ import type {
   FlipResult,
   PaperTrade,
   PaperTradeCreatePayload,
+  TradingEdgeRecommendation,
 } from "@/lib/types";
 
 type ShipKey = "sunesis" | "blockade_runner" | "dst" | "freighter" | "custom";
@@ -107,6 +109,22 @@ const SHIP_PROFILES: ShipProfile[] = [
 
 const DEFAULT_MAX_ISK = 1_000_000_000;
 
+const edgeTone: Record<string, "good" | "bad" | "warn" | "neutral"> = {
+  good_edge: "good",
+  needs_bigger_margin: "warn",
+  do_not_trade: "bad",
+  watch: "warn",
+  insufficient_data: "neutral",
+};
+
+const edgeLabel: Record<string, string> = {
+  good_edge: "Good personal edge",
+  needs_bigger_margin: "Needs bigger margin",
+  do_not_trade: "Do not trade",
+  watch: "Watch carefully",
+  insufficient_data: "Not enough history",
+};
+
 export interface TradeExecutionAutopilotPopupProps {
   open: boolean;
   onClose: () => void;
@@ -137,6 +155,11 @@ function clamp(value: number, min: number, max: number): number {
 
 function intInput(value: unknown, fallback = 1): number {
   return Math.max(1, Math.floor(finiteNumber(value, fallback)));
+}
+
+function positiveInt(value: unknown): number {
+  const n = Math.floor(finiteNumber(value));
+  return n > 0 ? n : 0;
 }
 
 function defaultQuantityForRow(row: FlipResult | null): number {
@@ -325,6 +348,75 @@ function Field({
   );
 }
 
+function DraftNumberInput({
+  value,
+  onChange,
+  min = 0,
+  max = Number.POSITIVE_INFINITY,
+  step = 1,
+  integer = false,
+  disabled = false,
+  className = "",
+}: {
+  value: number;
+  onChange: (value: number) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+  integer?: boolean;
+  disabled?: boolean;
+  className?: string;
+}) {
+  const [draft, setDraft] = useState(String(value));
+  const [focused, setFocused] = useState(false);
+
+  useEffect(() => {
+    if (!focused) setDraft(String(value));
+  }, [focused, value]);
+
+  const normalize = useCallback(
+    (raw: string, commit: boolean) => {
+      const trimmed = raw.trim();
+      if (trimmed === "" || trimmed === "-" || trimmed === "." || trimmed === "-.") {
+        if (commit) setDraft(String(value));
+        return;
+      }
+      let parsed = Number(trimmed);
+      if (!Number.isFinite(parsed)) {
+        if (commit) setDraft(String(value));
+        return;
+      }
+      if (integer) parsed = Math.floor(parsed);
+      const clamped = clamp(parsed, min, max);
+      onChange(clamped);
+      if (commit) setDraft(String(clamped));
+    },
+    [integer, max, min, onChange, value],
+  );
+
+  return (
+    <input
+      type="number"
+      min={min}
+      max={Number.isFinite(max) ? max : undefined}
+      step={step}
+      value={draft}
+      disabled={disabled}
+      onFocus={() => setFocused(true)}
+      onChange={(e) => {
+        const raw = e.target.value;
+        setDraft(raw);
+        normalize(raw, false);
+      }}
+      onBlur={(e) => {
+        setFocused(false);
+        normalize(e.target.value, true);
+      }}
+      className={className}
+    />
+  );
+}
+
 function Metric({
   label,
   value,
@@ -425,10 +517,14 @@ export function TradeExecutionAutopilotPopup({
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
   const [createdTrade, setCreatedTrade] = useState<PaperTrade | null>(null);
+  const [edgeRecommendation, setEdgeRecommendation] = useState<TradingEdgeRecommendation | null>(null);
+  const [edgeLoading, setEdgeLoading] = useState(false);
+  const [edgeError, setEdgeError] = useState("");
   const abortRef = useRef<AbortController | null>(null);
   const requestSeqRef = useRef(0);
   const missionTrackedRef = useRef("");
   const contextHintsEnabled = useMemo(() => loadCockpitPreferences().contextHintsEnabled, [open]);
+  const tradingEdgeEnabled = useMemo(() => loadCockpitPreferences().tradingEdgeEnabled, [open]);
 
   const selectedProfile = useMemo(() => {
     const profile = SHIP_PROFILES.find((item) => item.key === shipKey) ?? SHIP_PROFILES[1];
@@ -541,6 +637,47 @@ export function TradeExecutionAutopilotPopup({
       .finally(() => setCharacterLoading(false));
   }, [isLoggedIn, open]);
 
+  useEffect(() => {
+    if (!open || !row || !tradingEdgeEnabled) {
+      setEdgeRecommendation(null);
+      setEdgeError("");
+      setEdgeLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setEdgeLoading(true);
+    setEdgeError("");
+    getTradingEdgeSummary({
+      type_id: row.TypeID,
+      group_name: row.DayGroupName,
+      station: row.SellStation || row.SellSystemName || row.BuyStation || row.BuySystemName,
+    })
+      .then((data) => {
+        if (cancelled) return;
+        setEdgeRecommendation(data.recommendation ?? null);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setEdgeRecommendation(null);
+        setEdgeError(e instanceof Error ? e.message : "Trading Edge unavailable");
+      })
+      .finally(() => {
+        if (!cancelled) setEdgeLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    open,
+    row?.BuyStation,
+    row?.BuySystemName,
+    row?.DayGroupName,
+    row?.SellStation,
+    row?.SellSystemName,
+    row?.TypeID,
+    tradingEdgeEnabled,
+  ]);
+
   const characterExposure = useMemo(() => {
     if (!row) {
       return { assets: 0, buyOrders: 0, sellOrders: 0, openBuyISK: 0, openSellISK: 0 };
@@ -577,9 +714,32 @@ export function TradeExecutionAutopilotPopup({
   const mission = useMemo(() => {
     if (!row) return null;
     const requestedQty = intInput(quantity);
-    const buyDepthQty = planBuy ? planFilledQuantity(planBuy) : Math.max(0, Math.floor(finiteNumber(row.FilledQty || row.BuyOrderRemain || requestedQty)));
-    const sellDepthQty = planSell ? planFilledQuantity(planSell) : Math.max(0, Math.floor(finiteNumber(row.FilledQty || row.SellOrderRemain || requestedQty)));
-    const depthQty = Math.min(requestedQty, Math.max(0, buyDepthQty), Math.max(0, sellDepthQty));
+    const plannedBuyFillQty = planFilledQuantity(planBuy);
+    const plannedSellFillQty = planFilledQuantity(planSell);
+    const rowFilledQty = positiveInt(row.FilledQty);
+    const buyDepthQty = Math.max(
+      positiveInt(row.BuyOrderRemain),
+      positiveInt(row.BestAskQty),
+      plannedBuyFillQty,
+      rowFilledQty,
+    );
+    const sellDepthQty = Math.max(
+      positiveInt(row.SellOrderRemain),
+      positiveInt(row.BestBidQty),
+      plannedSellFillQty,
+      rowFilledQty,
+    );
+    const buyExecutableQty = plannedBuyFillQty > 0
+      ? plannedBuyFillQty
+      : buyDepthQty > 0
+        ? Math.min(requestedQty, buyDepthQty)
+        : requestedQty;
+    const sellExecutableQty = plannedSellFillQty > 0
+      ? plannedSellFillQty
+      : sellDepthQty > 0
+        ? Math.min(requestedQty, sellDepthQty)
+        : requestedQty;
+    const depthQty = Math.min(requestedQty, buyExecutableQty, sellExecutableQty);
 
     const wallet = walletOverride > 0 ? walletOverride : Math.max(0, character?.wallet ?? 0);
     const reserveCap = wallet > 0 ? wallet * Math.max(0, 1 - reservePct / 100) : Number.POSITIVE_INFINITY;
@@ -675,6 +835,7 @@ export function TradeExecutionAutopilotPopup({
 
     const warnings: string[] = [];
     if (executableQty <= 0) warnings.push("No executable quantity under current depth/cargo/capital constraints.");
+    if (row.IsContraband) warnings.push("Contraband item: hauling through empire space can trigger penalties; verify route/faction risk manually.");
     if (!isStationMode && !cargoPossible) warnings.push("One unit is larger than selected ship cargo.");
     if (depthQty < requestedQty) warnings.push("Orderbook depth cannot fill the requested quantity.");
     if (capitalQty < requestedQty) warnings.push("Capital/exposure limits reduce executable quantity.");
@@ -908,15 +1069,22 @@ export function TradeExecutionAutopilotPopup({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={`${isStationMode ? "Station Mission Control" : "Trade Execution Autopilot"}: ${row.TypeName}`} width="max-w-7xl" allowFullscreen>
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={`${isStationMode ? "Station Mission Control" : "Trade Execution Autopilot"}: ${row.TypeName}`}
+      width="max-w-7xl"
+      allowFullscreen
+      closeOnBackdrop={false}
+    >
       <div className="p-4 space-y-4">
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-3">
           <Field label="Quantity">
-            <input
-              type="number"
-              min={1}
+            <DraftNumberInput
               value={quantity}
-              onChange={(e) => setQuantity(intInput(e.target.value))}
+              onChange={(value) => setQuantity(intInput(value))}
+              min={1}
+              integer
               className="px-2 py-1.5 bg-eve-input border border-eve-border text-eve-text font-mono"
             />
           </Field>
@@ -936,12 +1104,11 @@ export function TradeExecutionAutopilotPopup({
                 </select>
               </Field>
               <Field label="Custom cargo m3">
-                <input
-                  type="number"
-                  min={0}
+                <DraftNumberInput
                   value={customCargo}
                   disabled={shipKey !== "custom"}
-                  onChange={(e) => setCustomCargo(Math.max(0, finiteNumber(e.target.value)))}
+                  onChange={(value) => setCustomCargo(Math.max(0, value))}
+                  min={0}
                   className="px-2 py-1.5 bg-eve-input border border-eve-border text-eve-text font-mono disabled:opacity-45"
                 />
               </Field>
@@ -975,40 +1142,36 @@ export function TradeExecutionAutopilotPopup({
 
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-3">
           <Field label="Max ISK per trade">
-            <input
-              type="number"
-              min={0}
+            <DraftNumberInput
               value={maxISK}
-              onChange={(e) => setMaxISK(Math.max(0, finiteNumber(e.target.value)))}
+              onChange={(value) => setMaxISK(Math.max(0, value))}
+              min={0}
               className="px-2 py-1.5 bg-eve-input border border-eve-border text-eve-text font-mono"
             />
           </Field>
           <Field label="Reserve wallet %">
-            <input
-              type="number"
+            <DraftNumberInput
+              value={reservePct}
+              onChange={(value) => setReservePct(clamp(value, 0, 100))}
               min={0}
               max={100}
-              value={reservePct}
-              onChange={(e) => setReservePct(clamp(finiteNumber(e.target.value), 0, 100))}
               className="px-2 py-1.5 bg-eve-input border border-eve-border text-eve-text font-mono"
             />
           </Field>
           <Field label="Max exposure / item %">
-            <input
-              type="number"
+            <DraftNumberInput
+              value={maxExposurePct}
+              onChange={(value) => setMaxExposurePct(clamp(value, 0, 100))}
               min={0}
               max={100}
-              value={maxExposurePct}
-              onChange={(e) => setMaxExposurePct(clamp(finiteNumber(e.target.value), 0, 100))}
               className="px-2 py-1.5 bg-eve-input border border-eve-border text-eve-text font-mono"
             />
           </Field>
           <Field label={character?.wallet ? "Wallet from ESI" : "Wallet override"}>
-            <input
-              type="number"
-              min={0}
+            <DraftNumberInput
               value={walletOverride || character?.wallet || 0}
-              onChange={(e) => setWalletOverride(Math.max(0, finiteNumber(e.target.value)))}
+              onChange={(value) => setWalletOverride(Math.max(0, value))}
+              min={0}
               className="px-2 py-1.5 bg-eve-input border border-eve-border text-eve-text font-mono"
             />
           </Field>
@@ -1091,6 +1254,58 @@ export function TradeExecutionAutopilotPopup({
                     <div className="mt-1 text-xs text-eve-dim leading-relaxed">{hint.body}</div>
                   </div>
                 ))}
+              </div>
+            )}
+
+            {tradingEdgeEnabled && (
+              <div className="border border-eve-border bg-eve-panel/70 p-3">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wider text-eve-accent">Trading Edge recommendation</div>
+                    <div className="mt-1 text-xs text-eve-dim">
+                      Personal expected-vs-actual model from reconciled journal trades.
+                    </div>
+                  </div>
+                  <div className="text-[10px] uppercase tracking-wider text-eve-dim">
+                    {edgeLoading ? "loading" : edgeRecommendation ? `source: ${edgeRecommendation.source}` : "no model"}
+                  </div>
+                </div>
+                {edgeError ? (
+                  <div className="mt-2 text-xs text-red-300">{edgeError}</div>
+                ) : edgeRecommendation ? (
+                  <div className="mt-3 grid grid-cols-1 lg:grid-cols-[1.2fr_2fr] gap-3">
+                    <div className="border border-eve-border bg-eve-dark/50 p-3">
+                      <div className={`text-sm font-semibold ${edgeTone[edgeRecommendation.label_code] === "good" ? "text-green-400" : edgeTone[edgeRecommendation.label_code] === "bad" ? "text-red-300" : edgeTone[edgeRecommendation.label_code] === "warn" ? "text-yellow-300" : "text-eve-text"}`}>
+                        {edgeLabel[edgeRecommendation.label_code] ?? edgeRecommendation.label_code}
+                      </div>
+                      <div className="mt-1 text-xs text-eve-dim leading-relaxed">{edgeRecommendation.advice}</div>
+                    </div>
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-sm">
+                      <Metric label="Sample" value={`${edgeRecommendation.sample_trades} trades`} />
+                      <Metric label="Win rate" value={`${edgeRecommendation.win_rate.toFixed(0)}%`} tone={edgeRecommendation.win_rate >= 60 ? "good" : "warn"} />
+                      <Metric label="Reality" value={edgeRecommendation.reality_ratio ? `${(edgeRecommendation.reality_ratio * 100).toFixed(0)}%` : "-"} tone={edgeRecommendation.reality_ratio >= 0.8 ? "good" : edgeRecommendation.reality_ratio > 0 ? "warn" : "neutral"} />
+                      <Metric label="Min ROI" value={`${edgeRecommendation.min_net_roi_pct.toFixed(1)}%`} />
+                      <Metric label="Max qty" value={shortNumber(edgeRecommendation.max_recommended_qty)} />
+                    </div>
+                    <div className="lg:col-span-2 flex flex-wrap items-center gap-2 text-[10px]">
+                      <span className="text-eve-dim">Reasons:</span>
+                      {(edgeRecommendation.reasons.length > 0 ? edgeRecommendation.reasons : ["not enough personal history"]).map((reason) => (
+                        <span key={reason} className="px-2 py-0.5 border border-eve-border bg-eve-dark/60 text-eve-dim">
+                          {reason}
+                        </span>
+                      ))}
+                      {edgeRecommendation.max_exposure_isk > 0 && (
+                        <span className="px-2 py-0.5 border border-eve-accent/35 bg-eve-accent/10 text-eve-accent">
+                          exposure guide {formatISK(edgeRecommendation.max_exposure_isk)}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-2 text-xs text-eve-dim">
+                    No personal journal history yet. Create and reconcile trades to train the model.
+                  </div>
+                )}
               </div>
             )}
 

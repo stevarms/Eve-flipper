@@ -17,6 +17,7 @@ import (
 type DB struct {
 	sql           *sql.DB
 	achievementMu sync.Mutex
+	privacy       PrivacyCodec
 }
 
 func dbPath() string {
@@ -1594,6 +1595,60 @@ func (d *DB) migrate() error {
 		logger.Info("DB", "Applied migration v37 (cockpit loadouts)")
 	}
 
+	if version < 38 {
+		_, err := d.sql.Exec(`
+			CREATE TABLE IF NOT EXISTS vault_state (
+				user_id              TEXT PRIMARY KEY,
+				mode                 TEXT NOT NULL,
+				status               TEXT NOT NULL,
+				schema_version       INTEGER NOT NULL DEFAULT 1,
+				checkpoint_version   INTEGER NOT NULL DEFAULT 1,
+				kdf_alg              TEXT NOT NULL DEFAULT '',
+				kdf_salt             TEXT NOT NULL DEFAULT '',
+				wrapped_key          TEXT NOT NULL,
+				key_check            TEXT NOT NULL,
+				plaintext_purged_at  TEXT NOT NULL DEFAULT '',
+				created_at           TEXT NOT NULL,
+				updated_at           TEXT NOT NULL
+			);
+
+			CREATE TABLE IF NOT EXISTS security_events (
+				id          INTEGER PRIMARY KEY AUTOINCREMENT,
+				user_id     TEXT NOT NULL,
+				event_type  TEXT NOT NULL,
+				detail      TEXT NOT NULL DEFAULT '',
+				created_at  TEXT NOT NULL
+			);
+			CREATE INDEX IF NOT EXISTS idx_security_events_user_time ON security_events(user_id, created_at DESC);
+
+			INSERT OR IGNORE INTO schema_version (version) VALUES (38);
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v38: %w", err)
+		}
+		logger.Info("DB", "Applied migration v38 (security vault)")
+	}
+
+	if version < 39 {
+		for _, c := range []struct {
+			table string
+			name  string
+			def   string
+		}{
+			{table: "wallet_archive_sync", name: "wallet_balance_private", def: "TEXT NOT NULL DEFAULT ''"},
+			{table: "wallet_archive_sync", name: "total_sp_private", def: "TEXT NOT NULL DEFAULT ''"},
+			{table: "wallet_archive_sync", name: "total_sp_at", def: "TEXT NOT NULL DEFAULT ''"},
+		} {
+			if err := d.ensureTableColumn(c.table, c.name, c.def); err != nil {
+				return fmt.Errorf("migration v39 add %s.%s: %w", c.table, c.name, err)
+			}
+		}
+		if _, err := d.sql.Exec(`INSERT OR IGNORE INTO schema_version (version) VALUES (39);`); err != nil {
+			return fmt.Errorf("migration v39: %w", err)
+		}
+		logger.Info("DB", "Applied migration v39 (private wallet balance and SP metrics)")
+	}
+
 	return nil
 }
 
@@ -1642,4 +1697,13 @@ func (d *DB) ensureTableColumn(tableName, columnName, columnDef string) error {
 // SqlDB returns the underlying *sql.DB for use by other packages (e.g. auth store).
 func (d *DB) SqlDB() *sql.DB {
 	return d.sql
+}
+
+// SetPrivacyCodec attaches optional field-level encryption for user-scoped
+// private text fields. Numeric analytics stay queryable in SQLite.
+func (d *DB) SetPrivacyCodec(codec PrivacyCodec) {
+	if d == nil {
+		return
+	}
+	d.privacy = codec
 }

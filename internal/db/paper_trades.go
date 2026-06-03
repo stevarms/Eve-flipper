@@ -270,6 +270,14 @@ func (d *DB) CreatePaperTradeForUser(userID string, in PaperTradeCreateInput) (P
 	if err != nil {
 		return PaperTrade{}, err
 	}
+	storedNotes, err := d.protectPrivateString(trade.UserID, "paper_trades.notes", trade.Notes)
+	if err != nil {
+		return PaperTrade{}, err
+	}
+	storedSource, err := d.protectPrivateString(trade.UserID, "paper_trades.source", trade.Source)
+	if err != nil {
+		return PaperTrade{}, err
+	}
 
 	res, err := d.sql.Exec(`
 		INSERT INTO paper_trades (
@@ -289,7 +297,7 @@ func (d *DB) CreatePaperTradeForUser(userID string, in PaperTradeCreateInput) (P
 		trade.PlannedProfitISK, trade.PlannedROIPercent, trade.FeesISK, trade.HaulingCostISK,
 		trade.BuyStation, trade.SellStation, trade.BuySystemName, trade.SellSystemName,
 		trade.BuySystemID, trade.SellSystemID, trade.BuyRegionID, trade.SellRegionID,
-		trade.BuyLocationID, trade.SellLocationID, trade.VolumeM3, trade.Notes, trade.Source,
+		trade.BuyLocationID, trade.SellLocationID, trade.VolumeM3, storedNotes, storedSource,
 		trade.CreatedAt, trade.UpdatedAt, trade.ClosedAt,
 	)
 	if err != nil {
@@ -322,6 +330,22 @@ func scanPaperTrade(scanner paperTradeScanner) (PaperTrade, error) {
 	return t, nil
 }
 
+func (d *DB) openPaperTradePrivateFields(t *PaperTrade) error {
+	if t == nil {
+		return nil
+	}
+	var err error
+	t.Notes, err = d.openPrivateString(t.UserID, "paper_trades.notes", t.Notes)
+	if err != nil {
+		return err
+	}
+	t.Source, err = d.openPrivateString(t.UserID, "paper_trades.source", t.Source)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 const paperTradeSelectColumns = `
 	id, user_id, status, type_id, type_name,
 	planned_quantity, actual_quantity,
@@ -338,12 +362,19 @@ func (d *DB) GetPaperTradeForUser(userID string, id int64) (PaperTrade, error) {
 	if id <= 0 {
 		return PaperTrade{}, sql.ErrNoRows
 	}
-	return scanPaperTrade(d.sql.QueryRow(`
+	trade, err := scanPaperTrade(d.sql.QueryRow(`
 		SELECT `+paperTradeSelectColumns+`
 		  FROM paper_trades
 		 WHERE user_id = ? AND id = ?
 		 LIMIT 1
 	`, userID, id))
+	if err != nil {
+		return PaperTrade{}, err
+	}
+	if err := d.openPaperTradePrivateFields(&trade); err != nil {
+		return PaperTrade{}, err
+	}
+	return trade, nil
 }
 
 func (d *DB) ListPaperTradesForUser(userID, status string, limit int) ([]PaperTrade, error) {
@@ -406,6 +437,12 @@ func (d *DB) ListPaperTradesForUser(userID, status string, limit int) ([]PaperTr
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	rows.Close()
+	for i := range out {
+		if err := d.openPaperTradePrivateFields(&out[i]); err != nil {
+			return nil, err
+		}
 	}
 	return out, nil
 }
@@ -486,6 +523,10 @@ func (d *DB) UpdatePaperTradeForUser(userID string, id int64, patch PaperTradeUp
 	if err := applyPaperTradePatch(&trade, patch, now); err != nil {
 		return PaperTrade{}, err
 	}
+	storedNotes, err := d.protectPrivateString(trade.UserID, "paper_trades.notes", trade.Notes)
+	if err != nil {
+		return PaperTrade{}, err
+	}
 
 	res, err := d.sql.Exec(`
 		UPDATE paper_trades
@@ -516,7 +557,7 @@ func (d *DB) UpdatePaperTradeForUser(userID string, id int64, patch PaperTradeUp
 		trade.PlannedROIPercent,
 		trade.FeesISK,
 		trade.HaulingCostISK,
-		trade.Notes,
+		storedNotes,
 		trade.UpdatedAt,
 		trade.ClosedAt,
 		trade.UserID,

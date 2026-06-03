@@ -38,6 +38,7 @@ export function SystemAutocomplete({
   const [noStations, setNoStations] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const containerRef = useRef<HTMLDivElement>(null);
+  const stationCheckSeqRef = useRef(0);
 
   useEffect(() => {
     setQuery(value);
@@ -50,12 +51,14 @@ export function SystemAutocomplete({
       setNoStations(false);
       return;
     }
+    const requestID = ++stationCheckSeqRef.current;
     let cancelled = false;
+    const isCurrent = () => !cancelled && requestID === stationCheckSeqRef.current;
 
     const run = async () => {
       try {
         const resp = await getStations(systemName);
-        if (cancelled) return;
+        if (!isCurrent()) return;
 
         const firstCheckNoStations = resp.system_id > 0 && resp.stations.length === 0;
         if (!firstCheckNoStations) {
@@ -66,10 +69,10 @@ export function SystemAutocomplete({
         // Rare backend race can return transient empty list for systems that have NPC stations.
         // Retry once before showing the warning.
         const retryResp = await getStations(systemName);
-        if (cancelled) return;
+        if (!isCurrent()) return;
         setNoStations(retryResp.system_id > 0 && retryResp.stations.length === 0);
       } catch {
-        if (!cancelled) setNoStations(false);
+        if (isCurrent()) setNoStations(false);
       }
     };
 

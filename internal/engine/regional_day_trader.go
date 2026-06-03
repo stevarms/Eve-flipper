@@ -17,6 +17,7 @@ const (
 type RegionalDayTradeItem struct {
 	TypeID             int32     `json:"type_id"`
 	TypeName           string    `json:"type_name"`
+	IsContraband       bool      `json:"is_contraband,omitempty"`
 	SourceSystemID     int32     `json:"source_system_id"`
 	SourceSystemName   string    `json:"source_system_name"`
 	SourceStationName  string    `json:"source_station_name"`
@@ -646,6 +647,7 @@ func (s *Scanner) BuildRegionalDayTrader(
 		item := RegionalDayTradeItem{
 			TypeID:             row.TypeID,
 			TypeName:           row.TypeName,
+			IsContraband:       row.IsContraband,
 			SourceSystemID:     row.BuySystemID,
 			SourceSystemName:   row.BuySystemName,
 			SourceStationName:  chooseNonEmpty(row.BuyStation, row.BuySystemName),
@@ -745,6 +747,7 @@ func FlattenRegionalDayHubs(hubs []RegionalDayTradeHub) []FlipResult {
 			row := FlipResult{
 				TypeID:            item.TypeID,
 				TypeName:          item.TypeName,
+				IsContraband:      item.IsContraband,
 				Volume:            sanitizeFloat(item.ItemVolume),
 				BuyPrice:          sanitizeFloat(item.SourceAvgPrice),
 				ExpectedBuyPrice:  sanitizeFloat(item.SourceAvgPrice),

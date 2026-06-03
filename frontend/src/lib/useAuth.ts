@@ -13,7 +13,13 @@ interface UseAuthReturn {
 }
 
 function normalizeAuthStatus(status: AuthStatus): AuthStatus {
-  if (!status.logged_in) return { logged_in: false, characters: [] };
+  if (!status.logged_in) {
+    return {
+      ...status,
+      logged_in: false,
+      characters: [],
+    };
+  }
 
   const characters = [...(status.characters ?? [])];
   if (characters.length === 0 && status.character_id && status.character_name) {
@@ -111,12 +117,12 @@ export function useAuth(): UseAuthReturn {
           url = `${baseUrl}?desktop=1`;
         }
         // Fallback if opener bridge fails
-        window.open(url, "_blank");
+        window.open(url, "_blank", "noopener,noreferrer");
       }
     } else {
       // In regular browser: fetch the login URL via apiFetch first so that
-      // X-EveFlipper-UID header is sent and the OAuth state entry is bound
-      // to the correct user ID. Then navigate the window to EVE SSO.
+      // the signed local user cookie is set and the OAuth state entry is
+      // bound to the correct user ID. Then navigate the window to EVE SSO.
       // This prevents the race condition where the cookie is not yet set
       // when the browser navigates to /api/auth/login directly.
       let url = baseUrl;

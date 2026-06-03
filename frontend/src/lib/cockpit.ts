@@ -73,6 +73,7 @@ export interface CockpitPreferences {
   layoutLocked: boolean;
   adaptiveEnabled: boolean;
   contextHintsEnabled: boolean;
+  tradingEdgeEnabled: boolean;
   dismissedAdaptiveSuggestions: string[];
   favoriteTemplates: string[];
   roleBindings: Record<string, CockpitRoleBinding>;
@@ -323,6 +324,7 @@ export const defaultCockpitPreferences: CockpitPreferences = {
   layoutLocked: false,
   adaptiveEnabled: true,
   contextHintsEnabled: true,
+  tradingEdgeEnabled: true,
   dismissedAdaptiveSuggestions: [],
   favoriteTemplates: [],
   roleBindings: {},
@@ -779,6 +781,7 @@ export function sanitizeCockpitPreferences(value: unknown): CockpitPreferences {
     layoutLocked: Boolean(rec.layoutLocked),
     adaptiveEnabled: rec.adaptiveEnabled !== false,
     contextHintsEnabled: rec.contextHintsEnabled !== false,
+    tradingEdgeEnabled: rec.tradingEdgeEnabled !== false,
     dismissedAdaptiveSuggestions: sanitizeStringList(rec.dismissedAdaptiveSuggestions, 100, 100),
     favoriteTemplates: sanitizeStringList(rec.favoriteTemplates, 100, 80),
     roleBindings: sanitizeRoleBindings(rec.roleBindings),

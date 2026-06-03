@@ -1,10 +1,47 @@
 import { type TranslationKey } from "../../lib/i18n";
-import type { CharacterInfo, CharacterOrder, CharacterRoles } from "../../lib/types";
+import type { CharacterInfo, CharacterOrder, CharacterRoles, SecurityVaultStatus } from "../../lib/types";
 import { StatCard } from "./shared";
+
+function vaultChip(vault?: SecurityVaultStatus) {
+  const base = "inline-flex items-center gap-1.5 shrink-0 rounded-sm border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider";
+  if (!vault?.configured) {
+    return {
+      label: "No vault",
+      title: "Local vault is not configured",
+      className: `${base} border-eve-border bg-eve-dark text-eve-dim`,
+      dotClassName: "bg-eve-dim",
+    };
+  }
+  if (vault.mode === "private") {
+    const locked = Boolean(vault.locked);
+    return {
+      label: locked ? "Private locked" : "Private vault",
+      title: locked ? "Private vault is locked" : "Private passphrase vault is active",
+      className: `${base} ${locked ? "border-eve-warning/50 bg-eve-warning/10 text-eve-warning" : "border-emerald-400/50 bg-emerald-400/10 text-emerald-300"}`,
+      dotClassName: locked ? "bg-eve-warning" : "bg-emerald-400",
+    };
+  }
+  if (vault.mode === "standard") {
+    return {
+      label: "Standard vault",
+      title: "Standard local machine vault is active",
+      className: `${base} border-eve-accent/50 bg-eve-accent/10 text-eve-accent`,
+      dotClassName: "bg-eve-accent",
+    };
+  }
+  return {
+    label: "Vault",
+    title: vault.mode ? `Vault mode: ${vault.mode}` : "Local vault is configured",
+    className: `${base} border-eve-border bg-eve-panel text-eve-text`,
+    dotClassName: "bg-eve-text",
+  };
+}
+
 interface OverviewTabProps {
   data: CharacterInfo;
   characterId?: number;
   isAllScope: boolean;
+  securityVault?: SecurityVaultStatus;
   formatIsk: (v: number) => string;
   formatNumber: (v: number) => string;
   buyOrders: CharacterOrder[];
@@ -22,6 +59,7 @@ export function OverviewTab({
   data,
   characterId,
   isAllScope,
+  securityVault,
   formatIsk,
   formatNumber,
   buyOrders,
@@ -39,6 +77,7 @@ export function OverviewTab({
   // so adding buy value again would double-count.
   const netWorth = data.wallet + totalSellValue;
   const tradingProfit = totalSold - totalBought;
+  const encryptionChip = vaultChip(securityVault);
 
   return (
     <div className="space-y-4">
@@ -55,8 +94,14 @@ export function OverviewTab({
             ALL
           </div>
         )}
-        <div>
-          <h2 className="text-lg font-bold text-eve-text">{isAllScope ? t("charAllCharacters") : data.character_name}</h2>
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="min-w-0 truncate text-lg font-bold text-eve-text">{isAllScope ? t("charAllCharacters") : data.character_name}</h2>
+            <span className={encryptionChip.className} title={encryptionChip.title}>
+              <span className={`h-1.5 w-1.5 rounded-full ${encryptionChip.dotClassName}`} />
+              {encryptionChip.label}
+            </span>
+          </div>
           {data.skills && !isAllScope && (
             <div className="text-sm text-eve-dim">{formatNumber(data.skills.total_sp)} SP</div>
           )}
@@ -121,7 +166,7 @@ export function OverviewTab({
               {/* Demo button — dev mode only */}
               {import.meta.env.DEV && (
                 <button
-                  onClick={() => window.open("/corp/?mode=demo", "_blank")}
+                  onClick={() => window.open("/corp/?mode=demo", "_blank", "noopener,noreferrer")}
                   className="px-3 py-1.5 text-xs font-medium rounded-sm border border-eve-border bg-eve-dark text-eve-dim hover:text-eve-text hover:border-eve-accent/50 transition-colors"
                 >
                   {t("corpDashboardDemo")}
@@ -130,7 +175,7 @@ export function OverviewTab({
               {/* Live button — only for directors */}
               {!corpRolesLoading && corpRoles?.is_director && (
                 <button
-                  onClick={() => window.open("/corp/?mode=live", "_blank")}
+                  onClick={() => window.open("/corp/?mode=live", "_blank", "noopener,noreferrer")}
                   className="px-3 py-1.5 text-xs font-medium rounded-sm border border-eve-accent bg-eve-accent/10 text-eve-accent hover:bg-eve-accent/20 transition-colors"
                 >
                   {t("corpDashboardLive")}

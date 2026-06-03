@@ -187,6 +187,7 @@ func startBackend(host string, preferredPort int) (*backendRuntime, error) {
 		logger.Info("SSO", "EVE SSO not configured (missing ESI_CLIENT_ID / ESI_CLIENT_SECRET)")
 	}
 	sessions := auth.NewSessionStore(database.SqlDB())
+	database.SetPrivacyCodec(sessions.Vault())
 
 	srv := api.NewServer(cfg, esiClient, database, ssoConfig, sessions)
 	srv.SetAppVersion(version)
@@ -205,8 +206,13 @@ func startBackend(host string, preferredPort int) (*backendRuntime, error) {
 
 	addr := fmt.Sprintf("%s:%d", host, port)
 	httpServer := &http.Server{
-		Addr:    addr,
-		Handler: srv.Handler(),
+		Addr:              addr,
+		Handler:           srv.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      15 * time.Minute,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	errCh := make(chan error, 1)

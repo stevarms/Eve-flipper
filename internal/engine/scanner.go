@@ -856,6 +856,7 @@ func (s *Scanner) calculateResults(
 					TypeID:           typeID,
 					TypeName:         itemType.Name,
 					Volume:           itemType.Volume,
+					IsContraband:     itemType.IsContraband,
 					BuyPrice:         sell.Price,
 					BestAskPrice:     sell.Price,
 					BestAskQty:       sell.BestPriceVolume,

@@ -1858,6 +1858,31 @@ func (d *DB) scanIndustryProject(
 	return out
 }
 
+func (d *DB) openIndustryProjectPrivateFields(project *IndustryProject) error {
+	if project == nil {
+		return nil
+	}
+	var err error
+	project.Notes, err = d.openPrivateString(project.UserID, "industry_projects.notes", project.Notes)
+	return err
+}
+
+func (d *DB) openIndustryJobPrivateFields(job *IndustryJob) error {
+	if job == nil {
+		return nil
+	}
+	var err error
+	job.Notes, err = d.openPrivateString(job.UserID, "industry_jobs.notes", job.Notes)
+	return err
+}
+
+func industryPlanWritesJobNotes(patch IndustryPlanPatch) bool {
+	if patch.Scheduler.Enabled {
+		return true
+	}
+	return len(patch.Jobs) > 0
+}
+
 func (d *DB) CreateIndustryProjectForUser(userID string, in IndustryProjectCreateInput) (IndustryProject, error) {
 	userID = normalizeUserID(userID)
 	name := strings.TrimSpace(in.Name)
@@ -1869,13 +1894,17 @@ func (d *DB) CreateIndustryProjectForUser(userID string, in IndustryProjectCreat
 	status := defaultIndustryProjectStatus(in.Status)
 	strategy := normalizeIndustryStrategy(in.Strategy)
 	notes := strings.TrimSpace(in.Notes)
+	storedNotes, err := d.protectPrivateString(userID, "industry_projects.notes", notes)
+	if err != nil {
+		return IndustryProject{}, err
+	}
 	paramsJSON := marshalJSONOrDefault(in.Params, "{}")
 
 	res, err := d.sql.Exec(`
 		INSERT INTO industry_projects (
 			user_id, name, status, strategy, notes, params_json, created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, userID, name, status, strategy, notes, paramsJSON, now, now)
+	`, userID, name, status, strategy, storedNotes, paramsJSON, now, now)
 	if err != nil {
 		return IndustryProject{}, err
 	}
@@ -1925,6 +1954,9 @@ func (d *DB) GetIndustryProjectForUser(userID string, projectID int64) (*Industr
 		return nil, err
 	}
 	project := d.scanIndustryProject(id, dbUserID, name, status, strategy, notes, paramsStr, createdAt, updatedAt)
+	if err := d.openIndustryProjectPrivateFields(&project); err != nil {
+		return nil, err
+	}
 	return &project, nil
 }
 
@@ -1988,6 +2020,12 @@ func (d *DB) ListIndustryProjectsForUser(userID, status string, limit int) ([]In
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	rows.Close()
+	for i := range projects {
+		if err := d.openIndustryProjectPrivateFields(&projects[i]); err != nil {
+			return nil, err
+		}
 	}
 	if projects == nil {
 		return []IndustryProject{}, nil
@@ -2225,6 +2263,11 @@ func (d *DB) ApplyIndustryPlanForUser(userID string, projectID int64, patch Indu
 		}
 		return IndustryPlanSummary{}, err
 	}
+	if industryPlanWritesJobNotes(patch) {
+		if err := d.warmPrivateString(userID, "industry_jobs.notes"); err != nil {
+			return IndustryPlanSummary{}, err
+		}
+	}
 
 	tx, err := d.sql.Begin()
 	if err != nil {
@@ -2438,6 +2481,11 @@ func (d *DB) ApplyIndustryPlanForUser(userID string, projectID int64, patch Indu
 		defer stmt.Close()
 
 		for _, j := range jobsForInsert {
+			notes := strings.TrimSpace(j.Notes)
+			storedNotes, err := d.protectPrivateString(userID, "industry_jobs.notes", notes)
+			if err != nil {
+				return IndustryPlanSummary{}, err
+			}
 			if _, err := stmt.Exec(
 				userID,
 				projectID,
@@ -2452,7 +2500,7 @@ func (d *DB) ApplyIndustryPlanForUser(userID string, projectID int64, patch Indu
 				strings.TrimSpace(j.StartedAt),
 				strings.TrimSpace(j.FinishedAt),
 				j.ExternalJobID,
-				strings.TrimSpace(j.Notes),
+				storedNotes,
 				now,
 				now,
 			); err != nil {
@@ -2618,6 +2666,9 @@ func (d *DB) getIndustryJobForUser(userID string, jobID int64) (*IndustryJob, er
 		&j.UpdatedAt,
 	)
 	if err != nil {
+		return nil, err
+	}
+	if err := d.openIndustryJobPrivateFields(&j); err != nil {
 		return nil, err
 	}
 	return &j, nil
@@ -3208,12 +3259,16 @@ func (d *DB) UpdateIndustryJobStatusForUser(
 	if err != nil {
 		return nil, err
 	}
+	storedNotes, err := d.protectPrivateString(userID, "industry_jobs.notes", nextNotes)
+	if err != nil {
+		return nil, err
+	}
 
 	_, err = d.sql.Exec(`
 		UPDATE industry_jobs
 		   SET status = ?, started_at = ?, finished_at = ?, notes = ?, updated_at = ?
 		 WHERE user_id = ? AND id = ?
-	`, normalizedStatus, nextStartedAt, nextFinishedAt, nextNotes, now, userID, jobID)
+	`, normalizedStatus, nextStartedAt, nextFinishedAt, storedNotes, now, userID, jobID)
 	if err != nil {
 		return nil, err
 	}
@@ -3253,12 +3308,6 @@ func (d *DB) UpdateIndustryJobStatusesForUser(
 		return nil, fmt.Errorf("job_ids are required")
 	}
 
-	tx, err := d.sql.Begin()
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-
 	placeholders := strings.Repeat("?,", len(uniqueIDs))
 	placeholders = strings.TrimSuffix(placeholders, ",")
 	query := `
@@ -3273,11 +3322,10 @@ func (d *DB) UpdateIndustryJobStatusesForUser(
 		args = append(args, id)
 	}
 
-	rows, err := tx.Query(query, args...)
+	rows, err := d.sql.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
 	jobsByID := make(map[int64]IndustryJob, len(uniqueIDs))
 	for rows.Next() {
@@ -3301,16 +3349,42 @@ func (d *DB) UpdateIndustryJobStatusesForUser(
 			&j.CreatedAt,
 			&j.UpdatedAt,
 		); err != nil {
+			_ = rows.Close()
 			return nil, err
 		}
 		jobsByID[j.ID] = j
 	}
 	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
 		return nil, err
 	}
 	if len(jobsByID) != len(uniqueIDs) {
 		return nil, sql.ErrNoRows
 	}
+	needsNoteProtection := strings.TrimSpace(notes) != ""
+	for id, job := range jobsByID {
+		if err := d.openIndustryJobPrivateFields(&job); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(job.Notes) != "" {
+			needsNoteProtection = true
+		}
+		jobsByID[id] = job
+	}
+	if needsNoteProtection {
+		if err := d.warmPrivateString(userID, "industry_jobs.notes"); err != nil {
+			return nil, err
+		}
+	}
+
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	stmt, err := tx.Prepare(`
@@ -3332,11 +3406,15 @@ func (d *DB) UpdateIndustryJobStatusesForUser(
 		if updateErr != nil {
 			return nil, updateErr
 		}
+		storedNotes, err := d.protectPrivateString(userID, "industry_jobs.notes", nextNotes)
+		if err != nil {
+			return nil, err
+		}
 		if _, err := stmt.Exec(
 			normalizedStatus,
 			nextStartedAt,
 			nextFinishedAt,
-			nextNotes,
+			storedNotes,
 			now,
 			userID,
 			jobID,
@@ -3441,6 +3519,15 @@ func (d *DB) GetIndustryLedgerForUser(userID string, opt IndustryLedgerOptions) 
 	}
 	if err := rows.Err(); err != nil {
 		return IndustryLedger{}, err
+	}
+	if err := rows.Close(); err != nil {
+		return IndustryLedger{}, err
+	}
+	for i := range entries {
+		entries[i].Notes, err = d.openPrivateString(userID, "industry_jobs.notes", entries[i].Notes)
+		if err != nil {
+			return IndustryLedger{}, err
+		}
 	}
 	if entries == nil {
 		entries = []IndustryLedgerEntry{}
@@ -3609,6 +3696,14 @@ func (d *DB) GetIndustryProjectSnapshotForUser(userID string, projectID int64) (
 	}
 	if err := jobRows.Err(); err != nil {
 		return IndustryProjectSnapshot{}, err
+	}
+	if err := jobRows.Close(); err != nil {
+		return IndustryProjectSnapshot{}, err
+	}
+	for i := range snapshot.Jobs {
+		if err := d.openIndustryJobPrivateFields(&snapshot.Jobs[i]); err != nil {
+			return IndustryProjectSnapshot{}, err
+		}
 	}
 
 	materialRows, err := d.sql.Query(`

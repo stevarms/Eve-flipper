@@ -65,6 +65,62 @@ func newSessionStoreForAPITest(t *testing.T) *auth.SessionStore {
 	return auth.NewSessionStore(sqlDB)
 }
 
+func newVaultSessionStoreForAPITest(t *testing.T) *auth.SessionStore {
+	t.Helper()
+
+	sqlDB, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open vault db: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	_, err = sqlDB.Exec(`
+		CREATE TABLE auth_session (
+			user_id         TEXT NOT NULL,
+			character_id    INTEGER NOT NULL,
+			character_name  TEXT NOT NULL,
+			access_token    TEXT NOT NULL,
+			refresh_token   TEXT NOT NULL,
+			expires_at      INTEGER NOT NULL,
+			is_active       INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (user_id, character_id)
+		);
+		CREATE TABLE vault_state (
+			user_id              TEXT PRIMARY KEY,
+			mode                 TEXT NOT NULL,
+			status               TEXT NOT NULL,
+			schema_version       INTEGER NOT NULL DEFAULT 1,
+			checkpoint_version   INTEGER NOT NULL DEFAULT 1,
+			kdf_alg              TEXT NOT NULL DEFAULT '',
+			kdf_salt             TEXT NOT NULL DEFAULT '',
+			wrapped_key          TEXT NOT NULL,
+			key_check            TEXT NOT NULL,
+			plaintext_purged_at  TEXT NOT NULL,
+			created_at           TEXT NOT NULL,
+			updated_at           TEXT NOT NULL
+		);
+		CREATE TABLE security_events (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id     TEXT NOT NULL,
+			event_type  TEXT NOT NULL DEFAULT '',
+			detail      TEXT NOT NULL DEFAULT '',
+			created_at  TEXT NOT NULL
+		);`)
+	if err != nil {
+		t.Fatalf("create vault tables: %v", err)
+	}
+
+	return auth.NewSessionStore(sqlDB)
+}
+
+func addSignedUserCookie(req *http.Request, srv *Server, userID string) {
+	req.AddCookie(&http.Cookie{
+		Name:  userIDCookieName,
+		Value: srv.signedUserIDCookieValue(userID),
+		Path:  "/",
+	})
+}
+
 func TestHandleAuthStructures_UsesRequestedCharacterScope(t *testing.T) {
 	store := newSessionStoreForAPITest(t)
 
@@ -94,7 +150,7 @@ func TestHandleAuthStructures_UsesRequestedCharacterScope(t *testing.T) {
 	srv.sessions = store
 
 	req := httptest.NewRequest(http.MethodGet, "/api/auth/structures?character_id=2002", nil)
-	req.Header.Set(userIDHeaderName, "u1")
+	addSignedUserCookie(req, srv, "u1")
 	rec := httptest.NewRecorder()
 
 	srv.Handler().ServeHTTP(rec, req)
@@ -185,7 +241,7 @@ func TestHandleAuthPortfolio_AllowsEmptyTransactions(t *testing.T) {
 	srv.setWalletTxnCache(characterID, []esi.WalletTransaction{})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/auth/portfolio?character_id=1001", nil)
-	req.Header.Set(userIDHeaderName, userID)
+	addSignedUserCookie(req, srv, userID)
 	rec := httptest.NewRecorder()
 
 	srv.Handler().ServeHTTP(rec, req)
@@ -210,6 +266,7 @@ func TestHandleAuthPortfolio_UsesArchiveWhenLiveTransactionsFail(t *testing.T) {
 	userID := "u-archived-portfolio"
 	characterID := int64(1001)
 	store := auth.NewSessionStore(database.SqlDB())
+	setupAPITestVault(t, store, userID)
 	if err := store.SaveAndActivateForUser(userID, &auth.Session{
 		CharacterID:   characterID,
 		CharacterName: "Archived Trader",
@@ -246,7 +303,7 @@ func TestHandleAuthPortfolio_UsesArchiveWhenLiveTransactionsFail(t *testing.T) {
 
 	srv := NewServer(config.Default(), &esi.Client{}, database, nil, store)
 	req := httptest.NewRequest(http.MethodGet, "/api/auth/portfolio?character_id=1001", nil)
-	req.Header.Set(userIDHeaderName, userID)
+	addSignedUserCookie(req, srv, userID)
 	rec := httptest.NewRecorder()
 
 	srv.Handler().ServeHTTP(rec, req)
@@ -328,6 +385,120 @@ func TestEnsureRequestUserID_RotatesTamperedCookie(t *testing.T) {
 	}
 	if parsed, ok := srv.parseSignedUserIDCookieValue(newCookies[0].Value); !ok || parsed != userID2 {
 		t.Fatalf("new cookie is not a valid signed user id: value=%q parsed=%q ok=%v", newCookies[0].Value, parsed, ok)
+	}
+}
+
+func TestEnsureRequestUserID_IgnoresUnsignedHeaderInWebFlavor(t *testing.T) {
+	srv := NewServer(config.Default(), &esi.Client{}, nil, nil, nil)
+	srv.SetAppFlavor("web")
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set(userIDHeaderName, "attacker-supplied-user")
+	rec := httptest.NewRecorder()
+
+	got := srv.ensureRequestUserID(rec, req)
+	if got == "attacker-supplied-user" {
+		t.Fatalf("web flavor accepted unsigned %s header", userIDHeaderName)
+	}
+	if !isValidUserID(got) {
+		t.Fatalf("generated user id invalid: %q", got)
+	}
+}
+
+func TestEnsureRequestUserID_AllowsHeaderOnlyInDesktopFlavor(t *testing.T) {
+	srv := NewServer(config.Default(), &esi.Client{}, nil, nil, nil)
+	srv.SetAppFlavor("desktop")
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set(userIDHeaderName, "eveflipper_desktop")
+	rec := httptest.NewRecorder()
+
+	got := srv.ensureRequestUserID(rec, req)
+	if got != "eveflipper_desktop" {
+		t.Fatalf("desktop flavor user id = %q, want eveflipper_desktop", got)
+	}
+}
+
+func TestCORSOriginIsPortAware(t *testing.T) {
+	if !isAllowedCORSOrigin("http://127.0.0.1:5173", "127.0.0.1:13370") {
+		t.Fatalf("expected Vite dev frontend origin to be allowed")
+	}
+	if !isAllowedCORSOrigin("http://localhost:1420", "127.0.0.1:13370") {
+		t.Fatalf("expected Wails/dev frontend origin to be allowed")
+	}
+	if isAllowedCORSOrigin("http://127.0.0.1:9999", "127.0.0.1:13370") {
+		t.Fatalf("unexpected arbitrary loopback port allowed")
+	}
+	if isAllowedCORSOrigin("http://evil.example", "127.0.0.1:13370") {
+		t.Fatalf("unexpected external origin allowed")
+	}
+}
+
+func TestOriginGuardBlocksStateChangingBadOrigin(t *testing.T) {
+	srv := NewServer(config.Default(), &esi.Client{}, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/security/vault/setup", strings.NewReader(`{"mode":"standard"}`))
+	req.Host = "127.0.0.1:13370"
+	req.Header.Set("Origin", "http://127.0.0.1:9999")
+	rec := httptest.NewRecorder()
+
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSecurityVaultPrivatePassphraseAPIFlow(t *testing.T) {
+	store := newVaultSessionStoreForAPITest(t)
+	srv := NewServer(config.Default(), &esi.Client{}, nil, nil, store)
+	userID := "api-private-vault-user"
+	passphrase := "correct horse battery staple"
+
+	doJSON := func(method, target, body string) (int, map[string]interface{}) {
+		t.Helper()
+		req := httptest.NewRequest(method, target, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		addSignedUserCookie(req, srv, userID)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		var payload map[string]interface{}
+		if strings.TrimSpace(rec.Body.String()) != "" {
+			if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode %s %s response %q: %v", method, target, rec.Body.String(), err)
+			}
+		}
+		return rec.Code, payload
+	}
+
+	code, payload := doJSON(http.MethodPost, "/api/security/vault/setup", `{"mode":"private","passphrase":"`+passphrase+`"}`)
+	if code != http.StatusOK {
+		t.Fatalf("private setup status=%d payload=%v", code, payload)
+	}
+	if payload["configured"] != true || payload["mode"] != "private" || payload["locked"] != false {
+		t.Fatalf("private setup payload=%v", payload)
+	}
+	if payload["zero_knowledge_local_storage"] != true || payload["field_encryption_active"] != true {
+		t.Fatalf("private setup flags payload=%v", payload)
+	}
+
+	code, payload = doJSON(http.MethodPost, "/api/security/vault/lock", `{}`)
+	if code != http.StatusOK {
+		t.Fatalf("private lock status=%d payload=%v", code, payload)
+	}
+	if payload["locked"] != true || payload["private_unlock_required"] != true || payload["field_encryption_active"] != false {
+		t.Fatalf("private lock payload=%v", payload)
+	}
+
+	code, _ = doJSON(http.MethodPost, "/api/security/vault/unlock", `{"passphrase":"wrong passphrase"}`)
+	if code != http.StatusUnauthorized {
+		t.Fatalf("wrong passphrase unlock status=%d, want 401", code)
+	}
+
+	code, payload = doJSON(http.MethodPost, "/api/security/vault/unlock", `{"passphrase":"`+passphrase+`"}`)
+	if code != http.StatusOK {
+		t.Fatalf("correct passphrase unlock status=%d payload=%v", code, payload)
+	}
+	if payload["locked"] != false || payload["private_unlock_required"] != false || payload["field_encryption_active"] != true {
+		t.Fatalf("private unlock payload=%v", payload)
 	}
 }
 

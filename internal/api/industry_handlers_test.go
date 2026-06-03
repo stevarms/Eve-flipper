@@ -53,6 +53,16 @@ func openAPITestDB(t *testing.T) *db.DB {
 	return database
 }
 
+func setupAPITestVault(t *testing.T, sessions *auth.SessionStore, userID string) {
+	t.Helper()
+	if sessions == nil || sessions.Vault() == nil || !sessions.Vault().TableReady() {
+		return
+	}
+	if err := sessions.Vault().SetupStandardForUser(userID); err != nil {
+		t.Fatalf("SetupStandardForUser: %v", err)
+	}
+}
+
 func requestWithUserID(method, target string, body io.Reader, userID string) *http.Request {
 	req := httptest.NewRequest(method, target, body)
 	ctx := context.WithValue(req.Context(), userIDContextKey, userID)
@@ -63,6 +73,7 @@ func newAuthedIndustryTestServer(t *testing.T, database *db.DB, userID string) *
 	t.Helper()
 
 	sessions := auth.NewSessionStore(database.SqlDB())
+	setupAPITestVault(t, sessions, userID)
 	if err := sessions.SaveAndActivateForUser(userID, &auth.Session{
 		CharacterID:   90000001,
 		CharacterName: "Test Pilot",
@@ -493,7 +504,7 @@ func TestCORSMiddleware_AllowsPATCH(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodOptions, "/api/auth/industry/jobs/status", nil)
-	req.Header.Set("Origin", "http://localhost:3000")
+	req.Header.Set("Origin", "http://localhost:5173")
 	req.Header.Set("Access-Control-Request-Method", "PATCH")
 	req.Host = "localhost:8080"
 	rec := httptest.NewRecorder()

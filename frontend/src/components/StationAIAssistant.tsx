@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import type {
   ScanParams,
   StationAIChatContext,
@@ -414,15 +414,6 @@ function saveActiveSessionID(id: string) {
   }
 }
 
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/\"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
 function sanitizeSafeURL(rawURL: string): string | null {
   try {
     const parsed = new URL(rawURL);
@@ -435,36 +426,66 @@ function sanitizeSafeURL(rawURL: string): string | null {
   }
 }
 
-function renderInlineMarkdown(text: string): string {
-  let out = escapeHtml(text);
-  const inlineCode: string[] = [];
+function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const tokenPattern = /(`[^`\n]+`|\[[^\]]+\]\([^) \t\r\n]+\)|\*\*[^*]+\*\*|\*[^*]+\*)/g;
+  let lastIndex = 0;
+  let tokenIndex = 0;
 
-  out = out.replace(/`([^`\n]+)`/g, (_m, code: string) => {
-    const token = `@@INLINE_CODE_${inlineCode.length}@@`;
-    inlineCode.push(
-      `<code class="rounded bg-eve-dark/80 border border-eve-border/50 px-1 py-0.5 font-mono text-[11px]">${code}</code>`,
-    );
-    return token;
-  });
-
-  out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  out = out.replace(/\*([^*]+)\*/g, "<em>$1</em>");
-
-  out = out.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, label: string, url: string) => {
-    const decodedURL = url.replace(/&amp;/g, "&");
-    const safeURL = sanitizeSafeURL(decodedURL);
-    if (!safeURL) {
-      return label;
+  const pushText = (value: string) => {
+    if (value) {
+      nodes.push(value);
     }
-    return `<a href="${escapeHtml(safeURL)}" target="_blank" rel="noopener noreferrer nofollow" class="text-eve-accent underline decoration-eve-accent/40">${label}</a>`;
-  });
+  };
 
-  out = out.replace(/@@INLINE_CODE_(\d+)@@/g, (_m, idx: string) => {
-    const i = Number(idx);
-    return inlineCode[i] ?? "";
-  });
+  for (const match of text.matchAll(tokenPattern)) {
+    const raw = match[0];
+    const start = match.index ?? 0;
+    pushText(text.slice(lastIndex, start));
+    const key = `${keyPrefix}-inline-${tokenIndex++}`;
 
-  return out;
+    if (raw.startsWith("`") && raw.endsWith("`")) {
+      nodes.push(
+        <code
+          key={key}
+          className="rounded bg-eve-dark/80 border border-eve-border/50 px-1 py-0.5 font-mono text-[11px]"
+        >
+          {raw.slice(1, -1)}
+        </code>,
+      );
+    } else if (raw.startsWith("**") && raw.endsWith("**")) {
+      nodes.push(<strong key={key}>{raw.slice(2, -2)}</strong>);
+    } else if (raw.startsWith("*") && raw.endsWith("*")) {
+      nodes.push(<em key={key}>{raw.slice(1, -1)}</em>);
+    } else {
+      const link = raw.match(/^\[([^\]]+)\]\(([^) \t\r\n]+)\)$/);
+      if (link) {
+        const safeURL = sanitizeSafeURL(link[2].replace(/&amp;/g, "&"));
+        nodes.push(
+          safeURL ? (
+            <a
+              key={key}
+              href={safeURL}
+              target="_blank"
+              rel="noopener noreferrer nofollow"
+              className="text-eve-accent underline decoration-eve-accent/40"
+            >
+              {link[1]}
+            </a>
+          ) : (
+            link[1]
+          ),
+        );
+      } else {
+        pushText(raw);
+      }
+    }
+
+    lastIndex = start + raw.length;
+  }
+
+  pushText(text.slice(lastIndex));
+  return nodes;
 }
 
 function parseMarkdownTableRow(line: string): string[] {
@@ -481,12 +502,11 @@ function isMarkdownTableSeparator(line: string): boolean {
   return cells.every((cell) => /^:?-{3,}:?$/.test(cell.replace(/\s+/g, "")));
 }
 
-function renderMarkdownTable(headers: string[], rows: string[][]): string {
+function renderMarkdownTable(headers: string[], rows: string[][], key: string): ReactNode {
   const cols = headers.length;
   if (cols === 0) {
-    return "";
+    return null;
   }
-  const safeHeaders = headers.map((h) => renderInlineMarkdown(h));
   const safeRows = rows
     .filter((row) => row.some((cell) => cell.trim() !== ""))
     .map((row) => {
@@ -494,63 +514,117 @@ function renderMarkdownTable(headers: string[], rows: string[][]): string {
       while (normalized.length < cols) {
         normalized.push("");
       }
-      return normalized.map((cell) => renderInlineMarkdown(cell));
+      return normalized;
     });
 
-  const thead = `<thead><tr>${safeHeaders
-    .map(
-      (header) =>
-        `<th class="px-2 py-1 text-left font-semibold text-eve-accent border-b border-eve-border/60 bg-eve-dark/45">${header}</th>`,
-    )
-    .join("")}</tr></thead>`;
-  const tbody = `<tbody>${safeRows
-    .map(
-      (row) =>
-        `<tr>${row
-          .map(
-            (cell) =>
-              `<td class="px-2 py-1 align-top border-b border-eve-border/40 text-eve-text">${cell}</td>`,
-          )
-          .join("")}</tr>`,
-    )
-    .join("")}</tbody>`;
-
-  return `<div class="my-2 overflow-x-auto rounded-sm border border-eve-border/60 bg-eve-dark/35"><table class="min-w-full text-[11px] leading-5 border-collapse">${thead}${tbody}</table></div>`;
+  return (
+    <div key={key} className="my-2 overflow-x-auto rounded-sm border border-eve-border/60 bg-eve-dark/35">
+      <table className="min-w-full text-[11px] leading-5 border-collapse">
+        <thead>
+          <tr>
+            {headers.map((header, idx) => (
+              <th
+                key={`${key}-th-${idx}`}
+                className="px-2 py-1 text-left font-semibold text-eve-accent border-b border-eve-border/60 bg-eve-dark/45"
+              >
+                {renderInlineMarkdown(header, `${key}-th-${idx}`)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {safeRows.map((row, rowIdx) => (
+            <tr key={`${key}-tr-${rowIdx}`}>
+              {row.map((cell, cellIdx) => (
+                <td
+                  key={`${key}-td-${rowIdx}-${cellIdx}`}
+                  className="px-2 py-1 align-top border-b border-eve-border/40 text-eve-text"
+                >
+                  {renderInlineMarkdown(cell, `${key}-td-${rowIdx}-${cellIdx}`)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
-function renderMarkdownToHtml(markdown: string): string {
-  const normalized = markdown.replace(/\r\n/g, "\n");
-  const codeBlocks: string[] = [];
-  const text = normalized.replace(
-    /```([a-zA-Z0-9_-]+)?\n?([\s\S]*?)```/g,
-    (_m, lang: string | undefined, code: string) => {
-      const token = `@@CODE_BLOCK_${codeBlocks.length}@@`;
-      const langLabel = lang ? escapeHtml(lang) : "";
-      const codeEscaped = escapeHtml(code.replace(/\n$/, ""));
-      const langHeader = langLabel
-        ? `<div class="px-2 py-1 border-b border-eve-border/40 text-[10px] uppercase tracking-wide text-eve-dim">${langLabel}</div>`
-        : "";
-      codeBlocks.push(
-        `<div class="rounded-sm border border-eve-border/60 bg-eve-dark/80 my-2 overflow-hidden">${langHeader}<pre class="p-2 overflow-x-auto text-[11px] leading-5 text-eve-text"><code>${codeEscaped}</code></pre></div>`,
-      );
-      return token;
-    },
-  );
+type MarkdownCodeBlock = {
+  kind: "code";
+  lang: string;
+  code: string;
+};
 
+type MarkdownTextBlock = {
+  kind: "text";
+  text: string;
+};
+
+type MarkdownBlock = MarkdownCodeBlock | MarkdownTextBlock;
+
+function splitMarkdownCodeBlocks(markdown: string): MarkdownBlock[] {
+  const normalized = markdown.replace(/\r\n/g, "\n");
+  const blocks: MarkdownBlock[] = [];
+  const codePattern = /```([a-zA-Z0-9_-]+)?\n?([\s\S]*?)```/g;
+  let lastIndex = 0;
+
+  for (const match of normalized.matchAll(codePattern)) {
+    const start = match.index ?? 0;
+    if (start > lastIndex) {
+      blocks.push({ kind: "text", text: normalized.slice(lastIndex, start) });
+    }
+    blocks.push({
+      kind: "code",
+      lang: match[1] ?? "",
+      code: (match[2] ?? "").replace(/\n$/, ""),
+    });
+    lastIndex = start + match[0].length;
+  }
+
+  if (lastIndex < normalized.length) {
+    blocks.push({ kind: "text", text: normalized.slice(lastIndex) });
+  }
+  if (blocks.length === 0) {
+    blocks.push({ kind: "text", text: normalized });
+  }
+
+  return blocks;
+}
+
+function renderMarkdownTextBlock(text: string, keyPrefix: string): ReactNode[] {
   const lines = text.split("\n");
-  const out: string[] = [];
-  let inUL = false;
-  let inOL = false;
+  const out: ReactNode[] = [];
+  let listType: "ul" | "ol" | null = null;
+  let listItems: ReactNode[][] = [];
+  let blockIndex = 0;
+
+  const nextKey = (kind: string) => `${keyPrefix}-${kind}-${blockIndex++}`;
 
   const closeLists = () => {
-    if (inUL) {
-      out.push("</ul>");
-      inUL = false;
+    if (!listType) {
+      return;
     }
-    if (inOL) {
-      out.push("</ol>");
-      inOL = false;
-    }
+    const key = nextKey(listType);
+    const items = listItems;
+    out.push(
+      listType === "ul" ? (
+        <ul key={key} className="list-disc pl-4 my-1 space-y-0.5">
+          {items.map((item, idx) => (
+            <li key={`${key}-li-${idx}`}>{item}</li>
+          ))}
+        </ul>
+      ) : (
+        <ol key={key} className="list-decimal pl-4 my-1 space-y-0.5">
+          {items.map((item, idx) => (
+            <li key={`${key}-li-${idx}`}>{item}</li>
+          ))}
+        </ol>
+      ),
+    );
+    listType = null;
+    listItems = [];
   };
 
   let idx = 0;
@@ -559,15 +633,6 @@ function renderMarkdownToHtml(markdown: string): string {
     const line = rawLine.trim();
     if (!line) {
       closeLists();
-      idx += 1;
-      continue;
-    }
-
-    const codeTokenMatch = line.match(/^@@CODE_BLOCK_(\d+)@@$/);
-    if (codeTokenMatch) {
-      closeLists();
-      const tokenIndex = Number(codeTokenMatch[1]);
-      out.push(codeBlocks[tokenIndex] ?? "");
       idx += 1;
       continue;
     }
@@ -595,7 +660,7 @@ function renderMarkdownToHtml(markdown: string): string {
           rows.push(parseMarkdownTableRow(rowLine));
           idx += 1;
         }
-        out.push(renderMarkdownTable(headers, rows));
+        out.push(renderMarkdownTable(headers, rows, nextKey("table")));
         continue;
       }
     }
@@ -604,53 +669,95 @@ function renderMarkdownToHtml(markdown: string): string {
     if (heading) {
       closeLists();
       const level = heading[1].length;
-      const tag = level === 1 ? "h1" : level === 2 ? "h2" : "h3";
       const cls =
         level === 1
           ? "text-sm font-semibold text-eve-text mt-2 mb-1"
           : "text-xs font-semibold text-eve-text mt-2 mb-1";
-      out.push(`<${tag} class="${cls}">${renderInlineMarkdown(heading[2])}</${tag}>`);
+      const key = nextKey("heading");
+      const content = renderInlineMarkdown(heading[2], key);
+      if (level === 1) {
+        out.push(
+          <h1 key={key} className={cls}>
+            {content}
+          </h1>,
+        );
+      } else if (level === 2) {
+        out.push(
+          <h2 key={key} className={cls}>
+            {content}
+          </h2>,
+        );
+      } else {
+        out.push(
+          <h3 key={key} className={cls}>
+            {content}
+          </h3>,
+        );
+      }
       idx += 1;
       continue;
     }
 
     const ul = line.match(/^[-*]\s+(.+)$/);
     if (ul) {
-      if (inOL) {
-        out.push("</ol>");
-        inOL = false;
+      if (listType !== "ul") {
+        closeLists();
+        listType = "ul";
       }
-      if (!inUL) {
-        out.push('<ul class="list-disc pl-4 my-1 space-y-0.5">');
-        inUL = true;
-      }
-      out.push(`<li>${renderInlineMarkdown(ul[1])}</li>`);
+      listItems.push(renderInlineMarkdown(ul[1], `${keyPrefix}-ul-${idx}`));
       idx += 1;
       continue;
     }
 
     const ol = line.match(/^\d+\.\s+(.+)$/);
     if (ol) {
-      if (inUL) {
-        out.push("</ul>");
-        inUL = false;
+      if (listType !== "ol") {
+        closeLists();
+        listType = "ol";
       }
-      if (!inOL) {
-        out.push('<ol class="list-decimal pl-4 my-1 space-y-0.5">');
-        inOL = true;
-      }
-      out.push(`<li>${renderInlineMarkdown(ol[1])}</li>`);
+      listItems.push(renderInlineMarkdown(ol[1], `${keyPrefix}-ol-${idx}`));
       idx += 1;
       continue;
     }
 
     closeLists();
-    out.push(`<p class="my-1">${renderInlineMarkdown(line)}</p>`);
+    const key = nextKey("p");
+    out.push(
+      <p key={key} className="my-1">
+        {renderInlineMarkdown(line, key)}
+      </p>,
+    );
     idx += 1;
   }
 
   closeLists();
-  return out.join("");
+  return out;
+}
+
+function renderCodeBlock(block: MarkdownCodeBlock, key: string): ReactNode {
+  return (
+    <div key={key} className="rounded-sm border border-eve-border/60 bg-eve-dark/80 my-2 overflow-hidden">
+      {block.lang ? (
+        <div className="px-2 py-1 border-b border-eve-border/40 text-[10px] uppercase tracking-wide text-eve-dim">
+          {block.lang}
+        </div>
+      ) : null}
+      <pre className="p-2 overflow-x-auto text-[11px] leading-5 text-eve-text">
+        <code>{block.code}</code>
+      </pre>
+    </div>
+  );
+}
+
+function renderMarkdownToNodes(markdown: string): ReactNode[] {
+  const blocks = splitMarkdownCodeBlocks(markdown);
+  return blocks.flatMap((block, idx) => {
+    const key = `md-${idx}`;
+    if (block.kind === "code") {
+      return [renderCodeBlock(block, key)];
+    }
+    return renderMarkdownTextBlock(block.text, key);
+  });
 }
 
 function tryParseStandaloneJSON(text: string): unknown | null {
@@ -668,41 +775,77 @@ function tryParseStandaloneJSON(text: string): unknown | null {
   }
 }
 
-function renderStandaloneJSONToHtml(value: unknown): string {
+function renderJSONTokens(pretty: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const tokenPattern =
+    /("(?:\\.|[^"\\])*")(?=\s*:)|("(?:\\.|[^"\\])*")|\b(true|false|null)\b|(-?\d+(?:\.\d+)?(?:[eE][+\-]?\d+)?)/g;
+  let lastIndex = 0;
+  let tokenIndex = 0;
+
+  for (const match of pretty.matchAll(tokenPattern)) {
+    const start = match.index ?? 0;
+    if (start > lastIndex) {
+      nodes.push(pretty.slice(lastIndex, start));
+    }
+    const key = `json-token-${tokenIndex++}`;
+    const raw = match[0];
+    if (match[1]) {
+      nodes.push(
+        <span key={key} className="text-eve-accent">
+          {raw}
+        </span>,
+      );
+    } else if (match[2]) {
+      nodes.push(
+        <span key={key} className="text-sky-300">
+          {raw}
+        </span>,
+      );
+    } else if (match[3]) {
+      nodes.push(
+        <span key={key} className="text-orange-300">
+          {raw}
+        </span>,
+      );
+    } else if (match[4]) {
+      nodes.push(
+        <span key={key} className="text-emerald-300">
+          {raw}
+        </span>,
+      );
+    }
+    lastIndex = start + raw.length;
+  }
+
+  if (lastIndex < pretty.length) {
+    nodes.push(pretty.slice(lastIndex));
+  }
+  return nodes;
+}
+
+function renderStandaloneJSONToNode(value: unknown): ReactNode {
   const pretty = JSON.stringify(value, null, 2);
-  const escaped = escapeHtml(pretty);
-  const highlighted = escaped.replace(
-    /(&quot;(?:\\.|[^"\\])*&quot;)(?=\s*:)|(&quot;(?:\\.|[^"\\])*&quot;)|\b(true|false|null)\b|(-?\d+(?:\.\d+)?(?:[eE][+\-]?\d+)?)/g,
-    (_m, keyToken: string, stringToken: string, boolNullToken: string, numberToken: string) => {
-      if (keyToken) return `<span class="text-eve-accent">${keyToken}</span>`;
-      if (stringToken) return `<span class="text-sky-300">${stringToken}</span>`;
-      if (boolNullToken) return `<span class="text-orange-300">${boolNullToken}</span>`;
-      if (numberToken) return `<span class="text-emerald-300">${numberToken}</span>`;
-      return _m;
-    },
-  );
   return (
-    `<div class="my-2 overflow-hidden rounded-sm border border-eve-border/60 bg-eve-dark/80">` +
-    `<div class="px-2 py-1 border-b border-eve-border/40 text-[10px] uppercase tracking-wide text-eve-dim">JSON</div>` +
-    `<pre class="p-2 overflow-x-auto text-[11px] leading-5 text-eve-text"><code>${highlighted}</code></pre>` +
-    `</div>`
+    <div className="my-2 overflow-hidden rounded-sm border border-eve-border/60 bg-eve-dark/80">
+      <div className="px-2 py-1 border-b border-eve-border/40 text-[10px] uppercase tracking-wide text-eve-dim">
+        JSON
+      </div>
+      <pre className="p-2 overflow-x-auto text-[11px] leading-5 text-eve-text">
+        <code>{renderJSONTokens(pretty)}</code>
+      </pre>
+    </div>
   );
 }
 
 function MarkdownMessage({ text }: { text: string }) {
-  const html = useMemo(() => {
+  const nodes = useMemo(() => {
     const parsedJSON = tryParseStandaloneJSON(text);
     if (parsedJSON !== null) {
-      return renderStandaloneJSONToHtml(parsedJSON);
+      return renderStandaloneJSONToNode(parsedJSON);
     }
-    return renderMarkdownToHtml(text);
+    return renderMarkdownToNodes(text);
   }, [text]);
-  return (
-    <div
-      className="text-xs leading-5 text-eve-text select-text"
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
-  );
+  return <div className="text-xs leading-5 text-eve-text select-text">{nodes}</div>;
 }
 
 function formatSessionTimestamp(ts: number, locale: "ru" | "en"): string {

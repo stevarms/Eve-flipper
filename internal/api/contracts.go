@@ -37,6 +37,7 @@ type ContractItemResponse struct {
 	CategoryID         int32   `json:"category_id,omitempty"`
 	IsShip             bool    `json:"is_ship,omitempty"`
 	IsRig              bool    `json:"is_rig,omitempty"`
+	IsContraband       bool    `json:"is_contraband,omitempty"`
 	RecordID           int64   `json:"record_id"`
 	ItemID             int64   `json:"item_id"`
 	MaterialEfficiency int     `json:"material_efficiency,omitempty"`
@@ -112,6 +113,7 @@ func (s *Server) handleGetContractItems(w http.ResponseWriter, r *http.Request) 
 		categoryID := int32(0)
 		isShip := false
 		isRig := false
+		isContraband := false
 		if s.sdeData != nil {
 			if t, ok := s.sdeData.Types[item.TypeID]; ok {
 				typeNameSDE = t.Name
@@ -119,6 +121,7 @@ func (s *Server) handleGetContractItems(w http.ResponseWriter, r *http.Request) 
 				categoryID = t.CategoryID
 				isShip = t.CategoryID == 6
 				isRig = t.IsRig
+				isContraband = t.IsContraband
 				if g, ok := s.sdeData.Groups[t.GroupID]; ok {
 					groupName = g.Name
 					isRig = g.IsRig
@@ -138,6 +141,7 @@ func (s *Server) handleGetContractItems(w http.ResponseWriter, r *http.Request) 
 			CategoryID:      categoryID,
 			IsShip:          isShip,
 			IsRig:           isRig,
+			IsContraband:    isContraband,
 			RecordID:        item.RecordID,
 			ItemID:          item.ItemID,
 		}

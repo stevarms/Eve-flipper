@@ -163,6 +163,7 @@ func main() {
 		logger.Info("SSO", "EVE SSO not configured (missing ESI_CLIENT_ID / ESI_CLIENT_SECRET)")
 	}
 	sessions := auth.NewSessionStore(database.SqlDB())
+	database.SetPrivacyCodec(sessions.Vault())
 
 	srv := api.NewServer(cfg, esiClient, database, ssoConfig, sessions)
 	srv.SetAppVersion(version)
@@ -207,7 +208,15 @@ func main() {
 	addr := fmt.Sprintf("%s:%d", *host, *port)
 	logger.Server(addr)
 
-	httpServer := &http.Server{Addr: addr, Handler: handler}
+	httpServer := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      15 * time.Minute,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
 
 	// Graceful shutdown on SIGINT / SIGTERM
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

@@ -5,6 +5,7 @@ type FlipResult struct {
 	TypeID          int32
 	TypeName        string
 	Volume          float64
+	IsContraband    bool `json:"IsContraband,omitempty"`
 	BuyPrice        float64
 	BestAskPrice    float64 `json:"BestAskPrice,omitempty"` // Explicit L1 best ask price at buy location (same level as BuyPrice)
 	BestAskQty      int32   `json:"BestAskQty,omitempty"`   // Quantity available strictly at BestAskPrice
@@ -119,6 +120,11 @@ type ContractResult struct {
 	EstLiquidationDays    float64 // bottleneck fill-time estimate for full liquidation
 	ConservativeValue     float64 // conservative expected liquidation value after fees
 	CarryCost             float64 // opportunity/carry cost for hold horizon
+	ExcludedRigValue      float64 // best-effort value removed by rig-safe checkout
+	ExcludedRigQty        int32   // quantity of rig items removed by rig-safe checkout
+	ExcludedRigRows       int     // number of rig rows removed by rig-safe checkout
+	HasContraband         bool    `json:"HasContraband,omitempty"`
+	ContrabandQty         int32   `json:"ContrabandQty,omitempty"`
 	Volume                float64 // contract volume in m³
 	StationName           string
 	SystemName            string `json:"SystemName,omitempty"`

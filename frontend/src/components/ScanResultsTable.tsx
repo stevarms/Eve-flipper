@@ -3257,6 +3257,7 @@ export function ScanResultsTable({
                 window.open(
                   `https://everef.net/type/${contextMenu.row.TypeID}`,
                   "_blank",
+                  "noopener,noreferrer",
                 );
                 setContextMenu(null);
               }}
@@ -3267,6 +3268,7 @@ export function ScanResultsTable({
                 window.open(
                   `https://www.jita.space/market/${contextMenu.row.TypeID}`,
                   "_blank",
+                  "noopener,noreferrer",
                 );
                 setContextMenu(null);
               }}
@@ -3814,6 +3816,14 @@ const DataRow = memo(
                   />
                 )}
                 <span className="truncate">{ir.row.TypeName}</span>
+                {ir.row.IsContraband && (
+                  <span
+                    title="Contraband item: hauling through empire space can be unsafe."
+                    className="shrink-0 inline-flex items-center px-1 py-px rounded-[2px] border border-red-500/50 bg-red-500/10 text-red-300 text-[9px] leading-none font-medium uppercase"
+                  >
+                    CONTRA
+                  </span>
+                )}
                 {ir.row.DayDiagnosticRejected && (
                   <span
                     title={`Rejected by diagnostic filter: ${ir.row.DayDiagnosticReason || "unknown"}`}

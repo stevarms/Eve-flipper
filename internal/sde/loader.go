@@ -36,6 +36,7 @@ type Data struct {
 	RegionByName map[string]int32       // lowercase name -> regionID
 	Types        map[int32]*ItemType    // typeID -> type
 	Groups       map[int32]*ItemGroup   // groupID -> group metadata
+	Contraband   map[int32]bool         // typeID -> listed in contrabandTypes
 	Stations     map[int64]*Station     // stationID -> station
 	Universe     *graph.Universe
 	Industry     *IndustryData // blueprints, reprocessing, etc.
@@ -57,12 +58,13 @@ type SolarSystem struct {
 
 // ItemType represents a market-tradeable item type from the SDE.
 type ItemType struct {
-	ID         int32
-	Name       string
-	Volume     float64 // packaged volume in m³
-	GroupID    int32   // item group (for categorization: rigs, ships, modules, etc.)
-	CategoryID int32   // item category (6=Ships, 7=Modules, 20=Implants, etc.)
-	IsRig      bool    // derived from group metadata
+	ID           int32
+	Name         string
+	Volume       float64 // packaged volume in m³
+	GroupID      int32   // item group (for categorization: rigs, ships, modules, etc.)
+	CategoryID   int32   // item category (6=Ships, 7=Modules, 20=Implants, etc.)
+	IsRig        bool    // derived from group metadata
+	IsContraband bool    // listed in contrabandTypes
 }
 
 // ItemGroup represents group-level SDE metadata used for type classification.
@@ -103,6 +105,7 @@ func Load(dataDir string) (*Data, error) {
 		RegionByName: make(map[string]int32),
 		Types:        make(map[int32]*ItemType),
 		Groups:       make(map[int32]*ItemGroup),
+		Contraband:   make(map[int32]bool),
 		Stations:     make(map[int64]*Station),
 		Universe:     graph.NewUniverse(),
 	}
@@ -223,7 +226,23 @@ func (d *Data) loadTypes(dir string) error {
 	// First load groups to get category mapping and data-driven rig classification.
 	groupCategories := make(map[int32]int32) // groupID -> categoryID
 	groupRig := make(map[int32]bool)         // groupID -> is rig group
-	err := readJSONL(dir, "groups", func(raw json.RawMessage) error {
+	_, err := readOptionalJSONL(dir, "contrabandTypes", func(raw json.RawMessage) error {
+		var c struct {
+			Key int32 `json:"_key"`
+		}
+		if err := json.Unmarshal(raw, &c); err != nil {
+			return err
+		}
+		if c.Key > 0 {
+			d.Contraband[c.Key] = true
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("load contraband types: %w", err)
+	}
+
+	err = readJSONL(dir, "groups", func(raw json.RawMessage) error {
 		var g struct {
 			Key        int32             `json:"_key"`
 			Name       map[string]string `json:"name"`
@@ -273,12 +292,13 @@ func (d *Data) loadTypes(dir string) error {
 			vol = t.Volume
 		}
 		d.Types[t.Key] = &ItemType{
-			ID:         t.Key,
-			Name:       name,
-			Volume:     vol,
-			GroupID:    t.GroupID,
-			CategoryID: groupCategories[t.GroupID],
-			IsRig:      groupRig[t.GroupID],
+			ID:           t.Key,
+			Name:         name,
+			Volume:       vol,
+			GroupID:      t.GroupID,
+			CategoryID:   groupCategories[t.GroupID],
+			IsRig:        groupRig[t.GroupID],
+			IsContraband: d.Contraband[t.Key],
 		}
 		return nil
 	})

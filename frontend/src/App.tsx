@@ -17,6 +17,7 @@ import { TabActionBar, TabPanel, tabWorkspaceClass } from "./components/TabWorks
 import { ScanHistory } from "./components/ScanHistory";
 import { CommandPalette } from "./components/CommandPalette";
 import { KeyboardShortcutsHelp } from "./components/KeyboardShortcutsHelp";
+import { SecurityVaultModal } from "./components/SecurityVaultModal";
 import { LanguageSwitcher } from "./components/LanguageSwitcher";
 import { ThemeSwitcher } from "./components/ThemeSwitcher";
 import { CockpitInterfaceTab } from "./components/CockpitInterfaceTab";
@@ -221,6 +222,7 @@ function legacyRegionalItemToFlip(
     TypeID: typeID,
     TypeName: typeName,
     Volume: volume,
+    IsContraband: item.is_contraband === true,
     BuyPrice: toNumber(item.source_avg_price, 0),
     BuyStation: buyStation,
     BuySystemName: sourceSystemName,
@@ -426,6 +428,13 @@ function App() {
     releaseURL,
   } = useVersionCheck();
   const { esiAvailable } = useEsiStatus();
+  const securityVaultStatus = authStatus.security_vault;
+  const cockpitRemoteStorageReady =
+    Boolean(securityVaultStatus) &&
+    (!securityVaultStatus?.available ||
+      (Boolean(securityVaultStatus.configured) &&
+        !securityVaultStatus.security_migration_required &&
+        !securityVaultStatus.private_unlock_required));
 
   const [radiusResults, setRadiusResults] = useState<FlipResult[]>([]);
   const [regionResults, setRegionResults] = useState<FlipResult[]>([]);
@@ -596,6 +605,13 @@ function App() {
     );
   }, [activeCockpitLoadoutID]);
 
+  const handleTradingEdgeEnabledChange = useCallback((enabled: boolean) => {
+    handleCockpitPreferencesChange({
+      ...cockpitPreferencesRef.current,
+      tradingEdgeEnabled: enabled,
+    });
+  }, [handleCockpitPreferencesChange]);
+
   const handleCockpitActivateLoadout = useCallback(async (loadoutID: string) => {
     setCockpitSyncStatus("saving");
     try {
@@ -663,6 +679,11 @@ function App() {
   }, [activateLocalCockpitLoadout, applyCockpitLoadoutState, cockpitLoadouts]);
 
   useEffect(() => {
+    if (!cockpitRemoteStorageReady) {
+      cockpitRemoteReadyRef.current = false;
+      setCockpitSyncStatus("local");
+      return;
+    }
     setCockpitSyncStatus("loading");
     let cancelled = false;
     getCockpitPreferencesRemote()
@@ -695,12 +716,16 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [applyCockpitLoadoutState, cockpitRemoteStorageReady]);
 
   useEffect(() => {
     const clean = sanitizeCockpitPreferences(cockpitPreferences);
     cockpitPreferencesRef.current = clean;
     saveCockpitPreferencesLocal(clean);
+    if (!cockpitRemoteStorageReady) {
+      setCockpitSyncStatus("local");
+      return;
+    }
     if (!cockpitRemoteReadyRef.current) return;
     setCockpitSyncStatus("saving");
     clearTimeout(cockpitSaveTimerRef.current);
@@ -718,7 +743,7 @@ function App() {
         .catch(() => setCockpitSyncStatus("local"));
     }, 500);
     return () => clearTimeout(cockpitSaveTimerRef.current);
-  }, [activeCockpitLoadoutID, applyCockpitLoadoutState, cockpitPreferences]);
+  }, [activeCockpitLoadoutID, applyCockpitLoadoutState, cockpitPreferences, cockpitRemoteStorageReady]);
 
   useEffect(() => {
     if (!visibleMainTabs.includes(tab)) {
@@ -1870,16 +1895,37 @@ function App() {
               />
             }
             settingsContent={
-              <section className="rounded-sm border border-eve-border/70 bg-eve-panel/70 p-4">
-                <TaxProfileEditor
-                  value={params}
-                  onChange={(profile) => setParams((prev) => ({ ...prev, ...profile }))}
-                  isLoggedIn={authStatus.logged_in}
-                  characterScope={authStatus.character_id}
-                  title={t("settingsHubTaxTitle")}
-                  subtitle={t("settingsHubTaxSubtitle")}
-                />
-              </section>
+              <div className="space-y-4">
+                <section className="rounded-sm border border-eve-border/70 bg-eve-panel/70 p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <div className="text-xs uppercase tracking-wider text-eve-accent">Trading Edge Engine</div>
+                      <div className="mt-1 text-[11px] text-eve-dim max-w-3xl leading-relaxed">
+                        Personal learning layer for scanner results, Mission Control plans and reconciled journal trades. Disable it if you do not want the app to calculate personal item/category recommendations.
+                      </div>
+                    </div>
+                    <label className="inline-flex items-center gap-2 text-xs text-eve-dim">
+                      <input
+                        type="checkbox"
+                        checked={cockpitPreferences.tradingEdgeEnabled}
+                        onChange={(event) => handleTradingEdgeEnabledChange(event.target.checked)}
+                        className="accent-eve-accent"
+                      />
+                      {cockpitPreferences.tradingEdgeEnabled ? "Enabled" : "Disabled"}
+                    </label>
+                  </div>
+                </section>
+                <section className="rounded-sm border border-eve-border/70 bg-eve-panel/70 p-4">
+                  <TaxProfileEditor
+                    value={params}
+                    onChange={(profile) => setParams((prev) => ({ ...prev, ...profile }))}
+                    isLoggedIn={authStatus.logged_in}
+                    characterScope={authStatus.character_id}
+                    title={t("settingsHubTaxTitle")}
+                    subtitle={t("settingsHubTaxSubtitle")}
+                  />
+                </section>
+              </div>
             }
           />
           <LanguageSwitcher />
@@ -2655,6 +2701,9 @@ function App() {
           onTaxProfileChange={(profile) => setParams((prev) => ({ ...prev, ...profile }))}
           initialTab={characterInitialTab}
           onOpenPaperTradeJournal={() => setShowPaperTradeJournal(true)}
+          tradingEdgeEnabled={cockpitPreferences.tradingEdgeEnabled}
+          onTradingEdgeEnabledChange={handleTradingEdgeEnabledChange}
+          securityVault={authStatus.security_vault}
         />
       )}
 
@@ -2709,6 +2758,12 @@ function App() {
         }}
       />
 
+      <SecurityVaultModal
+        authStatus={authStatus}
+        onRefresh={refreshAuthStatus}
+        onLogin={handleLogin}
+      />
+
       {/* ESI Unavailable Overlay */}
       {esiAvailable === false && (
         <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center">
@@ -2743,7 +2798,7 @@ function App() {
       {showBootSplash && (
         <div
           aria-hidden="true"
-          className={`pointer-events-none fixed inset-0 z-[12000] transition-opacity duration-500 ${
+          className={`pointer-events-none fixed inset-0 z-[45] transition-opacity duration-500 ${
             bootSplashState === "fading" ? "opacity-0" : "opacity-100"
           }`}
         >

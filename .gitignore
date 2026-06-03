@@ -8,6 +8,8 @@
 # Build output
 /build/
 /tmp/
+/output/
+.playwright-cli/
 
 # Local clone of GitHub wiki (for editing wiki from repo)
 wiki-repo/
@@ -72,6 +74,8 @@ frontend/.env.local
 NUL
 tmp_ai_server.log
 tmp_ai_server.err
+eve-flipper-*.log
+eve-flipper-*.err
 
 # Local Discord setup/scratch workspace (do not track)
 discord-local/

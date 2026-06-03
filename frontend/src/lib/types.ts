@@ -2,6 +2,7 @@ export interface FlipResult {
   TypeID: number;
   TypeName: string;
   Volume: number;
+  IsContraband?: boolean;
   IskPerM3?: number;
   BuyPrice: number;
   BestAskPrice?: number;
@@ -470,9 +471,98 @@ export interface PaperTradeReconcileResponse {
   warnings?: string[];
 }
 
+export type TradingEdgeLabelCode =
+  | "good_edge"
+  | "needs_bigger_margin"
+  | "do_not_trade"
+  | "watch"
+  | "insufficient_data"
+  | string;
+
+export interface TradingEdgeRow {
+  key: string;
+  label: string;
+  scope: "item" | "category" | "station" | "overall" | string;
+  trades: number;
+  closed_trades: number;
+  win_rate: number;
+  expected_isk: number;
+  realized_isk: number;
+  delta_isk: number;
+  reality_ratio: number;
+  avg_roi: number;
+  avg_hold_days: number;
+  avg_quantity: number;
+  avg_capital_isk: number;
+  max_recommended_qty: number;
+  min_net_roi_pct: number;
+  max_exposure_isk: number;
+  label_code: TradingEdgeLabelCode;
+  confidence: number;
+  advice: string;
+  reasons: string[];
+}
+
+export interface TradingEdgeLossBucket {
+  key: string;
+  label: string;
+  isk: number;
+  trades: number;
+  share_pct: number;
+}
+
+export interface TradingEdgePreset {
+  id: string;
+  name: string;
+  description: string;
+  min_net_roi_pct: number;
+  max_exposure_isk: number;
+  max_quantity: number;
+  preferred_scopes: string[];
+  avoid_scopes: string[];
+}
+
+export interface TradingEdgeRecommendation {
+  type_id: number;
+  type_name: string;
+  source: string;
+  label_code: TradingEdgeLabelCode;
+  confidence: number;
+  advice: string;
+  reasons: string[];
+  win_rate: number;
+  reality_ratio: number;
+  avg_roi: number;
+  min_net_roi_pct: number;
+  max_recommended_qty: number;
+  max_exposure_isk: number;
+  sample_trades: number;
+}
+
+export interface TradingEdgeSummary {
+  ok: boolean;
+  enabled: boolean;
+  sample_size: number;
+  closed_trades: number;
+  reconciled: number;
+  expected_isk: number;
+  realized_isk: number;
+  delta_isk: number;
+  win_rate: number;
+  reality_ratio: number;
+  items: TradingEdgeRow[];
+  categories: TradingEdgeRow[];
+  stations: TradingEdgeRow[];
+  loss_buckets: TradingEdgeLossBucket[];
+  presets: TradingEdgePreset[];
+  recommendation?: TradingEdgeRecommendation;
+  warnings?: string[];
+}
+
 export interface RegionalDayTradeItem {
   type_id: number;
   type_name: string;
+  is_contraband?: boolean;
   source_system_id: number;
   source_system_name: string;
   source_station_name: string;
@@ -551,6 +641,11 @@ export interface ContractResult {
   EstLiquidationDays?: number;
   ConservativeValue?: number;
   CarryCost?: number;
+  ExcludedRigValue?: number;
+  ExcludedRigQty?: number;
+  ExcludedRigRows?: number;
+  HasContraband?: boolean;
+  ContrabandQty?: number;
   Volume: number;
   StationName: string;
   SystemName?: string;
@@ -574,6 +669,7 @@ export interface ContractItem {
   category_id?: number;
   is_ship?: boolean;
   is_rig?: boolean;
+  is_contraband?: boolean;
   record_id: number;
   item_id: number;
   material_efficiency?: number;
@@ -705,6 +801,7 @@ export interface StationTrade {
   TypeID: number;
   TypeName: string;
   Volume: number;
+  IsContraband?: boolean;
   BuyPrice: number;
   SellPrice: number;
   Spread: number;
@@ -1138,6 +1235,29 @@ export interface AuthStatus {
   character_name?: string;
   characters?: AuthCharacter[];
   auth_revision?: number;
+  security_vault?: SecurityVaultStatus;
+  security_migration_required?: boolean;
+}
+
+export interface SecurityVaultStatus {
+  available?: boolean;
+  configured: boolean;
+  mode?: "standard" | "private" | string;
+  status?: string;
+  schema_version?: number;
+  checkpoint_version?: number;
+  locked?: boolean;
+  legacy_plaintext_auth?: boolean;
+  plaintext_purged_at?: string;
+  created_at?: string;
+  updated_at?: string;
+  security_migration_required?: boolean;
+  private_unlock_required?: boolean;
+  destructive_reset_available?: boolean;
+  standard_background_sync?: boolean;
+  zero_knowledge_local_storage?: boolean;
+  field_encryption_active?: boolean;
+  protected_fields?: string[];
 }
 
 export interface CharacterInfo {

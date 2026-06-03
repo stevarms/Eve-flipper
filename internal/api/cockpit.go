@@ -46,6 +46,7 @@ type cockpitPreferencesPayload struct {
 	LayoutLocked                 bool                                 `json:"layoutLocked"`
 	AdaptiveEnabled              *bool                                `json:"adaptiveEnabled,omitempty"`
 	ContextHintsEnabled          *bool                                `json:"contextHintsEnabled,omitempty"`
+	TradingEdgeEnabled           *bool                                `json:"tradingEdgeEnabled,omitempty"`
 	DismissedAdaptiveSuggestions []string                             `json:"dismissedAdaptiveSuggestions"`
 	FavoriteTemplates            []string                             `json:"favoriteTemplates"`
 	RoleBindings                 map[string]cockpitRoleBindingPayload `json:"roleBindings"`
@@ -121,6 +122,7 @@ var cockpitQuickActionIDs = []string{
 	"itemIntel",
 	"missionControl",
 	"ledger",
+	"journal",
 	"dotlan",
 	"commandPalette",
 	"shortcuts",
@@ -165,6 +167,7 @@ func defaultCockpitPreferencesPayload() cockpitPreferencesPayload {
 		LayoutLocked:                 false,
 		AdaptiveEnabled:              cockpitBoolPtr(true),
 		ContextHintsEnabled:          cockpitBoolPtr(true),
+		TradingEdgeEnabled:           cockpitBoolPtr(true),
 		DismissedAdaptiveSuggestions: []string{},
 		FavoriteTemplates:            []string{},
 		RoleBindings:                 map[string]cockpitRoleBindingPayload{},
@@ -525,6 +528,9 @@ func sanitizeCockpitPreferencesPayload(in cockpitPreferencesPayload) cockpitPref
 	}
 	if in.ContextHintsEnabled != nil {
 		out.ContextHintsEnabled = cockpitBoolPtr(*in.ContextHintsEnabled)
+	}
+	if in.TradingEdgeEnabled != nil {
+		out.TradingEdgeEnabled = cockpitBoolPtr(*in.TradingEdgeEnabled)
 	}
 	out.DismissedAdaptiveSuggestions = sanitizeCockpitStringList(in.DismissedAdaptiveSuggestions, 100, 100)
 	out.FavoriteTemplates = sanitizeCockpitStringList(in.FavoriteTemplates, 100, 80)
