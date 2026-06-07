@@ -4,7 +4,7 @@
 
 - No unreleased changes yet.
 
-## v1.6.6 - 2026-06-03
+## v1.6.6 - 2026-06-08
 
 This release introduces the local security vault, expands encrypted storage for sensitive local data, and tightens desktop/web API boundaries.
 
