@@ -37,10 +37,7 @@ function textWidth(value) {
 }
 
 function formatCount(value) {
-  const n = Number(value) || 0;
-  if (n < 1000) return String(n);
-  if (n < 1000000) return `${Number(n / 1000).toFixed(n < 10000 ? 1 : 0)}k`;
-  return `${Number(n / 1000000).toFixed(n < 10000000 ? 1 : 0)}M`;
+  return String(Math.max(0, Number(value) || 0));
 }
 
 function renderBadge({ label, value, color = "#4c1" }) {
@@ -106,7 +103,7 @@ async function fetchReleases(repo, token) {
 async function readPrevious(file) {
   if (!file) return null;
   try {
-    return JSON.parse(await readFile(file, "utf8"));
+    return JSON.parse((await readFile(file, "utf8")).replace(/^\uFEFF/, ""));
   } catch (err) {
     if (err.code === "ENOENT") return null;
     throw err;
@@ -139,6 +136,18 @@ function buildSnapshot({ repo, releases, previous }) {
       seen.add(id);
       const old = previousAssets.get(id);
       const downloadCount = Math.max(Number(asset.download_count) || 0, Number(old?.download_count) || 0);
+      const githubDownloadCount = Number(asset.download_count) || 0;
+      const oldUnchanged =
+        old &&
+        old.state === "active" &&
+        old.name === asset.name &&
+        old.tag_name === release.tag_name &&
+        old.release_id === String(release.id) &&
+        Number(old.download_count) === downloadCount &&
+        Number(old.github_download_count) === githubDownloadCount &&
+        old.browser_download_url === asset.browser_download_url &&
+        old.created_at === asset.created_at &&
+        old.updated_at === asset.updated_at;
       assets.push({
         id,
         name: asset.name,
@@ -146,12 +155,12 @@ function buildSnapshot({ repo, releases, previous }) {
         release_id: String(release.id),
         state: "active",
         download_count: downloadCount,
-        github_download_count: Number(asset.download_count) || 0,
+        github_download_count: githubDownloadCount,
         browser_download_url: asset.browser_download_url,
         created_at: asset.created_at,
         updated_at: asset.updated_at,
         first_seen_at: old?.first_seen_at || generatedAt,
-        last_seen_at: generatedAt,
+        last_seen_at: oldUnchanged ? old.last_seen_at : generatedAt,
       });
     }
   }
@@ -176,18 +185,65 @@ function buildSnapshot({ repo, releases, previous }) {
   const currentGithubTotal = assets
     .filter((asset) => asset.state === "active")
     .reduce((sum, asset) => sum + (Number(asset.github_download_count) || 0), 0);
+  const latestRelease = latestReleaseTag(releases);
+  const activeAssetCount = assets.filter((asset) => asset.state === "active").length;
+  const archivedAssetCount = assets.filter((asset) => asset.state === "archived").length;
+  const generatedAtForSnapshot = isMateriallySameSnapshot(previous, {
+    repo,
+    latestRelease,
+    totalDownloads,
+    currentGithubTotal,
+    activeAssetCount,
+    archivedAssetCount,
+    assets,
+  })
+    ? previous.generated_at
+    : generatedAt;
 
   return {
     schema_version: 1,
     repo,
-    generated_at: generatedAt,
-    latest_release: latestReleaseTag(releases),
+    generated_at: generatedAtForSnapshot,
+    latest_release: latestRelease,
     total_downloads: totalDownloads,
     current_github_total: currentGithubTotal,
-    active_asset_count: assets.filter((asset) => asset.state === "active").length,
-    archived_asset_count: assets.filter((asset) => asset.state === "archived").length,
+    active_asset_count: activeAssetCount,
+    archived_asset_count: archivedAssetCount,
     assets,
   };
+}
+
+function isMateriallySameSnapshot(previous, next) {
+  if (!previous) return false;
+  if (
+    previous.repo !== next.repo ||
+    previous.latest_release !== next.latestRelease ||
+    Number(previous.total_downloads) !== next.totalDownloads ||
+    Number(previous.current_github_total) !== next.currentGithubTotal ||
+    Number(previous.active_asset_count) !== next.activeAssetCount ||
+    Number(previous.archived_asset_count) !== next.archivedAssetCount
+  ) {
+    return false;
+  }
+  const oldAssets = Array.isArray(previous.assets) ? previous.assets : [];
+  if (oldAssets.length !== next.assets.length) return false;
+  return oldAssets.every((oldAsset, index) => {
+    const asset = next.assets[index];
+    return (
+      String(oldAsset.id) === String(asset.id) &&
+      oldAsset.name === asset.name &&
+      oldAsset.tag_name === asset.tag_name &&
+      oldAsset.release_id === asset.release_id &&
+      oldAsset.state === asset.state &&
+      Number(oldAsset.download_count) === Number(asset.download_count) &&
+      Number(oldAsset.github_download_count) === Number(asset.github_download_count) &&
+      oldAsset.browser_download_url === asset.browser_download_url &&
+      oldAsset.created_at === asset.created_at &&
+      oldAsset.updated_at === asset.updated_at &&
+      oldAsset.first_seen_at === asset.first_seen_at &&
+      oldAsset.last_seen_at === asset.last_seen_at
+    );
+  });
 }
 
 function latestReleaseTag(releases) {
