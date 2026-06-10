@@ -315,3 +315,22 @@ jobs:
             release-assets/SHA256SUMS.txt
           draft: ${{ contains(github.ref_name, '-rc') }}
           prerelease: ${{ contains(github.ref_name, '-rc') }}
+
+  update-download-badge:
+    name: Update Download Badge
+    runs-on: ubuntu-latest
+    needs:
+      - release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Publish download badge
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash .github/scripts/publish-download-badge.sh

@@ -8,8 +8,8 @@
   </p>
 
   <p>
-    <a href="https://github.com/ilyaux/Eve-flipper/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/ilyaux/Eve-flipper?label=release"></a>
-    <a href="https://github.com/ilyaux/Eve-flipper/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/ilyaux/Eve-flipper/total"></a>
+    <a href="https://github.com/ilyaux/Eve-flipper/releases/latest"><img alt="Latest release" src="https://raw.githubusercontent.com/ilyaux/Eve-flipper/badges/release.svg"></a>
+    <a href="https://github.com/ilyaux/Eve-flipper/releases"><img alt="Downloads" src="https://raw.githubusercontent.com/ilyaux/Eve-flipper/badges/downloads.svg"></a>
     <a href="https://go.dev/"><img alt="Go" src="https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white"></a>
     <a href="https://react.dev/"><img alt="React" src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black"></a>
     <a href="https://www.typescriptlang.org/"><img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white"></a>
