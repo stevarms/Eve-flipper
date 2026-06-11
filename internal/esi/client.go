@@ -48,6 +48,9 @@ type Client struct {
 	everefNames sync.Map // int64 -> string
 	// Known structure -> solar_system_id mappings from ESI/EVERef.
 	structureSystems sync.Map // int64 -> int32
+	// Known structure -> type_id mappings (e.g. 35827 for Sotiyo). Populated
+	// opportunistically when StructureDetails resolves a structure.
+	structureTypes sync.Map // int64 -> int32
 	// Negative cache for inaccessible/throttled structure name lookups.
 	structureNameFailures sync.Map // int64 -> structureNameFailure
 
@@ -464,6 +467,7 @@ func (c *Client) StructureDetails(structureID int64, accessToken string) (string
 	var info struct {
 		Name          string `json:"name"`
 		SolarSystemID int32  `json:"solar_system_id"`
+		TypeID        int32  `json:"type_id"`
 	}
 	url := fmt.Sprintf("%s/universe/structures/%d/?datasource=tranquility", baseURL, structureID)
 	if err := c.AuthGetJSON(url, accessToken, &info); err != nil {
@@ -480,6 +484,9 @@ func (c *Client) StructureDetails(structureID int64, accessToken string) (string
 	if info.SolarSystemID > 0 {
 		c.structureSystems.Store(structureID, info.SolarSystemID)
 	}
+	if info.TypeID > 0 {
+		c.structureTypes.Store(structureID, info.TypeID)
+	}
 	return info.Name, info.SolarSystemID, nil
 }
 
@@ -491,6 +498,20 @@ func (c *Client) StructureSystemID(structureID int64) (int32, bool) {
 	if v, ok := c.structureSystems.Load(structureID); ok {
 		if sid, okCast := v.(int32); okCast && sid > 0 {
 			return sid, true
+		}
+	}
+	return 0, false
+}
+
+// StructureTypeID returns the cached type_id for a structure, if known. Returns
+// (0, false) when the structure was never resolved via StructureDetails.
+func (c *Client) StructureTypeID(structureID int64) (int32, bool) {
+	if structureID <= 0 {
+		return 0, false
+	}
+	if v, ok := c.structureTypes.Load(structureID); ok {
+		if tid, okCast := v.(int32); okCast && tid > 0 {
+			return tid, true
 		}
 	}
 	return 0, false

@@ -878,6 +878,9 @@ export interface StationInfo {
   system_id: number;
   region_id: number;
   is_structure?: boolean;
+  /** Type ID of the structure (e.g. 35827 = Sotiyo). Empty/0 for NPC stations
+   *  or unresolved structures. */
+  type_id?: number;
 }
 
 export interface StationsResponse {
@@ -1923,6 +1926,95 @@ export interface IndustryAnalysis {
 export type NdjsonIndustryMessage =
   | { type: "progress"; message: string }
   | { type: "result"; data: IndustryAnalysis }
+  | { type: "error"; message: string };
+
+// --- Profitable blueprints scanner ---
+
+export interface ProfitableScanRequest {
+  scope: "single" | "all";
+  character_id?: number;
+  location_ids?: number[];
+  default_bpc_runs?: number;
+  include_corp_blueprints?: boolean;
+
+  build_system_name: string;
+  /** System whose region is queried for product/material market prices. When
+   *  omitted, the backend falls back to the build system's region (legacy
+   *  behavior). */
+  pricing_system_name?: string;
+  pricing_station_id?: number;
+  facility_tax?: number;
+  structure_bonus?: number;
+  broker_fee?: number;
+  sales_tax_percent?: number;
+  runs_per_job: number;
+  max_depth?: number;
+
+  min_isk_per_hour?: number;
+  min_profit?: number;
+  min_margin_percent?: number;
+
+  // Cap on how many BP groups the backend analyzes for this scan.
+  // Backend default is 500; hard ceiling is 20000.
+  max_blueprints?: number;
+
+  // Which kinds of blueprints to include. Default "bpo".
+  blueprint_filter?: "bpo" | "bpc" | "both";
+
+  // When true, the backend skips the ESI blueprint fetch and rescores the
+  // supplied reuse_groups instead. Used by the "Refresh prices" button.
+  skip_blueprint_fetch?: boolean;
+  reuse_groups?: ProfitableScanReuseRow[];
+}
+
+export interface ProfitableScanReuseRow {
+  blueprint_type_id: number;
+  is_bpo: boolean;
+  me: number;
+  te: number;
+  owned_quantity: number;
+  available_runs: number;
+  location_ids: number[];
+}
+
+export interface ProfitableScanRow {
+  blueprint_type_id: number;
+  blueprint_name: string;
+  product_type_id: number;
+  product_name: string;
+  owned_quantity: number;
+  is_bpo: boolean;
+  available_runs: number;
+  me: number;
+  te: number;
+  location_ids: number[];
+  runs: number;
+  profit: number;
+  profit_percent: number;
+  isk_per_hour: number;
+  optimal_build_cost: number;
+  sell_revenue: number;
+  manufacturing_time: number;
+}
+
+export interface ProfitableScanStats {
+  owned_blueprint_groups: number;
+  analyzed: number;
+  skipped_no_activity: number;
+  skipped_filtered: number;
+  errors: number;
+  cap_hit: number;
+}
+
+export interface ProfitableScanResponse {
+  rows: ProfitableScanRow[];
+  warnings: string[];
+  stats: ProfitableScanStats;
+}
+
+export type NdjsonProfitableScanMessage =
+  | { type: "progress"; message: string }
+  | { type: "result"; data: ProfitableScanResponse }
   | { type: "error"; message: string };
 
 export interface BuildableItem {

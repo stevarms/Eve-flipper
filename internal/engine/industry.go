@@ -18,7 +18,13 @@ type IndustryParams struct {
 	ActivityMode        string  // auto/manufacturing/reaction/invention
 	MaterialEfficiency  int32   // Blueprint ME (0-10)
 	TimeEfficiency      int32   // Blueprint TE (0-20)
-	SystemID            int32   // Manufacturing system
+	SystemID            int32   // Manufacturing system (drives system cost index)
+	// PricingSystemID, when non-zero, overrides which region market prices are
+	// fetched from. Lets the scanner build in one region (cost index, structure
+	// bonuses) while quoting prices from another (e.g. Jita). When zero, the
+	// pricing region is derived from StationID, then SystemID — preserving the
+	// pre-existing single-location analyzer behavior.
+	PricingSystemID     int32
 	StationID           int64   // Optional: specific station/structure for price lookup (0 = region-wide)
 	FacilityTax         float64 // Facility tax % (default 0)
 	StructureBonus      float64 // Structure material bonus % (e.g., 1% for Raitaru)
@@ -932,20 +938,28 @@ func (a *IndustryAnalyzer) sumJobCosts(node *MaterialNode) float64 {
 }
 
 // resolveMarketRegion chooses the market region for pricing.
-// Priority: selected manufacturing system -> selected NPC station -> The Forge (Jita).
+// Priority for the pricing region:
+//   1. PricingSystemID — explicit override used by the scanner so the user
+//      can build in one region and read prices from another. When set, it
+//      wins over both SystemID and StationID.
+//   2. SystemID — the legacy "build system also drives pricing" behavior used
+//      by the single-location analysis flow.
+//   3. StationID — fallback when neither system is provided.
+//   4. The Forge (Jita) as the absolute default.
 func (a *IndustryAnalyzer) resolveMarketRegion(params IndustryParams) (int32, string) {
 	// Default: The Forge (Jita)
 	regionID := int32(10000002)
 	regionName := ""
 
-	// Prefer explicit manufacturing system.
-	if params.SystemID != 0 {
+	if params.PricingSystemID != 0 {
+		if sys, ok := a.SDE.Systems[params.PricingSystemID]; ok && sys.RegionID != 0 {
+			regionID = sys.RegionID
+		}
+	} else if params.SystemID != 0 {
 		if sys, ok := a.SDE.Systems[params.SystemID]; ok && sys.RegionID != 0 {
 			regionID = sys.RegionID
 		}
 	} else if params.StationID != 0 {
-		// Fallback: infer region from NPC station metadata in SDE.
-		// Player structures are not present in SDE station map.
 		if st, ok := a.SDE.Stations[params.StationID]; ok {
 			if sys, ok := a.SDE.Systems[st.SystemID]; ok && sys.RegionID != 0 {
 				regionID = sys.RegionID

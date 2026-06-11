@@ -2,9 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import { useI18n } from "@/lib/i18n";
 import type { IndustryPlanPreview } from "@/lib/types";
 import { formatUtcShort } from "./industryHelpers";
+import type { IndustryJobsWorkspaceTab } from "./IndustryJobsWorkspaceNav";
 
 interface IndustryPlanPreviewPanelProps {
-  jobsWorkspaceTab: "guide" | "planning" | "operations";
+  jobsWorkspaceTab: IndustryJobsWorkspaceTab;
   lastLedgerPlanPreview: IndustryPlanPreview | null;
   isLastLedgerPreviewStale: boolean;
   clearPlanPreview: () => void;

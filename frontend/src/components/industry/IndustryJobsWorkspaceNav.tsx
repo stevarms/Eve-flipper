@@ -1,6 +1,6 @@
 import { useI18n } from "@/lib/i18n";
 
-export type IndustryJobsWorkspaceTab = "guide" | "planning" | "operations";
+export type IndustryJobsWorkspaceTab = "guide" | "planning" | "operations" | "scanner";
 
 interface Props {
   activeTab: IndustryJobsWorkspaceTab;
@@ -14,6 +14,7 @@ const tabTone: Record<IndustryJobsWorkspaceTab, string> = {
   guide: "border-emerald-500/40",
   planning: "border-cyan-500/40",
   operations: "border-fuchsia-500/40",
+  scanner: "border-amber-500/40",
 };
 
 export function IndustryJobsWorkspaceNav({
@@ -40,6 +41,11 @@ export function IndustryJobsWorkspaceNav({
       id: "operations",
       label: t("industryJobsWorkspaceOps"),
       hint: t("industryJobsWorkspaceOpsHint"),
+    },
+    {
+      id: "scanner",
+      label: t("industryJobsWorkspaceScanner"),
+      hint: t("industryJobsWorkspaceScannerHint"),
     },
   ];
 
