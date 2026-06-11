@@ -13,6 +13,7 @@ import { IndustryJobsPlanningActions } from "./IndustryJobsPlanningActions";
 import { IndustryPlannerSchedulerPanel } from "./IndustryPlannerSchedulerPanel";
 import { IndustryPlanPreviewPanel } from "./IndustryPlanPreviewPanel";
 import { IndustryWorkspaceStatusBoards } from "./IndustryWorkspaceStatusBoards";
+import { IndustryProfitableScannerPanel } from "./IndustryProfitableScannerPanel";
 
 interface IndustryJobsLedgerPanelProps {
   isLoggedIn: boolean;
@@ -33,6 +34,7 @@ interface IndustryJobsLedgerPanelProps {
   operationsBoardsProps: ComponentProps<typeof IndustryOperationsBoards>;
   plannerBuilderProps: ComponentProps<typeof IndustryPlannerBuilderPanel>;
   operationsJobsProps: ComponentProps<typeof IndustryOperationsJobsPanel>;
+  scannerProps: ComponentProps<typeof IndustryProfitableScannerPanel>;
 }
 
 export function IndustryJobsLedgerPanel({
@@ -54,6 +56,7 @@ export function IndustryJobsLedgerPanel({
   operationsBoardsProps,
   plannerBuilderProps,
   operationsJobsProps,
+  scannerProps,
 }: IndustryJobsLedgerPanelProps) {
   const { t } = useI18n();
 
@@ -80,31 +83,37 @@ export function IndustryJobsLedgerPanel({
               activeJobs={activeJobs}
             />
 
-            {jobsWorkspaceTab === "guide" && (
-              <IndustryJobsGuidePanel {...guidePanelProps} />
+            {jobsWorkspaceTab === "scanner" ? (
+              <IndustryProfitableScannerPanel {...scannerProps} />
+            ) : (
+              <>
+                {jobsWorkspaceTab === "guide" && (
+                  <IndustryJobsGuidePanel {...guidePanelProps} />
+                )}
+
+                <IndustryJobsPlanningActions {...planningActionsProps} />
+
+                {(jobsWorkspaceTab === "guide" || jobsWorkspaceTab === "planning") && (
+                  <IndustryPlannerWarningLog {...warningLogProps} />
+                )}
+
+                <IndustryWorkspaceStatusBoards {...workspaceStatusBoardsProps} />
+
+                {jobsWorkspaceTab === "planning" && (
+                  <IndustryDependencyBoard {...dependencyBoardProps} />
+                )}
+
+                <IndustryPlannerSchedulerPanel {...schedulerPanelProps} />
+
+                <IndustryPlanPreviewPanel {...planPreviewPanelProps} />
+
+                <IndustryOperationsBoards {...operationsBoardsProps} />
+
+                <IndustryPlannerBuilderPanel {...plannerBuilderProps} />
+
+                <IndustryOperationsJobsPanel {...operationsJobsProps} />
+              </>
             )}
-
-            <IndustryJobsPlanningActions {...planningActionsProps} />
-
-            {(jobsWorkspaceTab === "guide" || jobsWorkspaceTab === "planning") && (
-              <IndustryPlannerWarningLog {...warningLogProps} />
-            )}
-
-            <IndustryWorkspaceStatusBoards {...workspaceStatusBoardsProps} />
-
-            {jobsWorkspaceTab === "planning" && (
-              <IndustryDependencyBoard {...dependencyBoardProps} />
-            )}
-
-            <IndustryPlannerSchedulerPanel {...schedulerPanelProps} />
-
-            <IndustryPlanPreviewPanel {...planPreviewPanelProps} />
-
-            <IndustryOperationsBoards {...operationsBoardsProps} />
-
-            <IndustryPlannerBuilderPanel {...plannerBuilderProps} />
-
-            <IndustryOperationsJobsPanel {...operationsJobsProps} />
           </>
         )}
       </div>

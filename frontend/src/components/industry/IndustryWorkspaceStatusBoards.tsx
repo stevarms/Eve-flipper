@@ -1,8 +1,9 @@
 import type { IndustryProjectSnapshot } from "@/lib/types";
 import { industryJobStatusClass, industryTaskStatusClass } from "./industryHelpers";
+import type { IndustryJobsWorkspaceTab } from "./IndustryJobsWorkspaceNav";
 
 interface IndustryWorkspaceStatusBoardsProps {
-  jobsWorkspaceTab: "guide" | "planning" | "operations";
+  jobsWorkspaceTab: IndustryJobsWorkspaceTab;
   taskStatusDone: number;
   taskStatusTotal: number;
   taskStatusDonePct: number;

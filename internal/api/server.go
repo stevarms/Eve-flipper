@@ -861,6 +861,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auth/industry/projects/{projectID}/plan", s.handleAuthPlanIndustryProject)
 	mux.HandleFunc("POST /api/auth/industry/projects/{projectID}/materials/rebalance", s.handleAuthRebalanceIndustryProjectMaterials)
 	mux.HandleFunc("POST /api/auth/industry/projects/{projectID}/blueprints/sync", s.handleAuthSyncIndustryProjectBlueprintPool)
+	mux.HandleFunc("POST /api/auth/industry/blueprints/profitable-scan", s.handleAuthIndustryProfitableScan)
+	mux.HandleFunc("GET /api/auth/character/market-fees", s.handleAuthCharacterMarketFees)
 	mux.HandleFunc("PATCH /api/auth/industry/tasks/status", s.handleAuthUpdateIndustryTaskStatus)
 	mux.HandleFunc("PATCH /api/auth/industry/tasks/status/bulk", s.handleAuthBulkUpdateIndustryTaskStatus)
 	mux.HandleFunc("PATCH /api/auth/industry/tasks/priority", s.handleAuthUpdateIndustryTaskPriority)
@@ -4174,6 +4176,7 @@ func (s *Server) handleAuthStructures(w http.ResponseWriter, r *http.Request) {
 		SystemID    int32  `json:"system_id"`
 		RegionID    int32  `json:"region_id"`
 		IsStructure bool   `json:"is_structure,omitempty"`
+		TypeID      int32  `json:"type_id,omitempty"`
 	}
 
 	structureByID := make(map[int64]stationInfo)
@@ -4183,7 +4186,8 @@ func (s *Server) handleAuthStructures(w http.ResponseWriter, r *http.Request) {
 		}
 		name := s.esi.StructureName(id, accessToken)
 		structureSystemID, ok := s.esi.StructureSystemID(id)
-		if !ok {
+		typeID, _ := s.esi.StructureTypeID(id)
+		if !ok || typeID == 0 {
 			if resolvedName, resolvedSystemID, detailsErr := s.esi.StructureDetails(id, accessToken); detailsErr == nil {
 				if resolvedName != "" {
 					name = resolvedName
@@ -4191,6 +4195,9 @@ func (s *Server) handleAuthStructures(w http.ResponseWriter, r *http.Request) {
 				if resolvedSystemID > 0 {
 					structureSystemID = resolvedSystemID
 					ok = true
+				}
+				if t, has := s.esi.StructureTypeID(id); has {
+					typeID = t
 				}
 			}
 		}
@@ -4208,6 +4215,7 @@ func (s *Server) handleAuthStructures(w http.ResponseWriter, r *http.Request) {
 			SystemID:    structureSystemID,
 			RegionID:    regionID,
 			IsStructure: true,
+			TypeID:      typeID,
 		}
 	}
 
@@ -4217,12 +4225,21 @@ func (s *Server) handleAuthStructures(w http.ResponseWriter, r *http.Request) {
 	} else {
 		for _, st := range structures {
 			if st.SystemID == systemID {
+				typeID, _ := s.esi.StructureTypeID(st.ID)
+				if typeID == 0 {
+					if _, _, detailsErr := s.esi.StructureDetails(st.ID, token); detailsErr == nil {
+						if t, has := s.esi.StructureTypeID(st.ID); has {
+							typeID = t
+						}
+					}
+				}
 				structureByID[st.ID] = stationInfo{
 					ID:          st.ID,
 					Name:        st.Name,
 					SystemID:    st.SystemID,
 					RegionID:    st.RegionID,
 					IsStructure: true,
+					TypeID:      typeID,
 				}
 			}
 		}
@@ -6008,12 +6025,13 @@ func (s *Server) handleAuthIndustryCoverage(w http.ResponseWriter, r *http.Reque
 	}
 
 	var req struct {
-		Scope          string                                 `json:"scope"`
-		CharacterID    int64                                  `json:"character_id"`
-		LocationIDs    []int64                                `json:"location_ids"`
-		DefaultBPCRuns int64                                  `json:"default_bpc_runs"`
-		Materials      []engine.IndustryCoverageMaterialNeed  `json:"materials"`
-		Blueprints     []engine.IndustryCoverageBlueprintNeed `json:"blueprints"`
+		Scope                 string                                 `json:"scope"`
+		CharacterID           int64                                  `json:"character_id"`
+		LocationIDs           []int64                                `json:"location_ids"`
+		DefaultBPCRuns        int64                                  `json:"default_bpc_runs"`
+		Materials             []engine.IndustryCoverageMaterialNeed  `json:"materials"`
+		Blueprints            []engine.IndustryCoverageBlueprintNeed `json:"blueprints"`
+		IncludeCorpBlueprints bool                                   `json:"include_corp_blueprints"`
 	}
 	if r.Body != nil {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
@@ -6289,6 +6307,87 @@ func (s *Server) handleAuthIndustryCoverage(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	corpsScanned := 0
+	corpBPRows := 0
+	if req.IncludeCorpBlueprints && len(neededBlueprints) > 0 {
+		seenCorps := make(map[int32]struct{})
+		corpForbiddenWarnAdded := false
+		for _, sess := range selectedSessions {
+			token, tokenErr := s.sessions.EnsureValidTokenForUserCharacter(s.sso, userID, sess.CharacterID)
+			if tokenErr != nil {
+				continue
+			}
+			corpID, corpErr := s.esi.GetCharacterCorporationID(sess.CharacterID)
+			if corpErr != nil || corpID <= 0 {
+				continue
+			}
+			if _, done := seenCorps[corpID]; done {
+				continue
+			}
+			roles, rolesErr := s.esi.GetCharacterRoles(sess.CharacterID, token)
+			if rolesErr != nil {
+				continue
+			}
+			hasDirector := false
+			if roles != nil {
+				for _, r := range roles.Roles {
+					if strings.EqualFold(r, "Director") {
+						hasDirector = true
+						break
+					}
+				}
+			}
+			if !hasDirector {
+				continue
+			}
+			corpBPs, corpErr2 := s.esi.GetCorporationBlueprints(corpID, token)
+			if corpErr2 != nil {
+				msg := strings.ToLower(corpErr2.Error())
+				if strings.Contains(msg, "403") && !corpForbiddenWarnAdded {
+					appendWarningOnce("corp blueprints skipped: missing scope or insufficient corp role (re-authenticate to grant esi-corporations.read_blueprints.v1)")
+					corpForbiddenWarnAdded = true
+				}
+				continue
+			}
+			seenCorps[corpID] = struct{}{}
+			corpsScanned++
+			for _, bp := range corpBPs {
+				if bp.TypeID <= 0 {
+					continue
+				}
+				if _, needed := neededBlueprints[bp.TypeID]; !needed {
+					continue
+				}
+				if !locationAllowed(bp.LocationID) {
+					continue
+				}
+				qty := bp.Quantity
+				if qty <= 0 {
+					qty = 1
+				}
+				isBPO := bp.Runs < 0
+				availableRuns := int64(0)
+				if !isBPO {
+					runsPerCopy := bp.Runs
+					if runsPerCopy <= 0 {
+						runsPerCopy = defaultBPCRuns
+					}
+					availableRuns = runsPerCopy * qty
+				}
+				blueprintStock = append(blueprintStock, engine.IndustryCoverageBlueprintStock{
+					BlueprintTypeID: bp.TypeID,
+					BlueprintName:   industryCoverageTypeName(sdeData, bp.TypeID),
+					Quantity:        qty,
+					IsBPO:           isBPO,
+					AvailableRuns:   availableRuns,
+					ME:              bp.MaterialEfficiency,
+					TE:              bp.TimeEfficiency,
+				})
+				corpBPRows++
+			}
+		}
+	}
+
 	coverage := engine.ComputeIndustryCoverage(req.Materials, req.Blueprints, assetsByType, blueprintStock)
 	for _, msg := range extraWarnings {
 		coverage.Warnings = append(coverage.Warnings, msg)
@@ -6307,6 +6406,8 @@ func (s *Server) handleAuthIndustryCoverage(w http.ResponseWriter, r *http.Reque
 			"assets_fallback_characters":     assetsFallbackCharacters,
 			"default_bpc_runs":               defaultBPCRuns,
 			"location_filter_count":          len(locationFilter),
+			"corporations_scanned":           corpsScanned,
+			"corp_blueprint_rows":            corpBPRows,
 			"warnings":                       coverage.Warnings,
 		},
 	})
@@ -6374,280 +6475,38 @@ func (s *Server) handleAuthSyncIndustryProjectBlueprintPool(w http.ResponseWrite
 		defaultBPCRuns = 1000
 	}
 
-	selectedSessions, err := s.authSessionsForScope(userID, req.CharacterID, allScope, true)
+	blueprints, extraWarnings, aggStats, err := s.aggregateOwnedBlueprints(userID, req.CharacterID, allScope, req.LocationIDs, defaultBPCRuns, false)
 	if err != nil {
-		if strings.Contains(err.Error(), "not logged in") {
-			writeError(w, 401, err.Error())
-		} else {
-			writeError(w, 400, err.Error())
+		msg := err.Error()
+		switch {
+		case strings.Contains(msg, "not logged in"):
+			writeError(w, 401, msg)
+		case strings.Contains(msg, "industry data not ready"):
+			writeError(w, 503, msg)
+		case strings.Contains(msg, "character_id and scope=all"):
+			writeError(w, 400, msg)
+		case strings.Contains(msg, "failed to fetch blueprints"):
+			writeError(w, 500, msg)
+		default:
+			writeError(w, 400, msg)
 		}
 		return
 	}
 
-	s.mu.RLock()
-	sdeData := s.sdeData
-	s.mu.RUnlock()
-	if sdeData == nil || sdeData.Industry == nil {
-		writeError(w, 503, "industry data not ready")
-		return
-	}
-
-	locationFilter := make(map[int64]struct{}, len(req.LocationIDs))
+	// Legacy locals so the rest of the handler (plan apply + response summary)
+	// keeps reading the same way.
+	charactersUsed := aggStats.CharactersUsed
+	blueprintsEndpointCharacters := aggStats.BlueprintsEndpointCharacters
+	assetsFallbackCharacters := aggStats.AssetsFallbackCharacters
+	blueprintRowsScanned := aggStats.BlueprintRowsScanned
+	assetsScanned := aggStats.AssetsScanned
+	charactersSelected := aggStats.CharactersSelected
+	locationFilterCount := 0
 	for _, locationID := range req.LocationIDs {
-		if locationID <= 0 {
-			continue
-		}
-		locationFilter[locationID] = struct{}{}
-	}
-
-	type bpKey struct {
-		TypeID     int32
-		LocationID int64
-		IsBPO      bool
-	}
-
-	aggregated := make(map[bpKey]db.IndustryBlueprintPoolInput, 256)
-	charactersUsed := 0
-	blueprintsEndpointCharacters := 0
-	assetsFallbackCharacters := 0
-	blueprintRowsScanned := 0
-	assetsScanned := 0
-	extraWarnings := make([]string, 0, 4)
-	assetsFallbackWarnAdded := false
-	assetResolverWarnAdded := false
-
-	resolveRootLocationID := func(locationID int64, assetByItemID map[int64]esi.CharacterAsset) int64 {
-		if locationID <= 0 || len(assetByItemID) == 0 {
-			return locationID
-		}
-		current := locationID
-		seen := map[int64]struct{}{}
-		for current > 0 {
-			if _, ok := seen[current]; ok {
-				return current
-			}
-			seen[current] = struct{}{}
-
-			parent, ok := assetByItemID[current]
-			if !ok {
-				return current
-			}
-			parentType := strings.ToLower(strings.TrimSpace(parent.LocationType))
-			if parentType != "item" {
-				if parent.LocationID > 0 {
-					return parent.LocationID
-				}
-				return current
-			}
-			current = parent.LocationID
-		}
-		return locationID
-	}
-
-	upsertBlueprintPoolRow := func(typeID int32, locationID int64, isBPO bool, quantity int64, availableRuns int64, me int32, te int32) {
-		if typeID <= 0 {
-			return
-		}
-		if _, ok := sdeData.Industry.Blueprints[typeID]; !ok {
-			return
-		}
-		if quantity <= 0 {
-			quantity = 1
-		}
-		if !isBPO {
-			if availableRuns <= 0 {
-				availableRuns = quantity * defaultBPCRuns
-			}
-			if availableRuns < quantity {
-				availableRuns = quantity
-			}
-		} else {
-			availableRuns = 0
-		}
-		if len(locationFilter) > 0 {
-			if _, ok := locationFilter[locationID]; !ok {
-				return
-			}
-		}
-
-		typeName := fmt.Sprintf("Type %d", typeID)
-		if t, ok := sdeData.Types[typeID]; ok && strings.TrimSpace(t.Name) != "" {
-			typeName = strings.TrimSpace(t.Name)
-		}
-
-		key := bpKey{
-			TypeID:     typeID,
-			LocationID: locationID,
-			IsBPO:      isBPO,
-		}
-		row := aggregated[key]
-		if row.BlueprintTypeID == 0 {
-			row.BlueprintTypeID = typeID
-			row.BlueprintName = typeName
-			row.LocationID = locationID
-			row.IsBPO = isBPO
-		}
-		row.Quantity += quantity
-		if !isBPO {
-			row.AvailableRuns += availableRuns
-		}
-		if me > row.ME {
-			row.ME = me
-		}
-		if te > row.TE {
-			row.TE = te
-		}
-		aggregated[key] = row
-	}
-
-	for _, sess := range selectedSessions {
-		token, tokenErr := s.sessions.EnsureValidTokenForUserCharacter(s.sso, userID, sess.CharacterID)
-		if tokenErr != nil {
-			log.Printf("[AUTH] Industry blueprint sync token error (%s): %v", sess.CharacterName, tokenErr)
-			if !allScope {
-				writeError(w, 401, tokenErr.Error())
-				return
-			}
-			continue
-		}
-
-		sourceOK := false
-
-		charBlueprints, bpErr := s.esi.GetCharacterBlueprints(sess.CharacterID, token)
-		if bpErr == nil {
-			sourceOK = true
-			blueprintsEndpointCharacters++
-			blueprintRowsScanned += len(charBlueprints)
-
-			assetByItemID := map[int64]esi.CharacterAsset{}
-			assets, assetErr := s.esi.GetCharacterAssets(sess.CharacterID, token)
-			if assetErr == nil {
-				assetsScanned += len(assets)
-				assetByItemID = make(map[int64]esi.CharacterAsset, len(assets))
-				for _, asset := range assets {
-					if asset.ItemID > 0 {
-						assetByItemID[asset.ItemID] = asset
-					}
-				}
-			} else if !assetResolverWarnAdded {
-				extraWarnings = append(extraWarnings, "blueprint location resolver unavailable: using raw location_id for some rows")
-				assetResolverWarnAdded = true
-			}
-
-			for _, bp := range charBlueprints {
-				if bp.TypeID <= 0 {
-					continue
-				}
-				resolvedLocationID := resolveRootLocationID(bp.LocationID, assetByItemID)
-				quantity := bp.Quantity
-				if quantity <= 0 {
-					quantity = 1
-				}
-
-				isBPO := bp.Runs < 0
-				availableRuns := int64(0)
-				if !isBPO {
-					runsPerCopy := bp.Runs
-					if runsPerCopy <= 0 {
-						runsPerCopy = defaultBPCRuns
-					}
-					availableRuns = runsPerCopy * quantity
-				}
-
-				upsertBlueprintPoolRow(
-					bp.TypeID,
-					resolvedLocationID,
-					isBPO,
-					quantity,
-					availableRuns,
-					bp.MaterialEfficiency,
-					bp.TimeEfficiency,
-				)
-			}
-		} else {
-			log.Printf("[AUTH] Industry blueprint sync blueprints error (%s): %v", sess.CharacterName, bpErr)
-
-			assets, fetchErr := s.esi.GetCharacterAssets(sess.CharacterID, token)
-			if fetchErr != nil {
-				log.Printf("[AUTH] Industry blueprint sync assets fallback error (%s): %v", sess.CharacterName, fetchErr)
-				if !allScope {
-					writeError(w, 500, "failed to fetch blueprints/assets: "+fetchErr.Error())
-					return
-				}
-				continue
-			}
-
-			sourceOK = true
-			assetsFallbackCharacters++
-			assetsScanned += len(assets)
-			if !assetsFallbackWarnAdded {
-				extraWarnings = append(extraWarnings, "blueprints endpoint unavailable for some characters; assets fallback used (ME/TE/runs are estimated)")
-				assetsFallbackWarnAdded = true
-			}
-
-			assetByItemID := make(map[int64]esi.CharacterAsset, len(assets))
-			for _, asset := range assets {
-				if asset.ItemID > 0 {
-					assetByItemID[asset.ItemID] = asset
-				}
-			}
-
-			for _, asset := range assets {
-				if asset.TypeID <= 0 {
-					continue
-				}
-				resolvedLocationID := resolveRootLocationID(asset.LocationID, assetByItemID)
-				isBPO := true
-				if asset.IsBlueprintCopy || asset.Quantity <= -2 {
-					isBPO = false
-				}
-				quantity := asset.Quantity
-				if quantity <= 0 {
-					quantity = 1
-				}
-
-				upsertBlueprintPoolRow(
-					asset.TypeID,
-					resolvedLocationID,
-					isBPO,
-					quantity,
-					quantity*defaultBPCRuns,
-					0,
-					0,
-				)
-			}
-		}
-
-		if sourceOK {
-			charactersUsed++
+		if locationID > 0 {
+			locationFilterCount++
 		}
 	}
-
-	if len(selectedSessions) > 0 && charactersUsed == 0 {
-		if allScope {
-			writeError(w, 500, "failed to fetch blueprints/assets for selected characters")
-		} else {
-			writeError(w, 500, "failed to fetch blueprints/assets")
-		}
-		return
-	}
-
-	blueprints := make([]db.IndustryBlueprintPoolInput, 0, len(aggregated))
-	for _, row := range aggregated {
-		blueprints = append(blueprints, row)
-	}
-	sort.SliceStable(blueprints, func(i, j int) bool {
-		if blueprints[i].BlueprintTypeID != blueprints[j].BlueprintTypeID {
-			return blueprints[i].BlueprintTypeID < blueprints[j].BlueprintTypeID
-		}
-		if blueprints[i].LocationID != blueprints[j].LocationID {
-			return blueprints[i].LocationID < blueprints[j].LocationID
-		}
-		if blueprints[i].IsBPO == blueprints[j].IsBPO {
-			return blueprints[i].BlueprintName < blueprints[j].BlueprintName
-		}
-		return blueprints[i].IsBPO && !blueprints[j].IsBPO
-	})
 
 	planSummary, err := s.db.ApplyIndustryPlanForUser(userID, projectID, db.IndustryPlanPatch{
 		ReplaceBlueprintPool: true,
@@ -6687,7 +6546,7 @@ func (s *Server) handleAuthSyncIndustryProjectBlueprintPool(w http.ResponseWrite
 		"summary": map[string]interface{}{
 			"project_id":                     projectID,
 			"scope":                          scope,
-			"characters":                     len(selectedSessions),
+			"characters":                     charactersSelected,
 			"characters_used":                charactersUsed,
 			"blueprints_endpoint_characters": blueprintsEndpointCharacters,
 			"assets_fallback_characters":     assetsFallbackCharacters,
@@ -6696,7 +6555,7 @@ func (s *Server) handleAuthSyncIndustryProjectBlueprintPool(w http.ResponseWrite
 			"blueprints_detected":            len(blueprints),
 			"blueprints_upserted":            planSummary.BlueprintsUpsert,
 			"default_bpc_runs":               defaultBPCRuns,
-			"location_filter_count":          len(locationFilter),
+			"location_filter_count":          locationFilterCount,
 			"warnings":                       combinedWarnings,
 		},
 	})

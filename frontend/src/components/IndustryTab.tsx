@@ -297,6 +297,10 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
 
   // Analysis state
   const [analyzing, setAnalyzing] = useState(false);
+  // When set true by the scanner's "View in Analysis" handoff, an effect
+  // below triggers handleAnalyze on the next render so the analyzer sees
+  // the just-applied state.
+  const [pendingAutoAnalyze, setPendingAutoAnalyze] = useState(false);
   const [progress, setProgress] = useState("");
   const [result, setResult] = useState<IndustryAnalysis | null>(null);
   const [industryCoverage, setIndustryCoverage] = useState<IndustryCoverageResult | null>(null);
@@ -336,6 +340,7 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
   const [rebalanceWarehouseScope, setRebalanceWarehouseScope] = useState<"global" | "location_first" | "strict_location">("location_first");
   const [blueprintSyncDefaultBPCRuns, setBlueprintSyncDefaultBPCRuns] = useState(1);
   const [rebalanceUseSelectedStation, setRebalanceUseSelectedStation] = useState(false);
+  const [coverageIncludeCorpBlueprints, setCoverageIncludeCorpBlueprints] = useState(false);
   const [applyingLedgerPlan, setApplyingLedgerPlan] = useState(false);
   const [replaceLedgerPlanOnApply, setReplaceLedgerPlanOnApply] = useState(true);
   const [lastLedgerPlanSummary, setLastLedgerPlanSummary] = useState("");
@@ -946,6 +951,7 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
         location_ids: locationIDs,
         materials: needs.materials,
         blueprints: needs.blueprints,
+        include_corp_blueprints: coverageIncludeCorpBlueprints,
       });
       setIndustryCoverage(resp.coverage);
       const s = resp.summary;
@@ -976,6 +982,7 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     selectedStationId,
     rebalanceInventoryScope,
     blueprintSyncDefaultBPCRuns,
+    coverageIncludeCorpBlueprints,
     addToast,
     onError,
   ]);
@@ -2353,6 +2360,18 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     setLastLedgerPlanPreviewPatch(null);
   }, []);
 
+  // Triggers handleAnalyze on the render AFTER the scanner handoff applied
+  // its state setters, so the analyzer's closure has the up-to-date values
+  // for typeID, ME, TE, runs, system, station, fees, etc.
+  useEffect(() => {
+    if (!pendingAutoAnalyze) return;
+    if (!selectedItem || analyzing) return;
+    setPendingAutoAnalyze(false);
+    void handleAnalyze();
+    // handleAnalyze captures the rest of the analysis state via its own deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingAutoAnalyze, selectedItem, analyzing]);
+
   const operationsBoardsProps = useMemo(() => ({
     ctx: {
       jobsWorkspaceTab,
@@ -2629,7 +2648,12 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
           <div className="mb-3">
             <SettingsGrid cols={3}>
               <SettingsField label={t("system")}>
-                <SystemAutocomplete value={systemName} onChange={setSystemName} isLoggedIn={isLoggedIn} />
+                <SystemAutocomplete
+                  value={systemName}
+                  onChange={setSystemName}
+                  isLoggedIn={isLoggedIn}
+                  suppressInternalHint
+                />
               </SettingsField>
               <SettingsField label={t("stationSelect")}>
                 {loadingStations || loadingStructures ? (
@@ -2669,13 +2693,29 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
                 </SettingsField>
               )}
             </SettingsGrid>
-            {includeStructures && (
-              <div className="mt-2 text-[10px] text-eve-dim">
-                {structureStations.length > 0
-                  ? `${structureStations.length} accessible structure(s) resolved for this system.`
-                  : "Private/corp structures depend on ESI ACL visibility; if none appear, verify character access and scopes."}
-              </div>
-            )}
+            {(() => {
+              // Single status line below the grid so column heights stay even
+              // (mirrors the scanner panel — same overlap bug otherwise).
+              if (loadingStations) return <div className="mt-2 text-[10px] text-eve-dim">{t("loadingStations")}</div>;
+              if (loadingStructures) return <div className="mt-2 text-[10px] text-eve-dim">{t("loadingStructures")}</div>;
+              if (includeStructures) {
+                return (
+                  <div className="mt-2 text-[10px] text-eve-dim">
+                    {structureStations.length > 0
+                      ? `${structureStations.length} accessible structure(s) resolved for this system.`
+                      : "Private/corp structures depend on ESI ACL visibility; if none appear, verify character access and scopes."}
+                  </div>
+                );
+              }
+              if (stations.length === 0 && systemName.trim()) {
+                return (
+                  <div className="mt-2 text-[10px] text-amber-400/80">
+                    {!isLoggedIn ? t("noNpcStationsLoginHint") : t("noNpcStationsToggleHint")}
+                  </div>
+                );
+              }
+              return null;
+            })()}
           </div>
 
           {/* Production parameters (Runs, ME, TE, Facility Tax) */}
@@ -2952,6 +2992,67 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
             operationsBoardsProps={operationsBoardsProps}
             plannerBuilderProps={plannerBuilderProps}
             operationsJobsProps={operationsJobsProps}
+            scannerProps={{
+              isLoggedIn,
+              onViewInAnalysis: (handoff) => {
+                // Pre-fill the Analysis sub-tab with the row's parameters,
+                // switch to it, and (optionally) auto-trigger the analyzer
+                // once React has applied the state updates.
+                setSelectedItem({
+                  type_id: handoff.productTypeID,
+                  type_name: handoff.productName,
+                  has_blueprint: true,
+                });
+                setSearchQuery(handoff.productName);
+                setRuns(handoff.runs);
+                setActivityMode(handoff.activityMode);
+                setME(handoff.me);
+                setTE(handoff.te);
+                setSystemName(handoff.systemName);
+                setSelectedStationId(handoff.stationID);
+                if (handoff.stationIsStructure) {
+                  setIncludeStructures(true);
+                }
+                setFacilityTax(handoff.facilityTax);
+                setStructureBonus(handoff.structureBonus);
+                setBrokerFee(handoff.brokerFee);
+                setSalesTaxPercent(handoff.salesTaxPercent);
+                setOwnBlueprint(handoff.ownBlueprint);
+                setBlueprintIsBPO(handoff.blueprintIsBPO);
+                setBlueprintCost(0);
+                setResult(null);
+                setIndustryCoverage(null);
+                setIndustryCoverageMeta("");
+                setIndustryInnerTab("analysis");
+                if (handoff.autoAnalyze) {
+                  // Defer to the next tick so the state setters above have
+                  // committed and the new selectedItem closure flows into
+                  // handleAnalyze.
+                  setPendingAutoAnalyze(true);
+                }
+              },
+              onProjectCreated: (projectID: number) => {
+                setSelectedLedgerProjectId(projectID);
+                setJobsWorkspaceTab("planning");
+                void refreshLedgerProjects(projectID);
+                // Fetch the freshly-committed project snapshot and seed the
+                // visual plan builder so the user lands on a populated planner
+                // and can adjust per-row runs, ME/TE, etc. before re-applying.
+                void (async () => {
+                  try {
+                    const snapshot = await getAuthIndustryProjectSnapshot(projectID);
+                    setLedgerSnapshot(snapshot);
+                    seedVisualPlanBuilderFromSnapshot(snapshot);
+                    setUseVisualPlanBuilder(true);
+                    setLastLedgerPlanPreview(null);
+                    setLastLedgerPlanPreviewPatch(null);
+                  } catch (e) {
+                    console.error("Industry scanner snapshot seed error:", e);
+                    void refreshLedger(projectID);
+                  }
+                })();
+              },
+            }}
           />
         </Suspense>
       )}
@@ -2977,6 +3078,8 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
             coverageStationLabel={selectedStationLabel}
             coverageDefaultBPCRuns={blueprintSyncDefaultBPCRuns}
             onCoverageDefaultBPCRunsChange={setBlueprintSyncDefaultBPCRuns}
+            coverageIncludeCorpBlueprints={coverageIncludeCorpBlueprints}
+            onCoverageIncludeCorpBlueprintsChange={setCoverageIncludeCorpBlueprints}
             onRefreshCoverage={handleCheckCurrentIndustryCoverage}
             onSeedLedgerDraft={handleSeedCurrentIndustryPlanFromAnalysis}
           />

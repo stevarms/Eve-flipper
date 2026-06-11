@@ -26,6 +26,8 @@ interface IndustryAnalysisResultsPanelProps {
   coverageStationLabel?: string;
   coverageDefaultBPCRuns?: number;
   onCoverageDefaultBPCRunsChange?: (runs: number) => void;
+  coverageIncludeCorpBlueprints?: boolean;
+  onCoverageIncludeCorpBlueprintsChange?: (enabled: boolean) => void;
   onRefreshCoverage?: () => void;
   onSeedLedgerDraft?: () => void;
 }
@@ -48,6 +50,8 @@ export function IndustryAnalysisResultsPanel({
   coverageStationLabel = "",
   coverageDefaultBPCRuns = 1,
   onCoverageDefaultBPCRunsChange,
+  coverageIncludeCorpBlueprints = false,
+  onCoverageIncludeCorpBlueprintsChange,
   onRefreshCoverage,
   onSeedLedgerDraft,
 }: IndustryAnalysisResultsPanelProps) {
@@ -131,6 +135,8 @@ export function IndustryAnalysisResultsPanel({
         stationLabel={coverageStationLabel}
         defaultBPCRuns={coverageDefaultBPCRuns}
         onDefaultBPCRunsChange={onCoverageDefaultBPCRunsChange}
+        includeCorpBlueprints={coverageIncludeCorpBlueprints}
+        onIncludeCorpBlueprintsChange={onCoverageIncludeCorpBlueprintsChange}
         onRefresh={onRefreshCoverage}
         onSeedLedgerDraft={onSeedLedgerDraft}
       />
@@ -222,6 +228,8 @@ function IndustryCoveragePanel({
   stationLabel,
   defaultBPCRuns,
   onDefaultBPCRunsChange,
+  includeCorpBlueprints,
+  onIncludeCorpBlueprintsChange,
   onRefresh,
   onSeedLedgerDraft,
 }: {
@@ -236,6 +244,8 @@ function IndustryCoveragePanel({
   stationLabel: string;
   defaultBPCRuns: number;
   onDefaultBPCRunsChange?: (runs: number) => void;
+  includeCorpBlueprints: boolean;
+  onIncludeCorpBlueprintsChange?: (enabled: boolean) => void;
   onRefresh?: () => void;
   onSeedLedgerDraft?: () => void;
 }) {
@@ -292,6 +302,19 @@ function IndustryCoveragePanel({
               onChange={(event) => onDefaultBPCRunsChange?.(Math.max(1, Math.min(1000, Math.round(Number(event.target.value) || 1))))}
               className="w-14 bg-transparent text-eve-text font-mono outline-none disabled:text-eve-dim"
             />
+          </label>
+          <label
+            className="h-7 px-2 border border-eve-border rounded-sm flex items-center gap-1.5 text-[10px] text-eve-dim"
+            title="Also pull corporation blueprints (requires Director role + esi-corporations.read_blueprints.v1)"
+          >
+            <input
+              type="checkbox"
+              checked={includeCorpBlueprints}
+              disabled={!isLoggedIn || loading || !onIncludeCorpBlueprintsChange}
+              onChange={(event) => onIncludeCorpBlueprintsChange?.(event.target.checked)}
+              className="accent-eve-accent"
+            />
+            <span>Incl. corp BPs</span>
           </label>
           <button
             type="button"

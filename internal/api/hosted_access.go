@@ -654,6 +654,7 @@ func hostedQuotaFeatureForRequest(r *http.Request) (string, bool) {
 		path == "/api/auth/station/cache/reboot",
 		path == "/api/auth/station/command",
 		path == "/api/auth/industry/coverage",
+		path == "/api/auth/industry/blueprints/profitable-scan",
 		isHostedQuotaIndustryProjectComputePath(path):
 		return "scans", true
 	case path == "/api/auth/station/ai/chat",

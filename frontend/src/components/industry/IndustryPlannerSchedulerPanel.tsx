@@ -1,9 +1,10 @@
 import { useI18n } from "@/lib/i18n";
 import type { IndustryJobStatus } from "@/lib/types";
 import type { Dispatch, SetStateAction } from "react";
+import type { IndustryJobsWorkspaceTab } from "./IndustryJobsWorkspaceNav";
 
 interface IndustryPlannerSchedulerPanelProps {
-  jobsWorkspaceTab: "guide" | "planning" | "operations";
+  jobsWorkspaceTab: IndustryJobsWorkspaceTab;
   enablePlanScheduler: boolean;
   setEnablePlanScheduler: Dispatch<SetStateAction<boolean>>;
   schedulerSlotCount: number;

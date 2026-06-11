@@ -1227,6 +1227,10 @@ export interface AuthIndustryCoveragePayload {
   default_bpc_runs?: number;
   materials?: IndustryCoverageMaterialNeed[];
   blueprints?: IndustryCoverageBlueprintNeed[];
+  /** When true, the backend also pulls corporation blueprints for any corp
+   *  whose logged-in member has the Director role, merging them into the
+   *  blueprint stock. Requires esi-corporations.read_blueprints.v1. */
+  include_corp_blueprints?: boolean;
 }
 
 export interface AuthIndustryCoverageResponse {
@@ -1923,7 +1927,16 @@ export async function getPortfolioOptimization(days: number = 90, characterId?: 
 
 // --- Industry ---
 
-import type { IndustryParams, IndustryAnalysis, BuildableItem, IndustrySystem, NdjsonIndustryMessage } from "./types";
+import type {
+  IndustryParams,
+  IndustryAnalysis,
+  BuildableItem,
+  IndustrySystem,
+  NdjsonIndustryMessage,
+  ProfitableScanRequest,
+  ProfitableScanResponse,
+  NdjsonProfitableScanMessage,
+} from "./types";
 
 export async function analyzeIndustry(
   params: IndustryParams,
@@ -1988,6 +2001,79 @@ export async function analyzeIndustry(
     throw new Error("No result received");
   }
 
+  return result;
+}
+
+export interface CharacterMarketFees {
+  character_id: number;
+  character_name: string;
+  accounting_level: number;
+  broker_relations_level: number;
+  suggested_sales_tax_percent: number;
+  suggested_broker_fee_percent: number;
+}
+
+export async function getCharacterMarketFees(): Promise<CharacterMarketFees> {
+  const res = await apiFetch(`${BASE}/api/auth/character/market-fees`);
+  return handleResponse<CharacterMarketFees>(res);
+}
+
+export async function scanProfitableBlueprints(
+  params: ProfitableScanRequest,
+  onProgress: (msg: string) => void,
+  signal?: AbortSignal
+): Promise<ProfitableScanResponse> {
+  const res = await apiFetch(`${BASE}/api/auth/industry/blueprints/profitable-scan`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+    signal,
+  });
+
+  if (!res.ok) {
+    let errMsg = "Profitable scan failed";
+    try {
+      const err = await res.json();
+      errMsg = err.error || err.message || errMsg;
+    } catch {
+      // Response body is not JSON
+    }
+    throw new Error(errMsg);
+  }
+
+  if (!res.body) {
+    throw new Error("Response body is null");
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result: ProfitableScanResponse | null = null;
+
+  const handleLine = (line: string) => {
+    if (!line.trim()) return;
+    const msg = JSON.parse(line) as NdjsonProfitableScanMessage;
+    if (msg.type === "progress") {
+      onProgress(msg.message);
+    } else if (msg.type === "result") {
+      result = msg.data;
+    } else if (msg.type === "error") {
+      throw new Error(msg.message);
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) handleLine(line);
+  }
+  if (buffer.trim()) handleLine(buffer);
+
+  if (!result) {
+    throw new Error("No result received");
+  }
   return result;
 }
 

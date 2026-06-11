@@ -19,6 +19,13 @@ interface Props {
   extraAction?: ReactNode;
   /** Number of icon slots occupied by extraAction (for input right padding) */
   extraActionSlots?: number;
+  /** When true, the "no NPC stations" hint flows inline below the input
+   *  (consumes vertical space) instead of overlapping content below it. */
+  inlineHint?: boolean;
+  /** When true, the autocomplete renders no internal hint at all — useful when
+   *  the parent surfaces its own status line outside the grid so column
+   *  heights stay even. */
+  suppressInternalHint?: boolean;
 }
 
 export function SystemAutocomplete({
@@ -31,6 +38,8 @@ export function SystemAutocomplete({
   onIncludeStructuresChange,
   extraAction,
   extraActionSlots = 0,
+  inlineHint = false,
+  suppressInternalHint = false,
 }: Props) {
   const { t } = useI18n();
   const [query, setQuery] = useState(value);
@@ -237,8 +246,14 @@ export function SystemAutocomplete({
           ))}
         </div>
       )}
-      {noStationsHint && (
-        <div className="absolute z-40 left-0 right-0 top-full mt-1 px-1 py-0.5 text-[10px] text-amber-400/80 leading-tight bg-eve-panel/95 border border-eve-border/50 rounded-sm">
+      {!suppressInternalHint && noStationsHint && (
+        <div
+          className={
+            inlineHint
+              ? "mt-1 px-1 py-0.5 text-[10px] text-amber-400/80 leading-tight"
+              : "absolute z-40 left-0 right-0 top-full mt-1 px-1 py-0.5 text-[10px] text-amber-400/80 leading-tight bg-eve-panel/95 border border-eve-border/50 rounded-sm"
+          }
+        >
           {noStationsHint}
         </div>
       )}

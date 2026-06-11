@@ -1,9 +1,10 @@
 import { useI18n } from "@/lib/i18n";
 import type { Dispatch, SetStateAction } from "react";
 import type { BuildableItem, IndustryAnalysis, IndustryPlanPreview } from "@/lib/types";
+import type { IndustryJobsWorkspaceTab } from "./IndustryJobsWorkspaceNav";
 
 interface IndustryJobsPlanningActionsProps {
-  jobsWorkspaceTab: "guide" | "planning" | "operations";
+  jobsWorkspaceTab: IndustryJobsWorkspaceTab;
   handleGeneratePlanDraft: () => void;
   previewingLedgerPlan: boolean;
   selectedLedgerProjectId: number;
