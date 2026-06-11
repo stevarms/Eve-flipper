@@ -10,6 +10,7 @@
   <p>
     <a href="https://github.com/ilyaux/Eve-flipper/releases/latest"><img alt="Latest release" src="assets/badges/release.svg"></a>
     <a href="https://github.com/ilyaux/Eve-flipper/releases"><img alt="Downloads" src="assets/badges/downloads.svg"></a>
+    <a href="https://github.com/ilyaux/Eve-flipper/graphs/traffic"><img alt="Clones last 14 days" src="assets/badges/clones.svg"></a>
     <a href="https://go.dev/"><img alt="Go" src="https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white"></a>
     <a href="https://react.dev/"><img alt="React" src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black"></a>
     <a href="https://www.typescriptlang.org/"><img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white"></a>

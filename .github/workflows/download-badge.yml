@@ -18,6 +18,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: master
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -26,5 +28,5 @@ jobs:
 
       - name: Publish download badge
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.BADGE_STATS_TOKEN || secrets.GITHUB_TOKEN }}
         run: bash .github/scripts/publish-download-badge.sh

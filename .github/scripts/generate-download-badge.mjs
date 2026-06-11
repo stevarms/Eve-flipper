@@ -100,6 +100,15 @@ async function fetchReleases(repo, token) {
   return releases;
 }
 
+async function fetchTrafficClones(repo, token) {
+  try {
+    return await fetchJSON(`https://api.github.com/repos/${repo}/traffic/clones`, token);
+  } catch (err) {
+    console.warn(`Clone traffic unavailable: ${err.message}`);
+    return null;
+  }
+}
+
 async function readPrevious(file) {
   if (!file) return null;
   try {
@@ -123,7 +132,7 @@ function previousAssetMap(previous) {
   return map;
 }
 
-function buildSnapshot({ repo, releases, previous }) {
+function buildSnapshot({ repo, releases, previous, cloneStats }) {
   const previousAssets = previousAssetMap(previous);
   const seen = new Set();
   const assets = [];
@@ -195,6 +204,7 @@ function buildSnapshot({ repo, releases, previous }) {
     currentGithubTotal,
     activeAssetCount,
     archivedAssetCount,
+    cloneStats,
     assets,
   })
     ? previous.generated_at
@@ -209,7 +219,48 @@ function buildSnapshot({ repo, releases, previous }) {
     current_github_total: currentGithubTotal,
     active_asset_count: activeAssetCount,
     archived_asset_count: archivedAssetCount,
+    clone_stats: cloneStats,
     assets,
+  };
+}
+
+function buildCloneStats({ clones, previous }) {
+  if (clones && Number.isFinite(Number(clones.count))) {
+    const next = {
+      window: "14d",
+      count: Number(clones.count) || 0,
+      uniques: Number(clones.uniques) || 0,
+      days: Array.isArray(clones.clones) ? clones.clones : [],
+      updated_at: new Date().toISOString(),
+      source: "github_traffic_api",
+      available: true,
+    };
+    const previousStats = previous?.clone_stats;
+    if (
+      previousStats &&
+      previousStats.window === next.window &&
+      Number(previousStats.count) === next.count &&
+      Number(previousStats.uniques) === next.uniques &&
+      JSON.stringify(previousStats.days || []) === JSON.stringify(next.days)
+    ) {
+      return {
+        ...next,
+        updated_at: previousStats.updated_at || next.updated_at,
+      };
+    }
+    return next;
+  }
+  if (previous?.clone_stats) {
+    return previous.clone_stats;
+  }
+  return {
+    window: "14d",
+    count: 0,
+    uniques: 0,
+    days: [],
+    updated_at: null,
+    source: "unavailable",
+    available: false,
   };
 }
 
@@ -221,7 +272,9 @@ function isMateriallySameSnapshot(previous, next) {
     Number(previous.total_downloads) !== next.totalDownloads ||
     Number(previous.current_github_total) !== next.currentGithubTotal ||
     Number(previous.active_asset_count) !== next.activeAssetCount ||
-    Number(previous.archived_asset_count) !== next.archivedAssetCount
+    Number(previous.archived_asset_count) !== next.archivedAssetCount ||
+    Number(previous.clone_stats?.count) !== Number(next.cloneStats?.count) ||
+    Number(previous.clone_stats?.uniques) !== Number(next.cloneStats?.uniques)
   ) {
     return false;
   }
@@ -258,6 +311,7 @@ async function main() {
   const repo = args.repo || process.env.GITHUB_REPOSITORY;
   const output = args.output;
   const releaseOutput = args["release-output"];
+  const clonesOutput = args["clones-output"];
   const jsonOutput = args.json;
   const label = args.label || DEFAULT_LABEL;
   const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || "";
@@ -272,11 +326,13 @@ async function main() {
     throw new Error("Pass --json path/to/downloads.json.");
   }
 
-  const [releases, previous] = await Promise.all([
+  const [releases, clones, previous] = await Promise.all([
     fetchReleases(repo, token),
+    fetchTrafficClones(repo, token),
     readPrevious(args.previous),
   ]);
-  const snapshot = buildSnapshot({ repo, releases, previous });
+  const cloneStats = buildCloneStats({ clones, previous });
+  const snapshot = buildSnapshot({ repo, releases, previous, cloneStats });
   const downloadBadge = renderBadge({ label, value: formatCount(snapshot.total_downloads) });
 
   await mkdir(path.dirname(output), { recursive: true });
@@ -290,9 +346,19 @@ async function main() {
       "utf8",
     );
   }
+  if (clonesOutput) {
+    await mkdir(path.dirname(clonesOutput), { recursive: true });
+    await writeFile(
+      clonesOutput,
+      renderBadge({ label: "clones 14d", value: formatCount(snapshot.clone_stats.count), color: "#007ec6" }),
+      "utf8",
+    );
+  }
   await writeFile(jsonOutput, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
 
-  console.log(`Generated ${output} with ${snapshot.total_downloads} downloads from ${snapshot.active_asset_count} active assets.`);
+  console.log(
+    `Generated ${output} with ${snapshot.total_downloads} downloads and ${snapshot.clone_stats.count} clones (${snapshot.clone_stats.window}).`,
+  );
 }
 
 main().catch((err) => {
