@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "repo": "ilyaux/Eve-flipper",
-  "generated_at": "2026-06-13T15:33:56.145Z",
+  "generated_at": "2026-06-13T19:55:58.937Z",
   "latest_release": "v1.6.7",
-  "total_downloads": 1487,
-  "current_github_total": 1487,
+  "total_downloads": 1492,
+  "current_github_total": 1492,
   "active_asset_count": 257,
   "archived_asset_count": 0,
   "clone_stats": {
@@ -108,13 +108,13 @@
       "tag_name": "v1.6.7",
       "release_id": "338998064",
       "state": "active",
-      "download_count": 0,
-      "github_download_count": 0,
+      "download_count": 1,
+      "github_download_count": 1,
       "browser_download_url": "https://github.com/ilyaux/Eve-flipper/releases/download/v1.6.7/eve-flipper-desktop-darwin-arm64",
       "created_at": "2026-06-13T15:33:44Z",
       "updated_at": "2026-06-13T15:33:46Z",
       "first_seen_at": "2026-06-13T15:33:56.145Z",
-      "last_seen_at": "2026-06-13T15:33:56.145Z"
+      "last_seen_at": "2026-06-13T19:55:58.937Z"
     },
     {
       "id": "446644986",
@@ -220,13 +220,13 @@
       "tag_name": "v1.6.7",
       "release_id": "338998064",
       "state": "active",
-      "download_count": 0,
-      "github_download_count": 0,
+      "download_count": 2,
+      "github_download_count": 2,
       "browser_download_url": "https://github.com/ilyaux/Eve-flipper/releases/download/v1.6.7/eve-flipper-web-windows-amd64.exe",
       "created_at": "2026-06-13T15:33:44Z",
       "updated_at": "2026-06-13T15:33:46Z",
       "first_seen_at": "2026-06-13T15:33:56.145Z",
-      "last_seen_at": "2026-06-13T15:33:56.145Z"
+      "last_seen_at": "2026-06-13T19:55:58.937Z"
     },
     {
       "id": "446644994",
@@ -234,13 +234,13 @@
       "tag_name": "v1.6.7",
       "release_id": "338998064",
       "state": "active",
-      "download_count": 0,
-      "github_download_count": 0,
+      "download_count": 2,
+      "github_download_count": 2,
       "browser_download_url": "https://github.com/ilyaux/Eve-flipper/releases/download/v1.6.7/SHA256SUMS.txt",
       "created_at": "2026-06-13T15:33:44Z",
       "updated_at": "2026-06-13T15:33:44Z",
       "first_seen_at": "2026-06-13T15:33:56.145Z",
-      "last_seen_at": "2026-06-13T15:33:56.145Z"
+      "last_seen_at": "2026-06-13T19:55:58.937Z"
     },
     {
       "id": "441219602",
