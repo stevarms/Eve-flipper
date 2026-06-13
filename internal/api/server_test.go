@@ -12,6 +12,7 @@ import (
 	"eve-flipper/internal/auth"
 	"eve-flipper/internal/config"
 	"eve-flipper/internal/esi"
+	"eve-flipper/internal/sde"
 
 	_ "modernc.org/sqlite"
 )
@@ -302,6 +303,11 @@ func TestHandleAuthPortfolio_UsesArchiveWhenLiveTransactionsFail(t *testing.T) {
 	}
 
 	srv := NewServer(config.Default(), &esi.Client{}, database, nil, store)
+	srv.sdeData = &sde.Data{
+		Types: map[int32]*sde.ItemType{
+			34: &sde.ItemType{ID: 34, Name: "Tritanium"},
+		},
+	}
 	req := httptest.NewRequest(http.MethodGet, "/api/auth/portfolio?character_id=1001", nil)
 	addSignedUserCookie(req, srv, userID)
 	rec := httptest.NewRecorder()
@@ -312,13 +318,19 @@ func TestHandleAuthPortfolio_UsesArchiveWhenLiveTransactionsFail(t *testing.T) {
 		t.Fatalf("GET /api/auth/portfolio status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
 	var out struct {
-		Ledger []any `json:"ledger"`
+		Ledger []struct {
+			TypeID   int32  `json:"type_id"`
+			TypeName string `json:"type_name"`
+		} `json:"ledger"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&out); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
 	if len(out.Ledger) == 0 {
 		t.Fatalf("expected archived transactions to produce portfolio ledger, got none")
+	}
+	if out.Ledger[0].TypeID != 34 || out.Ledger[0].TypeName != "Tritanium" {
+		t.Fatalf("ledger item = %#v, want type 34 named Tritanium", out.Ledger[0])
 	}
 }
 

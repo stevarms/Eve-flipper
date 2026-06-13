@@ -327,6 +327,7 @@ func (s *Server) handleItemIntelligence(w http.ResponseWriter, r *http.Request) 
 	}
 	if s.db != nil {
 		if txns, txErr := s.db.ListArchivedWalletTransactions(userID, nil, time.Time{}, 100000); txErr == nil {
+			s.enrichWalletTransactionTypeNames(txns)
 			resp.Personal = summarizeItemPersonalTrades(typeID, txns)
 			resp.Peer = summarizeItemPeerTrades(txns, "group", groupName, func(tx esi.WalletTransaction) bool {
 				if sdeData == nil {
