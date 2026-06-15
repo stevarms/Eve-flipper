@@ -11,6 +11,8 @@ interface Props {
   isLoggedIn?: boolean;
   /** Whether "include structures" toggle is on */
   includeStructures?: boolean;
+  /** True when the parent selector has at least one usable station/structure. */
+  hasAccessibleLocations?: boolean;
   /** Callback when structure toggle changes */
   onIncludeStructuresChange?: (v: boolean) => void;
   /** Optional extra action button rendered with right-side icons */
@@ -25,6 +27,7 @@ export function SystemAutocomplete({
   showLocationButton = true,
   isLoggedIn = false,
   includeStructures,
+  hasAccessibleLocations = false,
   onIncludeStructuresChange,
   extraAction,
   extraActionSlots = 0,
@@ -152,7 +155,7 @@ export function SystemAutocomplete({
   const showStructureBtn = isLoggedIn && onIncludeStructuresChange != null;
   const btnCount =
     (showLocationBtn ? 1 : 0) + (showStructureBtn ? 1 : 0) + extraActionSlots;
-  const noStationsHint = !noStations || open
+  const noStationsHint = !noStations || open || hasAccessibleLocations
     ? null
     : !isLoggedIn
       ? t("noNpcStationsLoginHint")

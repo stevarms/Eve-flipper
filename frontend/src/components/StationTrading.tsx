@@ -196,6 +196,7 @@ const baseStationColumnDefs: StationColumnDef[] = [
 
 // Sentinel value for "All stations"
 const ALL_STATIONS_ID = 0;
+const PLAYER_STRUCTURE_ID_MIN = 1_000_000_000_000;
 const STATION_PAGE_SIZE = 100;
 const STATION_COLUMN_PREFS_STORAGE_KEY = "eve-station-columns:v1";
 const OPERATOR_PANEL_STORAGE_KEY = "station.operator_panel_width";
@@ -1046,6 +1047,15 @@ export function StationTrading({
     return stations;
   }, [stations, structureStations, includeStructures]);
 
+  const selectedStation = useMemo(() => {
+    if (selectedStationId === ALL_STATIONS_ID) return undefined;
+    return allStations.find((s) => s.id === selectedStationId);
+  }, [allStations, selectedStationId]);
+
+  const selectedStationIsStructure =
+    selectedStation?.is_structure === true ||
+    selectedStationId > PLAYER_STRUCTURE_ID_MIN;
+
   // If structure view is turned off, keep selection within NPC station scope.
   useEffect(() => {
     if (includeStructures || selectedStationId === ALL_STATIONS_ID) return;
@@ -1351,10 +1361,14 @@ export function StationTrading({
       }
 
       const singleStationMode = radius === 0 && selectedStationId !== ALL_STATIONS_ID;
-      // Include structures for radius/all scans. Single-station mode stays strictly row-scoped.
-      if (includeStructures && !singleStationMode) {
+      const singleStructureMode = singleStationMode && selectedStationIsStructure;
+      // Include structures for radius/all scans, and for a selected single player structure.
+      // Single NPC-station mode stays strictly row-scoped.
+      if (includeStructures && (!singleStationMode || singleStructureMode)) {
         scanParams.include_structures = true;
-        if (structureStations.length > 0) {
+        if (singleStructureMode) {
+          scanParams.structure_ids = [selectedStationId];
+        } else if (structureStations.length > 0) {
           scanParams.structure_ids = structureStations.map((s) => s.id);
         }
       }
@@ -1449,6 +1463,7 @@ export function StationTrading({
   }, [
     canScan,
     selectedStationId,
+    selectedStationIsStructure,
     regionId,
     params,
     minMargin,
@@ -2044,9 +2059,8 @@ export function StationTrading({
 
   const selectedStationLabel = useMemo(() => {
     if (selectedStationId === ALL_STATIONS_ID) return t("allStations");
-    const selected = allStations.find((s) => s.id === selectedStationId);
-    return selected?.name ?? t("allStations");
-  }, [allStations, selectedStationId, t]);
+    return selectedStation?.name ?? t("allStations");
+  }, [selectedStation, selectedStationId, t]);
 
   const aiScanSnapshot = useMemo<StationAIScanSnapshot>(() => {
     const scopeMode =
@@ -2056,9 +2070,12 @@ export function StationTrading({
           ? "single_station"
           : "region_all";
     const singleStationMode = scopeMode === "single_station";
-    const structuresApplied = includeStructures && !singleStationMode;
+    const singleStructureMode = singleStationMode && selectedStationIsStructure;
+    const structuresApplied = includeStructures && (!singleStationMode || singleStructureMode);
     const structureIDs = structuresApplied
-      ? structureStations.map((s) => s.id).slice(0, 300)
+      ? singleStructureMode
+        ? [selectedStationId]
+        : structureStations.map((s) => s.id).slice(0, 300)
       : [];
 
     return {
@@ -2117,6 +2134,7 @@ export function StationTrading({
     regionId,
     salesTaxPercent,
     selectedStationId,
+    selectedStationIsStructure,
     sellBrokerFeePercent,
     sellSalesTaxPercent,
     splitTradeFees,
@@ -2178,6 +2196,7 @@ export function StationTrading({
                       showLocationButton={true}
                       isLoggedIn={isLoggedIn}
                       includeStructures={includeStructures}
+                      hasAccessibleLocations={allStations.length > 0}
                       extraActionSlots={1}
                       extraAction={
                         <SystemBlacklistButton
