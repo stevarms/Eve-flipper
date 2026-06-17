@@ -248,6 +248,10 @@ type scanIndex struct {
 	// Minimum sell order price at destination — used by "sell order mode" in the regional day trader.
 	sellSideSellMinPriceByLoc        map[locKey]float64
 	sellSideSellMinPriceByTypeSystem map[sysTypeKey]float64
+	// Full destination sell-book candidates for sell-order mode. In that mode
+	// we compare source asks against destination asks, not destination bids.
+	targetSellByType map[int32][]sellInfo
+	targetSellCounts map[locKey]int
 	// Raw orders kept for execution plan (indexed by location+type).
 	sellOrders []esi.MarketOrder
 	buyOrders  []esi.MarketOrder
@@ -361,6 +365,8 @@ func (s *Scanner) fetchAndIndex(
 		sellSideSellDepthByTypeSystem:    make(map[sysTypeKey]int64),
 		sellSideSellMinPriceByLoc:        make(map[locKey]float64),
 		sellSideSellMinPriceByTypeSystem: make(map[sysTypeKey]float64),
+		targetSellByType:                 make(map[int32][]sellInfo),
+		targetSellCounts:                 make(map[locKey]int),
 	}
 
 	sourceStructureSystemIDs := make(map[int64]int32)
@@ -433,6 +439,11 @@ func (s *Scanner) fetchAndIndex(
 				idx.sellSideSellDepthByType[o.TypeID] += int64(o.VolumeRemain)
 				locK := locKey{o.TypeID, o.LocationID}
 				idx.sellSideSellDepthByLoc[locK] += int64(o.VolumeRemain)
+				idx.targetSellCounts[locK]++
+				idx.targetSellByType[o.TypeID] = append(idx.targetSellByType[o.TypeID], sellInfo{
+					Price: o.Price, VolumeRemain: o.VolumeRemain,
+					LocationID: o.LocationID, SystemID: o.SystemID,
+				})
 				if cur, ok := idx.sellSideSellMinPriceByLoc[locK]; !ok || o.Price < cur {
 					idx.sellSideSellMinPriceByLoc[locK] = o.Price
 				}
@@ -441,6 +452,11 @@ func (s *Scanner) fetchAndIndex(
 				if cur, ok := idx.sellSideSellMinPriceByTypeSystem[sysK]; !ok || o.Price < cur {
 					idx.sellSideSellMinPriceByTypeSystem[sysK] = o.Price
 				}
+			}
+		}
+		for tid, sells := range idx.targetSellByType {
+			for i := range sells {
+				sells[i].OrderCount = idx.targetSellCounts[locKey{tid, sells[i].LocationID}]
 			}
 		}
 	}()
@@ -663,6 +679,19 @@ func (s *Scanner) calculateResults(
 			continue
 		}
 		buys := idx.buyByType[typeID]
+		if params.SellOrderMode {
+			targetSells := idx.targetSellByType[typeID]
+			buys = make([]buyInfo, 0, len(targetSells))
+			for _, targetSell := range targetSells {
+				buys = append(buys, buyInfo{
+					Price:        targetSell.Price,
+					VolumeRemain: targetSell.VolumeRemain,
+					LocationID:   targetSell.LocationID,
+					SystemID:     targetSell.SystemID,
+					OrderCount:   targetSell.OrderCount,
+				})
+			}
+		}
 		if len(buys) == 0 {
 			continue
 		}
@@ -707,13 +736,19 @@ func (s *Scanner) calculateResults(
 			}
 		}
 
-		// Deduplicate buys: keep most expensive per location (with total volume)
+		// Deduplicate liquidation locations. Normal mode sells into bids and
+		// keeps the highest bid; sell-order mode lists at destination and keeps
+		// the lowest competing ask.
 		bestBuyByLoc := make(map[int64]*buyLocBest)
 		for _, buy := range buys {
 			if existing, ok := bestBuyByLoc[buy.LocationID]; ok {
-				// Accumulate full depth and track L1 quantity at the best bid.
+				// Accumulate full depth and track L1 quantity at the best price.
 				existing.VolumeRemain += buy.VolumeRemain
-				if buy.Price > existing.Price {
+				isBetterPrice := buy.Price > existing.Price
+				if params.SellOrderMode {
+					isBetterPrice = buy.Price < existing.Price
+				}
+				if isBetterPrice {
 					existing.Price = buy.Price
 					existing.SystemID = buy.SystemID
 					existing.OrderCount = buy.OrderCount
@@ -762,15 +797,41 @@ func (s *Scanner) calculateResults(
 				if targetMarketSystemID > 0 && buy.SystemID != targetMarketSystemID {
 					continue
 				}
-				if buy.Price <= sell.Price {
-					continue
-				}
 				if sellLocID == buyLocID {
 					continue
 				}
 
+				targetSellSupply := int64(0)
+				targetLowestSell := 0.0
+				switch {
+				case targetMarketLocationID > 0:
+					locK := locKey{typeID, targetMarketLocationID}
+					targetSellSupply = idx.sellSideSellDepthByLoc[locK]
+					targetLowestSell = idx.sellSideSellMinPriceByLoc[locK]
+				case targetMarketSystemID > 0:
+					sysK := sysTypeKey{typeID, buy.SystemID}
+					targetSellSupply = idx.sellSideSellDepthByTypeSystem[sysK]
+					targetLowestSell = idx.sellSideSellMinPriceByTypeSystem[sysK]
+				default:
+					// In unconstrained mode keep metric local to the chosen liquidation location first.
+					locK := locKey{typeID, buyLocID}
+					targetSellSupply = idx.sellSideSellDepthByLoc[locK]
+					targetLowestSell = idx.sellSideSellMinPriceByLoc[locK]
+					if targetSellSupply <= 0 {
+						targetSellSupply = idx.sellSideSellDepthByType[typeID]
+					}
+				}
+
+				revenuePrice := buy.Price
+				if params.SellOrderMode && targetLowestSell > 0 {
+					revenuePrice = targetLowestSell
+				}
+				if revenuePrice <= sell.Price {
+					continue
+				}
+
 				effectiveBuyPrice := sell.Price * buyCostMult
-				effectiveSellPrice := buy.Price * sellRevenueMult
+				effectiveSellPrice := revenuePrice * sellRevenueMult
 				profitPerUnit := effectiveSellPrice - effectiveBuyPrice
 				if profitPerUnit <= 0 {
 					continue
@@ -784,7 +845,7 @@ func (s *Scanner) calculateResults(
 				if sell.VolumeRemain < units {
 					units = sell.VolumeRemain
 				}
-				if buy.VolumeRemain < units {
+				if !params.SellOrderMode && buy.VolumeRemain < units {
 					units = buy.VolumeRemain
 				}
 
@@ -820,27 +881,6 @@ func (s *Scanner) calculateResults(
 				var profitPerJump float64
 				if totalJumps > 0 {
 					profitPerJump = totalProfit / float64(totalJumps)
-				}
-
-				targetSellSupply := int64(0)
-				targetLowestSell := 0.0
-				switch {
-				case targetMarketLocationID > 0:
-					locK := locKey{typeID, targetMarketLocationID}
-					targetSellSupply = idx.sellSideSellDepthByLoc[locK]
-					targetLowestSell = idx.sellSideSellMinPriceByLoc[locK]
-				case targetMarketSystemID > 0:
-					sysK := sysTypeKey{typeID, buy.SystemID}
-					targetSellSupply = idx.sellSideSellDepthByTypeSystem[sysK]
-					targetLowestSell = idx.sellSideSellMinPriceByTypeSystem[sysK]
-				default:
-					// In unconstrained mode keep metric local to the chosen liquidation location first.
-					locK := locKey{typeID, buyLocID}
-					targetSellSupply = idx.sellSideSellDepthByLoc[locK]
-					targetLowestSell = idx.sellSideSellMinPriceByLoc[locK]
-					if targetSellSupply <= 0 {
-						targetSellSupply = idx.sellSideSellDepthByType[typeID]
-					}
 				}
 
 				buyRegionID := int32(0)
@@ -937,13 +977,39 @@ func (s *Scanner) calculateResults(
 		for i := range results {
 			r := &results[i]
 			requestedQty := r.UnitsToBuy
-			safeQty, planBuy, planSell, expectedProfit := findSafeExecutionQuantity(
-				sellByLT[locTypeKey{r.BuyLocationID, r.TypeID}],
-				buyByLT[locTypeKey{r.SellLocationID, r.TypeID}],
-				requestedQty,
-				buyCostMult,
-				sellRevenueMult,
-			)
+			var safeQty int32
+			var planBuy, planSell ExecutionPlanResult
+			var expectedProfit float64
+			if params.SellOrderMode {
+				planBuy = ComputeExecutionPlan(sellByLT[locTypeKey{r.BuyLocationID, r.TypeID}], requestedQty, true)
+				if !planBuy.CanFill || planBuy.ExpectedPrice <= 0 {
+					continue
+				}
+				targetRevenuePrice := r.TargetLowestSell
+				if targetRevenuePrice <= 0 {
+					targetRevenuePrice = r.SellPrice
+				}
+				if targetRevenuePrice <= 0 {
+					continue
+				}
+				safeQty = requestedQty
+				planSell = ExecutionPlanResult{
+					BestPrice:     targetRevenuePrice,
+					ExpectedPrice: targetRevenuePrice,
+					TotalCost:     targetRevenuePrice * float64(safeQty),
+					TotalDepth:    safeQty,
+					CanFill:       true,
+				}
+				expectedProfit = expectedProfitForPlans(planBuy, planSell, safeQty, buyCostMult, sellRevenueMult)
+			} else {
+				safeQty, planBuy, planSell, expectedProfit = findSafeExecutionQuantity(
+					sellByLT[locTypeKey{r.BuyLocationID, r.TypeID}],
+					buyByLT[locTypeKey{r.SellLocationID, r.TypeID}],
+					requestedQty,
+					buyCostMult,
+					sellRevenueMult,
+				)
+			}
 			if safeQty <= 0 {
 				continue
 			}

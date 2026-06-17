@@ -2236,6 +2236,30 @@ export function ScanResultsTable({
     addToast(t("copied"), "success", 2000);
   }, [selectableVisibleRows, selectedIds, columnDefs, addToast, t]);
 
+  const copySelectedMultibuy = useCallback(async () => {
+    if (selectedIds.size === 0) {
+      addToast(t("multibuySelectRows"), "info", 2200);
+      return;
+    }
+    const selectedRows = selectableVisibleRows.filter((ir) => selectedIds.has(ir.id));
+    const byName = new Map<string, number>();
+    for (const { row } of selectedRows) {
+      const itemName = String(row.TypeName ?? "").replace(/\s+/g, " ").trim();
+      const quantity = Math.floor(
+        Number(row.UnitsToBuy || row.FilledQty || row.DaySourceUnits || row.SellOrderRemain || 0),
+      );
+      if (!itemName || quantity <= 0) continue;
+      byName.set(itemName, (byName.get(itemName) ?? 0) + quantity);
+    }
+    const lines = Array.from(byName.entries()).map(([name, quantity]) => `${name}\t${quantity}`);
+    if (lines.length === 0) {
+      addToast(t("multibuyNoRows"), "error", 2400);
+      return;
+    }
+    await navigator.clipboard.writeText(lines.join("\n"));
+    addToast(t("multibuyCopied", { count: lines.length }), "success", 2200);
+  }, [selectableVisibleRows, selectedIds, addToast, t]);
+
   const hiddenEntries = useMemo(
     () =>
       Object.values(hiddenMap).sort((a, b) =>
@@ -2629,6 +2653,14 @@ export function ScanResultsTable({
               label="CSV"
               title={t("exportCSV")}
               onClick={exportCSV}
+            />
+            <ToolbarBtn
+              label="MB"
+              title={t("copyMultibuy")}
+              onClick={() => {
+                void copySelectedMultibuy();
+              }}
+              disabled={selectedIds.size === 0}
             />
             <ToolbarBtn
               label="⎘"

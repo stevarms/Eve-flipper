@@ -432,6 +432,115 @@ func TestCalculateResults_TotalProfitUsesDepthAwareProfit(t *testing.T) {
 	}
 }
 
+func TestCalculateResults_SellOrderModePricesFullSourceDepth(t *testing.T) {
+	u := graph.NewUniverse()
+	u.SetRegion(1, 10000043)
+	u.SetRegion(2, 10000002)
+	u.SetSecurity(1, 0.9)
+	u.SetSecurity(2, 0.9)
+	u.AddGate(1, 2)
+	u.AddGate(2, 1)
+
+	const (
+		typeID       = int32(98989)
+		buyLocID     = int64(300000000101)
+		sellLocID    = int64(300000000202)
+		currentSys   = int32(1)
+		buySystemID  = int32(1)
+		sellSystemID = int32(2)
+	)
+
+	scanner := &Scanner{
+		SDE: &sde.Data{
+			Universe: u,
+			Systems: map[int32]*sde.SolarSystem{
+				1: {ID: 1, Name: "Amarr", RegionID: 10000043},
+				2: {ID: 2, Name: "Jita", RegionID: 10000002},
+			},
+			Regions: map[int32]*sde.Region{
+				10000043: {ID: 10000043, Name: "Domain"},
+				10000002: {ID: 10000002, Name: "The Forge"},
+			},
+			Types: map[int32]*sde.ItemType{
+				typeID: {ID: typeID, Name: "Depth Sensitive Item", Volume: 1},
+			},
+		},
+		ESI: esi.NewClient(nil),
+	}
+
+	asks := []esi.MarketOrder{
+		{TypeID: typeID, LocationID: buyLocID, SystemID: buySystemID, Price: 300, VolumeRemain: 4},
+		{TypeID: typeID, LocationID: buyLocID, SystemID: buySystemID, Price: 630, VolumeRemain: 596},
+	}
+	idx := &scanIndex{
+		sellByType: map[int32][]sellInfo{
+			typeID: {
+				{Price: 300, VolumeRemain: 4, LocationID: buyLocID, SystemID: buySystemID},
+				{Price: 630, VolumeRemain: 596, LocationID: buyLocID, SystemID: buySystemID},
+			},
+		},
+		buyByType: map[int32][]buyInfo{
+			typeID: {},
+		},
+		sellOrders: asks,
+		buyOrders:  nil,
+		sellSideBuyDepthByType: map[int32]int64{
+			typeID: 0,
+		},
+		sellSideSellDepthByType: map[int32]int64{
+			typeID: 1000,
+		},
+		sellSideSellDepthByLoc: map[locKey]int64{
+			{typeID: typeID, locationID: sellLocID}: 1000,
+		},
+		sellSideSellDepthByTypeSystem: map[sysTypeKey]int64{
+			{typeID: typeID, systemID: sellSystemID}: 1000,
+		},
+		sellSideSellMinPriceByLoc: map[locKey]float64{
+			{typeID: typeID, locationID: sellLocID}: 800,
+		},
+		sellSideSellMinPriceByTypeSystem: map[sysTypeKey]float64{
+			{typeID: typeID, systemID: sellSystemID}: 800,
+		},
+		targetSellByType: map[int32][]sellInfo{
+			typeID: {
+				{Price: 800, VolumeRemain: 1000, LocationID: sellLocID, SystemID: sellSystemID, OrderCount: 1},
+			},
+		},
+		targetSellCounts: map[locKey]int{
+			{typeID: typeID, locationID: sellLocID}: 1,
+		},
+	}
+
+	results, err := scanner.calculateResults(ScanParams{
+		CurrentSystemID:        currentSys,
+		CargoCapacity:          600,
+		MinMargin:              0,
+		SellOrderMode:          true,
+		TargetMarketSystemID:   sellSystemID,
+		TargetMarketLocationID: sellLocID,
+	}, idx, map[int32]int{currentSys: 0}, func(string) {})
+	if err != nil {
+		t.Fatalf("calculateResults error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("len(results) = %d, want 1", len(results))
+	}
+
+	r := results[0]
+	const wantQty int32 = 600
+	const wantExpectedBuy = (4*300.0 + 596*630.0) / 600.0
+	if r.UnitsToBuy != wantQty || r.FilledQty != wantQty {
+		t.Fatalf("qty = units %d filled %d, want both %d", r.UnitsToBuy, r.FilledQty, wantQty)
+	}
+	if math.Abs(r.ExpectedBuyPrice-wantExpectedBuy) > 1e-9 {
+		t.Fatalf("ExpectedBuyPrice = %f, want depth VWAP %f", r.ExpectedBuyPrice, wantExpectedBuy)
+	}
+	if r.ExpectedBuyPrice < 600 {
+		t.Fatalf("ExpectedBuyPrice still uses top-book fantasy price: %f", r.ExpectedBuyPrice)
+	}
+}
+
 func TestCalculateResults_CargoCapacityZeroMeansUnlimited(t *testing.T) {
 	u := graph.NewUniverse()
 	u.SetRegion(1, 10000002)

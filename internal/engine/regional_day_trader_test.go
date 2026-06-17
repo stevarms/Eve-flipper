@@ -206,6 +206,29 @@ func TestBuildRegionalDayTrader_PurchaseUnitsBehaviorByRevenueMode(t *testing.T)
 		}
 	})
 
+	t.Run("sell_order_mode_does_not_expand_beyond_priced_execution_quantity", func(t *testing.T) {
+		depthPriced := append([]FlipResult(nil), flips...)
+		depthPriced[0].FilledQty = 4
+		depthPriced[0].ExpectedBuyPrice = 100
+
+		hubs, totalItems, _, _ := scanner.BuildRegionalDayTrader(
+			ScanParams{
+				AvgPricePeriod:     14,
+				PurchaseDemandDays: 0.5,
+				SellOrderMode:      true,
+			},
+			depthPriced,
+			nil,
+			nil,
+		)
+		if len(hubs) != 1 || totalItems != 1 {
+			t.Fatalf("unexpected shape: hubs=%d items=%d", len(hubs), totalItems)
+		}
+		if got := hubs[0].Items[0].PurchaseUnits; got != 4 {
+			t.Fatalf("purchase_units = %d, want 4 capped to priced execution quantity", got)
+		}
+	})
+
 	t.Run("sell_order_mode_respects_cargo_capacity", func(t *testing.T) {
 		hubs, totalItems, _, _ := scanner.BuildRegionalDayTrader(
 			ScanParams{

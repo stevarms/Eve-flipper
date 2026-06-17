@@ -490,6 +490,15 @@ func (s *Scanner) BuildRegionalDayTrader(
 				}
 			}
 		}
+		if params.SellOrderMode {
+			// Sell-order mode is not constrained by target buy-order depth, but it
+			// still must not expand beyond the source quantity already priced by
+			// the execution simulator. Otherwise a tiny cheap L1 ask can make a
+			// large multi-buy position look profitable at an impossible average.
+			if row.FilledQty > 0 && purchaseUnits > row.FilledQty {
+				purchaseUnits = row.FilledQty
+			}
+		}
 		if purchaseUnits <= 0 {
 			if !params.RegionalDiagnosticMode {
 				continue
