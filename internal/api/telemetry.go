@@ -81,6 +81,7 @@ func (s *Server) telemetryMiddleware(next http.Handler) http.Handler {
 			DurationMS:  float64(duration.Microseconds()) / 1000,
 			ErrorCode:   telemetryErrorCode(rec.status),
 			IP:          telemetryClientIP(r),
+			Country:     telemetryClientCountry(r),
 			UserAgent:   r.UserAgent(),
 		})
 	})
@@ -118,6 +119,7 @@ func (s *Server) handleTelemetryClient(w http.ResponseWriter, r *http.Request) {
 		SessionID:   strings.TrimSpace(req.SessionID),
 		CharacterID: req.CharacterID,
 		IP:          telemetryClientIP(r),
+		Country:     telemetryClientCountry(r),
 		UserAgent:   r.UserAgent(),
 		Properties:  req.Properties,
 	})
@@ -128,9 +130,12 @@ func (s *Server) trackTelemetryEvent(r *http.Request, event telemetry.Event) {
 	if !s.telemetryEnabled() {
 		return
 	}
-	if event.UserID == "" && r != nil {
-		event.UserID = userIDFromRequest(r)
+	if r != nil {
+		if event.UserID == "" {
+			event.UserID = userIDFromRequest(r)
+		}
 		event.IP = firstNonEmpty(event.IP, telemetryClientIP(r))
+		event.Country = firstNonEmpty(event.Country, telemetryClientCountry(r))
 		event.UserAgent = firstNonEmpty(event.UserAgent, r.UserAgent())
 	}
 	s.telemetry.Track(event)
@@ -268,6 +273,20 @@ func telemetryClientIP(r *http.Request) string {
 		return host
 	}
 	return ""
+}
+
+// telemetryClientCountry extracts the visitor country from the Cloudflare
+// CF-IPCountry header. Cloudflare sets this on every proxied request. The
+// sentinels "XX" (unknown) and "T1" (Tor) are treated as empty.
+func telemetryClientCountry(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	country := strings.ToUpper(strings.TrimSpace(r.Header.Get("CF-IPCountry")))
+	if country == "" || country == "XX" || country == "T1" {
+		return ""
+	}
+	return country
 }
 
 func normalizedTelemetryPath(path string) string {
