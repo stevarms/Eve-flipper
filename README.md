@@ -8,6 +8,12 @@
   </p>
 
   <p>
+    <a href="https://app.eveflipper.com"><strong>Launch the web app</strong></a>
+    ·
+    <a href="https://github.com/ilyaux/Eve-flipper/releases/latest">Download desktop build</a>
+  </p>
+
+  <p>
     <a href="https://github.com/ilyaux/Eve-flipper/releases/latest"><img alt="Latest release" src="assets/badges/release.svg"></a>
     <a href="https://github.com/ilyaux/Eve-flipper/releases"><img alt="Downloads" src="assets/badges/downloads.svg"></a>
     <a href="https://github.com/ilyaux/Eve-flipper/graphs/traffic"><img alt="Clones last 14 days" src="assets/badges/clones.svg"></a>
@@ -32,7 +38,7 @@ The app is built for practical EVE trading:
 - Portfolio, wallet, PnL, cashflow, active orders, assets, and risk views.
 - Paper backtesting, orderbook snapshot recording, and trade journaling.
 
-Everything runs locally. There is no hosted service and no central database.
+Use the hosted web build at [app.eveflipper.com](https://app.eveflipper.com), or run the desktop/server builds locally when you want the full local-first workflow. EVE Flipper does not depend on a shared user database for the desktop app.
 
 ## Screenshots
 
@@ -46,6 +52,7 @@ The current public release is `v1.6.11`.
 
 Download it from:
 
+- [Hosted web app](https://app.eveflipper.com)
 - [GitHub Releases](https://github.com/ilyaux/Eve-flipper/releases/latest)
 
 Release packages are published as two runtime families:
