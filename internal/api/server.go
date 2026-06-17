@@ -125,6 +125,7 @@ const stationAIProviderResponseMaxBodyBytes int64 = 4 * 1024 * 1024
 const stationAIProviderErrorMaxBodyBytes int64 = 64 * 1024
 const defaultAPIRequestBodyMaxBytes int64 = 2 * 1024 * 1024
 const stationAIWikiWebhookSecretEnv = "STATION_AI_WIKI_WEBHOOK_SECRET"
+const hostedMaintenanceOverrideEnv = "EVEFLIPPER_ALLOW_HOSTED_MAINTENANCE"
 const stationAIWikiWebhookRefreshTimeout = 2 * time.Minute
 const stationAIMaxTokensLimit = 1_000_000
 const industryAnalyzeMaxBodyBytes = 64 * 1024
@@ -614,6 +615,30 @@ func (s *Server) acceptsUserIDHeader() bool {
 
 func (s *Server) isDesktopFlavor() bool {
 	return s != nil && strings.EqualFold(strings.TrimSpace(s.appFlavor), "desktop")
+}
+
+func (s *Server) isHostedDeployment() bool {
+	if envFlagEnabled("EVEFLIPPER_HOSTED") {
+		return true
+	}
+	return envFlagEnabled("TELEMETRY_ENABLED") && strings.EqualFold(strings.TrimSpace(os.Getenv("TELEMETRY_ENV")), "hosted")
+}
+
+func envFlagEnabled(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) rejectHostedMaintenance(w http.ResponseWriter, action string) bool {
+	if s == nil || !s.isHostedDeployment() || envFlagEnabled(hostedMaintenanceOverrideEnv) {
+		return false
+	}
+	writeError(w, http.StatusForbidden, action+" is disabled on hosted deployment")
+	return true
 }
 
 func userIDFromRequest(r *http.Request) string {
@@ -1152,7 +1177,7 @@ func stationAIWikiWebhookSecret() string {
 func validateGitHubWebhookSignature(body []byte, signatureHeader, secret string) bool {
 	secret = strings.TrimSpace(secret)
 	if secret == "" {
-		return true
+		return false
 	}
 	signatureHeader = strings.TrimSpace(signatureHeader)
 	if !strings.HasPrefix(strings.ToLower(signatureHeader), "sha256=") {
@@ -1207,6 +1232,10 @@ func (s *Server) handleInternalWikiGollumWebhook(w http.ResponseWriter, r *http.
 	}
 
 	secret := stationAIWikiWebhookSecret()
+	if secret == "" {
+		writeError(w, http.StatusServiceUnavailable, "wiki webhook secret is not configured")
+		return
+	}
 	signature := r.Header.Get("X-Hub-Signature-256")
 	if !validateGitHubWebhookSignature(body, signature, secret) {
 		writeError(w, http.StatusUnauthorized, "invalid webhook signature")
@@ -2128,10 +2157,14 @@ func sendTelegramAlert(token, chatID, message string) error {
 }
 
 func sendDiscordAlert(webhookURL, message string) error {
+	safeURL, err := validateDiscordWebhookURL(webhookURL)
+	if err != nil {
+		return err
+	}
 	body, _ := json.Marshal(map[string]any{
 		"content": message,
 	})
-	req, err := http.NewRequest(http.MethodPost, strings.TrimSpace(webhookURL), bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, safeURL, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -2149,6 +2182,34 @@ func sendDiscordAlert(webhookURL, message string) error {
 		return fmt.Errorf("discord http %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 	return nil
+}
+
+func validateDiscordWebhookURL(rawURL string) (string, error) {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return "", fmt.Errorf("discord webhook URL is empty")
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid discord webhook URL")
+	}
+	if u.Scheme != "https" {
+		return "", fmt.Errorf("discord webhook URL must use https")
+	}
+	if u.User != nil {
+		return "", fmt.Errorf("discord webhook URL must not include credentials")
+	}
+	if port := strings.TrimSpace(u.Port()); port != "" && port != "443" {
+		return "", fmt.Errorf("discord webhook URL must use the default https port")
+	}
+	host := strings.ToLower(strings.TrimSpace(u.Hostname()))
+	if host != "discord.com" && host != "discordapp.com" {
+		return "", fmt.Errorf("discord webhook URL host is not allowed")
+	}
+	if !strings.HasPrefix(u.EscapedPath(), "/api/webhooks/") {
+		return "", fmt.Errorf("discord webhook URL path is not allowed")
+	}
+	return u.String(), nil
 }
 
 func (s *Server) handleGetSystems(w http.ResponseWriter, r *http.Request) {
@@ -11567,6 +11628,9 @@ func (s *Server) handleDemandFittings(w http.ResponseWriter, r *http.Request) {
 // handleDemandRefresh forces a refresh of demand data for all regions.
 // Uses NDJSON streaming so the frontend can track progress in real time.
 func (s *Server) handleDemandRefresh(w http.ResponseWriter, r *http.Request) {
+	if s.rejectHostedMaintenance(w, "demand refresh") {
+		return
+	}
 	if !s.isReady() {
 		writeError(w, 503, "SDE not loaded yet")
 		return

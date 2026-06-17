@@ -119,6 +119,9 @@ func (s *Server) handleUpdateSkipForSession(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) handleUpdateApply(w http.ResponseWriter, r *http.Request) {
+	if s.rejectHostedMaintenance(w, "auto-update") {
+		return
+	}
 	userID := userIDFromRequest(r)
 	resolved, err := s.resolveUpdate(r.Context())
 	if err != nil {

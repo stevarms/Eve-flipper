@@ -79,3 +79,6 @@ eve-flipper-*.err
 
 # Local Discord setup/scratch workspace (do not track)
 discord-local/
+
+# Local security assessments can contain IPs, credentials, and attack paths
+security/

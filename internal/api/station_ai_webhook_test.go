@@ -15,6 +15,9 @@ func TestValidateGitHubWebhookSignature(t *testing.T) {
 	secret := "top-secret"
 	signature := signGitHubWebhookBody(body, secret)
 
+	if validateGitHubWebhookSignature(body, signature, "") {
+		t.Fatal("expected empty secret to fail closed")
+	}
 	if !validateGitHubWebhookSignature(body, signature, secret) {
 		t.Fatal("expected valid signature to pass verification")
 	}
@@ -43,12 +46,28 @@ func TestHandleInternalWikiGollumWebhook_RejectsInvalidSignature(t *testing.T) {
 	}
 }
 
-func TestHandleInternalWikiGollumWebhook_AcceptsPingAndGollum(t *testing.T) {
+func TestHandleInternalWikiGollumWebhook_RejectsMissingSecret(t *testing.T) {
 	t.Setenv(stationAIWikiWebhookSecretEnv, "")
 	srv := &Server{}
 
 	pingReq := httptest.NewRequest(http.MethodPost, "/api/internal/wiki/gollum", strings.NewReader(`{}`))
 	pingReq.Header.Set("X-GitHub-Event", "ping")
+	pingRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(pingRec, pingReq)
+	if pingRec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("ping status = %d, want %d", pingRec.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestHandleInternalWikiGollumWebhook_AcceptsSignedPingAndGollum(t *testing.T) {
+	secret := "secret-1"
+	t.Setenv(stationAIWikiWebhookSecretEnv, secret)
+	srv := &Server{}
+
+	pingBody := []byte(`{}`)
+	pingReq := httptest.NewRequest(http.MethodPost, "/api/internal/wiki/gollum", strings.NewReader(string(pingBody)))
+	pingReq.Header.Set("X-GitHub-Event", "ping")
+	pingReq.Header.Set("X-Hub-Signature-256", signGitHubWebhookBody(pingBody, secret))
 	pingRec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(pingRec, pingReq)
 	if pingRec.Code != http.StatusAccepted {
@@ -58,6 +77,7 @@ func TestHandleInternalWikiGollumWebhook_AcceptsPingAndGollum(t *testing.T) {
 	gollumBody := `{"repository":{"full_name":"ilyaux/Eve-flipper"},"pages":[{"page_name":"Station-Trading","action":"edited"}]}`
 	gollumReq := httptest.NewRequest(http.MethodPost, "/api/internal/wiki/gollum", strings.NewReader(gollumBody))
 	gollumReq.Header.Set("X-GitHub-Event", "gollum")
+	gollumReq.Header.Set("X-Hub-Signature-256", signGitHubWebhookBody([]byte(gollumBody), secret))
 	gollumRec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(gollumRec, gollumReq)
 	if gollumRec.Code != http.StatusAccepted {

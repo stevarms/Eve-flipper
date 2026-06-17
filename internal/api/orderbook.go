@@ -195,6 +195,9 @@ type orderBookCleanupRequest struct {
 }
 
 func (s *Server) handleOrderBookCleanup(w http.ResponseWriter, r *http.Request) {
+	if s.rejectHostedMaintenance(w, "orderbook cleanup") {
+		return
+	}
 	if s.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "orderbook database not ready")
 		return
