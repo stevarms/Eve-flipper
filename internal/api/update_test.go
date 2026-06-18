@@ -1,6 +1,9 @@
 package api
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"eve-flipper/internal/config"
@@ -174,5 +177,38 @@ func TestUpdateDismissedForSessionMemory(t *testing.T) {
 	s.clearUpdateDismissedForSession(userID)
 	if s.isUpdateDismissedForSession(userID, latest) {
 		t.Fatalf("expected false after clear")
+	}
+}
+
+func TestUpdateCheckDisabledInHostedMode(t *testing.T) {
+	t.Setenv("EVEFLIPPER_HOSTED", "true")
+
+	s := NewServer(config.Default(), &esi.Client{}, nil, nil, nil)
+	s.SetAppVersion("9179bc4")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/update/check", nil)
+	rec := httptest.NewRecorder()
+
+	s.handleUpdateCheck(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var got updateCheckResponse
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.HasUpdate {
+		t.Fatal("has_update = true, want false")
+	}
+	if got.AutoUpdateSupported {
+		t.Fatal("auto_update_supported = true, want false")
+	}
+	if got.LatestVersion != "" {
+		t.Fatalf("latest_version = %q, want empty", got.LatestVersion)
+	}
+	if got.CurrentVersion != "9179bc4" {
+		t.Fatalf("current_version = %q, want 9179bc4", got.CurrentVersion)
 	}
 }

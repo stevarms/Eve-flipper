@@ -68,6 +68,15 @@ type updateCheckResponse struct {
 }
 
 func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
+	if envFlagEnabled("EVEFLIPPER_HOSTED") {
+		writeJSON(w, updateCheckResponse{
+			CurrentVersion:      firstNonEmpty(strings.TrimSpace(s.appVersion), "hosted"),
+			HasUpdate:           false,
+			AutoUpdateSupported: false,
+			Platform:            runtime.GOOS + "/" + runtime.GOARCH,
+		})
+		return
+	}
 	userID := userIDFromRequest(r)
 	resolved, err := s.resolveUpdate(r.Context())
 	resp := updateCheckResponse{
