@@ -20,6 +20,7 @@ import type {
   FlipBacktestResult,
   FlipResult,
   HotZonesResponse,
+  HostedAccessStatus,
   IndustryCoverageBlueprintNeed,
   IndustryCoverageMaterialNeed,
   IndustryCoverageResult,
@@ -132,13 +133,40 @@ function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Respons
   return window.fetch(input, { credentials: "include", ...init, headers });
 }
 
+function hostedAccessErrorMessage(code: string, decision?: Record<string, unknown>): string {
+  const feature = typeof decision?.feature === "string" ? decision.feature.replace(/_/g, " ") : "this action";
+  const used = typeof decision?.used === "number" ? decision.used : null;
+  const limit = typeof decision?.limit === "number" ? decision.limit : null;
+  const remaining = typeof decision?.remaining === "number" ? decision.remaining : null;
+  const windowName = typeof decision?.window === "string" && decision.window ? decision.window : "current window";
+  const usage = limit != null && used != null ? ` (${used}/${limit} used in the ${windowName})` : "";
+
+  switch (code) {
+    case "quota_exhausted":
+      return `Hosted ${feature} quota is exhausted${usage}. Open the Access tab to renew or upgrade.`;
+    case "hosted_identity_required":
+      return "Hosted access requires an EVE login. Log in with EVE again, then retry.";
+    case "feature_denied":
+      return remaining === 0
+        ? `Hosted ${feature} is not available on the current plan. Open the Access tab to upgrade.`
+        : `Hosted ${feature} is not available on the current plan.`;
+    default:
+      return "";
+  }
+}
+
 // Helper to handle HTTP errors consistently
 async function handleResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let errorMessage = `HTTP ${res.status}`;
     try {
       const err = await res.json();
-      errorMessage = err.error || err.message || errorMessage;
+      const hostedMessage = typeof err.error === "string" ? hostedAccessErrorMessage(err.error, err.decision) : "";
+      if (hostedMessage) {
+        errorMessage = hostedMessage;
+      } else {
+        errorMessage = err.error || err.message || errorMessage;
+      }
     } catch {
       // Response body is not JSON
     }
@@ -1599,6 +1627,27 @@ export async function getSecurityVaultStatus(): Promise<SecurityVaultStatus> {
   return handleResponse<SecurityVaultStatus>(res);
 }
 
+export async function getHostedAccess(characterId?: CharacterScope): Promise<HostedAccessStatus> {
+  const params = new URLSearchParams();
+  appendCharacterScope(params, characterId);
+  const query = params.toString();
+  const res = await apiFetch(`${BASE}/api/hosted/access${query ? `?${query}` : ""}`);
+  return handleResponse<HostedAccessStatus>(res);
+}
+
+export async function requestHostedPayment(planId: string, characterId?: CharacterScope): Promise<{ ok: boolean; payment?: HostedAccessStatus["payment"] }> {
+  const body: Record<string, string> = { plan_id: planId };
+  if (typeof characterId === "number") {
+    body.character_id = String(characterId);
+  }
+  const res = await apiFetch(`${BASE}/api/hosted/payments/request`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return handleResponse<{ ok: boolean; payment?: HostedAccessStatus["payment"] }>(res);
+}
+
 export async function setupSecurityVault(mode: "standard" | "private", passphrase?: string): Promise<SecurityVaultStatus> {
   const res = await apiFetch(`${BASE}/api/security/vault/setup`, {
     method: "POST",
@@ -1609,7 +1658,19 @@ export async function setupSecurityVault(mode: "standard" | "private", passphras
 }
 
 export interface ClientTelemetryPayload {
-  event_type: "active_session" | "feature_opened" | "scan_started" | "scan_finished" | "auth_clicked" | "vault_setup_clicked";
+  event_type:
+    | "active_session"
+    | "feature_opened"
+    | "scan_started"
+    | "scan_finished"
+    | "auth_clicked"
+    | "vault_setup_clicked"
+    | "billing_panel_opened"
+    | "plan_selected"
+    | "payment_instructions_copied"
+    | "upgrade_prompt_shown"
+    | "feature_denied"
+    | "quota_warning_shown";
   session_id: string;
   module?: string;
   character_id?: number;

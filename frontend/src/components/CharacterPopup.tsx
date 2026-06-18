@@ -3,12 +3,16 @@ import { Modal } from "./Modal";
 import {
   getCharacterInfo,
   getCharacterRoles,
+  getHostedAccess,
+  requestHostedPayment,
   type CharacterScope,
 } from "../lib/api";
 import { useI18n } from "../lib/i18n";
-import type { AuthCharacter, CharacterInfo, CharacterRoles, SecurityVaultStatus } from "../lib/types";
+import { trackClientTelemetry } from "../lib/telemetry";
+import type { AuthCharacter, CharacterInfo, CharacterRoles, HostedAccessStatus, SecurityVaultStatus } from "../lib/types";
 import {
   CombinedOrdersTab,
+  HostedAccessTab,
   IndustryJobsTab,
   OptimizerTab,
   PIPlanetsTab,
@@ -43,7 +47,7 @@ interface CharacterPopupProps {
   securityVault?: SecurityVaultStatus;
 }
 
-type CharTab = "overview" | "orders" | "transactions" | "ledger" | "industry" | "pi" | "pnl" | "edge" | "risk" | "optimizer" | "achievements" | "plex";
+type CharTab = "overview" | "orders" | "transactions" | "ledger" | "industry" | "pi" | "pnl" | "edge" | "risk" | "optimizer" | "achievements" | "plex" | "access";
 const SCOPE_COLLAPSE_KEY = "eve-character-scope-collapsed";
 
 export function CharacterPopup({
@@ -71,6 +75,10 @@ export function CharacterPopup({
   const [tab, setTab] = useState<CharTab>("overview");
   const [corpRoles, setCorpRoles] = useState<CharacterRoles | null>(null);
   const [corpRolesLoading, setCorpRolesLoading] = useState(false);
+  const [hostedAccess, setHostedAccess] = useState<HostedAccessStatus | null>(null);
+  const [hostedAccessLoading, setHostedAccessLoading] = useState(false);
+  const [hostedAccessError, setHostedAccessError] = useState<string | null>(null);
+  const [hostedAccessCheckedAt, setHostedAccessCheckedAt] = useState<Date | null>(null);
   const [selectedScope, setSelectedScope] = useState<CharacterScope>(activeCharacterId ?? "all");
   const [scopeBusy, setScopeBusy] = useState(false);
   const [deletingCharacterId, setDeletingCharacterId] = useState<number | null>(null);
@@ -108,15 +116,29 @@ export function CharacterPopup({
   const modalTitle = selectedScope === "all"
     ? t("charAllCharacters")
     : selectedCharacter?.character_name ?? t("charOverview");
+  const hostedBillingEnabled = hostedAccess?.hosted === true;
 
   const setTrackedTab = useCallback(
     (nextTab: CharTab) => {
+      if (nextTab === "access" && !hostedBillingEnabled) return;
       setTab(nextTab);
       if (nextTab === "ledger") void trackAchievementEvent("ledger_opened");
       if (nextTab === "pnl" || nextTab === "optimizer" || nextTab === "edge") void trackAchievementEvent("portfolio_opened");
       if (nextTab === "risk") void trackAchievementEvent("risk_opened");
+      if (nextTab === "access") {
+        trackClientTelemetry({
+          event_type: "billing_panel_opened",
+          module: "hosted",
+          character_id: typeof selectedScope === "number" ? selectedScope : undefined,
+          properties: {
+            plan: hostedAccess?.plan.id,
+            subscription_status: hostedAccess?.status,
+            scope: selectedScope,
+          },
+        });
+      }
     },
-    [trackAchievementEvent],
+    [hostedAccess?.plan.id, hostedAccess?.status, hostedBillingEnabled, selectedScope, trackAchievementEvent],
   );
 
   useEffect(() => {
@@ -134,9 +156,27 @@ export function CharacterPopup({
       .finally(() => setLoading(false));
   }, [selectedScope]);
 
+  const loadHostedAccess = useCallback(() => {
+    setHostedAccessLoading(true);
+    setHostedAccessError(null);
+    getHostedAccess(selectedScope)
+      .then(setHostedAccess)
+      .catch((e) => setHostedAccessError(e.message))
+      .finally(() => {
+        setHostedAccessCheckedAt(new Date());
+        setHostedAccessLoading(false);
+      });
+  }, [selectedScope]);
+
+  const handleHostedPaymentRequest = useCallback(async (planId: string) => {
+    await requestHostedPayment(planId, selectedScope);
+    loadHostedAccess();
+  }, [loadHostedAccess, selectedScope]);
+
   useEffect(() => {
     if (!open) return;
     loadData();
+    loadHostedAccess();
     if (selectedScope === "all") {
       setCorpRoles(null);
       setCorpRolesLoading(false);
@@ -148,7 +188,20 @@ export function CharacterPopup({
       .then(setCorpRoles)
       .catch(() => setCorpRoles(null))
       .finally(() => setCorpRolesLoading(false));
-  }, [open, loadData, selectedScope]);
+  }, [open, loadData, loadHostedAccess, selectedScope]);
+
+  useEffect(() => {
+    if (!open || tab !== "access" || !hostedAccess || hostedBillingEnabled) return;
+    setTab("overview");
+  }, [open, tab, hostedAccess, hostedBillingEnabled]);
+
+  useEffect(() => {
+    if (!open || tab !== "access" || !hostedBillingEnabled || !hostedAccess?.payment) return;
+    const timer = window.setInterval(() => {
+      loadHostedAccess();
+    }, 20_000);
+    return () => window.clearInterval(timer);
+  }, [open, tab, hostedBillingEnabled, hostedAccess?.payment, loadHostedAccess]);
 
   const handleSelectScope = useCallback(async (scope: CharacterScope) => {
     if (scope === "all") {
@@ -254,6 +307,20 @@ export function CharacterPopup({
                 </span>
               )}
             </div>
+            {hostedBillingEnabled && (
+              <button
+                type="button"
+                onClick={() => setTrackedTab("access")}
+                className={`hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] border rounded-sm transition-colors ${
+                  tab === "access"
+                    ? "border-eve-accent/70 bg-eve-accent/12 text-eve-accent"
+                    : "border-eve-border bg-eve-dark/80 text-eve-dim hover:text-eve-accent hover:border-eve-accent/50"
+                }`}
+              >
+                <span>{hostedAccess?.plan.name ?? "Access"}</span>
+                <span className="text-[9px] opacity-75">{hostedAccess?.status ?? "sync"}</span>
+              </button>
+            )}
             <button
               onClick={() => { void handleAdd(); }}
               disabled={scopeBusy}
@@ -348,6 +415,7 @@ export function CharacterPopup({
               }
             />
             <TabBtn active={tab === "plex"} onClick={() => setTrackedTab("plex")} label="PLEX+" />
+            {hostedBillingEnabled && <TabBtn active={tab === "access"} onClick={() => setTrackedTab("access")} label="Access" />}
           </div>
           {/* Refresh button */}
           <button
@@ -364,10 +432,10 @@ export function CharacterPopup({
 
         {/* Content */}
         <div className="flex-1 overflow-auto p-4">
-          {loading && !data && tab !== "achievements" && tab !== "plex" && (
+          {loading && !data && tab !== "achievements" && tab !== "plex" && tab !== "access" && (
             <div className="flex items-center justify-center h-full text-eve-dim">{t("loading")}...</div>
           )}
-          {error && !data && tab !== "achievements" && tab !== "plex" && (
+          {error && !data && tab !== "achievements" && tab !== "plex" && tab !== "access" && (
             <div className="flex items-center justify-center h-full text-eve-error">{error}</div>
           )}
           {tab === "achievements" && <AchievementLibraryPanel />}
@@ -381,7 +449,18 @@ export function CharacterPopup({
               />
             </div>
           )}
-          {tab !== "achievements" && tab !== "plex" && data && (
+          {hostedBillingEnabled && tab === "access" && (
+            <HostedAccessTab
+              access={hostedAccess}
+              loading={hostedAccessLoading}
+              error={hostedAccessError}
+              lastCheckedAt={hostedAccessCheckedAt}
+              onReload={loadHostedAccess}
+              onRequestPayment={handleHostedPaymentRequest}
+              formatIsk={formatIsk}
+            />
+          )}
+          {tab !== "achievements" && tab !== "plex" && tab !== "access" && data && (
             <>
               {tab === "overview" && (
                 <OverviewTab

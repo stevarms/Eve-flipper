@@ -9,3 +9,4 @@ export { WalletDashboardTab } from "./WalletDashboardTab";
 export { IndustryJobsTab } from "./IndustryJobsTab";
 export { PIPlanetsTab } from "./PIPlanetsTab";
 export { TradingEdgeTab } from "./TradingEdgeTab";
+export { HostedAccessTab } from "./HostedAccessTab";

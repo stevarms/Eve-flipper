@@ -618,10 +618,7 @@ func (s *Server) isDesktopFlavor() bool {
 }
 
 func (s *Server) isHostedDeployment() bool {
-	if envFlagEnabled("EVEFLIPPER_HOSTED") {
-		return true
-	}
-	return envFlagEnabled("TELEMETRY_ENABLED") && strings.EqualFold(strings.TrimSpace(os.Getenv("TELEMETRY_ENV")), "hosted")
+	return envFlagEnabled("EVEFLIPPER_HOSTED")
 }
 
 func envFlagEnabled(key string) bool {
@@ -785,6 +782,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/update/apply", s.handleUpdateApply)
 	mux.HandleFunc("POST /api/internal/wiki/gollum", s.handleInternalWikiGollumWebhook)
 	mux.HandleFunc("POST /api/telemetry/client", s.handleTelemetryClient)
+	mux.HandleFunc("GET /api/hosted/access", s.handleHostedAccess)
+	mux.HandleFunc("POST /api/hosted/payments/request", s.handleHostedPaymentRequest)
 	mux.HandleFunc("GET /api/config", s.handleGetConfig)
 	mux.HandleFunc("POST /api/config", s.handleSetConfig)
 	mux.HandleFunc("GET /api/cockpit/preferences", s.handleGetCockpitPreferences)
@@ -911,7 +910,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/gankcheck", s.handleGankCheck)
 	mux.HandleFunc("GET /api/gankcheck/detail", s.handleGankCheckDetail)
 	mux.HandleFunc("GET /api/gankcheck/batch", s.handleGankCheckBatch)
-	return securityHeadersMiddleware(s.corsMiddleware(s.originGuardMiddleware(requestBodyLimitMiddleware(s.userScopeMiddleware(s.telemetryMiddleware(mux))))))
+	return securityHeadersMiddleware(s.corsMiddleware(s.originGuardMiddleware(requestBodyLimitMiddleware(s.userScopeMiddleware(s.telemetryMiddleware(s.hostedQuotaMiddleware(mux)))))))
 }
 
 func corsMiddleware(next http.Handler) http.Handler {

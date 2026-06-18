@@ -8,8 +8,7 @@ import (
 )
 
 func TestRejectHostedMaintenance(t *testing.T) {
-	t.Setenv("TELEMETRY_ENABLED", "true")
-	t.Setenv("TELEMETRY_ENV", "hosted")
+	t.Setenv("EVEFLIPPER_HOSTED", "true")
 
 	srv := &Server{}
 	rec := httptest.NewRecorder()

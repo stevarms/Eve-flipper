@@ -1239,6 +1239,65 @@ export interface AuthStatus {
   security_migration_required?: boolean;
 }
 
+export interface HostedAccessPlan {
+  id: string;
+  name: string;
+  expires_at?: string;
+  renews_at?: string;
+}
+
+export interface HostedAccessUsage {
+  used: number;
+  limit?: number | null;
+  remaining?: number | null;
+  window: string;
+  resets_at?: string;
+}
+
+export interface HostedAccessPayment {
+  receiver_name?: string;
+  receiver_character_id?: number | null;
+  receiver_corporation_id?: number | null;
+  amount_isk: number;
+  reason_code: string;
+  expires_at?: string;
+}
+
+export interface HostedAccessPaymentHistoryItem {
+  code: string;
+  plan_id: string;
+  amount_isk: number;
+  status: "pending" | "matched" | "underpaid" | "expired" | "duplicate" | "unmatched" | "sender_mismatch" | string;
+  created_at: string;
+  expires_at: string;
+  matched_at?: string;
+  matched_amount_isk?: number;
+  note?: string;
+}
+
+export interface HostedAccessPlanOffer {
+  id: string;
+  name: string;
+  price_isk: number;
+  period_days: number;
+  scan_limit_per_day?: number | null;
+  station_ai_limit_per_day?: number | null;
+  features?: string[];
+}
+
+export interface HostedAccessStatus {
+  hosted: boolean;
+  plan: HostedAccessPlan;
+  status: "local" | "free" | "trial" | "active" | "grace" | "expired" | "blocked" | string;
+  features: Record<string, boolean>;
+  usage: Record<string, HostedAccessUsage>;
+  payment?: HostedAccessPayment;
+  payment_history?: HostedAccessPaymentHistoryItem[];
+  available_plans?: HostedAccessPlanOffer[];
+  upgrade_url?: string;
+  message?: string;
+}
+
 export interface SecurityVaultStatus {
   available?: boolean;
   configured: boolean;

@@ -7,12 +7,18 @@ import (
 )
 
 var allowedClientEvents = map[string]bool{
-	"active_session":      true,
-	"feature_opened":      true,
-	"scan_started":        true,
-	"scan_finished":       true,
-	"auth_clicked":        true,
-	"vault_setup_clicked": true,
+	"active_session":              true,
+	"feature_opened":              true,
+	"scan_started":                true,
+	"scan_finished":               true,
+	"auth_clicked":                true,
+	"vault_setup_clicked":         true,
+	"billing_panel_opened":        true,
+	"plan_selected":               true,
+	"payment_instructions_copied": true,
+	"upgrade_prompt_shown":        true,
+	"feature_denied":              true,
+	"quota_warning_shown":         true,
 }
 
 var forbiddenKeyFragments = []string{
@@ -27,6 +33,8 @@ var forbiddenKeyFragments = []string{
 	"session_token",
 	"sso_token",
 	"client_secret",
+	"payment_code",
+	"reason_code",
 }
 
 func ClientEventAllowed(eventType string) bool {
