@@ -124,6 +124,51 @@ func TestHostedPaymentRequestProxiesBillingService(t *testing.T) {
 	}
 }
 
+func TestHostedPaymentCancelProxiesBillingService(t *testing.T) {
+	const apiKey = "payment-key"
+	enableHostedMode(t)
+	billing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/payments/cancel" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		if got := r.Header.Get("X-Entitlements-Key"); got != apiKey {
+			t.Fatalf("X-Entitlements-Key = %q, want %q", got, apiKey)
+		}
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["user_id"] != "hosted-user" || body["character_id"] != "123" {
+			t.Fatalf("unexpected body: %#v", body)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok":        true,
+			"cancelled": 2,
+		})
+	}))
+	defer billing.Close()
+
+	t.Setenv(hostedPaymentsURLEnv, billing.URL+"/v1/payments/request")
+	t.Setenv(hostedEntitlementsKeyEnv, apiKey)
+	server := NewServer(config.Default(), nil, nil, nil, nil)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/hosted/payments/cancel", bytes.NewBufferString(`{"character_id":"123"}`))
+	req = req.WithContext(context.WithValue(req.Context(), userIDContextKey, "hosted-user"))
+	server.handleHostedPaymentCancel(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["ok"] != true || got["cancelled"].(float64) != 2 {
+		t.Fatalf("unexpected response: %#v", got)
+	}
+}
+
 func TestHostedAccessPreservesCorporationReceiverInstructions(t *testing.T) {
 	const apiKey = "entitlement-key"
 	enableHostedMode(t)
@@ -514,6 +559,7 @@ func TestHostedQuotaFeatureMappingClassifiesAllPostAPIRoutes(t *testing.T) {
 		"/api/internal/wiki/gollum":                  "internal webhook",
 		"/api/telemetry/client":                      "telemetry ingest",
 		"/api/hosted/payments/request":               "billing request has dedicated payment limits",
+		"/api/hosted/payments/cancel":                "billing cancel has dedicated payment limits",
 		"/api/config":                                "local config write",
 		"/api/cockpit/loadouts":                      "cockpit CRUD",
 		"/api/cockpit/loadouts/{loadoutID}/activate": "cockpit CRUD",

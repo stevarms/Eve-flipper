@@ -85,6 +85,10 @@ type hostedPaymentRequest struct {
 	CharacterID string `json:"character_id,omitempty"`
 }
 
+type hostedPaymentCancelRequest struct {
+	CharacterID string `json:"character_id,omitempty"`
+}
+
 type hostedUsageDecision struct {
 	Allowed     bool   `json:"allowed"`
 	UserID      string `json:"user_id"`
@@ -210,6 +214,82 @@ func (s *Server) handleHostedPaymentRequest(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, result)
 }
 
+func (s *Server) handleHostedPaymentCancel(w http.ResponseWriter, r *http.Request) {
+	if s == nil || !s.isHostedDeployment() {
+		writeError(w, http.StatusNotFound, "hosted payments are not configured")
+		return
+	}
+	cancelURL := hostedPaymentCancelURL()
+	if cancelURL == "" {
+		writeError(w, http.StatusNotFound, "hosted payments are not configured")
+		return
+	}
+	var req hostedPaymentCancelRequest
+	if r.Body != nil {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid json")
+			return
+		}
+	}
+	req.CharacterID = strings.TrimSpace(req.CharacterID)
+	userID, ok := hostedBillingUserIDFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "hosted user identity is required")
+		return
+	}
+	internalKey := hostedBillingInternalKey()
+	if internalKey == "" {
+		writeError(w, http.StatusServiceUnavailable, "hosted billing internal key is not configured")
+		return
+	}
+
+	payload := map[string]string{"user_id": userID}
+	if req.CharacterID != "" {
+		payload["character_id"] = req.CharacterID
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "payment cancel failed")
+		return
+	}
+
+	outReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, cancelURL, bytes.NewReader(body))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "payment cancel failed")
+		return
+	}
+	outReq.Header.Set("Content-Type", "application/json")
+	outReq.Header.Set("Accept", "application/json")
+	outReq.Header.Set("X-Entitlements-Key", internalKey)
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Do(outReq)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "billing service is unavailable")
+		return
+	}
+	defer resp.Body.Close()
+	var result map[string]interface{}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 128*1024)).Decode(&result); err != nil {
+		writeError(w, http.StatusBadGateway, "billing service returned invalid json")
+		return
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		message, _ := result["error"].(string)
+		if strings.TrimSpace(message) == "" {
+			message = fmt.Sprintf("billing service returned HTTP %d", resp.StatusCode)
+		}
+		writeError(w, resp.StatusCode, message)
+		return
+	}
+
+	s.trackTelemetryEvent(r, telemetryEvent("payment_request_cancelled", "hosted", map[string]interface{}{
+		"character_id": req.CharacterID,
+		"cancelled":    result["cancelled"],
+	}))
+	writeJSON(w, result)
+}
+
 func (s *Server) fetchHostedAccess(ctx context.Context, userID string, characterID string) (hostedAccessResponse, error) {
 	if s == nil || !s.isHostedDeployment() {
 		return defaultHostedAccess(), nil
@@ -288,6 +368,25 @@ func hostedPaymentURL() string {
 	}
 	if strings.HasSuffix(entitlementURL, "/v1/entitlements/current") {
 		return strings.TrimSuffix(entitlementURL, "/v1/entitlements/current") + "/v1/payments/request"
+	}
+	return ""
+}
+
+func hostedPaymentCancelURL() string {
+	if explicit := strings.TrimSpace(os.Getenv(hostedPaymentsURLEnv)); explicit != "" {
+		if strings.HasSuffix(explicit, "/v1/payments/request") {
+			return strings.TrimSuffix(explicit, "/v1/payments/request") + "/v1/payments/cancel"
+		}
+		if strings.HasSuffix(explicit, "/request") {
+			return strings.TrimSuffix(explicit, "/request") + "/cancel"
+		}
+	}
+	entitlementURL := strings.TrimSpace(os.Getenv(hostedEntitlementsURLEnv))
+	if entitlementURL == "" {
+		return ""
+	}
+	if strings.HasSuffix(entitlementURL, "/v1/entitlements/current") {
+		return strings.TrimSuffix(entitlementURL, "/v1/entitlements/current") + "/v1/payments/cancel"
 	}
 	return ""
 }

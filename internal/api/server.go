@@ -784,6 +784,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/telemetry/client", s.handleTelemetryClient)
 	mux.HandleFunc("GET /api/hosted/access", s.handleHostedAccess)
 	mux.HandleFunc("POST /api/hosted/payments/request", s.handleHostedPaymentRequest)
+	mux.HandleFunc("POST /api/hosted/payments/cancel", s.handleHostedPaymentCancel)
 	mux.HandleFunc("GET /api/config", s.handleGetConfig)
 	mux.HandleFunc("POST /api/config", s.handleSetConfig)
 	mux.HandleFunc("GET /api/cockpit/preferences", s.handleGetCockpitPreferences)

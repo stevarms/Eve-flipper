@@ -1267,7 +1267,7 @@ export interface HostedAccessPaymentHistoryItem {
   code: string;
   plan_id: string;
   amount_isk: number;
-  status: "pending" | "matched" | "underpaid" | "expired" | "duplicate" | "unmatched" | "sender_mismatch" | string;
+  status: "pending" | "matched" | "underpaid" | "expired" | "duplicate" | "unmatched" | "sender_mismatch" | "receiver_mismatch" | "cancelled" | string;
   created_at: string;
   expires_at: string;
   matched_at?: string;

@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { Modal } from "./Modal";
 import {
+  cancelHostedPayment,
   getCharacterInfo,
   getCharacterRoles,
   getHostedAccess,
@@ -173,6 +174,11 @@ export function CharacterPopup({
     loadHostedAccess();
   }, [loadHostedAccess, selectedScope]);
 
+  const handleHostedPaymentCancel = useCallback(async () => {
+    await cancelHostedPayment(selectedScope);
+    loadHostedAccess();
+  }, [loadHostedAccess, selectedScope]);
+
   useEffect(() => {
     if (!open) return;
     loadData();
@@ -286,9 +292,9 @@ export function CharacterPopup({
 
   return (
     <Modal open={open} onClose={onClose} title={modalTitle} width="max-w-6xl" allowFullscreen>
-      <div className="flex flex-col h-[78vh]">
+      <div className="flex h-[calc(100dvh-5.25rem)] min-h-0 flex-col sm:h-[calc(100dvh-6rem)]">
         {/* Character selector */}
-        <div className="border-b border-eve-border bg-gradient-to-r from-eve-panel/90 to-eve-dark/70 px-4 py-3 space-y-2.5">
+        <div className="shrink-0 border-b border-eve-border bg-gradient-to-r from-eve-panel/90 to-eve-dark/70 px-4 py-3 space-y-2.5">
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 min-w-0">
               <button
@@ -393,7 +399,7 @@ export function CharacterPopup({
         </div>
 
         {/* Tabs + Refresh */}
-        <div className="flex items-center border-b border-eve-border bg-eve-panel">
+        <div className="flex shrink-0 items-center border-b border-eve-border bg-eve-panel">
           <div className="flex flex-1 overflow-x-auto scrollbar-thin">
             <TabBtn active={tab === "overview"} onClick={() => setTrackedTab("overview")} label={t("charOverview")} />
             <TabBtn active={tab === "orders"} onClick={() => setTrackedTab("orders")} label={`${t("charOrders")} (${data?.orders.length ?? 0})`} />
@@ -457,6 +463,7 @@ export function CharacterPopup({
               lastCheckedAt={hostedAccessCheckedAt}
               onReload={loadHostedAccess}
               onRequestPayment={handleHostedPaymentRequest}
+              onCancelPayment={handleHostedPaymentCancel}
               formatIsk={formatIsk}
             />
           )}

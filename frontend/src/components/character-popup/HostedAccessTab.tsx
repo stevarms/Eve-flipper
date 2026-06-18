@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, Check, Clock3, Copy, RefreshCw } from "lucide-react";
+import { ArrowLeft, Check, Clock3, Copy, RefreshCw, X } from "lucide-react";
 import type { HostedAccessPlanOffer, HostedAccessStatus } from "../../lib/types";
 import { trackClientTelemetry } from "../../lib/telemetry";
 
@@ -10,6 +10,7 @@ interface HostedAccessTabProps {
   lastCheckedAt: Date | null;
   onReload: () => void;
   onRequestPayment: (planId: string) => Promise<void>;
+  onCancelPayment: () => Promise<void>;
   formatIsk: (value: number) => string;
 }
 
@@ -42,7 +43,7 @@ function paymentStatusTone(status?: string) {
   ) {
     return "text-eve-error border-eve-error/40 bg-eve-error/10";
   }
-  if (normalized === "duplicate") return "text-eve-dim border-eve-border bg-eve-dark/60";
+  if (normalized === "duplicate" || normalized === "cancelled") return "text-eve-dim border-eve-border bg-eve-dark/60";
   return "text-eve-accent border-eve-accent/40 bg-eve-accent/10";
 }
 
@@ -116,6 +117,8 @@ function paymentHistoryHint(status?: string) {
       return "Transfer was after request expiry. Create a fresh request.";
     case "duplicate":
       return "This wallet reference was already processed.";
+    case "cancelled":
+      return "Cancelled before ISK was sent.";
     case "sender_mismatch":
       return "Sender does not match the character that created the request.";
     case "receiver_mismatch":
@@ -165,8 +168,9 @@ function paymentState(access: HostedAccessStatus | null, paymentHistory: HostedA
   };
 }
 
-export function HostedAccessTab({ access, loading, error, lastCheckedAt, onReload, onRequestPayment, formatIsk }: HostedAccessTabProps) {
+export function HostedAccessTab({ access, loading, error, lastCheckedAt, onReload, onRequestPayment, onCancelPayment, formatIsk }: HostedAccessTabProps) {
   const [requestingPlan, setRequestingPlan] = useState<string | null>(null);
+  const [cancelingPayment, setCancelingPayment] = useState(false);
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [showPlanPicker, setShowPlanPicker] = useState(false);
@@ -264,6 +268,31 @@ export function HostedAccessTab({ access, loading, error, lastCheckedAt, onReloa
       setPaymentError(e?.message || "Payment request failed");
     } finally {
       setRequestingPlan(null);
+    }
+  };
+
+  const cancelPaymentRequest = async () => {
+    if (!payment || cancelingPayment) return;
+    const confirmed = window.confirm("Cancel the current pending payment request? If you already sent ISK, wait for the wallet match instead.");
+    if (!confirmed) return;
+    setCancelingPayment(true);
+    setPaymentError(null);
+    trackClientTelemetry({
+      event_type: "payment_request_cancelled",
+      module: "hosted",
+      properties: {
+        plan: pendingPlan?.id ?? pendingHistoryRow?.plan_id,
+        amount_isk: payment.amount_isk,
+      },
+    });
+    try {
+      await onCancelPayment();
+      setShowPlanPicker(false);
+      setSelectedPlanId(null);
+    } catch (e: any) {
+      setPaymentError(e?.message || "Payment cancel failed");
+    } finally {
+      setCancelingPayment(false);
     }
   };
 
@@ -416,72 +445,54 @@ export function HostedAccessTab({ access, loading, error, lastCheckedAt, onReloa
                 <div className="flex min-w-0 items-center gap-2">
                   <Clock3 className="h-4 w-4 shrink-0" />
                   <span>
-                    Pending payment request{pendingPlan ? ` for ${pendingPlan.name}` : ""}. Wallet polling checks about every 20 seconds.
+                    Pending request{pendingPlan ? ` for ${pendingPlan.name}` : ""}. Wallet polling checks about every 20 seconds.
                   </span>
                 </div>
                 <span className={paymentExpired ? "font-semibold text-eve-error" : "font-semibold text-eve-accent"}>{pendingCountdown}</span>
               </div>
 
-              <div className="grid gap-2 text-xs sm:grid-cols-3">
-                <div className="border border-eve-border/70 bg-eve-dark/45 p-2">
-                  <div className="text-[10px] uppercase tracking-[0.14em] text-eve-dim">1. Receiver</div>
-                  <div className="mt-1 break-words text-eve-text">{payment.receiver_name || "Configured receiver"}</div>
+              <div className="border border-eve-border/70 bg-eve-dark/40 p-3">
+                <div className="grid gap-2 lg:grid-cols-[1.1fr_0.75fr_1fr]">
+                  <div className="min-w-0 border border-eve-border/60 bg-eve-panel/45 p-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-[10px] uppercase tracking-[0.14em] text-eve-dim">1. Receiver</div>
+                        <div className="mt-1 break-words text-eve-text">{receiverDisplay(payment)}</div>
+                      </div>
+                      {renderCopyButton("receiver", "Copy", payment.receiver_name || receiverDisplay(payment), "receiver")}
+                    </div>
+                  </div>
+                  <div className="min-w-0 border border-eve-border/60 bg-eve-panel/45 p-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-[10px] uppercase tracking-[0.14em] text-eve-dim">2. Exact ISK</div>
+                        <div className="mt-1 font-mono text-eve-accent">{exactIskAmount(payment.amount_isk)}</div>
+                        <div className="mt-0.5 text-[11px] text-eve-dim">{formatIsk(payment.amount_isk)} ISK</div>
+                      </div>
+                      {renderCopyButton("amount", "Copy", exactIskAmount(payment.amount_isk), "amount")}
+                    </div>
+                  </div>
+                  <div className="min-w-0 border border-eve-border/60 bg-eve-panel/45 p-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-[10px] uppercase tracking-[0.14em] text-eve-dim">3. Reason</div>
+                        <button
+                          type="button"
+                          onClick={copyPaymentCode}
+                          className="mt-1 break-all text-left font-mono text-eve-accent hover:text-eve-accent/80"
+                        >
+                          {payment.reason_code}
+                        </button>
+                      </div>
+                      {renderCopyButton("reason", "Copy", payment.reason_code, "reason_code")}
+                    </div>
+                  </div>
                 </div>
-                <div className="border border-eve-border/70 bg-eve-dark/45 p-2">
-                  <div className="text-[10px] uppercase tracking-[0.14em] text-eve-dim">2. Exact ISK</div>
-                  <div className="mt-1 font-mono text-eve-accent">{exactIskAmount(payment.amount_isk)}</div>
-                </div>
-                <div className="border border-eve-border/70 bg-eve-dark/45 p-2">
-                  <div className="text-[10px] uppercase tracking-[0.14em] text-eve-dim">3. Reason</div>
-                  <div className="mt-1 break-all font-mono text-eve-accent">{payment.reason_code}</div>
+                <div className="mt-2 text-xs leading-relaxed text-eve-dim">
+                  In EVE: open People & Places, find the receiver, choose Give Money, send the exact ISK amount, and paste the reason code into Reason / Description.
                 </div>
               </div>
 
-              <div className="space-y-2 border border-eve-border/70 bg-eve-dark/35 p-3">
-                <div className="text-[10px] uppercase tracking-[0.18em] text-eve-dim">How to pay in EVE</div>
-                <ol className="list-decimal space-y-1 pl-4 text-xs text-eve-dim">
-                  <li>Open People & Places, find the receiver character name below.</li>
-                  <li>Use Give Money / Transfer Money.</li>
-                  <li>Send the exact ISK amount. Do not round it or add extra text.</li>
-                  <li>Paste the reason code into Reason / Description.</li>
-                  <li>Return here and wait for auto-check, or press Refresh status.</li>
-                </ol>
-              </div>
-
-              <div className="grid gap-3">
-                <div className="border border-eve-border/70 bg-eve-dark/45 p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <div className="text-eve-dim">Receiver character</div>
-                      <div className="text-eve-text">{receiverDisplay(payment)}</div>
-                    </div>
-                    {renderCopyButton("receiver", payment.receiver_name || "", payment.receiver_name || "", "receiver")}
-                  </div>
-                </div>
-                <div className="border border-eve-border/70 bg-eve-dark/45 p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <div className="text-eve-dim">Amount</div>
-                      <div className="text-xl font-semibold text-eve-accent">{formatIsk(payment.amount_isk)} ISK</div>
-                      <div className="mt-0.5 font-mono text-xs text-eve-dim">Exact: {exactIskAmount(payment.amount_isk)} ISK</div>
-                    </div>
-                    {renderCopyButton("amount", "Copy amount", exactIskAmount(payment.amount_isk), "amount")}
-                  </div>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={copyPaymentCode}
-                className="w-full border border-eve-accent/50 bg-eve-accent/10 px-3 py-2 text-left font-mono text-eve-accent hover:bg-eve-accent/15"
-              >
-                <span className="flex items-center justify-between gap-2">
-                  <span className="break-all">{payment.reason_code}</span>
-                  <span className="inline-flex shrink-0 items-center gap-1 text-[10px] uppercase tracking-[0.12em]">
-                    {copiedKey === "reason" ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                    {copiedKey === "reason" ? "Copied" : "Copy reason"}
-                  </span>
-                </span>
-              </button>
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
@@ -493,25 +504,34 @@ export function HostedAccessTab({ access, loading, error, lastCheckedAt, onReloa
                 </button>
                 <button
                   type="button"
-                  onClick={() => setShowPlanPicker(true)}
+                  onClick={onReload}
+                  disabled={loading}
                   className="inline-flex items-center gap-1.5 border border-eve-border bg-eve-dark/70 px-3 py-2 text-xs uppercase tracking-[0.12em] text-eve-dim hover:border-eve-accent/50 hover:text-eve-accent"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  {refreshStatusLabel}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowPlanPicker(true)}
+                  className="inline-flex items-center gap-1.5 border border-eve-border bg-eve-dark/70 px-3 py-2 text-xs uppercase tracking-[0.12em] text-eve-dim hover:border-eve-accent/50 hover:text-eve-accent disabled:opacity-50"
                 >
                   <ArrowLeft className="h-3.5 w-3.5" />
                   Choose another plan
                 </button>
                 <button
                   type="button"
-                  onClick={onReload}
-                  disabled={loading}
-                  className="inline-flex items-center gap-1.5 border border-eve-border bg-eve-dark/70 px-3 py-2 text-xs uppercase tracking-[0.12em] text-eve-dim hover:border-eve-accent/50 hover:text-eve-accent disabled:opacity-50"
+                  onClick={() => { void cancelPaymentRequest(); }}
+                  disabled={cancelingPayment}
+                  className="inline-flex items-center gap-1.5 border border-eve-error/45 bg-eve-error/10 px-3 py-2 text-xs uppercase tracking-[0.12em] text-eve-error hover:bg-eve-error/15 disabled:opacity-50"
                 >
-                  <RefreshCw className="h-3.5 w-3.5" />
-                  {refreshStatusLabel}
+                  <X className="h-3.5 w-3.5" />
+                  {cancelingPayment ? "Canceling..." : "Cancel pending"}
                 </button>
               </div>
-              <div className="space-y-1 text-xs text-eve-dim">
-                <div>Valid until {formatDate(payment.expires_at)}. Transfer should be made before this time; expired requests are ignored.</div>
-                <div>After sending ISK, EVE wallet journal visibility usually takes 1-3 minutes. If nothing changes after 5 minutes, press Refresh status.</div>
+              {paymentError && <div className="border border-eve-error/40 bg-eve-error/10 px-3 py-2 text-xs text-eve-error">{paymentError}</div>}
+              <div className="text-xs leading-relaxed text-eve-dim">
+                Valid until {formatDate(payment.expires_at)}. After sending ISK, wallet journal visibility usually takes 1-3 minutes.
               </div>
             </div>
           ) : payment && showPlanPicker ? (
