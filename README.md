@@ -13,7 +13,7 @@
     <a href="https://github.com/ilyaux/Eve-flipper/releases/latest">Download desktop build</a>
   </p>
 
-  <p>
+ <p>
     <a href="https://github.com/ilyaux/Eve-flipper/releases/latest"><img alt="Latest release" src="assets/badges/release.svg"></a>
     <a href="https://github.com/ilyaux/Eve-flipper/releases"><img alt="Downloads" src="assets/badges/downloads.svg"></a>
     <a href="https://github.com/ilyaux/Eve-flipper/graphs/traffic"><img alt="Clones last 14 days" src="assets/badges/clones.svg"></a>
@@ -22,6 +22,12 @@
     <a href="https://www.typescriptlang.org/"><img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white"></a>
     <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-MIT-green"></a>
     <a href="https://discord.gg/rnR2bw6XXX"><img alt="Discord" src="https://img.shields.io/badge/Discord-Join%20Server-5865F2?logo=discord&logoColor=white"></a>
+  </p>
+
+   <p>
+    <a href="https://ko-fi.com/eveflipper">
+      <img alt="Support EVE Flipper on Ko-fi" src="https://ko-fi.com/img/githubbutton_sm.svg">
+    </a>
   </p>
 </div>
 
