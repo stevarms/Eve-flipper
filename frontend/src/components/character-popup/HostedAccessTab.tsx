@@ -170,6 +170,7 @@ export function HostedAccessTab({ access, loading, error, lastCheckedAt, onReloa
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [showPlanPicker, setShowPlanPicker] = useState(false);
+  const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const usageEntries = Object.entries(access?.usage ?? {});
   const featureEntries = Object.entries(access?.features ?? {}).filter(([, enabled]) => enabled);
@@ -197,6 +198,7 @@ export function HostedAccessTab({ access, loading, error, lastCheckedAt, onReloa
     if (!payment) {
       setShowPlanPicker(false);
     }
+    setSelectedPlanId(null);
   }, [payment]);
 
   const copyText = async (key: string, text: string, copyMode: string) => {
@@ -257,6 +259,7 @@ export function HostedAccessTab({ access, loading, error, lastCheckedAt, onReloa
     try {
       await onRequestPayment(planId);
       setShowPlanPicker(false);
+      setSelectedPlanId(null);
     } catch (e: any) {
       setPaymentError(e?.message || "Payment request failed");
     } finally {
@@ -281,34 +284,62 @@ export function HostedAccessTab({ access, loading, error, lastCheckedAt, onReloa
         <div className="text-[10px] uppercase tracking-[0.18em] text-eve-dim">{title}</div>
         <div className="mt-1 text-xs text-eve-dim">{intro}</div>
       </div>
+      {payment && (
+        <div className="border border-eve-accent/35 bg-eve-accent/10 px-3 py-2 text-xs text-eve-accent">
+          No payment request is created when you click a plan. Select a plan first, then confirm with the button below.
+        </div>
+      )}
       {planOffers.length === 0 ? (
         <div className="text-eve-dim">No plans are available right now.</div>
       ) : (
-        <div className="grid gap-2">
-          {planOffers.map((plan) => {
-            const selected = plan.id === pendingPlan?.id;
-            return (
-              <button
-                key={plan.id}
-                type="button"
-                onClick={() => { void createPaymentRequest(plan.id); }}
-                disabled={requestingPlan !== null}
-                className={`w-full border px-3 py-2 text-left transition-colors disabled:opacity-50 ${
-                  selected
-                    ? "border-eve-accent/70 bg-eve-accent/12"
-                    : "border-eve-border bg-eve-dark/65 hover:border-eve-accent/60 hover:bg-eve-accent/10"
-                }`}
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <span className="font-semibold text-eve-text">{plan.name}</span>
-                  <span className="font-mono text-eve-accent">{formatIsk(plan.price_isk)} ISK</span>
-                </div>
-                <div className="mt-1 text-xs text-eve-dim">{planLimitSummary(plan)}</div>
-                {selected && <div className="mt-1 text-[10px] uppercase tracking-[0.12em] text-eve-accent">Current pending request</div>}
-              </button>
-            );
-          })}
-        </div>
+        <>
+          <div className="grid gap-2">
+            {planOffers.map((plan) => {
+              const selected = plan.id === selectedPlanId;
+              const hasPendingRequest = plan.id === pendingPlan?.id;
+              return (
+                <button
+                  key={plan.id}
+                  type="button"
+                  onClick={() => {
+                    setSelectedPlanId(plan.id);
+                    setPaymentError(null);
+                  }}
+                  disabled={requestingPlan !== null}
+                  className={`w-full border px-3 py-2 text-left transition-colors disabled:opacity-50 ${
+                    selected
+                      ? "border-eve-accent bg-eve-accent/15"
+                      : "border-eve-border bg-eve-dark/65 hover:border-eve-accent/60 hover:bg-eve-accent/10"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="font-semibold text-eve-text">{plan.name}</span>
+                    <span className="font-mono text-eve-accent">{formatIsk(plan.price_isk)} ISK</span>
+                  </div>
+                  <div className="mt-1 text-xs text-eve-dim">{planLimitSummary(plan)}</div>
+                  <div className="mt-1 flex flex-wrap gap-2 text-[10px] uppercase tracking-[0.12em]">
+                    {selected && <span className="text-eve-accent">Selected, not pending yet</span>}
+                    {hasPendingRequest && <span className="text-eve-dim">Current pending request</span>}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              if (selectedPlanId) void createPaymentRequest(selectedPlanId);
+            }}
+            disabled={!selectedPlanId || requestingPlan !== null}
+            className="w-full bg-eve-accent px-3 py-2 font-semibold uppercase tracking-[0.12em] text-black hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            {requestingPlan
+              ? "Creating payment request..."
+              : selectedPlanId
+                ? `Create payment request for ${planOffers.find((plan) => plan.id === selectedPlanId)?.name ?? selectedPlanId}`
+                : "Select a plan first"}
+          </button>
+        </>
       )}
       {paymentError && <div className="border border-eve-error/40 bg-eve-error/10 px-3 py-2 text-xs text-eve-error">{paymentError}</div>}
     </div>
@@ -493,17 +524,17 @@ export function HostedAccessTab({ access, loading, error, lastCheckedAt, onReloa
                 <ArrowLeft className="h-3.5 w-3.5" />
                 Back to current payment
               </button>
-              {renderPlanPicker("Choose another plan", "Creating a new request gives you a new amount/code. Use only the latest request when sending ISK.")}
+              {renderPlanPicker("Choose another plan", "Select a tariff first. A new pending request is created only after you press the confirmation button. Use only the latest request when sending ISK.")}
             </div>
           ) : (access?.status === "active" || access?.status === "trial" || access?.status === "grace") ? (
             <div className="mt-3 space-y-3">
               <div className="border border-eve-success/35 bg-eve-success/10 px-3 py-2 text-xs text-eve-success">
                 No pending payment. Current hosted access is active.
               </div>
-              {renderPlanPicker("Extend or change plan", "Create a new payment request to extend the current window or switch tariff.")}
+              {renderPlanPicker("Extend or change plan", "Select a tariff, then press the confirmation button to create a payment request.")}
             </div>
           ) : planOffers.length > 0 ? (
-            <div className="mt-3">{renderPlanPicker()}</div>
+            <div className="mt-3">{renderPlanPicker("Choose a plan", "Select a tariff, then press the confirmation button to create a payment request.")}</div>
           ) : (
             <div className="mt-3 text-eve-dim">No pending payment request.</div>
           )}
