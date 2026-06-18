@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { ArrowLeft, Check, Clock3, Copy, RefreshCw } from "lucide-react";
 import type { HostedAccessPlanOffer, HostedAccessStatus } from "../../lib/types";
 import { trackClientTelemetry } from "../../lib/telemetry";
 
@@ -53,7 +54,7 @@ function receiverDisplay(payment: HostedAccessPayment) {
 }
 
 function receiverInstructionLines(payment: HostedAccessPayment) {
-  const lines = [`Receiver: ${payment.receiver_name || "Configured receiver"}`];
+  const lines = [`Receiver character name: ${payment.receiver_name || "Configured receiver"}`];
   if (payment.receiver_character_id) lines.push(`Receiver character ID: ${payment.receiver_character_id}`);
   if (payment.receiver_corporation_id) lines.push(`Receiver corporation ID: ${payment.receiver_corporation_id}`);
   return lines;
@@ -70,6 +71,26 @@ function planLimitSummary(plan: HostedAccessPlanOffer) {
     parts.push(plan.station_ai_limit_per_day != null ? `${plan.station_ai_limit_per_day} AI/day` : "unlimited AI");
   }
   return parts.join(" - ");
+}
+
+function exactIskAmount(value: number) {
+  if (!Number.isFinite(value)) return "0";
+  return String(Math.trunc(value));
+}
+
+function formatCountdown(expiresAt?: string, now = Date.now()) {
+  if (!expiresAt) return "No expiry time";
+  const expires = new Date(expiresAt).getTime();
+  if (Number.isNaN(expires)) return "Unknown expiry";
+  const remainingMs = expires - now;
+  if (remainingMs <= 0) return "Expired";
+  const totalSeconds = Math.ceil(remainingMs / 1000);
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  if (days > 0) return `${days}d ${hours}h left`;
+  if (hours > 0) return `${hours}h ${minutes}m left`;
+  return `${minutes}m left`;
 }
 
 function paymentDelta(row: HostedPaymentHistoryRow) {
@@ -147,6 +168,9 @@ function paymentState(access: HostedAccessStatus | null, paymentHistory: HostedA
 export function HostedAccessTab({ access, loading, error, lastCheckedAt, onReload, onRequestPayment, formatIsk }: HostedAccessTabProps) {
   const [requestingPlan, setRequestingPlan] = useState<string | null>(null);
   const [paymentError, setPaymentError] = useState<string | null>(null);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [showPlanPicker, setShowPlanPicker] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
   const usageEntries = Object.entries(access?.usage ?? {});
   const featureEntries = Object.entries(access?.features ?? {}).filter(([, enabled]) => enabled);
   const planOffers = access?.available_plans ?? [];
@@ -154,49 +178,66 @@ export function HostedAccessTab({ access, loading, error, lastCheckedAt, onReloa
   const state = paymentState(access, paymentHistory);
   const refreshLabel = loading ? "Checking..." : "Refresh";
   const refreshStatusLabel = loading ? "Checking..." : "Refresh status";
+  const payment = access?.payment;
+  const pendingHistoryRow = useMemo(
+    () => paymentHistory.find((row) => row.code === payment?.reason_code || row.status?.toLowerCase() === "pending"),
+    [payment?.reason_code, paymentHistory]
+  );
+  const pendingPlan = planOffers.find((plan) => plan.id === pendingHistoryRow?.plan_id);
+  const pendingCountdown = formatCountdown(payment?.expires_at, now);
+  const paymentExpired = pendingCountdown === "Expired";
 
-  const copyPaymentCode = async () => {
-    const payment = access?.payment;
-    if (!access || !payment?.reason_code) return;
+  useEffect(() => {
+    if (!payment?.expires_at) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [payment?.expires_at]);
+
+  useEffect(() => {
+    if (!payment) {
+      setShowPlanPicker(false);
+    }
+  }, [payment]);
+
+  const copyText = async (key: string, text: string, copyMode: string) => {
+    if (!text) return;
     try {
-      await navigator.clipboard.writeText(payment.reason_code);
-      trackClientTelemetry({
-        event_type: "payment_instructions_copied",
-        module: "hosted",
-        properties: {
-          plan: access.plan.id,
-          amount_isk: payment.amount_isk,
-        },
-      });
+      await navigator.clipboard.writeText(text);
+      setCopiedKey(key);
+      window.setTimeout(() => setCopiedKey((current) => (current === key ? null : current)), 1800);
+      if (access?.plan) {
+        trackClientTelemetry({
+          event_type: "payment_instructions_copied",
+          module: "hosted",
+          properties: {
+            plan: access.plan.id,
+            amount_isk: payment?.amount_isk,
+            copy_mode: copyMode,
+          },
+        });
+      }
     } catch {
       // Clipboard support is best-effort in desktop/web shells.
     }
   };
 
+  const copyPaymentCode = async () => {
+    if (!payment?.reason_code) return;
+    await copyText("reason", payment.reason_code, "reason_code");
+  };
+
   const copyPaymentInstructions = async () => {
-    const payment = access?.payment;
-    if (!access || !payment?.reason_code) return;
+    if (!payment?.reason_code) return;
     const lines = [
       "EVE Flipper hosted access payment",
+      pendingPlan ? `Plan: ${pendingPlan.name} (${pendingPlan.id})` : pendingHistoryRow?.plan_id ? `Plan: ${pendingHistoryRow.plan_id}` : "",
       ...receiverInstructionLines(payment),
-      `Amount: ${formatIsk(payment.amount_isk)} ISK`,
-      `Reason: ${payment.reason_code}`,
-      `Valid until: ${formatDate(payment.expires_at)}`,
-    ];
-    try {
-      await navigator.clipboard.writeText(lines.join("\n"));
-      trackClientTelemetry({
-        event_type: "payment_instructions_copied",
-        module: "hosted",
-        properties: {
-          plan: access.plan.id,
-          amount_isk: payment.amount_isk,
-          copy_mode: "full",
-        },
-      });
-    } catch {
-      // Clipboard support is best-effort in desktop/web shells.
-    }
+      `Exact amount: ${exactIskAmount(payment.amount_isk)} ISK`,
+      `Reason / Description: ${payment.reason_code}`,
+      `Request expires: ${formatDate(payment.expires_at)} (${formatCountdown(payment.expires_at, now)})`,
+      "After sending: keep this tab open or press Refresh status. Wallet journal polling checks about every 20 seconds.",
+    ].filter(Boolean);
+    await copyText("all", lines.join("\n"), "full");
   };
 
   const createPaymentRequest = async (planId: string) => {
@@ -215,12 +256,63 @@ export function HostedAccessTab({ access, loading, error, lastCheckedAt, onReloa
     });
     try {
       await onRequestPayment(planId);
+      setShowPlanPicker(false);
     } catch (e: any) {
       setPaymentError(e?.message || "Payment request failed");
     } finally {
       setRequestingPlan(null);
     }
   };
+
+  const renderCopyButton = (key: string, label: string, value: string, copyMode: string) => (
+    <button
+      type="button"
+      onClick={() => { void copyText(key, value, copyMode); }}
+      className="inline-flex items-center justify-center gap-1.5 border border-eve-border bg-eve-dark/75 px-2.5 py-1 text-[10px] uppercase tracking-[0.12em] text-eve-dim hover:border-eve-accent/60 hover:text-eve-accent"
+    >
+      {copiedKey === key ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+      {copiedKey === key ? "Copied" : label}
+    </button>
+  );
+
+  const renderPlanPicker = (title = "Choose a plan", intro = "Pick a tariff to generate a fresh ISK payment request.") => (
+    <div className="space-y-3">
+      <div>
+        <div className="text-[10px] uppercase tracking-[0.18em] text-eve-dim">{title}</div>
+        <div className="mt-1 text-xs text-eve-dim">{intro}</div>
+      </div>
+      {planOffers.length === 0 ? (
+        <div className="text-eve-dim">No plans are available right now.</div>
+      ) : (
+        <div className="grid gap-2">
+          {planOffers.map((plan) => {
+            const selected = plan.id === pendingPlan?.id;
+            return (
+              <button
+                key={plan.id}
+                type="button"
+                onClick={() => { void createPaymentRequest(plan.id); }}
+                disabled={requestingPlan !== null}
+                className={`w-full border px-3 py-2 text-left transition-colors disabled:opacity-50 ${
+                  selected
+                    ? "border-eve-accent/70 bg-eve-accent/12"
+                    : "border-eve-border bg-eve-dark/65 hover:border-eve-accent/60 hover:bg-eve-accent/10"
+                }`}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-semibold text-eve-text">{plan.name}</span>
+                  <span className="font-mono text-eve-accent">{formatIsk(plan.price_isk)} ISK</span>
+                </div>
+                <div className="mt-1 text-xs text-eve-dim">{planLimitSummary(plan)}</div>
+                {selected && <div className="mt-1 text-[10px] uppercase tracking-[0.12em] text-eve-accent">Current pending request</div>}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {paymentError && <div className="border border-eve-error/40 bg-eve-error/10 px-3 py-2 text-xs text-eve-error">{paymentError}</div>}
+    </div>
+  );
 
   if (loading && !access) {
     return <div className="flex h-full items-center justify-center text-eve-dim">Loading access...</div>;
@@ -287,81 +379,131 @@ export function HostedAccessTab({ access, loading, error, lastCheckedAt, onReloa
               {refreshStatusLabel}
             </button>
           </div>
-          {access?.payment ? (
+          {payment && !showPlanPicker ? (
             <div className="mt-3 space-y-3">
-              <div className="border border-eve-accent/35 bg-eve-accent/10 px-3 py-2 text-xs text-eve-accent">
-                Waiting for ISK transfer. Send the exact amount with this reason code, then refresh status.
+              <div className="flex flex-wrap items-center justify-between gap-2 border border-eve-accent/35 bg-eve-accent/10 px-3 py-2 text-xs text-eve-accent">
+                <div className="flex min-w-0 items-center gap-2">
+                  <Clock3 className="h-4 w-4 shrink-0" />
+                  <span>
+                    Pending payment request{pendingPlan ? ` for ${pendingPlan.name}` : ""}. Wallet polling checks about every 20 seconds.
+                  </span>
+                </div>
+                <span className={paymentExpired ? "font-semibold text-eve-error" : "font-semibold text-eve-accent"}>{pendingCountdown}</span>
               </div>
-              <div>
-                <div className="text-eve-dim">Amount</div>
-                <div className="text-xl font-semibold text-eve-accent">{formatIsk(access.payment.amount_isk)} ISK</div>
+
+              <div className="grid gap-2 text-xs sm:grid-cols-3">
+                <div className="border border-eve-border/70 bg-eve-dark/45 p-2">
+                  <div className="text-[10px] uppercase tracking-[0.14em] text-eve-dim">1. Receiver</div>
+                  <div className="mt-1 break-words text-eve-text">{payment.receiver_name || "Configured receiver"}</div>
+                </div>
+                <div className="border border-eve-border/70 bg-eve-dark/45 p-2">
+                  <div className="text-[10px] uppercase tracking-[0.14em] text-eve-dim">2. Exact ISK</div>
+                  <div className="mt-1 font-mono text-eve-accent">{exactIskAmount(payment.amount_isk)}</div>
+                </div>
+                <div className="border border-eve-border/70 bg-eve-dark/45 p-2">
+                  <div className="text-[10px] uppercase tracking-[0.14em] text-eve-dim">3. Reason</div>
+                  <div className="mt-1 break-all font-mono text-eve-accent">{payment.reason_code}</div>
+                </div>
               </div>
-              <div>
-                <div className="text-eve-dim">Receiver</div>
-                <div className="text-eve-text">{receiverDisplay(access.payment)}</div>
+
+              <div className="space-y-2 border border-eve-border/70 bg-eve-dark/35 p-3">
+                <div className="text-[10px] uppercase tracking-[0.18em] text-eve-dim">How to pay in EVE</div>
+                <ol className="list-decimal space-y-1 pl-4 text-xs text-eve-dim">
+                  <li>Open People & Places, find the receiver character name below.</li>
+                  <li>Use Give Money / Transfer Money.</li>
+                  <li>Send the exact ISK amount. Do not round it or add extra text.</li>
+                  <li>Paste the reason code into Reason / Description.</li>
+                  <li>Return here and wait for auto-check, or press Refresh status.</li>
+                </ol>
+              </div>
+
+              <div className="grid gap-3">
+                <div className="border border-eve-border/70 bg-eve-dark/45 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div className="text-eve-dim">Receiver character</div>
+                      <div className="text-eve-text">{receiverDisplay(payment)}</div>
+                    </div>
+                    {renderCopyButton("receiver", payment.receiver_name || "", payment.receiver_name || "", "receiver")}
+                  </div>
+                </div>
+                <div className="border border-eve-border/70 bg-eve-dark/45 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div className="text-eve-dim">Amount</div>
+                      <div className="text-xl font-semibold text-eve-accent">{formatIsk(payment.amount_isk)} ISK</div>
+                      <div className="mt-0.5 font-mono text-xs text-eve-dim">Exact: {exactIskAmount(payment.amount_isk)} ISK</div>
+                    </div>
+                    {renderCopyButton("amount", "Copy amount", exactIskAmount(payment.amount_isk), "amount")}
+                  </div>
+                </div>
               </div>
               <button
                 type="button"
                 onClick={copyPaymentCode}
                 className="w-full border border-eve-accent/50 bg-eve-accent/10 px-3 py-2 text-left font-mono text-eve-accent hover:bg-eve-accent/15"
               >
-                {access.payment.reason_code}
+                <span className="flex items-center justify-between gap-2">
+                  <span className="break-all">{payment.reason_code}</span>
+                  <span className="inline-flex shrink-0 items-center gap-1 text-[10px] uppercase tracking-[0.12em]">
+                    {copiedKey === "reason" ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                    {copiedKey === "reason" ? "Copied" : "Copy reason"}
+                  </span>
+                </span>
               </button>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={copyPaymentInstructions}
+                  className="inline-flex items-center gap-1.5 border border-eve-border bg-eve-dark/70 px-3 py-2 text-xs uppercase tracking-[0.12em] text-eve-dim hover:border-eve-accent/50 hover:text-eve-accent"
+                >
+                  {copiedKey === "all" ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                  {copiedKey === "all" ? "Copied instructions" : "Copy full instructions"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowPlanPicker(true)}
+                  className="inline-flex items-center gap-1.5 border border-eve-border bg-eve-dark/70 px-3 py-2 text-xs uppercase tracking-[0.12em] text-eve-dim hover:border-eve-accent/50 hover:text-eve-accent"
+                >
+                  <ArrowLeft className="h-3.5 w-3.5" />
+                  Choose another plan
+                </button>
+                <button
+                  type="button"
+                  onClick={onReload}
+                  disabled={loading}
+                  className="inline-flex items-center gap-1.5 border border-eve-border bg-eve-dark/70 px-3 py-2 text-xs uppercase tracking-[0.12em] text-eve-dim hover:border-eve-accent/50 hover:text-eve-accent disabled:opacity-50"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  {refreshStatusLabel}
+                </button>
+              </div>
+              <div className="space-y-1 text-xs text-eve-dim">
+                <div>Valid until {formatDate(payment.expires_at)}. Transfer should be made before this time; expired requests are ignored.</div>
+                <div>After sending ISK, EVE wallet journal visibility usually takes 1-3 minutes. If nothing changes after 5 minutes, press Refresh status.</div>
+              </div>
+            </div>
+          ) : payment && showPlanPicker ? (
+            <div className="mt-3 space-y-3">
               <button
                 type="button"
-                onClick={copyPaymentInstructions}
-                className="w-full border border-eve-border bg-eve-dark/70 px-3 py-2 text-left text-xs uppercase tracking-[0.12em] text-eve-dim hover:border-eve-accent/50 hover:text-eve-accent"
+                onClick={() => setShowPlanPicker(false)}
+                className="inline-flex items-center gap-1.5 border border-eve-border bg-eve-dark/70 px-3 py-1.5 text-xs uppercase tracking-[0.12em] text-eve-dim hover:border-eve-accent/50 hover:text-eve-accent"
               >
-                Copy full payment instructions
+                <ArrowLeft className="h-3.5 w-3.5" />
+                Back to current payment
               </button>
-              <div className="text-xs text-eve-dim">Valid until {formatDate(access.payment.expires_at)}</div>
+              {renderPlanPicker("Choose another plan", "Creating a new request gives you a new amount/code. Use only the latest request when sending ISK.")}
             </div>
           ) : (access?.status === "active" || access?.status === "trial" || access?.status === "grace") ? (
             <div className="mt-3 space-y-3">
               <div className="border border-eve-success/35 bg-eve-success/10 px-3 py-2 text-xs text-eve-success">
                 No pending payment. Current hosted access is active.
               </div>
-              {planOffers.length > 0 && (
-                <div className="space-y-2">
-                  <div className="text-[10px] uppercase tracking-[0.18em] text-eve-dim">Extend or change plan</div>
-                  {planOffers.map((plan) => (
-                    <button
-                      key={plan.id}
-                      type="button"
-                      onClick={() => { void createPaymentRequest(plan.id); }}
-                      disabled={requestingPlan !== null}
-                      className="w-full border border-eve-border bg-eve-dark/65 px-3 py-2 text-left hover:border-eve-accent/60 hover:bg-eve-accent/10 disabled:opacity-50"
-                    >
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="font-semibold text-eve-text">{plan.name}</span>
-                        <span className="font-mono text-eve-accent">{formatIsk(plan.price_isk)} ISK</span>
-                      </div>
-                      <div className="mt-1 text-xs text-eve-dim">{planLimitSummary(plan)}</div>
-                    </button>
-                  ))}
-                </div>
-              )}
-              {paymentError && <div className="border border-eve-error/40 bg-eve-error/10 px-3 py-2 text-xs text-eve-error">{paymentError}</div>}
+              {renderPlanPicker("Extend or change plan", "Create a new payment request to extend the current window or switch tariff.")}
             </div>
           ) : planOffers.length > 0 ? (
-            <div className="mt-3 space-y-2">
-              {planOffers.map((plan) => (
-                <button
-                  key={plan.id}
-                  type="button"
-                  onClick={() => { void createPaymentRequest(plan.id); }}
-                  disabled={requestingPlan !== null}
-                  className="w-full border border-eve-border bg-eve-dark/65 px-3 py-2 text-left hover:border-eve-accent/60 hover:bg-eve-accent/10 disabled:opacity-50"
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="font-semibold text-eve-text">{plan.name}</span>
-                    <span className="font-mono text-eve-accent">{formatIsk(plan.price_isk)} ISK</span>
-                  </div>
-                  <div className="mt-1 text-xs text-eve-dim">{planLimitSummary(plan)}</div>
-                </button>
-              ))}
-              {paymentError && <div className="border border-eve-error/40 bg-eve-error/10 px-3 py-2 text-xs text-eve-error">{paymentError}</div>}
-            </div>
+            <div className="mt-3">{renderPlanPicker()}</div>
           ) : (
             <div className="mt-3 text-eve-dim">No pending payment request.</div>
           )}
