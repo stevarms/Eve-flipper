@@ -136,18 +136,20 @@ function paymentHistoryHint(status?: string) {
 function paymentState(access: HostedAccessStatus | null, paymentHistory: HostedAccessStatus["payment_history"]) {
   const status = (access?.status ?? "").toLowerCase();
   const latest = latestPaymentStatus(paymentHistory);
+  if (status === "active" || status === "trial" || status === "grace") {
+    return {
+      tone: "text-eve-success border-eve-success/40 bg-eve-success/10",
+      title: status === "grace" ? "Subscription in grace period" : "Subscription active",
+      body: access?.payment
+        ? "Paid access is already enabled. The pending payment on the right is only for an extension or plan change; cancel it if it was created by mistake."
+        : "Paid access is enabled. Usage counters below show the current billing window.",
+    };
+  }
   if (access?.payment) {
     return {
       tone: "text-eve-accent border-eve-accent/40 bg-eve-accent/10",
       title: "Waiting for payment",
       body: `Send the exact ISK amount to the receiver. If EVE shows a Reason / Description field, paste the optional code too. ${WALLET_SETTLEMENT_COPY}`,
-    };
-  }
-  if (status === "active" || status === "trial" || status === "grace") {
-    return {
-      tone: "text-eve-success border-eve-success/40 bg-eve-success/10",
-      title: status === "grace" ? "Subscription in grace period" : "Subscription active",
-      body: "Paid access is enabled. Usage counters below show the current billing window.",
     };
   }
   if (latest === "matched") {
@@ -304,12 +306,50 @@ export function HostedAccessTab({ access, loading, error, lastCheckedAt, onReloa
     <button
       type="button"
       onClick={() => { void copyText(key, value, copyMode); }}
-      className="inline-flex items-center justify-center gap-1.5 border border-eve-border bg-eve-dark/75 px-2.5 py-1 text-[10px] uppercase tracking-[0.12em] text-eve-dim hover:border-eve-accent/60 hover:text-eve-accent"
+      className="inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap border border-eve-border bg-eve-dark/75 px-3 py-1.5 text-[10px] uppercase tracking-[0.12em] text-eve-dim hover:border-eve-accent/60 hover:text-eve-accent"
     >
       {copiedKey === key ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
       {copiedKey === key ? "Copied" : label}
     </button>
   );
+
+  const renderPaymentDetail = (
+    key: string,
+    step: string,
+    title: string,
+    value: string,
+    copyValue: string,
+    copyMode: string,
+    hint?: string,
+    strong = false,
+    onValueClick?: () => void,
+  ) => {
+    const valueClass = `mt-1 block max-w-full text-left ${strong ? "font-mono text-xl font-semibold text-eve-accent" : "text-sm text-eve-text"} ${
+      onValueClick ? "hover:text-eve-accent/80" : ""
+    }`;
+    const valueContent = <span className="break-words">{value}</span>;
+
+    return (
+      <div className="border border-eve-border/65 bg-eve-dark/45 p-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <div className="text-[10px] uppercase tracking-[0.16em] text-eve-dim">
+              {step}. {title}
+            </div>
+            {onValueClick ? (
+              <button type="button" onClick={onValueClick} className={valueClass}>
+                {valueContent}
+              </button>
+            ) : (
+              <div className={valueClass}>{valueContent}</div>
+            )}
+            {hint && <div className="mt-1 text-xs leading-relaxed text-eve-dim">{hint}</div>}
+          </div>
+          {renderCopyButton(key, "Copy", copyValue, copyMode)}
+        </div>
+      </div>
+    );
+  };
 
   const renderPlanPicker = (title = "Choose a plan", intro = "Pick a tariff to generate a fresh ISK payment request.") => (
     <div className="space-y-3">
@@ -384,7 +424,7 @@ export function HostedAccessTab({ access, loading, error, lastCheckedAt, onReloa
 
   return (
     <div className="space-y-4 text-sm">
-      <div className="grid gap-3 md:grid-cols-[1.2fr_0.8fr]">
+      <div className="grid gap-3 xl:grid-cols-[minmax(360px,0.85fr)_minmax(560px,1.15fr)]">
         <section className="border border-eve-border bg-eve-panel/65 p-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
@@ -445,56 +485,47 @@ export function HostedAccessTab({ access, loading, error, lastCheckedAt, onReloa
           </div>
           {payment && !showPlanPicker ? (
             <div className="mt-3 space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2 border border-eve-accent/35 bg-eve-accent/10 px-3 py-2 text-xs text-eve-accent">
-                <div className="flex min-w-0 items-center gap-2">
+              <div className="flex flex-col gap-2 border border-eve-accent/35 bg-eve-accent/10 px-3 py-2 text-xs text-eve-accent sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex min-w-0 items-start gap-2">
                   <Clock3 className="h-4 w-4 shrink-0" />
-                  <span>
-                    Pending request{pendingPlan ? ` for ${pendingPlan.name}` : ""}. {WALLET_SETTLEMENT_COPY}
-                  </span>
+                  <span className="leading-relaxed">Pending request{pendingPlan ? ` for ${pendingPlan.name}` : ""}. {WALLET_SETTLEMENT_COPY}</span>
                 </div>
-                <span className={paymentExpired ? "font-semibold text-eve-error" : "font-semibold text-eve-accent"}>{pendingCountdown}</span>
+                <span className={`shrink-0 font-semibold ${paymentExpired ? "text-eve-error" : "text-eve-accent"}`}>{pendingCountdown}</span>
               </div>
 
-              <div className="border border-eve-border/70 bg-eve-dark/40 p-3">
-                <div className="grid gap-2">
-                  <div className="min-w-0 border border-eve-border/60 bg-eve-panel/45 p-2">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="text-[10px] uppercase tracking-[0.14em] text-eve-dim">1. Receiver</div>
-                        <div className="mt-1 break-words text-eve-text">{receiverDisplay(payment)}</div>
-                      </div>
-                      {renderCopyButton("receiver", "Copy", payment.receiver_name || receiverDisplay(payment), "receiver")}
-                    </div>
-                  </div>
-                  <div className="min-w-0 border border-eve-border/60 bg-eve-panel/45 p-2">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="text-[10px] uppercase tracking-[0.14em] text-eve-dim">2. Exact ISK</div>
-                        <div className="mt-1 font-mono text-eve-accent">{exactIskAmount(payment.amount_isk)}</div>
-                        <div className="mt-0.5 text-[11px] text-eve-dim">{formatIsk(payment.amount_isk)} ISK</div>
-                      </div>
-                      {renderCopyButton("amount", "Copy", exactIskAmount(payment.amount_isk), "amount")}
-                    </div>
-                  </div>
-                  <div className="min-w-0 border border-eve-border/60 bg-eve-panel/45 p-2">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="text-[10px] uppercase tracking-[0.14em] text-eve-dim">3. Optional code</div>
-                        <button
-                          type="button"
-                          onClick={copyPaymentCode}
-                          className="mt-1 break-all text-left font-mono text-eve-accent hover:text-eve-accent/80"
-                        >
-                          {payment.reason_code}
-                        </button>
-                      </div>
-                      {renderCopyButton("reason", "Copy", payment.reason_code, "reason_code")}
-                    </div>
-                  </div>
-                </div>
-                <div className="mt-2 border border-eve-accent/25 bg-eve-accent/10 px-2 py-2 text-xs leading-relaxed text-eve-dim">
-                  In EVE: Wallet {"->"} Send ISK, choose the receiver and send the exact amount. If the transfer window has
-                  a Reason / Description field, paste the optional code. If there is no such field, leave it empty.
+              <div className="space-y-2 border border-eve-border/70 bg-eve-dark/35 p-3">
+                {renderPaymentDetail(
+                  "receiver",
+                  "1",
+                  "Receiver",
+                  receiverDisplay(payment),
+                  payment.receiver_name || receiverDisplay(payment),
+                  "receiver",
+                  "Search this character in EVE, then use Wallet -> Send ISK.",
+                )}
+                {renderPaymentDetail(
+                  "amount",
+                  "2",
+                  "Exact amount",
+                  `${exactIskAmount(payment.amount_isk)} ISK`,
+                  exactIskAmount(payment.amount_isk),
+                  "amount",
+                  `${formatIsk(payment.amount_isk)} ISK. Do not round or split the transfer.`,
+                  true,
+                )}
+                {renderPaymentDetail(
+                  "reason",
+                  "3",
+                  "Optional reason code",
+                  payment.reason_code,
+                  payment.reason_code,
+                  "reason_code",
+                  "Paste this only if the EVE transfer window shows a Reason / Description field. If there is no field, leave it empty.",
+                  false,
+                  copyPaymentCode,
+                )}
+                <div className="border border-eve-accent/25 bg-eve-accent/10 px-3 py-2 text-xs leading-relaxed text-eve-dim">
+                  Send ISK once, then wait here or press Refresh status. Access is granted when the wallet journal entry appears through ESI.
                 </div>
               </div>
 
