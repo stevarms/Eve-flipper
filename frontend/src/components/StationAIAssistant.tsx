@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import type {
+  HostedAccessStatus,
   ScanParams,
   StationAIChatContext,
   StationAIHistoryMessage,
@@ -8,7 +9,7 @@ import type {
   StationCommandRow,
   StationTrade,
 } from "@/lib/types";
-import { stationAIChatStream } from "@/lib/api";
+import { getHostedAccess, stationAIChatStream } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 import { useGlobalToast } from "./Toast";
 
@@ -961,6 +962,9 @@ export function StationAIAssistant({
   const [completionTokensEst, setCompletionTokensEst] = useState(0);
   const [totalTokensEst, setTotalTokensEst] = useState(0);
   const [usage, setUsage] = useState<StationAIUsage | null>(null);
+  const [hostedAccess, setHostedAccess] = useState<HostedAccessStatus | null>(null);
+  const [hostedAccessLoading, setHostedAccessLoading] = useState(false);
+  const [hostedAccessError, setHostedAccessError] = useState<string | null>(null);
   const [elapsedSec, setElapsedSec] = useState(0);
   const [windowRect, setWindowRect] = useState<AIWindowRect>(() => {
     const base = defaultAIWindowRect();
@@ -1008,6 +1012,26 @@ export function StationAIAssistant({
   );
 
   const messages = activeSession?.messages ?? [];
+  const hostedStationAIAccessPending = hostedAccessLoading && hostedAccess === null;
+  const hostedStationAILocked =
+    hostedAccess?.hosted === true && hostedAccess.features?.station_ai !== true;
+  const stationAIUIDisabled = hostedStationAIAccessPending || hostedStationAILocked;
+  const hostedPlanName = hostedAccess?.plan?.name || "Free";
+
+  const refreshHostedAccess = useCallback(() => {
+    setHostedAccessLoading(true);
+    setHostedAccessError(null);
+    getHostedAccess()
+      .then(setHostedAccess)
+      .catch((e) => setHostedAccessError(e instanceof Error ? e.message : "Access check failed"))
+      .finally(() => setHostedAccessLoading(false));
+  }, []);
+
+  useEffect(() => {
+    if (open) {
+      refreshHostedAccess();
+    }
+  }, [open, refreshHostedAccess]);
 
   useEffect(() => {
     saveOpenState(open);
@@ -1379,6 +1403,15 @@ export function StationAIAssistant({
     setProgressPct((prev) => (prev > 0 ? prev : 0));
   }, [stopElapsedTimer, t, thinking]);
 
+  useEffect(() => {
+    if (!stationAIUIDisabled) return;
+    setConfigOpen(false);
+    setPromptToolsOpen(false);
+    if (thinking) {
+      stopStreaming();
+    }
+  }, [stationAIUIDisabled, stopStreaming, thinking]);
+
   const deleteSession = useCallback(
     (id: string) => {
       if (thinking && id === activeSessionID) {
@@ -1440,6 +1473,15 @@ export function StationAIAssistant({
   const sendMessage = async (text: string) => {
     const content = text.trim();
     if (!content || thinking || disabled || sendInFlightRef.current) return;
+    if (hostedStationAIAccessPending) {
+      addToast("Checking Ivy AI access. Try again in a moment.", "warning", 2200);
+      return;
+    }
+    if (hostedStationAILocked) {
+      addToast("Ivy AI is available on Pro and higher hosted plans.", "warning", 2800);
+      refreshHostedAccess();
+      return;
+    }
     if (!cfg.apiKey.trim()) {
       setConfigOpen(true);
       addToast(t("aiErrorNoKey"), "error", 2800);
@@ -1669,8 +1711,15 @@ export function StationAIAssistant({
           <div className="flex-1" />
           <button
             type="button"
-            onClick={() => setConfigOpen(true)}
-            className="px-2 py-0.5 rounded-sm border border-eve-border/60 text-eve-dim hover:text-eve-accent hover:border-eve-accent/50 transition-colors text-xs"
+            onClick={() => {
+              if (stationAIUIDisabled) {
+                addToast("Upgrade hosted access to configure Ivy AI.", "warning", 2400);
+                return;
+              }
+              setConfigOpen(true);
+            }}
+            disabled={stationAIUIDisabled}
+            className="px-2 py-0.5 rounded-sm border border-eve-border/60 text-eve-dim hover:text-eve-accent hover:border-eve-accent/50 transition-colors text-xs disabled:opacity-40 disabled:cursor-not-allowed"
             title={t("aiConfig")}
           >
             ⚙
@@ -1694,6 +1743,73 @@ export function StationAIAssistant({
             ×
           </button>
         </header>
+
+        {stationAIUIDisabled && (
+          <div className="absolute left-0 right-0 bottom-0 top-[57px] z-[3] bg-eve-dark/95 border-t border-eve-border/60 p-4 flex items-center justify-center">
+            <div className="w-[min(620px,100%)] rounded-sm border border-eve-accent/50 bg-eve-panel/95 p-4 shadow-eve-glow">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-[10px] uppercase tracking-[0.22em] text-eve-accent">
+                    {hostedStationAIAccessPending ? "Checking access" : "Hosted plan limit"}
+                  </p>
+                  <h3 className="mt-2 text-base font-semibold text-eve-text">
+                    {hostedStationAIAccessPending ? "Checking Ivy AI access" : "Ivy AI requires Pro access"}
+                  </h3>
+                  <p className="mt-2 max-w-[520px] text-xs leading-relaxed text-eve-dim">
+                    {hostedStationAIAccessPending ? (
+                      "The app is verifying your hosted entitlement before enabling chat and model settings."
+                    ) : (
+                      <>
+                        Current plan: <span className="text-eve-text">{hostedPlanName}</span>. Station AI chat,
+                        model settings, wiki context and web research are locked on the Free hosted plan.
+                      </>
+                    )}
+                  </p>
+                </div>
+                <span className="shrink-0 rounded-sm border border-eve-accent/50 px-2 py-1 text-[10px] uppercase tracking-wider text-eve-accent">
+                  station_ai
+                </span>
+              </div>
+
+              <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+                <div className="rounded-sm border border-eve-border/70 bg-eve-dark/55 p-2">
+                  <p className="text-[10px] uppercase tracking-wider text-eve-dim">Current</p>
+                  <p className="mt-1 font-mono text-eve-text">{hostedPlanName}</p>
+                </div>
+                <div className="rounded-sm border border-eve-border/70 bg-eve-dark/55 p-2">
+                  <p className="text-[10px] uppercase tracking-wider text-eve-dim">Required</p>
+                  <p className="mt-1 font-mono text-eve-accent">Pro or higher</p>
+                </div>
+                <div className="rounded-sm border border-eve-border/70 bg-eve-dark/55 p-2">
+                  <p className="text-[10px] uppercase tracking-wider text-eve-dim">Status</p>
+                  <p className="mt-1 font-mono text-eve-text">
+                    {hostedAccessLoading ? "checking" : hostedAccess?.status ?? "free"}
+                  </p>
+                </div>
+              </div>
+
+              {hostedAccessError && (
+                <p className="mt-3 rounded-sm border border-red-500/40 bg-red-500/10 px-2 py-1.5 text-xs text-red-200">
+                  {hostedAccessError}
+                </p>
+              )}
+
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={refreshHostedAccess}
+                  disabled={hostedAccessLoading}
+                  className="rounded-sm border border-eve-accent/70 bg-eve-accent/15 px-3 py-1.5 text-xs font-semibold uppercase tracking-wider text-eve-accent hover:bg-eve-accent/25 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {hostedAccessLoading ? "Checking..." : "Refresh access"}
+                </button>
+                <p className="text-[11px] text-eve-dim">
+                  Use the character Access tab to choose a paid plan, then refresh this window.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="flex-1 min-h-0 flex flex-col sm:flex-row">
           <aside
@@ -2016,7 +2132,7 @@ export function StationAIAssistant({
         </div>
       </section>
 
-      {configOpen && (
+      {configOpen && !stationAIUIDisabled && (
         <>
           <div className="fixed inset-0 z-[59] bg-black/70" onClick={() => setConfigOpen(false)} />
           <div className="fixed z-[60] left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[min(560px,92vw)] rounded-sm border border-eve-border bg-eve-panel p-3 shadow-eve-glow-strong">
