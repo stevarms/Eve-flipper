@@ -17,6 +17,9 @@ interface HostedAccessTabProps {
 type HostedPaymentHistoryRow = NonNullable<HostedAccessStatus["payment_history"]>[number];
 type HostedAccessPayment = NonNullable<HostedAccessStatus["payment"]>;
 
+const WALLET_SETTLEMENT_COPY =
+  "Wallet polling checks about every 30 seconds, but EVE ESI wallet journal data can be cached for up to 60 minutes. Access activates as soon as the transfer is visible through ESI.";
+
 function formatDate(value?: string | Date | null) {
   if (!value) return "N/A";
   const date = new Date(value);
@@ -106,7 +109,7 @@ function latestPaymentStatus(history: HostedAccessStatus["payment_history"]) {
 function paymentHistoryHint(status?: string) {
   switch ((status ?? "").toLowerCase()) {
     case "pending":
-      return "Waiting for wallet journal polling.";
+      return "Waiting for EVE ESI wallet journal visibility. This can take up to 60 minutes because CCP caches wallet data.";
     case "matched":
       return "Activated automatically.";
     case "underpaid":
@@ -137,7 +140,7 @@ function paymentState(access: HostedAccessStatus | null, paymentHistory: HostedA
     return {
       tone: "text-eve-accent border-eve-accent/40 bg-eve-accent/10",
       title: "Waiting for payment",
-      body: "Send the exact ISK amount to the receiver. If EVE shows a Reason / Description field, paste the optional code too. Wallet polling activates access after the transfer is visible.",
+      body: `Send the exact ISK amount to the receiver. If EVE shows a Reason / Description field, paste the optional code too. ${WALLET_SETTLEMENT_COPY}`,
     };
   }
   if (status === "active" || status === "trial" || status === "grace") {
@@ -242,7 +245,7 @@ export function HostedAccessTab({ access, loading, error, lastCheckedAt, onReloa
       `Optional Reason / Description code: ${payment.reason_code}`,
       `Request expires: ${formatDate(payment.expires_at)} (${formatCountdown(payment.expires_at, now)})`,
       "If your EVE transfer window has no Reason / Description field, leave it empty. The payment can still match by sender and exact amount.",
-      "After sending: keep this tab open or press Refresh status. Wallet journal polling checks about every 30 seconds.",
+      `After sending: keep this tab open or press Refresh status. ${WALLET_SETTLEMENT_COPY}`,
     ].filter(Boolean);
     await copyText("all", lines.join("\n"), "full");
   };
@@ -446,14 +449,14 @@ export function HostedAccessTab({ access, loading, error, lastCheckedAt, onReloa
                 <div className="flex min-w-0 items-center gap-2">
                   <Clock3 className="h-4 w-4 shrink-0" />
                   <span>
-                    Pending request{pendingPlan ? ` for ${pendingPlan.name}` : ""}. Wallet polling checks about every 30 seconds.
+                    Pending request{pendingPlan ? ` for ${pendingPlan.name}` : ""}. {WALLET_SETTLEMENT_COPY}
                   </span>
                 </div>
                 <span className={paymentExpired ? "font-semibold text-eve-error" : "font-semibold text-eve-accent"}>{pendingCountdown}</span>
               </div>
 
               <div className="border border-eve-border/70 bg-eve-dark/40 p-3">
-                <div className="grid gap-2 lg:grid-cols-[1.1fr_0.75fr_1fr]">
+                <div className="grid gap-2">
                   <div className="min-w-0 border border-eve-border/60 bg-eve-panel/45 p-2">
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
@@ -533,7 +536,7 @@ export function HostedAccessTab({ access, loading, error, lastCheckedAt, onReloa
               </div>
               {paymentError && <div className="border border-eve-error/40 bg-eve-error/10 px-3 py-2 text-xs text-eve-error">{paymentError}</div>}
               <div className="text-xs leading-relaxed text-eve-dim">
-                Valid until {formatDate(payment.expires_at)}. After sending ISK, wallet journal visibility usually takes 1-3 minutes.
+                Valid until {formatDate(payment.expires_at)}. {WALLET_SETTLEMENT_COPY}
               </div>
             </div>
           ) : payment && showPlanPicker ? (
