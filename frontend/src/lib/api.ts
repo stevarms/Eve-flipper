@@ -1661,6 +1661,19 @@ export async function cancelHostedPayment(characterId?: CharacterScope): Promise
   return handleResponse<{ ok: boolean; cancelled?: number }>(res);
 }
 
+export async function markHostedPaymentSent(code: string, characterId?: CharacterScope): Promise<{ ok: boolean; payment?: HostedAccessStatus["payment"] }> {
+  const body: Record<string, string> = { code };
+  if (typeof characterId === "number") {
+    body.character_id = String(characterId);
+  }
+  const res = await apiFetch(`${BASE}/api/hosted/payments/mark-sent`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return handleResponse<{ ok: boolean; payment?: HostedAccessStatus["payment"] }>(res);
+}
+
 export async function setupSecurityVault(mode: "standard" | "private", passphrase?: string): Promise<SecurityVaultStatus> {
   const res = await apiFetch(`${BASE}/api/security/vault/setup`, {
     method: "POST",
@@ -1680,6 +1693,7 @@ export interface ClientTelemetryPayload {
     | "vault_setup_clicked"
     | "billing_panel_opened"
     | "plan_selected"
+    | "payment_marked_sent"
     | "payment_request_cancelled"
     | "payment_instructions_copied"
     | "upgrade_prompt_shown"

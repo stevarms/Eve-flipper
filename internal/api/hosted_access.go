@@ -43,6 +43,7 @@ type hostedAccessPayment struct {
 	AmountISK             int64  `json:"amount_isk"`
 	ReasonCode            string `json:"reason_code"`
 	ExpiresAt             string `json:"expires_at,omitempty"`
+	SentMarkedAt          string `json:"sent_marked_at,omitempty"`
 }
 
 type hostedAccessPaymentHistoryItem struct {
@@ -54,6 +55,7 @@ type hostedAccessPaymentHistoryItem struct {
 	ExpiresAt        string `json:"expires_at"`
 	MatchedAt        string `json:"matched_at,omitempty"`
 	MatchedAmountISK int64  `json:"matched_amount_isk,omitempty"`
+	SentMarkedAt     string `json:"sent_marked_at,omitempty"`
 	Note             string `json:"note,omitempty"`
 }
 
@@ -87,6 +89,11 @@ type hostedPaymentRequest struct {
 
 type hostedPaymentCancelRequest struct {
 	CharacterID string `json:"character_id,omitempty"`
+}
+
+type hostedPaymentMarkSentRequest struct {
+	CharacterID string `json:"character_id,omitempty"`
+	Code        string `json:"code"`
 }
 
 type hostedUsageDecision struct {
@@ -290,6 +297,87 @@ func (s *Server) handleHostedPaymentCancel(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, result)
 }
 
+func (s *Server) handleHostedPaymentMarkSent(w http.ResponseWriter, r *http.Request) {
+	if s == nil || !s.isHostedDeployment() {
+		writeError(w, http.StatusNotFound, "hosted payments are not configured")
+		return
+	}
+	markURL := hostedPaymentMarkSentURL()
+	if markURL == "" {
+		writeError(w, http.StatusNotFound, "hosted payments are not configured")
+		return
+	}
+	var req hostedPaymentMarkSentRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	req.CharacterID = strings.TrimSpace(req.CharacterID)
+	req.Code = strings.ToUpper(strings.TrimSpace(req.Code))
+	if req.Code == "" {
+		writeError(w, http.StatusBadRequest, "payment code is required")
+		return
+	}
+	userID, ok := hostedBillingUserIDFromRequest(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "hosted user identity is required")
+		return
+	}
+	internalKey := hostedBillingInternalKey()
+	if internalKey == "" {
+		writeError(w, http.StatusServiceUnavailable, "hosted billing internal key is not configured")
+		return
+	}
+
+	payload := map[string]string{
+		"user_id": userID,
+		"code":    req.Code,
+	}
+	if req.CharacterID != "" {
+		payload["character_id"] = req.CharacterID
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "payment mark sent failed")
+		return
+	}
+
+	outReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, markURL, bytes.NewReader(body))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "payment mark sent failed")
+		return
+	}
+	outReq.Header.Set("Content-Type", "application/json")
+	outReq.Header.Set("Accept", "application/json")
+	outReq.Header.Set("X-Entitlements-Key", internalKey)
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Do(outReq)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "billing service is unavailable")
+		return
+	}
+	defer resp.Body.Close()
+	var result map[string]interface{}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 128*1024)).Decode(&result); err != nil {
+		writeError(w, http.StatusBadGateway, "billing service returned invalid json")
+		return
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		message, _ := result["error"].(string)
+		if strings.TrimSpace(message) == "" {
+			message = fmt.Sprintf("billing service returned HTTP %d", resp.StatusCode)
+		}
+		writeError(w, resp.StatusCode, message)
+		return
+	}
+
+	s.trackTelemetryEvent(r, telemetryEvent("payment_marked_sent", "hosted", map[string]interface{}{
+		"character_id": req.CharacterID,
+	}))
+	writeJSON(w, result)
+}
+
 func (s *Server) fetchHostedAccess(ctx context.Context, userID string, characterID string) (hostedAccessResponse, error) {
 	if s == nil || !s.isHostedDeployment() {
 		return defaultHostedAccess(), nil
@@ -387,6 +475,25 @@ func hostedPaymentCancelURL() string {
 	}
 	if strings.HasSuffix(entitlementURL, "/v1/entitlements/current") {
 		return strings.TrimSuffix(entitlementURL, "/v1/entitlements/current") + "/v1/payments/cancel"
+	}
+	return ""
+}
+
+func hostedPaymentMarkSentURL() string {
+	if explicit := strings.TrimSpace(os.Getenv(hostedPaymentsURLEnv)); explicit != "" {
+		if strings.HasSuffix(explicit, "/v1/payments/request") {
+			return strings.TrimSuffix(explicit, "/v1/payments/request") + "/v1/payments/mark-sent"
+		}
+		if strings.HasSuffix(explicit, "/request") {
+			return strings.TrimSuffix(explicit, "/request") + "/mark-sent"
+		}
+	}
+	entitlementURL := strings.TrimSpace(os.Getenv(hostedEntitlementsURLEnv))
+	if entitlementURL == "" {
+		return ""
+	}
+	if strings.HasSuffix(entitlementURL, "/v1/entitlements/current") {
+		return strings.TrimSuffix(entitlementURL, "/v1/entitlements/current") + "/v1/payments/mark-sent"
 	}
 	return ""
 }

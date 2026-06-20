@@ -5,6 +5,7 @@ import {
   getCharacterInfo,
   getCharacterRoles,
   getHostedAccess,
+  markHostedPaymentSent,
   requestHostedPayment,
   type CharacterScope,
 } from "../lib/api";
@@ -179,6 +180,11 @@ export function CharacterPopup({
     loadHostedAccess();
   }, [loadHostedAccess, selectedScope]);
 
+  const handleHostedPaymentMarkSent = useCallback(async (code: string) => {
+    await markHostedPaymentSent(code, selectedScope);
+    loadHostedAccess();
+  }, [loadHostedAccess, selectedScope]);
+
   useEffect(() => {
     if (!open) return;
     loadData();
@@ -205,7 +211,7 @@ export function CharacterPopup({
     if (!open || tab !== "access" || !hostedBillingEnabled || !hostedAccess?.payment) return;
     const timer = window.setInterval(() => {
       loadHostedAccess();
-    }, 20_000);
+    }, 60_000);
     return () => window.clearInterval(timer);
   }, [open, tab, hostedBillingEnabled, hostedAccess?.payment, loadHostedAccess]);
 
@@ -463,6 +469,7 @@ export function CharacterPopup({
               lastCheckedAt={hostedAccessCheckedAt}
               onReload={loadHostedAccess}
               onRequestPayment={handleHostedPaymentRequest}
+              onMarkPaymentSent={handleHostedPaymentMarkSent}
               onCancelPayment={handleHostedPaymentCancel}
               formatIsk={formatIsk}
             />

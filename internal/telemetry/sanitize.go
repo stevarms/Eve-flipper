@@ -15,6 +15,7 @@ var allowedClientEvents = map[string]bool{
 	"vault_setup_clicked":         true,
 	"billing_panel_opened":        true,
 	"plan_selected":               true,
+	"payment_marked_sent":         true,
 	"payment_instructions_copied": true,
 	"upgrade_prompt_shown":        true,
 	"feature_denied":              true,

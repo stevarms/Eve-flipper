@@ -1261,6 +1261,7 @@ export interface HostedAccessPayment {
   amount_isk: number;
   reason_code: string;
   expires_at?: string;
+  sent_marked_at?: string;
 }
 
 export interface HostedAccessPaymentHistoryItem {
@@ -1272,6 +1273,7 @@ export interface HostedAccessPaymentHistoryItem {
   expires_at: string;
   matched_at?: string;
   matched_amount_isk?: number;
+  sent_marked_at?: string;
   note?: string;
 }
 

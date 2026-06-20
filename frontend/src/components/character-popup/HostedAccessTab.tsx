@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, Check, Clock3, Copy, RefreshCw, X } from "lucide-react";
+import { ArrowLeft, Check, Clock3, Copy, RefreshCw, Send, X } from "lucide-react";
 import type { HostedAccessPlanOffer, HostedAccessStatus } from "../../lib/types";
 import { trackClientTelemetry } from "../../lib/telemetry";
 
@@ -10,6 +10,7 @@ interface HostedAccessTabProps {
   lastCheckedAt: Date | null;
   onReload: () => void;
   onRequestPayment: (planId: string) => Promise<void>;
+  onMarkPaymentSent: (code: string) => Promise<void>;
   onCancelPayment: () => Promise<void>;
   formatIsk: (value: number) => string;
 }
@@ -18,7 +19,8 @@ type HostedPaymentHistoryRow = NonNullable<HostedAccessStatus["payment_history"]
 type HostedAccessPayment = NonNullable<HostedAccessStatus["payment"]>;
 
 const WALLET_SETTLEMENT_COPY =
-  "Wallet polling checks about every 30 seconds, but EVE ESI wallet journal data can be cached for up to 60 minutes. Access activates as soon as the transfer is visible through ESI.";
+  "EVE ESI wallet journal data can be cached by CCP for up to 60 minutes. Access activates automatically as soon as the transfer is visible through ESI.";
+const SENT_MARKED_STORAGE_PREFIX = "eveflipper_hosted_payment_sent:";
 
 function formatDate(value?: string | Date | null) {
   if (!value) return "N/A";
@@ -109,7 +111,7 @@ function latestPaymentStatus(history: HostedAccessStatus["payment_history"]) {
 function paymentHistoryHint(status?: string) {
   switch ((status ?? "").toLowerCase()) {
     case "pending":
-      return "Waiting for EVE ESI wallet journal visibility. This can take up to 60 minutes because CCP caches wallet data.";
+      return "Waiting for EVE ESI wallet journal visibility. CCP can cache wallet data for up to 60 minutes.";
     case "matched":
       return "Activated automatically.";
     case "underpaid":
@@ -169,17 +171,19 @@ function paymentState(access: HostedAccessStatus | null, paymentHistory: HostedA
   return {
     tone: "text-eve-dim border-eve-border bg-eve-dark/55",
     title: "Choose a plan",
-    body: "Create a payment request, send the exact ISK amount to the receiver, then refresh status.",
+    body: "Choose a plan first. A pending payment is created only after you confirm the selected plan.",
   };
 }
 
-export function HostedAccessTab({ access, loading, error, lastCheckedAt, onReload, onRequestPayment, onCancelPayment, formatIsk }: HostedAccessTabProps) {
+export function HostedAccessTab({ access, loading, error, lastCheckedAt, onReload, onRequestPayment, onMarkPaymentSent, onCancelPayment, formatIsk }: HostedAccessTabProps) {
   const [requestingPlan, setRequestingPlan] = useState<string | null>(null);
   const [cancelingPayment, setCancelingPayment] = useState(false);
+  const [markingSentPayment, setMarkingSentPayment] = useState(false);
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [showPlanPicker, setShowPlanPicker] = useState(false);
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
+  const [sentMarkedAt, setSentMarkedAt] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const usageEntries = Object.entries(access?.usage ?? {});
   const featureEntries = Object.entries(access?.features ?? {}).filter(([, enabled]) => enabled);
@@ -206,9 +210,27 @@ export function HostedAccessTab({ access, loading, error, lastCheckedAt, onReloa
   useEffect(() => {
     if (!payment) {
       setShowPlanPicker(false);
+      setSentMarkedAt(null);
+      return;
+    }
+    const serverMarkedAt = payment.sent_marked_at || pendingHistoryRow?.sent_marked_at || "";
+    if (serverMarkedAt) {
+      setSentMarkedAt(serverMarkedAt);
+      try {
+        window.localStorage.setItem(SENT_MARKED_STORAGE_PREFIX + payment.reason_code, serverMarkedAt);
+      } catch {
+        // Local marker is only a UX fallback.
+      }
+      setSelectedPlanId(null);
+      return;
+    }
+    try {
+      setSentMarkedAt(window.localStorage.getItem(SENT_MARKED_STORAGE_PREFIX + payment.reason_code));
+    } catch {
+      setSentMarkedAt(null);
     }
     setSelectedPlanId(null);
-  }, [payment]);
+  }, [payment?.reason_code, payment?.sent_marked_at, pendingHistoryRow?.sent_marked_at]);
 
   const copyText = async (key: string, text: string, copyMode: string) => {
     if (!text) return;
@@ -247,7 +269,7 @@ export function HostedAccessTab({ access, loading, error, lastCheckedAt, onReloa
       `Optional Reason / Description code: ${payment.reason_code}`,
       `Request expires: ${formatDate(payment.expires_at)} (${formatCountdown(payment.expires_at, now)})`,
       "If your EVE transfer window has no Reason / Description field, leave it empty. The payment can still match by sender and exact amount.",
-      `After sending: keep this tab open or press Refresh status. ${WALLET_SETTLEMENT_COPY}`,
+      `After sending: press "I sent ISK" or keep this tab open. ${WALLET_SETTLEMENT_COPY}`,
     ].filter(Boolean);
     await copyText("all", lines.join("\n"), "full");
   };
@@ -302,6 +324,26 @@ export function HostedAccessTab({ access, loading, error, lastCheckedAt, onReloa
     }
   };
 
+  const markPaymentSent = async () => {
+    if (!payment || markingSentPayment) return;
+    setMarkingSentPayment(true);
+    setPaymentError(null);
+    const markedAt = new Date().toISOString();
+    try {
+      await onMarkPaymentSent(payment.reason_code);
+      try {
+        window.localStorage.setItem(SENT_MARKED_STORAGE_PREFIX + payment.reason_code, markedAt);
+      } catch {
+        // Local marker is only a UX fallback.
+      }
+      setSentMarkedAt(markedAt);
+    } catch (e: any) {
+      setPaymentError(e?.message || "Payment sent marker failed");
+    } finally {
+      setMarkingSentPayment(false);
+    }
+  };
+
   const renderCopyButton = (key: string, label: string, value: string, copyMode: string) => (
     <button
       type="button"
@@ -327,10 +369,10 @@ export function HostedAccessTab({ access, loading, error, lastCheckedAt, onReloa
     const valueClass = `mt-1 block max-w-full text-left ${strong ? "font-mono text-xl font-semibold text-eve-accent" : "text-sm text-eve-text"} ${
       onValueClick ? "hover:text-eve-accent/80" : ""
     }`;
-    const valueContent = <span className="break-words">{value}</span>;
+    const valueContent = <span className="break-words leading-relaxed">{value}</span>;
 
     return (
-      <div className="min-w-0 border border-eve-border/65 bg-eve-dark/45 p-3">
+      <div className="min-w-0 max-w-full overflow-hidden border border-eve-border/65 bg-eve-dark/45 p-3">
         <div className="flex min-w-0 flex-wrap items-start gap-3">
           <div className="min-w-0 flex-1 basis-60">
             <div className="text-[10px] uppercase tracking-[0.16em] text-eve-dim">
@@ -485,10 +527,15 @@ export function HostedAccessTab({ access, loading, error, lastCheckedAt, onReloa
           </div>
           {payment && !showPlanPicker ? (
             <div className="mt-3 space-y-3">
-              <div className="flex flex-col gap-2 border border-eve-accent/35 bg-eve-accent/10 px-3 py-2 text-xs text-eve-accent sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex flex-col gap-2 border border-eve-accent/35 bg-eve-accent/10 px-3 py-2 text-xs text-eve-accent md:flex-row md:items-center md:justify-between">
                 <div className="flex min-w-0 items-start gap-2">
                   <Clock3 className="h-4 w-4 shrink-0" />
-                  <span className="leading-relaxed">Pending request{pendingPlan ? ` for ${pendingPlan.name}` : ""}. {WALLET_SETTLEMENT_COPY}</span>
+                  <span className="leading-relaxed">
+                    {sentMarkedAt
+                      ? `ISK marked as sent${pendingPlan ? ` for ${pendingPlan.name}` : ""}. Waiting for CCP ESI wallet journal visibility.`
+                      : `Pending request${pendingPlan ? ` for ${pendingPlan.name}` : ""}. Send ISK when ready, then mark it as sent.`}{" "}
+                    {WALLET_SETTLEMENT_COPY}
+                  </span>
                 </div>
                 <span className={`shrink-0 font-semibold ${paymentExpired ? "text-eve-error" : "text-eve-accent"}`}>{pendingCountdown}</span>
               </div>
@@ -525,11 +572,20 @@ export function HostedAccessTab({ access, loading, error, lastCheckedAt, onReloa
                   copyPaymentCode,
                 )}
                 <div className="border border-eve-accent/25 bg-eve-accent/10 px-3 py-2 text-xs leading-relaxed text-eve-dim">
-                  Send ISK once, then wait here or press Refresh status. Access is granted when the wallet journal entry appears through ESI.
+                  Send ISK once. The optional code helps support, but automatic activation can still match by sender, exact amount, and wallet journal time.
                 </div>
               </div>
 
               <div className="flex min-w-0 flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => { void markPaymentSent(); }}
+                  disabled={Boolean(sentMarkedAt) || markingSentPayment}
+                  className="inline-flex items-center gap-1.5 border border-eve-success/45 bg-eve-success/10 px-3 py-2 text-xs uppercase tracking-[0.12em] text-eve-success hover:bg-eve-success/15 disabled:opacity-70"
+                >
+                  {sentMarkedAt ? <Check className="h-3.5 w-3.5" /> : <Send className="h-3.5 w-3.5" />}
+                  {sentMarkedAt ? "ISK marked sent" : markingSentPayment ? "Marking..." : "I sent ISK"}
+                </button>
                 <button
                   type="button"
                   onClick={copyPaymentInstructions}
@@ -567,7 +623,8 @@ export function HostedAccessTab({ access, loading, error, lastCheckedAt, onReloa
               </div>
               {paymentError && <div className="border border-eve-error/40 bg-eve-error/10 px-3 py-2 text-xs text-eve-error">{paymentError}</div>}
               <div className="text-xs leading-relaxed text-eve-dim">
-                Valid until {formatDate(payment.expires_at)}. {WALLET_SETTLEMENT_COPY}
+                Send the transfer before {formatDate(payment.expires_at)}. It can still activate later if ESI reports a wallet journal timestamp before expiry. {WALLET_SETTLEMENT_COPY}
+                {sentMarkedAt ? ` Marked sent locally at ${formatDate(sentMarkedAt)}.` : ""}
               </div>
             </div>
           ) : payment && showPlanPicker ? (
