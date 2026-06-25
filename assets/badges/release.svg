@@ -1,21 +1,21 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="122" height="20" role="img" aria-label="release: v1.6.13">
-  <title>release: v1.6.13</title>
+<svg xmlns="http://www.w3.org/2000/svg" width="104" height="20" role="img" aria-label="release: none">
+  <title>release: none</title>
   <linearGradient id="s" x2="0" y2="100%">
     <stop offset="0" stop-color="#bbb" stop-opacity=".1"/>
     <stop offset="1" stop-opacity=".1"/>
   </linearGradient>
   <clipPath id="r">
-    <rect width="122" height="20" rx="3" fill="#fff"/>
+    <rect width="104" height="20" rx="3" fill="#fff"/>
   </clipPath>
   <g clip-path="url(#r)">
     <rect width="66" height="20" fill="#555"/>
-    <rect x="66" width="56" height="20" fill="#007ec6"/>
-    <rect width="122" height="20" fill="url(#s)"/>
+    <rect x="66" width="38" height="20" fill="#007ec6"/>
+    <rect width="104" height="20" fill="url(#s)"/>
   </g>
   <g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" text-rendering="geometricPrecision" font-size="110">
     <text aria-hidden="true" x="330" y="150" fill="#010101" fill-opacity=".3" transform="scale(.1)" textLength="540">release</text>
     <text x="330" y="140" transform="scale(.1)" fill="#fff" textLength="540">release</text>
-    <text aria-hidden="true" x="940" y="150" fill="#010101" fill-opacity=".3" transform="scale(.1)" textLength="440">v1.6.13</text>
-    <text x="940" y="140" transform="scale(.1)" fill="#fff" textLength="440">v1.6.13</text>
+    <text aria-hidden="true" x="850" y="150" fill="#010101" fill-opacity=".3" transform="scale(.1)" textLength="260">none</text>
+    <text x="850" y="140" transform="scale(.1)" fill="#fff" textLength="260">none</text>
   </g>
 </svg>
