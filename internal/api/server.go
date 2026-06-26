@@ -2383,6 +2383,24 @@ func ignoredSystemSet(systems map[int32]*sde.SolarSystem, ids []int32) map[int32
 	return out
 }
 
+// ignoredCategorySet turns a request-supplied list of category IDs into a
+// lookup set the engine can consult per order. Returns nil for empty input.
+func ignoredCategorySet(ids []int32) map[int32]bool {
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make(map[int32]bool, len(ids))
+	for _, id := range ids {
+		if id > 0 {
+			out[id] = true
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 type scanRequest struct {
 	SystemName           string  `json:"system_name"`
 	IgnoredSystemIDs     []int32 `json:"ignored_system_ids"`
@@ -3796,6 +3814,8 @@ func (s *Server) handleScanStation(w http.ResponseWriter, r *http.Request) {
 		MinDailyVolume       int64   `json:"min_daily_volume"`
 		// EVE Guru Profit Filters
 		MinItemProfit   float64 `json:"min_item_profit"`
+		MinDailyProfit  float64 `json:"min_daily_profit"`
+		MinExpectedPnL  float64 `json:"min_expected_pnl"`
 		MinDemandPerDay float64 `json:"min_demand_per_day"` // legacy alias for min_s2b_per_day
 		MinS2BPerDay    float64 `json:"min_s2b_per_day"`
 		MinBfSPerDay    float64 `json:"min_bfs_per_day"`
@@ -3811,6 +3831,10 @@ func (s *Server) handleScanStation(w http.ResponseWriter, r *http.Request) {
 		// Player structures
 		IncludeStructures bool    `json:"include_structures"`
 		StructureIDs      []int64 `json:"structure_ids"`
+		// ExcludeCosmetics drops SKINs and Apparel before scoring.
+		ExcludeCosmetics bool `json:"exclude_cosmetics"`
+		// IgnoredCategoryIDs drops any type in these SDE categories before scoring.
+		IgnoredCategoryIDs []int32 `json:"ignored_category_ids"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, 400, "invalid json")
@@ -3953,6 +3977,8 @@ func (s *Server) handleScanStation(w http.ResponseWriter, r *http.Request) {
 			SellSalesTaxPercent:  req.SellSalesTaxPercent,
 			MinDailyVolume:       req.MinDailyVolume,
 			MinItemProfit:        req.MinItemProfit,
+			MinDailyProfit:       req.MinDailyProfit,
+			MinExpectedPnL:       req.MinExpectedPnL,
 			MinDemandPerDay:      req.MinDemandPerDay,
 			MinS2BPerDay:         req.MinS2BPerDay,
 			MinBfSPerDay:         req.MinBfSPerDay,
@@ -3966,6 +3992,8 @@ func (s *Server) handleScanStation(w http.ResponseWriter, r *http.Request) {
 			FlagExtremePrices:    req.FlagExtremePrices,
 			AccessToken:          accessToken,
 			IncludeStructures:    req.IncludeStructures,
+			ExcludeCosmetics:     req.ExcludeCosmetics,
+			IgnoredCategories:    ignoredCategorySet(req.IgnoredCategoryIDs),
 			Ctx:                  ctx,
 		}
 		// In all-stations mode keep StationIDs nil so the engine evaluates full region scope.
@@ -7100,6 +7128,8 @@ func (s *Server) handleAuthStationCommand(w http.ResponseWriter, r *http.Request
 		SellSalesTaxPercent  float64 `json:"sell_sales_tax_percent"`
 		MinDailyVolume       int64   `json:"min_daily_volume"`
 		MinItemProfit        float64 `json:"min_item_profit"`
+		MinDailyProfit       float64 `json:"min_daily_profit"`
+		MinExpectedPnL       float64 `json:"min_expected_pnl"`
 		MinDemandPerDay      float64 `json:"min_demand_per_day"` // legacy alias for min_s2b_per_day
 		MinS2BPerDay         float64 `json:"min_s2b_per_day"`
 		MinBfSPerDay         float64 `json:"min_bfs_per_day"`
@@ -7238,6 +7268,8 @@ func (s *Server) handleAuthStationCommand(w http.ResponseWriter, r *http.Request
 			SellSalesTaxPercent:  req.SellSalesTaxPercent,
 			MinDailyVolume:       req.MinDailyVolume,
 			MinItemProfit:        req.MinItemProfit,
+			MinDailyProfit:       req.MinDailyProfit,
+			MinExpectedPnL:       req.MinExpectedPnL,
 			MinDemandPerDay:      req.MinDemandPerDay,
 			MinS2BPerDay:         req.MinS2BPerDay,
 			MinBfSPerDay:         req.MinBfSPerDay,

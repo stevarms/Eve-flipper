@@ -45,6 +45,8 @@ export interface StationTradingSettings {
   radius: number;
   minDailyVolume: number;
   minItemProfit: number;
+  minDailyProfit?: number;
+  minExpectedPnL?: number;
   minDemandPerDay: number;
   minBfSPerDay?: number;
   avgPricePeriod: number;
@@ -55,6 +57,7 @@ export interface StationTradingSettings {
   maxSDS: number;
   limitBuyToPriceLow: boolean;
   flagExtremePrices: boolean;
+  excludeCosmetics?: boolean;
 }
 
 const PRESET_TAB_SET = new Set<PresetTab>([
@@ -432,6 +435,7 @@ export const STATION_BUILTIN_PRESETS: BuiltinPreset[] = [
       maxSDS: 30,
       limitBuyToPriceLow: false,
       flagExtremePrices: true,
+      excludeCosmetics: true,
     } satisfies Partial<StationTradingSettings>,
   },
   {
@@ -463,6 +467,7 @@ export const STATION_BUILTIN_PRESETS: BuiltinPreset[] = [
       maxSDS: 50,
       limitBuyToPriceLow: false,
       flagExtremePrices: true,
+      excludeCosmetics: true,
     } satisfies Partial<StationTradingSettings>,
   },
   {
@@ -494,6 +499,7 @@ export const STATION_BUILTIN_PRESETS: BuiltinPreset[] = [
       maxSDS: 100,
       limitBuyToPriceLow: false,
       flagExtremePrices: false,
+      excludeCosmetics: true,
     } satisfies Partial<StationTradingSettings>,
   },
 ];

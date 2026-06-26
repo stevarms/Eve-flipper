@@ -59,6 +59,8 @@ type StationTrade struct {
 	TypeName       string  `json:"TypeName"`
 	Volume         float64 `json:"Volume"`
 	IsContraband   bool    `json:"IsContraband,omitempty"`
+	CategoryID     int32   `json:"CategoryID,omitempty"`
+	CategoryName   string  `json:"CategoryName,omitempty"`
 	BuyPrice       float64 `json:"BuyPrice"`  // highest buy order price (we sell to this)
 	SellPrice      float64 `json:"SellPrice"` // lowest sell order price (we buy from this)
 	Spread         float64 `json:"Spread"`    // SellPrice - BuyPrice
@@ -130,6 +132,10 @@ type StationTrade struct {
 	ExpectedSellPrice float64 `json:"ExpectedSellPrice,omitempty"`
 	ExpectedProfit    float64 `json:"ExpectedProfit,omitempty"` // expected net profit per unit
 	RealProfit        float64 `json:"RealProfit,omitempty"`     // expected net profit for target quantity
+	// ExpectedPnL is the per-cycle PnL the execution-plan popup shows
+	// ("Expected PnL"). Populated post-enrichment so it agrees with the
+	// MinExpectedPnL filter. Mirrors canonicalExpectedPnL() output.
+	ExpectedPnL float64 `json:"ExpectedPnL,omitempty"`
 	FilledQty         int32   `json:"FilledQty,omitempty"`      // executable profitable quantity
 	CanFill           bool    `json:"CanFill"`                  // whether target quantity is fully fillable
 	SlippageBuyPct    float64 `json:"SlippageBuyPct,omitempty"`
@@ -379,6 +385,8 @@ type StationTradeParams struct {
 
 	// --- EVE Guru Profit Filters ---
 	MinItemProfit   float64 // Min profit per unit ISK (e.g. 1,000,000)
+	MinDailyProfit  float64 // Min canonical DailyProfit ISK/day (post-history)
+	MinExpectedPnL  float64 // Min expected per-cycle PnL (matches execution-plan popup)
 	MinDemandPerDay float64 // Legacy alias for MinS2BPerDay
 	MinS2BPerDay    float64 // Min daily S2B flow
 	MinBfSPerDay    float64 // Min daily BfS flow
@@ -400,6 +408,15 @@ type StationTradeParams struct {
 
 	// IncludeStructures controls whether player-owned structures are considered.
 	IncludeStructures bool
+
+	// ExcludeCosmetics filters out SKINs and Apparel before they're scored.
+	// Cosmetics have very thin turnover and otherwise dominate top-CTS results.
+	ExcludeCosmetics bool
+
+	// IgnoredCategories drops any type whose SDE CategoryID is in this set
+	// before scoring. User-defined; built up via the right-click
+	// "Ignore category" action in the UI.
+	IgnoredCategories map[int32]bool
 
 	// Ctx allows cooperative cancellation for long-running station scans.
 	Ctx context.Context
@@ -456,6 +473,16 @@ func (s *Scanner) ScanStationTrades(params StationTradeParams, progress func(str
 		}
 		if isMarketDisabledType(o.TypeID) {
 			continue
+		}
+		if params.ExcludeCosmetics && isCosmeticType(o.TypeID, s.SDE) {
+			continue
+		}
+		if len(params.IgnoredCategories) > 0 && s.SDE != nil {
+			if t, ok := s.SDE.Types[o.TypeID]; ok {
+				if params.IgnoredCategories[t.CategoryID] {
+					continue
+				}
+			}
 		}
 		if len(params.IgnoredSystems) > 0 && params.IgnoredSystems[o.SystemID] {
 			continue
@@ -614,11 +641,20 @@ func (s *Scanner) ScanStationTrades(params StationTradeParams, progress func(str
 			systemID = lowestSell.SystemID
 		}
 
+		categoryID := itemType.CategoryID
+		categoryName := ""
+		if s.SDE != nil {
+			if cat, ok := s.SDE.Categories[categoryID]; ok {
+				categoryName = cat.Name
+			}
+		}
 		results = append(results, StationTrade{
 			TypeID:          typeID,
 			TypeName:        itemType.Name,
 			Volume:          itemType.Volume,
 			IsContraband:    itemType.IsContraband,
+			CategoryID:      categoryID,
+			CategoryName:    categoryName,
 			BuyPrice:        costToBuy,                   // highest buy (we place our buy here; when filled we pay bid)
 			SellPrice:       revenueFromSell,             // lowest sell (we place our sell here; when filled we receive ask)
 			Spread:          revenueFromSell - costToBuy, // ask - bid
@@ -741,6 +777,7 @@ func (s *Scanner) ScanStationTrades(params StationTradeParams, progress func(str
 	s.enrichStationWithHistory(results, params.RegionID, orderGroups, params, fullRegionDepthByType, progress)
 
 	// Apply post-history filters
+	populateExpectedPnL(results)
 	results = applyStationTradeFilters(results, params)
 
 	log.Printf("[DEBUG] StationTrades: %d after all filters", len(results))
@@ -762,6 +799,56 @@ func (s *Scanner) ScanStationTrades(params StationTradeParams, progress func(str
 	return results, nil
 }
 
+// canonicalExpectedPnL approximates the "Expected PnL" the execution-plan
+// popup shows (TradeExecutionAutopilotPopup.expectedProfit). When depth-aware
+// execution succeeded we use RealProfit directly; otherwise we proxy with
+// per-unit profit × the best executable-quantity estimate available, falling
+// back to expected daily turnover so maker-only rows still get scored.
+func canonicalExpectedPnL(r StationTrade) float64 {
+	if r.RealProfit > 0 {
+		return r.RealProfit
+	}
+	qty := float64(r.FilledQty)
+	if qty <= 0 {
+		flow := r.BfSPerDay
+		if r.S2BPerDay > 0 && r.S2BPerDay < flow {
+			flow = r.S2BPerDay
+		}
+		if flow > 0 {
+			qty = flow
+		}
+	}
+	if qty <= 0 {
+		return 0
+	}
+	return r.ProfitPerUnit * qty
+}
+
+// canonicalDailyProfit returns the same daily-profit value the frontend's
+// stationDailyProfit() helper surfaces in the Daily Profit column, so the
+// MinDailyProfit filter agrees with what the user sees in the table.
+func canonicalDailyProfit(r StationTrade) float64 {
+	if r.DailyProfit != 0 {
+		return r.DailyProfit
+	}
+	if r.RealizableDailyProfit != 0 {
+		return r.RealizableDailyProfit
+	}
+	if r.RealProfit != 0 {
+		return r.RealProfit
+	}
+	return r.TheoreticalDailyProfit
+}
+
+// populateExpectedPnL writes canonicalExpectedPnL into the row so the column
+// and the MinExpectedPnL filter share the same value. Called once after all
+// enrichment is done and before filtering.
+func populateExpectedPnL(results []StationTrade) {
+	for i := range results {
+		results[i].ExpectedPnL = sanitizeFloat(canonicalExpectedPnL(results[i]))
+	}
+}
+
 // applyStationTradeFilters applies post-history filters based on params.
 func applyStationTradeFilters(results []StationTrade, params StationTradeParams) []StationTrade {
 	filtered := make([]StationTrade, 0, len(results))
@@ -777,10 +864,11 @@ func applyStationTradeFilters(results []StationTrade, params StationTradeParams)
 		params.BvSRatioMax > 0 ||
 		params.MaxPVI > 0 ||
 		params.MaxSDS > 0 ||
-		params.LimitBuyToPriceLow
+		params.LimitBuyToPriceLow ||
+		params.MinDailyProfit > 0
 
 	// Debug counters
-	var dropExecution, dropHistory, dropMargin, dropItemProfit, dropVol, dropS2B, dropBfS, dropROI, dropBvS, dropPVI, dropSDS, dropPrice int
+	var dropExecution, dropHistory, dropMargin, dropItemProfit, dropDailyProfit, dropExpectedPnL, dropVol, dropS2B, dropBfS, dropROI, dropBvS, dropPVI, dropSDS, dropPrice int
 
 	for _, r := range results {
 		// Station trading is a maker strategy (buy at bid, sell at ask). If
@@ -814,6 +902,16 @@ func applyStationTradeFilters(results []StationTrade, params StationTradeParams)
 				dropItemProfit++
 				continue
 			}
+		}
+		// Min daily profit (matches the value shown in the Daily Profit column).
+		if params.MinDailyProfit > 0 && canonicalDailyProfit(r) < params.MinDailyProfit {
+			dropDailyProfit++
+			continue
+		}
+		// Min expected per-cycle PnL (matches the execution-plan popup's value).
+		if params.MinExpectedPnL > 0 && canonicalExpectedPnL(r) < params.MinExpectedPnL {
+			dropExpectedPnL++
+			continue
 		}
 		// Min daily volume
 		if params.MinDailyVolume > 0 && r.DailyVolume < params.MinDailyVolume {
@@ -866,8 +964,8 @@ func applyStationTradeFilters(results []StationTrade, params StationTradeParams)
 	}
 
 	if len(results) != len(filtered) {
-		log.Printf("[DEBUG] StationFilter drops: execution=%d history=%d margin=%d item_profit=%d vol=%d s2b=%d bfs=%d roi=%d bvs=%d pvi=%d sds=%d price=%d",
-			dropExecution, dropHistory, dropMargin, dropItemProfit, dropVol, dropS2B, dropBfS, dropROI, dropBvS, dropPVI, dropSDS, dropPrice)
+		log.Printf("[DEBUG] StationFilter drops: execution=%d history=%d margin=%d item_profit=%d daily_profit=%d expected_pnl=%d vol=%d s2b=%d bfs=%d roi=%d bvs=%d pvi=%d sds=%d price=%d",
+			dropExecution, dropHistory, dropMargin, dropItemProfit, dropDailyProfit, dropExpectedPnL, dropVol, dropS2B, dropBfS, dropROI, dropBvS, dropPVI, dropSDS, dropPrice)
 	}
 
 	return filtered
