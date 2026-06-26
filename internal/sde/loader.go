@@ -36,6 +36,7 @@ type Data struct {
 	RegionByName map[string]int32       // lowercase name -> regionID
 	Types        map[int32]*ItemType    // typeID -> type
 	Groups       map[int32]*ItemGroup   // groupID -> group metadata
+	Categories   map[int32]*ItemCategory // categoryID -> category metadata
 	Contraband   map[int32]bool         // typeID -> listed in contrabandTypes
 	Stations     map[int64]*Station     // stationID -> station
 	Universe     *graph.Universe
@@ -75,6 +76,13 @@ type ItemGroup struct {
 	IsRig      bool
 }
 
+// ItemCategory represents top-level SDE category metadata
+// (e.g. categoryID 6 = "Ship", 91 = "SKINs").
+type ItemCategory struct {
+	ID   int32
+	Name string
+}
+
 // Station represents an NPC station from the SDE.
 type Station struct {
 	ID       int64
@@ -105,6 +113,7 @@ func Load(dataDir string) (*Data, error) {
 		RegionByName: make(map[string]int32),
 		Types:        make(map[int32]*ItemType),
 		Groups:       make(map[int32]*ItemGroup),
+		Categories:   make(map[int32]*ItemCategory),
 		Contraband:   make(map[int32]bool),
 		Stations:     make(map[int64]*Station),
 		Universe:     graph.NewUniverse(),
@@ -223,6 +232,27 @@ func (d *Data) loadSystems(dir string) error {
 }
 
 func (d *Data) loadTypes(dir string) error {
+	// Load category names for UI (right-click "Ignore category" etc).
+	_, _ = readOptionalJSONL(dir, "categories", func(raw json.RawMessage) error {
+		var c struct {
+			Key       int32             `json:"_key"`
+			Name      map[string]string `json:"name"`
+			Published bool              `json:"published"`
+		}
+		if err := json.Unmarshal(raw, &c); err != nil {
+			return err
+		}
+		if !c.Published {
+			return nil
+		}
+		name := strings.TrimSpace(c.Name["en"])
+		if name == "" {
+			return nil
+		}
+		d.Categories[c.Key] = &ItemCategory{ID: c.Key, Name: name}
+		return nil
+	})
+
 	// First load groups to get category mapping and data-driven rig classification.
 	groupCategories := make(map[int32]int32) // groupID -> categoryID
 	groupRig := make(map[int32]bool)         // groupID -> is rig group

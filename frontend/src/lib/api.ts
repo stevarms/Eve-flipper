@@ -929,6 +929,8 @@ export async function scanStation(
     min_daily_volume?: number;
     // EVE Guru Profit Filters
     min_item_profit?: number;
+    min_daily_profit?: number;
+    min_expected_pnl?: number;
     min_demand_per_day?: number;
     min_s2b_per_day?: number;
     min_bfs_per_day?: number;
@@ -945,6 +947,10 @@ export async function scanStation(
     include_structures?: boolean;
     structure_ids?: number[];
     ignored_system_ids?: number[];
+    // Filter out SKINs / Apparel before scoring
+    exclude_cosmetics?: boolean;
+    // Drop types whose SDE CategoryID is in this list (user-defined blacklist)
+    ignored_category_ids?: number[];
   },
   onProgress: (msg: string) => void,
   signal?: AbortSignal,

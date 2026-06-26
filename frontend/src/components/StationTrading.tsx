@@ -149,6 +149,18 @@ const baseStationColumnDefs: StationColumnDef[] = [
   },
   { key: "CTS", labelKey: "colCTS", width: "min-w-[60px]", numeric: true },
   {
+    key: "BuyPrice",
+    labelKey: "colStationBuyPrice",
+    width: "min-w-[90px]",
+    numeric: true,
+  },
+  {
+    key: "SellPrice",
+    labelKey: "colStationSellPrice",
+    width: "min-w-[90px]",
+    numeric: true,
+  },
+  {
     key: "ProfitPerUnit",
     labelKey: "colProfitPerUnit",
     width: "min-w-[90px]",
@@ -192,6 +204,12 @@ const baseStationColumnDefs: StationColumnDef[] = [
     width: "min-w-[100px]",
     numeric: true,
   },
+  {
+    key: "ExpectedPnL",
+    labelKey: "colExpectedPnL",
+    width: "min-w-[100px]",
+    numeric: true,
+  },
 ];
 
 // Sentinel value for "All stations"
@@ -205,6 +223,91 @@ const OPERATOR_PANEL_MIN = 28;
 const OPERATOR_PANEL_MAX = 62;
 const OPERATOR_PANEL_DEFAULT = 50;
 const STATION_CACHE_TTL_MS = 20 * 60 * 1000;
+const STATION_TRADING_LOCATION_STORAGE_KEY = "station.location";
+const STATION_IGNORED_CATEGORIES_STORAGE_KEY = "station.ignored_categories";
+
+function loadIgnoredCategories(): Set<number> {
+  if (typeof window === "undefined") return new Set();
+  try {
+    const raw = window.localStorage.getItem(STATION_IGNORED_CATEGORIES_STORAGE_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((n): n is number => typeof n === "number" && n > 0));
+  } catch {
+    return new Set();
+  }
+}
+
+function saveIgnoredCategories(ids: Set<number>): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      STATION_IGNORED_CATEGORIES_STORAGE_KEY,
+      JSON.stringify([...ids]),
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
+interface PersistedStationLocation {
+  systemName: string;
+  stationId: number;
+}
+
+interface StationTradingHub {
+  key: string;
+  shortLabel: string;
+  systemName: string;
+  stationID: number;
+}
+
+// Canonical NPC trade-hub stations. Same set used by the Industry scanner's
+// pricing-hub presets so the two tabs stay in sync.
+const STATION_TRADING_HUBS: StationTradingHub[] = [
+  { key: "jita", shortLabel: "Jita", systemName: "Jita", stationID: 60003760 },
+  { key: "amarr", shortLabel: "Amarr", systemName: "Amarr", stationID: 60008494 },
+  { key: "dodixie", shortLabel: "Dodixie", systemName: "Dodixie", stationID: 60011866 },
+  { key: "rens", shortLabel: "Rens", systemName: "Rens", stationID: 60004588 },
+  { key: "hek", shortLabel: "Hek", systemName: "Hek", stationID: 60005686 },
+];
+
+function loadPersistedStationLocation(): PersistedStationLocation | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(STATION_TRADING_LOCATION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (
+      parsed &&
+      typeof parsed.systemName === "string" &&
+      parsed.systemName.trim() &&
+      typeof parsed.stationId === "number"
+    ) {
+      return {
+        systemName: parsed.systemName.trim(),
+        stationId: parsed.stationId,
+      };
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function savePersistedStationLocation(loc: PersistedStationLocation): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      STATION_TRADING_LOCATION_STORAGE_KEY,
+      JSON.stringify(loc),
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
 const settingsSectionClass =
   "rounded-sm border border-eve-border/60 bg-gradient-to-br from-eve-panel to-eve-dark/40";
 
@@ -439,8 +542,16 @@ export function StationTrading({
   const operatorModeDevOnly = import.meta.env.DEV;
 
   const [stations, setStations] = useState<StationInfo[]>([]);
-  const [selectedStationId, setSelectedStationId] =
-    useState<number>(ALL_STATIONS_ID);
+  // pendingStationLocationRef holds a persisted {system, station} restored from
+  // localStorage. Consumed once: by the mount effect (to override the parent's
+  // default system) and then by the station-load effect (to re-select the
+  // saved station). Cleared after use so manual system changes don't re-apply.
+  const pendingStationLocationRef = useRef<PersistedStationLocation | null>(
+    loadPersistedStationLocation(),
+  );
+  const [selectedStationId, setSelectedStationId] = useState<number>(
+    ALL_STATIONS_ID,
+  );
   const [minMargin, setMinMargin] = useState(params.min_margin ?? 0);
   const [brokerFee, setBrokerFee] = useState(params.broker_fee_percent ?? 0);
   const [salesTaxPercent, setSalesTaxPercent] = useState(params.sales_tax_percent ?? 8);
@@ -521,6 +632,8 @@ export function StationTrading({
 
   // EVE Guru Profit Filters
   const [minItemProfit, setMinItemProfit] = useState(0);
+  const [minDailyProfit, setMinDailyProfit] = useState(0);
+  const [minExpectedPnL, setMinExpectedPnL] = useState(0);
   const [minDemandPerDay, setMinDemandPerDay] = useState(1);
   const [minBfSPerDay, setMinBfSPerDay] = useState(0);
 
@@ -535,6 +648,16 @@ export function StationTrading({
   // Price Limits
   const [limitBuyToPriceLow, setLimitBuyToPriceLow] = useState(false);
   const [flagExtremePrices, setFlagExtremePrices] = useState(true);
+  const [excludeCosmetics, setExcludeCosmetics] = useState(true);
+  const [ignoredCategoryIds, setIgnoredCategoryIds] = useState<Set<number>>(
+    () => loadIgnoredCategories(),
+  );
+  // Multibuy session: typeID -> qty. Holds rows the user has queued for a
+  // multibuy paste into EVE. Lives only for the current page session — no
+  // persistence; mid-flight stocking shouldn't carry across refreshes.
+  const [multibuyQueue, setMultibuyQueue] = useState<Map<number, { name: string; qty: number }>>(
+    () => new Map(),
+  );
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   const activeAdvancedCount = useMemo(
@@ -828,6 +951,8 @@ export function StationTrading({
       radius,
       minDailyVolume,
       minItemProfit,
+      minDailyProfit,
+      minExpectedPnL,
       minDemandPerDay,
       minBfSPerDay,
       avgPricePeriod,
@@ -838,6 +963,7 @@ export function StationTrading({
       maxSDS,
       limitBuyToPriceLow,
       flagExtremePrices,
+      excludeCosmetics,
     }),
     [
       params.system_name,
@@ -855,6 +981,8 @@ export function StationTrading({
       radius,
       minDailyVolume,
       minItemProfit,
+      minDailyProfit,
+      minExpectedPnL,
       minDemandPerDay,
       minBfSPerDay,
       avgPricePeriod,
@@ -865,6 +993,7 @@ export function StationTrading({
       maxSDS,
       limitBuyToPriceLow,
       flagExtremePrices,
+      excludeCosmetics,
     ],
   );
 
@@ -905,6 +1034,8 @@ export function StationTrading({
     if (st.radius !== undefined) setRadius(st.radius);
     if (st.minDailyVolume !== undefined) setMinDailyVolume(st.minDailyVolume);
     if (st.minItemProfit !== undefined) setMinItemProfit(st.minItemProfit);
+    if (st.minDailyProfit !== undefined) setMinDailyProfit(st.minDailyProfit);
+    if (st.minExpectedPnL !== undefined) setMinExpectedPnL(st.minExpectedPnL);
     if (st.minDemandPerDay !== undefined)
       setMinDemandPerDay(st.minDemandPerDay);
     if (st.minBfSPerDay !== undefined) setMinBfSPerDay(st.minBfSPerDay);
@@ -918,6 +1049,8 @@ export function StationTrading({
       setLimitBuyToPriceLow(st.limitBuyToPriceLow);
     if (st.flagExtremePrices !== undefined)
       setFlagExtremePrices(st.flagExtremePrices);
+    if (st.excludeCosmetics !== undefined)
+      setExcludeCosmetics(st.excludeCosmetics);
   }, [onChange, params]);
 
   // Keep Station Trader on the same tax profile as the global scanner params.
@@ -979,6 +1112,18 @@ export function StationTrading({
     splitTradeFees,
   ]);
 
+  // Restore the persisted system at mount when it differs from the parent
+  // default. The station ID itself is still applied by the station-load effect
+  // once the lookup resolves.
+  useEffect(() => {
+    const stored = pendingStationLocationRef.current;
+    if (!stored) return;
+    const current = (params.system_name ?? "").trim().toLowerCase();
+    if (stored.systemName.toLowerCase() === current) return;
+    onChange?.({ ...params, system_name: stored.systemName });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Load stations when system changes
   useEffect(() => {
     const systemName = (params.system_name ?? "").trim();
@@ -1001,7 +1146,20 @@ export function StationTrading({
         setStations(resp.stations);
         setSystemRegionId(resp.region_id);
         setSystemId(resp.system_id);
-        setSelectedStationId(ALL_STATIONS_ID);
+        const pending = pendingStationLocationRef.current;
+        if (
+          pending &&
+          pending.systemName.toLowerCase() === systemName.toLowerCase() &&
+          pending.stationId !== ALL_STATIONS_ID &&
+          resp.stations.some((st) => st.id === pending.stationId)
+        ) {
+          setSelectedStationId(pending.stationId);
+        } else {
+          setSelectedStationId(ALL_STATIONS_ID);
+        }
+        // One-shot: clear after the first system load so manual switches
+        // don't keep re-applying the saved station.
+        pendingStationLocationRef.current = null;
         setStructureStations([]); // reset structures on system change
       })
       .catch(() => {
@@ -1015,6 +1173,17 @@ export function StationTrading({
       });
     return () => controller.abort();
   }, [params.system_name]);
+
+  // Persist the active system + selected station so they survive refresh.
+  useEffect(() => {
+    const systemName = (params.system_name ?? "").trim();
+    if (!systemName) return;
+    savePersistedStationLocation({ systemName, stationId: selectedStationId });
+  }, [params.system_name, selectedStationId]);
+
+  useEffect(() => {
+    saveIgnoredCategories(ignoredCategoryIds);
+  }, [ignoredCategoryIds]);
 
   // Fetch structures when toggle is enabled
   useEffect(() => {
@@ -1280,6 +1449,100 @@ export function StationTrading({
     [addToast, t],
   );
 
+  // Default multibuy qty for a row: ~1 day of expected flippable flow
+  // (min of buy-side and sell-side daily turnover), clamped to >= 1.
+  const defaultMultibuyQty = useCallback((row: StationTrade): number => {
+    const buys = row.BfSPerDay ?? row.SellUnitsPerDay ?? 0;
+    const sells = row.S2BPerDay ?? row.BuyUnitsPerDay ?? 0;
+    const flow = Math.min(buys || 0, sells || 0);
+    const rounded = Math.round(flow);
+    return Math.max(1, Number.isFinite(rounded) ? rounded : 1);
+  }, []);
+
+  const addToMultibuy = useCallback(
+    (row: StationTrade) => {
+      const qty = defaultMultibuyQty(row);
+      setMultibuyQueue((prev) => {
+        const next = new Map(prev);
+        next.set(row.TypeID, { name: row.TypeName, qty });
+        return next;
+      });
+      addToast(t("multibuyAdded", { name: row.TypeName, qty: String(qty) }), "success", 1800);
+    },
+    [addToast, defaultMultibuyQty, t],
+  );
+
+  const removeFromMultibuy = useCallback((typeID: number) => {
+    setMultibuyQueue((prev) => {
+      if (!prev.has(typeID)) return prev;
+      const next = new Map(prev);
+      next.delete(typeID);
+      return next;
+    });
+  }, []);
+
+  const clearMultibuy = useCallback(() => {
+    setMultibuyQueue(new Map());
+  }, []);
+
+  const copyMultibuyToClipboard = useCallback(async () => {
+    if (multibuyQueue.size === 0) return;
+    const lines: string[] = [];
+    for (const { name, qty } of multibuyQueue.values()) {
+      const safeName = String(name).trim();
+      if (!safeName) continue;
+      lines.push(`${safeName}\t${Math.max(1, Math.round(qty))}`);
+    }
+    if (lines.length === 0) return;
+    try {
+      await navigator.clipboard.writeText(lines.join("\n"));
+      addToast(t("multibuyCopied", { count: lines.length }), "success", 2400);
+    } catch {
+      addToast(t("multibuyCopyFailed"), "error", 2400);
+    }
+  }, [addToast, multibuyQueue, t]);
+
+  // Open in-game market window for a row and, when possible, copy the
+  // outbidding price to the clipboard so the user can paste it straight into
+  // the order dialog. mode="buy" copies (top buy + 0.01); "sell" copies
+  // (lowest sell - 0.01).
+  const openMarketAndCopyPrice = useCallback(
+    async (row: StationTrade, mode: "buy" | "sell") => {
+      const basis = mode === "buy" ? row.BuyPrice : row.SellPrice;
+      const targetPrice = mode === "buy" ? basis + 0.01 : basis - 0.01;
+      const priceText =
+        Number.isFinite(targetPrice) && targetPrice > 0
+          ? targetPrice.toFixed(2)
+          : "";
+      try {
+        await openMarketInGame(row.TypeID);
+      } catch (err: any) {
+        const { messageKey, duration } = handleEveUIError(err);
+        addToast(t(messageKey), "error", duration);
+        return;
+      }
+      if (!priceText) {
+        addToast(t("actionSuccess"), "success", 2000);
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(priceText);
+        addToast(
+          t(mode === "buy" ? "openMarketBuyCopied" : "openMarketSellCopied", {
+            price: priceText,
+          }),
+          "success",
+          2400,
+        );
+      } catch {
+        // Clipboard rejection (e.g. headless/insecure context). Still surface
+        // success for the in-game window so the user isn't confused.
+        addToast(t("actionSuccess"), "success", 2000);
+      }
+    },
+    [addToast, t],
+  );
+
   // Keep context menu inside viewport
   useEffect(() => {
     if (contextMenu && contextMenuRef.current) {
@@ -1333,6 +1596,8 @@ export function StationTrading({
         min_daily_volume: minDailyVolume,
         // EVE Guru Profit Filters
         min_item_profit: minItemProfit > 0 ? minItemProfit : undefined,
+        min_daily_profit: minDailyProfit > 0 ? minDailyProfit : undefined,
+        min_expected_pnl: minExpectedPnL > 0 ? minExpectedPnL : undefined,
         min_s2b_per_day: minDemandPerDay > 0 ? minDemandPerDay : undefined,
         min_bfs_per_day: minBfSPerDay > 0 ? minBfSPerDay : undefined,
         // Risk Profile
@@ -1344,6 +1609,9 @@ export function StationTrading({
         max_sds: maxSDS > 0 ? maxSDS : undefined,
         limit_buy_to_price_low: limitBuyToPriceLow,
         flag_extreme_prices: flagExtremePrices,
+        exclude_cosmetics: excludeCosmetics,
+        ignored_category_ids:
+          ignoredCategoryIds.size > 0 ? [...ignoredCategoryIds] : undefined,
       };
 
       if (radius > 0) {
@@ -1478,6 +1746,7 @@ export function StationTrading({
     radius,
     minDailyVolume,
     minItemProfit,
+    minDailyProfit,
     minDemandPerDay,
     minBfSPerDay,
     avgPricePeriod,
@@ -1488,6 +1757,8 @@ export function StationTrading({
     maxSDS,
     limitBuyToPriceLow,
     flagExtremePrices,
+    excludeCosmetics,
+    ignoredCategoryIds,
     includeStructures,
     structureStations,
     operatorMode,
@@ -1572,8 +1843,15 @@ export function StationTrading({
 
   const displayRows = useMemo(() => {
     if (showHiddenRows) return sorted;
-    return sorted.filter((row) => !hiddenTradeMap[stationRowKey(row)]);
-  }, [sorted, showHiddenRows, hiddenTradeMap]);
+    let rows = sorted.filter((row) => !hiddenTradeMap[stationRowKey(row)]);
+    if (ignoredCategoryIds.size > 0) {
+      rows = rows.filter(
+        (row) =>
+          row.CategoryID == null || !ignoredCategoryIds.has(row.CategoryID),
+      );
+    }
+    return rows;
+  }, [sorted, showHiddenRows, hiddenTradeMap, ignoredCategoryIds]);
 
   const cacheSecondsLeft = useMemo(() => {
     if (!cacheMeta) return null;
@@ -1636,7 +1914,7 @@ export function StationTrading({
 
   useEffect(() => {
     setPage(0);
-  }, [results, sortKey, sortDir, showHiddenRows, hiddenTradeMap]);
+  }, [results, sortKey, sortDir, showHiddenRows, hiddenTradeMap, ignoredCategoryIds]);
 
   useEffect(() => {
     if (!(operatorMode && isLoggedIn)) {
@@ -1981,6 +2259,7 @@ export function StationTrading({
       col.key === "Spread" ||
       col.key === "TotalProfit" ||
       col.key === "DailyProfit" ||
+      col.key === "ExpectedPnL" ||
       col.key === "ProfitPerUnit" ||
       col.key === "CapitalRequired" ||
       col.key === "VWAP"
@@ -2188,6 +2467,50 @@ export function StationTrading({
                   subtitle={t("stationSelect")}
                 />
 
+                <div className="flex flex-wrap items-center gap-1 mt-2">
+                  <span className="text-[10px] uppercase tracking-wider text-eve-dim mr-1">
+                    {t("tradeHubs")}
+                  </span>
+                  {STATION_TRADING_HUBS.map((hub) => {
+                    const currentSystem = (params.system_name ?? "")
+                      .trim()
+                      .toLowerCase();
+                    const active =
+                      currentSystem === hub.systemName.toLowerCase() &&
+                      selectedStationId === hub.stationID;
+                    return (
+                      <button
+                        key={hub.key}
+                        type="button"
+                        onClick={() => {
+                          if (currentSystem === hub.systemName.toLowerCase()) {
+                            setSelectedStationId(hub.stationID);
+                          } else {
+                            // Queue the station so the station-load effect
+                            // can re-select it once the new system resolves.
+                            pendingStationLocationRef.current = {
+                              systemName: hub.systemName,
+                              stationId: hub.stationID,
+                            };
+                            onChange?.({
+                              ...params,
+                              system_name: hub.systemName,
+                            });
+                          }
+                        }}
+                        className={`px-2 py-0.5 text-[11px] rounded-sm border transition-colors ${
+                          active
+                            ? "border-eve-accent text-eve-accent bg-eve-accent/10"
+                            : "border-eve-border text-eve-dim hover:text-eve-text hover:border-eve-border/80"
+                        }`}
+                        title={`${hub.systemName} — ${hub.shortLabel}`}
+                      >
+                        {hub.shortLabel}
+                      </button>
+                    );
+                  })}
+                </div>
+
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-3 gap-y-3 mt-2">
                   <SettingsField label={t("system")}>
                     <SystemAutocomplete
@@ -2286,6 +2609,22 @@ export function StationTrading({
                     <SettingsNumberInput
                       value={minItemProfit}
                       onChange={setMinItemProfit}
+                      min={0}
+                    />
+                  </SettingsField>
+
+                  <SettingsField label={t("minDailyProfit")}>
+                    <SettingsNumberInput
+                      value={minDailyProfit}
+                      onChange={setMinDailyProfit}
+                      min={0}
+                    />
+                  </SettingsField>
+
+                  <SettingsField label={t("minExpectedPnL")}>
+                    <SettingsNumberInput
+                      value={minExpectedPnL}
+                      onChange={setMinExpectedPnL}
                       min={0}
                     />
                   </SettingsField>
@@ -2660,7 +2999,7 @@ export function StationTrading({
               className="px-2 py-0.5 rounded-sm border border-eve-border/60 bg-eve-dark/40 text-[11px] hover:border-eve-accent/50 hover:text-eve-accent transition-colors"
               title="Open hidden rows manager"
             >
-              Ignored ({hiddenCounts.total})
+              Ignored ({hiddenCounts.total + ignoredCategoryIds.size})
             </button>
               <button
                 type="button"
@@ -3166,13 +3505,26 @@ export function StationTrading({
                   />
                 </th>
               )}
-              <th className="min-w-[24px] px-1 py-2"></th>
               <th
-                className="min-w-[32px] px-1 py-2 text-center text-[10px] uppercase tracking-wider text-eve-dim"
+                style={{ width: 28, minWidth: 28, maxWidth: 28 }}
+                className="px-1 py-2"
+              ></th>
+              <th
+                style={{ width: 32, minWidth: 32, maxWidth: 32 }}
+                className="px-1 py-2 text-center text-[10px] uppercase tracking-wider text-eve-dim"
                 title={t("execPlanTitle")}
               >
                 📊
               </th>
+              {isLoggedIn && (
+                <th
+                  style={{ width: 32, minWidth: 32, maxWidth: 32 }}
+                  className="px-1 py-2 text-center text-[10px] uppercase tracking-wider text-eve-dim"
+                  title={t("openMarketShiftHint")}
+                >
+                  🎮
+                </th>
+              )}
               {showOperatorColumns && (
                 <>
                   <th className="min-w-[92px] px-2 py-2 text-left text-[10px] uppercase tracking-wider text-eve-dim font-medium">
@@ -3247,7 +3599,10 @@ export function StationTrading({
                     </td>
                   )}
                   {/* Risk indicator */}
-                  <td className="px-1 py-1 text-center">
+                  <td
+                    style={{ width: 28, minWidth: 28, maxWidth: 28 }}
+                    className="px-1 py-1 text-center"
+                  >
                     {hiddenEntry
                       ? hiddenEntry.mode === "ignored"
                         ? "✖"
@@ -3258,7 +3613,10 @@ export function StationTrading({
                           ? "⚠️"
                           : ""}
                   </td>
-                  <td className="px-1 py-1 text-center">
+                  <td
+                    style={{ width: 32, minWidth: 32, maxWidth: 32 }}
+                    className="px-1 py-1 text-center"
+                  >
                     {rowRegionID(row, regionId) > 0 && (
                       <button
                         type="button"
@@ -3270,6 +3628,27 @@ export function StationTrading({
                       </button>
                     )}
                   </td>
+                  {isLoggedIn && (
+                    <td
+                      style={{ width: 32, minWidth: 32, maxWidth: 32 }}
+                      className="px-1 py-1 text-center"
+                    >
+                      <button
+                        type="button"
+                        className="text-eve-dim hover:text-eve-accent transition-colors text-sm"
+                        title={t("openMarketShiftHint")}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void openMarketAndCopyPrice(
+                            row,
+                            e.shiftKey ? "sell" : "buy",
+                          );
+                        }}
+                      >
+                        🎮
+                      </button>
+                    </td>
+                  )}
                   {showOperatorColumns && (
                     <>
                       <td className="px-2 py-1 text-left">
@@ -3318,25 +3697,35 @@ export function StationTrading({
                             CONTRA
                           </span>
                         )}
-                        {isLoggedIn && (
-                          <button
-                            type="button"
-                            className="shrink-0 text-eve-dim hover:text-eve-accent transition-colors"
-                            title={t("openMarket")}
-                            onClick={async (e) => {
-                              e.stopPropagation();
-                              try {
-                                await openMarketInGame(row.TypeID);
-                                addToast(t("actionSuccess"), "success", 2000);
-                              } catch (err: any) {
-                                const { messageKey, duration } =
-                                  handleEveUIError(err);
-                                addToast(t(messageKey), "error", duration);
-                              }
-                            }}
+                        {(row.CharacterBuyOrders ?? 0) > 0 && (
+                          <span
+                            title={t("hasOpenBuyOrdersHint", {
+                              qty: String(row.CharacterBuyOrders ?? 0),
+                            })}
+                            className="shrink-0 inline-flex items-center px-1 py-px rounded-[2px] border border-emerald-500/50 bg-emerald-500/10 text-emerald-300 text-[9px] leading-none font-medium uppercase"
                           >
-                            🎮
-                          </button>
+                            BUY
+                          </span>
+                        )}
+                        {(row.CharacterSellOrders ?? 0) > 0 && (
+                          <span
+                            title={t("hasOpenSellOrdersHint", {
+                              qty: String(row.CharacterSellOrders ?? 0),
+                            })}
+                            className="shrink-0 inline-flex items-center px-1 py-px rounded-[2px] border border-amber-500/50 bg-amber-500/10 text-amber-300 text-[9px] leading-none font-medium uppercase"
+                          >
+                            SELL
+                          </span>
+                        )}
+                        {(row.CharacterAssets ?? 0) > 0 && (
+                          <span
+                            title={t("ownedQtyHint", {
+                              qty: String(row.CharacterAssets ?? 0),
+                            })}
+                            className="shrink-0 inline-flex items-center px-1 py-px rounded-[2px] border border-sky-500/50 bg-sky-500/10 text-sky-300 text-[9px] leading-none font-medium uppercase"
+                          >
+                            OWN
+                          </span>
                         )}
                       </div>
                     ) : (
@@ -3350,7 +3739,7 @@ export function StationTrading({
             {displayRows.length === 0 && !scanning && (
               <tr>
                 <td
-                  colSpan={columnDefs.length + 2 + (showOperatorColumns ? 3 : 0)}
+                  colSpan={columnDefs.length + 2 + (isLoggedIn ? 1 : 0) + (showOperatorColumns ? 3 : 0)}
                   className="p-0"
                 >
                   {results.length > 0 && hiddenCounts.total > 0 && !showHiddenRows ? (
@@ -3517,6 +3906,35 @@ export function StationTrading({
                     void setRowHiddenState(contextMenu.row, "ignored");
                   }}
                 />
+                {contextMenu.row.CategoryID != null &&
+                  contextMenu.row.CategoryID > 0 &&
+                  !ignoredCategoryIds.has(contextMenu.row.CategoryID) && (
+                    <ContextItem
+                      label={t("ignoreCategory", {
+                        name:
+                          contextMenu.row.CategoryName ||
+                          String(contextMenu.row.CategoryID),
+                      })}
+                      onClick={() => {
+                        const id = contextMenu.row.CategoryID;
+                        const name =
+                          contextMenu.row.CategoryName ||
+                          String(contextMenu.row.CategoryID);
+                        if (id == null || id <= 0) return;
+                        setIgnoredCategoryIds((prev) => {
+                          const next = new Set(prev);
+                          next.add(id);
+                          return next;
+                        });
+                        addToast(
+                          t("categoryIgnored", { name }),
+                          "success",
+                          2400,
+                        );
+                        setContextMenu(null);
+                      }}
+                    />
+                  )}
               </>
             )}
             {rowRegionID(contextMenu.row, regionId) > 0 && (
@@ -3528,20 +3946,38 @@ export function StationTrading({
                 }}
               />
             )}
+            {multibuyQueue.has(contextMenu.row.TypeID) ? (
+              <ContextItem
+                label={`🛒 ${t("multibuyRemove")}`}
+                onClick={() => {
+                  removeFromMultibuy(contextMenu.row.TypeID);
+                  setContextMenu(null);
+                }}
+              />
+            ) : (
+              <ContextItem
+                label={`🛒 ${t("multibuyAdd")}`}
+                onClick={() => {
+                  addToMultibuy(contextMenu.row);
+                  setContextMenu(null);
+                }}
+              />
+            )}
             {/* EVE UI actions */}
             {isLoggedIn && (
               <>
                 <div className="h-px bg-eve-border my-1" />
                 <ContextItem
                   label={`🎮 ${t("openMarket")}`}
-                  onClick={async () => {
-                    try {
-                      await openMarketInGame(contextMenu.row.TypeID);
-                      addToast(t("actionSuccess"), "success", 2000);
-                    } catch (err: any) {
-                      const { messageKey, duration } = handleEveUIError(err);
-                      addToast(t(messageKey), "error", duration);
-                    }
+                  onClick={() => {
+                    void openMarketAndCopyPrice(contextMenu.row, "buy");
+                    setContextMenu(null);
+                  }}
+                />
+                <ContextItem
+                  label={`📈 ${t("openMarketCopySell")}`}
+                  onClick={() => {
+                    void openMarketAndCopyPrice(contextMenu.row, "sell");
                     setContextMenu(null);
                   }}
                 />
@@ -3578,6 +4014,29 @@ export function StationTrading({
         </>
       )}
 
+      {multibuyQueue.size > 0 && (
+        <div className="fixed bottom-16 right-4 z-[56] flex items-center gap-2 rounded-sm border border-eve-accent/60 bg-eve-panel/95 backdrop-blur-sm shadow-eve-glow px-3 py-2">
+          <span className="text-xs uppercase tracking-wider text-eve-dim">
+            🛒 {t("multibuyPillLabel", { count: multibuyQueue.size })}
+          </span>
+          <button
+            type="button"
+            onClick={() => void copyMultibuyToClipboard()}
+            className="px-2 py-0.5 text-[11px] rounded-sm border border-eve-accent/60 text-eve-accent hover:bg-eve-accent/10 transition-colors"
+          >
+            {t("multibuyCopyBtn")}
+          </button>
+          <button
+            type="button"
+            onClick={clearMultibuy}
+            title={t("multibuyClearHint")}
+            className="px-2 py-0.5 text-[11px] rounded-sm border border-eve-border text-eve-dim hover:text-red-300 hover:border-red-400/60 transition-colors"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
       {ignoredModalOpen && (
         <>
           <div
@@ -3592,7 +4051,8 @@ export function StationTrading({
                 </h3>
                 <p className="text-[11px] text-eve-dim mt-0.5">
                   done {hiddenCounts.done} | ignored {hiddenCounts.ignored} |
-                  total {hiddenCounts.total}
+                  total {hiddenCounts.total} | categories{" "}
+                  {ignoredCategoryIds.size}
                 </p>
               </div>
               <button
@@ -3603,6 +4063,62 @@ export function StationTrading({
                 Close
               </button>
             </div>
+
+            <label className="mt-3 inline-flex items-center gap-2 cursor-pointer select-none text-[11px] text-eve-text">
+              <input
+                type="checkbox"
+                checked={excludeCosmetics}
+                onChange={(e) => setExcludeCosmetics(e.target.checked)}
+                className="accent-eve-accent"
+              />
+              <span className="uppercase tracking-wider text-eve-dim">
+                {t("excludeCosmetics")}
+              </span>
+              <span className="text-eve-dim/70 normal-case tracking-normal">
+                — built-in filter for SKINs &amp; apparel
+              </span>
+            </label>
+
+            {ignoredCategoryIds.size > 0 && (
+              <div className="mt-3 p-2 border border-eve-border/60 rounded-sm bg-eve-dark/40">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-[10px] uppercase tracking-wider text-eve-dim">
+                    {t("ignoredCategoriesLabel")} ({ignoredCategoryIds.size})
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setIgnoredCategoryIds(new Set())}
+                    className="text-[10px] uppercase tracking-wide text-red-300 hover:text-red-200 transition-colors"
+                  >
+                    Clear all
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {[...ignoredCategoryIds].map((id) => {
+                    const sample = results.find((r) => r.CategoryID === id);
+                    const name = sample?.CategoryName ?? `Category ${id}`;
+                    return (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => {
+                          setIgnoredCategoryIds((prev) => {
+                            const next = new Set(prev);
+                            next.delete(id);
+                            return next;
+                          });
+                        }}
+                        title={t("categoryUnignoreHint")}
+                        className="px-2 py-0.5 text-[11px] rounded-sm border border-eve-border text-eve-dim hover:text-red-300 hover:border-red-400/60 transition-colors"
+                      >
+                        {name}{" "}
+                        <span className="ml-1 opacity-70">×</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <input

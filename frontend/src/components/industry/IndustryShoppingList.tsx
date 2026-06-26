@@ -31,7 +31,10 @@ export function IndustryShoppingList({
       <table className="w-full text-sm">
         <thead className="sticky top-0 bg-eve-dark z-10">
           <tr className="text-eve-dim text-[10px] uppercase tracking-wider border-b border-eve-border">
-            <th className="min-w-[32px] px-1 py-2" />
+            <th
+              style={{ width: 32, minWidth: 32, maxWidth: 32 }}
+              className="px-1 py-2"
+            />
             <th className="px-3 py-2 text-left font-medium">Item</th>
             <th className="px-3 py-2 text-right font-medium">Quantity</th>
             <th className="px-3 py-2 text-right font-medium">Unit Price</th>
@@ -47,7 +50,10 @@ export function IndustryShoppingList({
                 index % 2 === 0 ? "bg-eve-panel" : "bg-eve-dark"
               }`}
             >
-              <td className="px-1 py-1.5 text-center">
+              <td
+                style={{ width: 32, minWidth: 32, maxWidth: 32 }}
+                className="px-1 py-1.5 text-center"
+              >
                 {regionId > 0 && (
                   <button
                     type="button"
@@ -77,7 +83,10 @@ export function IndustryShoppingList({
         </tbody>
         <tfoot className="bg-eve-dark border-t border-eve-border">
           <tr>
-            <td className="px-1 py-2" />
+            <td
+              style={{ width: 32, minWidth: 32, maxWidth: 32 }}
+              className="px-1 py-2"
+            />
             <td className="px-3 py-2 text-eve-dim font-medium">Total</td>
             <td className="px-3 py-2 text-right font-mono text-eve-accent font-semibold">
               {materials.length} items

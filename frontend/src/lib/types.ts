@@ -802,6 +802,8 @@ export interface StationTrade {
   TypeName: string;
   Volume: number;
   IsContraband?: boolean;
+  CategoryID?: number;
+  CategoryName?: string;
   BuyPrice: number;
   SellPrice: number;
   Spread: number;
@@ -856,6 +858,8 @@ export interface StationTrade {
   ExpectedSellPrice?: number;
   ExpectedProfit?: number;
   RealProfit?: number;
+  /** Per-cycle expected PnL (matches execution-plan popup) */
+  ExpectedPnL?: number;
   FilledQty?: number;
   CanFill?: boolean;
   SlippageBuyPct?: number;
