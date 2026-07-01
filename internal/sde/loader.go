@@ -40,6 +40,8 @@ type Data struct {
 	Stations     map[int64]*Station     // stationID -> station
 	Universe     *graph.Universe
 	Industry     *IndustryData // blueprints, reprocessing, etc.
+
+	shipTypesMissingPackagedVolume map[int32]bool
 }
 
 // Region represents an EVE region from the SDE.
@@ -108,6 +110,8 @@ func Load(dataDir string) (*Data, error) {
 		Contraband:   make(map[int32]bool),
 		Stations:     make(map[int64]*Station),
 		Universe:     graph.NewUniverse(),
+
+		shipTypesMissingPackagedVolume: make(map[int32]bool),
 	}
 
 	logger.Info("SDE", "Loading regions...")
@@ -287,16 +291,20 @@ func (d *Data) loadTypes(dir string) error {
 		if name == "" {
 			return nil
 		}
+		categoryID := groupCategories[t.GroupID]
 		vol := t.PackagedVolume
 		if vol == 0 {
 			vol = t.Volume
+			if categoryID == 6 {
+				d.shipTypesMissingPackagedVolume[t.Key] = true
+			}
 		}
 		d.Types[t.Key] = &ItemType{
 			ID:           t.Key,
 			Name:         name,
 			Volume:       vol,
 			GroupID:      t.GroupID,
-			CategoryID:   groupCategories[t.GroupID],
+			CategoryID:   categoryID,
 			IsRig:        groupRig[t.GroupID],
 			IsContraband: d.Contraband[t.Key],
 		}

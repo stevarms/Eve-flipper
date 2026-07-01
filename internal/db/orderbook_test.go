@@ -234,3 +234,64 @@ func TestOrderBookStatsAndCleanup(t *testing.T) {
 		t.Fatalf("stats after cleanup = %#v", stats)
 	}
 }
+
+func TestCleanupOrderBookSnapshotsBatch(t *testing.T) {
+	d := openTestDB(t)
+	defer d.Close()
+
+	old := time.Now().UTC().AddDate(0, 0, -60)
+	for i := 0; i < 3; i++ {
+		if err := d.RecordMarketOrderSnapshot(esi.MarketOrderSnapshot{
+			RegionID:   10000002,
+			OrderType:  "sell",
+			Source:     "region",
+			CapturedAt: old.Add(time.Duration(i) * time.Hour),
+			Orders: []esi.MarketOrder{
+				{OrderID: int64(100 + i), TypeID: int32(35 + i), LocationID: 60008494, SystemID: 30000142, Price: float64(10 + i), VolumeRemain: 10, IsBuyOrder: false},
+			},
+		}); err != nil {
+			t.Fatalf("record old snapshot %d: %v", i, err)
+		}
+	}
+	if err := d.RecordMarketOrderSnapshot(esi.MarketOrderSnapshot{
+		RegionID:   10000002,
+		OrderType:  "sell",
+		Source:     "region",
+		CapturedAt: time.Now().UTC(),
+		Orders: []esi.MarketOrder{
+			{OrderID: 200, TypeID: 40, LocationID: 60008494, SystemID: 30000142, Price: 99, VolumeRemain: 10, IsBuyOrder: false},
+		},
+	}); err != nil {
+		t.Fatalf("record fresh snapshot: %v", err)
+	}
+
+	plan, err := d.CleanupOrderBookSnapshotsBatch(30, 2)
+	if err != nil {
+		t.Fatalf("batch cleanup: %v", err)
+	}
+	if plan.SnapshotsDeleted != 2 || plan.LevelsDeleted != 2 {
+		t.Fatalf("first batch = %#v, want 2 old snapshots and levels", plan)
+	}
+	stats, err := d.GetOrderBookStats(5)
+	if err != nil {
+		t.Fatalf("stats after first batch: %v", err)
+	}
+	if stats.SnapshotCount != 2 || stats.LevelCount != 2 {
+		t.Fatalf("stats after first batch = %#v, want 2 remaining", stats)
+	}
+
+	plan, err = d.CleanupOrderBookSnapshotsBatch(30, 2)
+	if err != nil {
+		t.Fatalf("second batch cleanup: %v", err)
+	}
+	if plan.SnapshotsDeleted != 1 || plan.LevelsDeleted != 1 {
+		t.Fatalf("second batch = %#v, want final old snapshot and level", plan)
+	}
+	stats, err = d.GetOrderBookStats(5)
+	if err != nil {
+		t.Fatalf("stats after second batch: %v", err)
+	}
+	if stats.SnapshotCount != 1 || stats.LevelCount != 1 || stats.TopTypes[0].TypeID != 40 {
+		t.Fatalf("stats after second batch = %#v, want only fresh snapshot", stats)
+	}
+}

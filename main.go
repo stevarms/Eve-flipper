@@ -136,8 +136,9 @@ func main() {
 	// Migrate config.json → SQLite (if exists)
 	database.MigrateFromJSON()
 
-	// Cleanup old market history to prevent unbounded DB growth
-	database.CleanupOldHistory()
+	// Run local cache cleanup after startup so large existing databases do not
+	// block the app from becoming usable.
+	database.CleanupStartupCachesAsync(30 * time.Second)
 
 	// Load config from SQLite
 	cfg := database.LoadConfig()
@@ -178,6 +179,7 @@ func main() {
 			logger.Error("SDE", fmt.Sprintf("Load failed: %v", err))
 			return
 		}
+		prepareShipPackagedVolumes(dataDir, data, esiClient)
 		srv.SetSDE(data)
 		logger.Success("SDE", "Scanner ready")
 	}()

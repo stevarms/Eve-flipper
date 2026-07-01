@@ -54,7 +54,7 @@ Use the hosted web build at [app.eveflipper.com](https://app.eveflipper.com), or
 
 ## Current Public Release
 
-The current public release is `v1.6.11`.
+The current public release is `v1.6.13`.
 
 Download it from:
 
