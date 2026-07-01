@@ -26,3 +26,26 @@ func TestIsRigGroupName(t *testing.T) {
 		})
 	}
 }
+
+func TestApplyShipPackagedVolumes(t *testing.T) {
+	data := &Data{
+		Types: map[int32]*ItemType{
+			608: {ID: 608, Name: "Atron", CategoryID: 6, Volume: 22500},
+			34:  {ID: 34, Name: "Tritanium", CategoryID: 4, Volume: 0.01},
+		},
+		shipTypesMissingPackagedVolume: map[int32]bool{608: true},
+	}
+
+	if got := data.ApplyShipPackagedVolumes(map[int32]float64{608: 2500, 34: 999}); got != 1 {
+		t.Fatalf("ApplyShipPackagedVolumes applied %d, want 1", got)
+	}
+	if data.Types[608].Volume != 2500 {
+		t.Fatalf("ship volume = %v, want packaged volume 2500", data.Types[608].Volume)
+	}
+	if data.Types[34].Volume != 0.01 {
+		t.Fatalf("non-ship volume changed to %v", data.Types[34].Volume)
+	}
+	if missing := data.MissingShipPackagedVolumeTypeIDs(); len(missing) != 0 {
+		t.Fatalf("missing after apply = %v, want empty", missing)
+	}
+}

@@ -143,9 +143,10 @@ func startBackend(host string, preferredPort int) (*backendRuntime, error) {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
-	// Migrate config.json -> SQLite (if exists) and cleanup stale history.
+	// Migrate config.json -> SQLite (if exists). Cache cleanup runs after
+	// startup so large existing databases do not block the desktop UI.
 	database.MigrateFromJSON()
-	database.CleanupOldHistory()
+	database.CleanupStartupCachesAsync(30 * time.Second)
 	cfg := database.LoadConfig()
 
 	listener, port, err := listenOnPreferredOrFreePort(host, preferredPort)
@@ -202,6 +203,7 @@ func startBackend(host string, preferredPort int) (*backendRuntime, error) {
 			logger.Error("SDE", fmt.Sprintf("Load failed: %v", err))
 			return
 		}
+		prepareShipPackagedVolumes(dataDir, data, esiClient)
 		srv.SetSDE(data)
 		logger.Success("SDE", "Scanner ready")
 	}()

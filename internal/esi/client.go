@@ -41,6 +41,7 @@ type Client struct {
 	stationCache  sync.Map     // int64 -> string (L1 in-memory)
 	stationStore  StationStore // L2 persistent cache (SQLite)
 	typeNameCache sync.Map     // int32 -> string (L1 in-memory)
+	typeInfoCache sync.Map     // int32 -> UniverseTypeInfo (L1 in-memory)
 	orderCache    *OrderCache  // region order cache with ETag/Expires
 	orderRecorder MarketOrderRecorder
 
@@ -64,6 +65,14 @@ type Client struct {
 type structureNameFailure struct {
 	RetryAfter time.Time
 	Reason     string
+}
+
+type UniverseTypeInfo struct {
+	TypeID         int32   `json:"type_id"`
+	Name           string  `json:"name"`
+	GroupID        int32   `json:"group_id"`
+	Volume         float64 `json:"volume"`
+	PackagedVolume float64 `json:"packaged_volume"`
 }
 
 // NewClient creates an ESI client with rate limiting and the given station cache store.
@@ -216,11 +225,8 @@ func (c *Client) TypeName(typeID int32) string {
 		return v.(string)
 	}
 
-	var info struct {
-		Name string `json:"name"`
-	}
-	url := fmt.Sprintf("%s/universe/types/%d/?datasource=tranquility", baseURL, typeID)
-	if err := c.GetJSON(url, &info); err != nil {
+	info, err := c.TypeInfo(typeID)
+	if err != nil {
 		return ""
 	}
 	name := strings.TrimSpace(info.Name)
@@ -229,6 +235,28 @@ func (c *Client) TypeName(typeID int32) string {
 	}
 	c.typeNameCache.Store(typeID, name)
 	return name
+}
+
+func (c *Client) TypeInfo(typeID int32) (UniverseTypeInfo, error) {
+	if typeID <= 0 {
+		return UniverseTypeInfo{}, fmt.Errorf("invalid type_id %d", typeID)
+	}
+	if v, ok := c.typeInfoCache.Load(typeID); ok {
+		return v.(UniverseTypeInfo), nil
+	}
+	var info UniverseTypeInfo
+	url := fmt.Sprintf("%s/universe/types/%d/?datasource=tranquility", baseURL, typeID)
+	if err := c.GetJSON(url, &info); err != nil {
+		return UniverseTypeInfo{}, err
+	}
+	if info.TypeID == 0 {
+		info.TypeID = typeID
+	}
+	c.typeInfoCache.Store(typeID, info)
+	if name := strings.TrimSpace(info.Name); name != "" {
+		c.typeNameCache.Store(typeID, name)
+	}
+	return info, nil
 }
 
 // HealthCheck pings ESI to verify connectivity.
