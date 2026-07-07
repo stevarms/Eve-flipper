@@ -816,6 +816,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/watchlist/{typeID}", s.handleUpdateWatchlist)
 	mux.HandleFunc("GET /api/alerts/history", s.handleGetAlertHistory)
 	mux.HandleFunc("POST /api/scan/station", s.handleScanStation)
+	mux.HandleFunc("POST /api/market/price-audit", s.handlePriceAudit)
+	mux.HandleFunc("POST /api/market/hub-allocate", s.handleHubAllocate)
 	mux.HandleFunc("GET /api/stations", s.handleGetStations)
 	mux.HandleFunc("GET /api/scan/history", s.handleGetHistory)
 	mux.HandleFunc("GET /api/scan/history/{id}", s.handleGetHistoryByID)

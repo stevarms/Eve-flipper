@@ -45,6 +45,7 @@ import {
 } from "./TabSettingsPanel";
 import { SystemAutocomplete } from "./SystemAutocomplete";
 import { PresetPicker } from "./PresetPicker";
+import { STATION_TRADING_HUBS } from "@/lib/tradeHubs";
 import { StationAIAssistant } from "./StationAIAssistant";
 import { SystemBlacklistButton } from "./SystemBlacklistButton";
 import {
@@ -255,23 +256,6 @@ interface PersistedStationLocation {
   systemName: string;
   stationId: number;
 }
-
-interface StationTradingHub {
-  key: string;
-  shortLabel: string;
-  systemName: string;
-  stationID: number;
-}
-
-// Canonical NPC trade-hub stations. Same set used by the Industry scanner's
-// pricing-hub presets so the two tabs stay in sync.
-const STATION_TRADING_HUBS: StationTradingHub[] = [
-  { key: "jita", shortLabel: "Jita", systemName: "Jita", stationID: 60003760 },
-  { key: "amarr", shortLabel: "Amarr", systemName: "Amarr", stationID: 60008494 },
-  { key: "dodixie", shortLabel: "Dodixie", systemName: "Dodixie", stationID: 60011866 },
-  { key: "rens", shortLabel: "Rens", systemName: "Rens", stationID: 60004588 },
-  { key: "hek", shortLabel: "Hek", systemName: "Hek", stationID: 60005686 },
-];
 
 function loadPersistedStationLocation(): PersistedStationLocation | null {
   if (typeof window === "undefined") return null;

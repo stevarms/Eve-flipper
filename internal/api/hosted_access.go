@@ -645,6 +645,8 @@ func hostedQuotaFeatureForRequest(r *http.Request) (string, bool) {
 		path == "/api/scan/regional-day",
 		path == "/api/scan/contracts",
 		path == "/api/scan/station",
+		path == "/api/market/price-audit",
+		path == "/api/market/hub-allocate",
 		path == "/api/backtest/flips",
 		path == "/api/orderbook/coverage",
 		path == "/api/route/find",

@@ -2241,6 +2241,103 @@ export async function getItemIntelligence(typeID: number, regionID = 10000002, s
   return handleResponse<ItemIntelligence>(res);
 }
 
+// --- Price Audit (multisell price helper) ---
+
+export type PriceAuditSource = "station" | "region" | "avg" | "none";
+
+export interface PriceAuditRow {
+  name: string;
+  qty: number;
+  type_id?: number;
+  type_name?: string;
+  top_buy?: number;
+  low_sell?: number;
+  suggested_price?: number;
+  source: PriceAuditSource;
+  unresolved?: boolean;
+}
+
+export interface PriceAuditResponse {
+  results: PriceAuditRow[];
+  region_id: number;
+  station_id: number;
+  station_name: string;
+}
+
+export async function priceAudit(params: {
+  station_id: number;
+  items: { name: string; qty: number }[];
+}): Promise<PriceAuditResponse> {
+  const res = await apiFetch(`${BASE}/api/market/price-audit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  return handleResponse<PriceAuditResponse>(res);
+}
+
+export interface HubAllocation {
+  station_id: number;
+  station_name: string;
+  system_name: string;
+  qty: number;
+  price?: number;
+  daily_flow: number;
+  /** Raw per-day volume samples the daily_flow metric was computed from,
+   *  oldest → newest. Rendered as a hover tooltip so users can sanity-check. */
+  daily_volumes?: number[];
+  source: PriceAuditSource;
+  /** Per-unit packaged m³ from SDE. Frontend uses this × qty to compute
+   *  how much of a capped hub's cargo this row consumes. */
+  unit_volume?: number;
+}
+
+export interface HubAllocateResult {
+  name: string;
+  qty: number;
+  type_id?: number;
+  type_name?: string;
+  allocations: HubAllocation[];
+  unallocated: number;
+  unresolved?: boolean;
+}
+
+export interface HubStationMeta {
+  id: number;
+  name: string;
+  system_name: string;
+  region_id: number;
+  volume_cap?: number;
+}
+
+export interface HubAllocateResponse {
+  results: HubAllocateResult[];
+  stations: HubStationMeta[];
+}
+
+export type HubAllocateStrategy = "profit" | "balanced" | "volume" | "percent";
+export type FlowMetric = "median" | "mean";
+
+export async function hubAllocate(params: {
+  station_ids: number[];
+  days_of_stock: number;
+  items: { name: string; qty: number }[];
+  history_days?: number;
+  flow_metric?: FlowMetric;
+  strategy?: HubAllocateStrategy;
+  hub_percents?: Record<string, number>;
+  min_daily_flow?: number;
+  no_unallocated?: boolean;
+  hub_caps?: Record<string, number>;
+}): Promise<HubAllocateResponse> {
+  const res = await apiFetch(`${BASE}/api/market/hub-allocate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  return handleResponse<HubAllocateResponse>(res);
+}
+
 // --- UI Operations (in-game actions) ---
 
 export async function openMarketInGame(typeID: number): Promise<void> {
