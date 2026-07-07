@@ -565,6 +565,8 @@ func TestHostedQuotaFeatureMappingCoversHeavyHostedPosts(t *testing.T) {
 		{http.MethodPost, "/api/scan/regional-day", "scans"},
 		{http.MethodPost, "/api/scan/contracts", "scans"},
 		{http.MethodPost, "/api/scan/station", "scans"},
+		{http.MethodPost, "/api/market/price-audit", "scans"},
+		{http.MethodPost, "/api/market/hub-allocate", "scans"},
 		{http.MethodPost, "/api/backtest/flips", "scans"},
 		{http.MethodPost, "/api/orderbook/coverage", "scans"},
 		{http.MethodPost, "/api/route/find", "scans"},

@@ -9,6 +9,7 @@ import { ContractResultsTable } from "./components/ContractResultsTable";
 import { RouteBuilder } from "./components/RouteBuilder";
 import { WatchlistTab } from "./components/WatchlistTab";
 import { StationTrading } from "./components/StationTrading";
+import { PriceAudit } from "./components/PriceAudit";
 import { IndustryTab } from "./components/IndustryTab";
 import { WarTracker } from "./components/WarTracker";
 import { ItemIntelligenceModal } from "./components/ItemIntelligenceModal";
@@ -2440,6 +2441,9 @@ function App() {
               showAdvancedControls={!cockpitPreferences.hiddenPanels.advancedFilters}
               showAIAssistant={!cockpitPreferences.hiddenPanels.stationAiAssistant}
             />
+          </TabPanel>
+          <TabPanel active={tab === "price_audit"}>
+            <PriceAudit isLoggedIn={authStatus.logged_in} />
           </TabPanel>
           <TabPanel active={tab === "route"}>
             <RouteBuilder

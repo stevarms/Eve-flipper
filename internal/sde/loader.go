@@ -35,6 +35,7 @@ type Data struct {
 	Regions      map[int32]*Region      // regionID -> region
 	RegionByName map[string]int32       // lowercase name -> regionID
 	Types        map[int32]*ItemType    // typeID -> type
+	TypeByName   map[string]int32       // lowercase name -> typeID (for reverse lookup)
 	Groups       map[int32]*ItemGroup   // groupID -> group metadata
 	Categories   map[int32]*ItemCategory // categoryID -> category metadata
 	Contraband   map[int32]bool         // typeID -> listed in contrabandTypes
@@ -114,6 +115,7 @@ func Load(dataDir string) (*Data, error) {
 		Regions:      make(map[int32]*Region),
 		RegionByName: make(map[string]int32),
 		Types:        make(map[int32]*ItemType),
+		TypeByName:   make(map[string]int32),
 		Groups:       make(map[int32]*ItemGroup),
 		Categories:   make(map[int32]*ItemCategory),
 		Contraband:   make(map[int32]bool),
@@ -329,6 +331,7 @@ func (d *Data) loadTypes(dir string) error {
 				d.shipTypesMissingPackagedVolume[t.Key] = true
 			}
 		}
+		d.TypeByName[strings.ToLower(name)] = t.Key
 		d.Types[t.Key] = &ItemType{
 			ID:           t.Key,
 			Name:         name,
