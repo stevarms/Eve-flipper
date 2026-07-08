@@ -82,9 +82,10 @@ jobs:
           ESI_CLIENT_SECRET: ${{ secrets.ESI_CLIENT_SECRET }}
           ESI_CALLBACK_URL: ${{ secrets.ESI_CALLBACK_URL }}
         run: |
+          # ESI creds are optional on forks — if they're not set, users can
+          # supply their own via .env / env vars at runtime.
           if [ -z "${ESI_CLIENT_ID}" ] || [ -z "${ESI_CLIENT_SECRET}" ] || [ -z "${ESI_CALLBACK_URL}" ]; then
-            echo "ERROR: ESI_CLIENT_ID / ESI_CLIENT_SECRET / ESI_CALLBACK_URL GitHub Secrets must be set for release builds."
-            exit 1
+            echo "::warning::ESI secrets not fully set. Binary will not have baked-in defaults; runtime env vars required for SSO."
           fi
 
           VERSION=${GITHUB_REF_NAME}
@@ -100,12 +101,9 @@ jobs:
             LDFLAGS="$LDFLAGS -X main.defaultESICallbackURL=${ESI_CALLBACK_URL}"
           fi
 
+          # Windows-only for this fork's release cadence.
           for target in \
-            "windows amd64 .exe" \
-            "linux amd64 " \
-            "linux arm64 " \
-            "darwin amd64 " \
-            "darwin arm64 "; do
+            "windows amd64 .exe"; do
             set -- $target
             echo "Building web $1/$2..."
             GOOS=$1 GOARCH=$2 CGO_ENABLED=0 \
@@ -118,10 +116,6 @@ jobs:
           name: web-binaries
           path: |
             eve-flipper-web-windows-amd64.exe
-            eve-flipper-web-linux-amd64
-            eve-flipper-web-linux-arm64
-            eve-flipper-web-darwin-amd64
-            eve-flipper-web-darwin-arm64
           if-no-files-found: error
 
   build-desktop:
@@ -130,6 +124,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Windows-only for this fork's release cadence.
         include:
           - runner: windows-latest
             goos: windows
@@ -137,30 +132,6 @@ jobs:
             ext: .exe
             cgo: "0"
             windows_gui: "1"
-          - runner: ubuntu-22.04
-            goos: linux
-            goarch: amd64
-            ext: ""
-            cgo: "1"
-            windows_gui: "0"
-          - runner: ubuntu-22.04-arm
-            goos: linux
-            goarch: arm64
-            ext: ""
-            cgo: "1"
-            windows_gui: "0"
-          - runner: macos-14
-            goos: darwin
-            goarch: amd64
-            ext: ""
-            cgo: "1"
-            windows_gui: "0"
-          - runner: macos-14
-            goos: darwin
-            goarch: arm64
-            ext: ""
-            cgo: "1"
-            windows_gui: "0"
     steps:
       - uses: actions/checkout@v4
 
@@ -313,12 +284,15 @@ jobs:
           files: |
             release-assets/eve-flipper-*
             release-assets/SHA256SUMS.txt
-          draft: ${{ contains(github.ref_name, '-rc') }}
+          draft: false
           prerelease: ${{ contains(github.ref_name, '-rc') }}
 
   update-download-badge:
     name: Update Download Badge
     runs-on: ubuntu-latest
+    # Skip badge updates on pre-release tags — no need to spam auto-commits
+    # into this fork's master for every rc build.
+    if: ${{ !contains(github.ref_name, '-rc') }}
     needs:
       - release
     steps:
