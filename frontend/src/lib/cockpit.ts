@@ -11,6 +11,7 @@ export const MAIN_TAB_IDS = [
   "route",
   "station",
   "price_audit",
+  "pi_factory",
   "industry",
   "demand",
 ] as const;
@@ -259,6 +260,7 @@ export const MAIN_TAB_META: Record<MainTabId, { labelKey: TranslationKey; fallba
   route: { labelKey: "tabRoute", fallback: "Route", group: "scan" },
   station: { labelKey: "tabStation", fallback: "Station Trading", group: "tools" },
   price_audit: { labelKey: "tabPriceAudit", fallback: "Price Audit", group: "tools" },
+  pi_factory: { labelKey: "tabPIFactory", fallback: "PI Factory", group: "tools" },
   industry: { labelKey: "tabIndustry", fallback: "Industry", group: "tools" },
   demand: { labelKey: "tabDemand", fallback: "War", group: "tools" },
 };

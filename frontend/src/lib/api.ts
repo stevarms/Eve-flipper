@@ -2338,6 +2338,115 @@ export async function hubAllocate(params: {
   return handleResponse<HubAllocateResponse>(res);
 }
 
+// --- PI Factory Planner ---
+
+export interface PISchematicMaterial {
+  type_id: number;
+  type_name: string;
+  qty: number;
+  tier?: string;
+}
+
+export interface PISchematicSummary {
+  id: number;
+  name: string;
+  cycle_time_sec: number;
+  inputs: PISchematicMaterial[];
+  output?: PISchematicMaterial;
+  output_tier?: string;
+}
+
+export interface PIFactoryConfig {
+  id: string;
+  name: string;
+  schematic_id: number;
+  factory_count: number;
+}
+
+export interface PIMaterialRow {
+  type_id: number;
+  type_name: string;
+  qty_per_day: number;
+  buy_price?: number;
+  sell_price?: number;
+  base_price?: number;
+  source?: PriceAuditSource;
+  cost_per_day?: number;
+  unit_volume?: number;
+  volume_per_day?: number;
+}
+
+export interface PIFactoryResult {
+  id: string;
+  name: string;
+  schematic_id: number;
+  schematic_name: string;
+  output_tier?: string;
+  factory_count: number;
+  cycle_time_sec: number;
+  cycles_per_day: number;
+  inputs: PIMaterialRow[];
+  output: PIMaterialRow;
+  output_undercut?: number;
+  input_cost_per_day: number;
+  poco_tax_per_day: number;
+  poco_import_per_day: number;
+  poco_export_per_day: number;
+  sales_fees_per_day: number;
+  gross_rev_per_day: number;
+  net_profit_per_day: number;
+  buy_output_cost_per_day: number;
+  savings_vs_buy_per_day: number;
+  input_sale_value_per_day: number;
+  output_sale_value_per_day: number;
+  input_volume_per_day: number;
+  unresolved?: boolean;
+  unresolved_reason?: string;
+}
+
+export interface PIShoppingRow {
+  type_id: number;
+  type_name: string;
+  qty_per_day: number;
+  qty_buffer: number;
+  buy_price?: number;
+  sell_price?: number;
+  cost_buffer?: number;
+  source?: PriceAuditSource;
+  unit_volume?: number;
+  volume_buffer?: number;
+}
+
+export interface PIFactoryResponse {
+  results: PIFactoryResult[];
+  shopping: PIShoppingRow[];
+  station_id: number;
+  station_name: string;
+  buffer_days: number;
+}
+
+export async function getPISchematics(): Promise<PISchematicSummary[]> {
+  const res = await apiFetch(`${BASE}/api/pi/schematics`);
+  const data = await handleResponse<{ schematics: PISchematicSummary[] }>(res);
+  return data.schematics ?? [];
+}
+
+export async function piFactoryPlan(params: {
+  station_id: number;
+  poco_tax_percent: number;
+  sales_tax_percent: number;
+  broker_fee_percent: number;
+  buffer_days: number;
+  factories: PIFactoryConfig[];
+}): Promise<PIFactoryResponse> {
+  const res = await apiFetch(`${BASE}/api/pi/factory-plan`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  return handleResponse<PIFactoryResponse>(res);
+}
+
 // --- UI Operations (in-game actions) ---
 
 export async function openMarketInGame(typeID: number): Promise<void> {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "@/lib/i18n";
-import { scanProfitableBlueprints, getStations, getStructures, getCharacterMarketFees } from "@/lib/api";
+import { scanProfitableBlueprints, getStations, getStructures } from "@/lib/api";
+import { useEsiFeeImport } from "@/lib/useEsiFeeImport";
 import type { ProfitableScanRequest, ProfitableScanResponse, ProfitableScanRow, ProfitableScanReuseRow, StationInfo } from "@/lib/types";
 import { formatISK } from "@/lib/format";
 import {
@@ -219,7 +220,7 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
   const rowKey = (row: ProfitableScanRow) =>
     `${row.blueprint_type_id}-${row.is_bpo ? "bpo" : "bpc"}`;
   const [addToProjectOpen, setAddToProjectOpen] = useState(false);
-  const [importingFees, setImportingFees] = useState(false);
+  const { importFees, loading: importingFees } = useEsiFeeImport();
   const [searchQuery, setSearchQuery] = useState(initialScanState?.searchQuery ?? "");
 
   // Persist transient state back to sessionStorage on every change.
@@ -240,11 +241,8 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
     }
   }, [response, searchQuery, selectedIDs, sortKey, sortDir]);
 
-  const handleImportFees = useCallback(async () => {
-    if (importingFees) return;
-    setImportingFees(true);
-    try {
-      const fees = await getCharacterMarketFees();
+  const handleImportFees = useCallback(() => {
+    void importFees((fees) =>
       setParams((prev) => {
         const next = {
           ...prev,
@@ -253,23 +251,9 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
         };
         savePersistedParams(next);
         return next;
-      });
-      addToast(
-        t("industryScannerImportFeesSuccess")
-          .replace("{tax}", fees.suggested_sales_tax_percent.toFixed(2))
-          .replace("{fee}", fees.suggested_broker_fee_percent.toFixed(2))
-          .replace("{acc}", String(fees.accounting_level))
-          .replace("{br}", String(fees.broker_relations_level)),
-        "success",
-        2800,
-      );
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Import failed";
-      addToast(msg, "error", 3000);
-    } finally {
-      setImportingFees(false);
-    }
-  }, [importingFees, addToast, t]);
+      }),
+    );
+  }, [importFees]);
 
   // Station picker (mirrors the IndustryTab Analysis flow).
   const [stations, setStations] = useState<StationInfo[]>([]);

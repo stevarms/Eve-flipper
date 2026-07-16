@@ -818,6 +818,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/scan/station", s.handleScanStation)
 	mux.HandleFunc("POST /api/market/price-audit", s.handlePriceAudit)
 	mux.HandleFunc("POST /api/market/hub-allocate", s.handleHubAllocate)
+	mux.HandleFunc("GET /api/pi/schematics", s.handlePISchematics)
+	mux.HandleFunc("POST /api/pi/factory-plan", s.handlePIFactoryPlan)
 	mux.HandleFunc("GET /api/stations", s.handleGetStations)
 	mux.HandleFunc("GET /api/scan/history", s.handleGetHistory)
 	mux.HandleFunc("GET /api/scan/history/{id}", s.handleGetHistoryByID)

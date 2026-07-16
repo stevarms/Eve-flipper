@@ -62,13 +62,15 @@ type SolarSystem struct {
 
 // ItemType represents a market-tradeable item type from the SDE.
 type ItemType struct {
-	ID           int32
-	Name         string
-	Volume       float64 // packaged volume in m³
-	GroupID      int32   // item group (for categorization: rigs, ships, modules, etc.)
-	CategoryID   int32   // item category (6=Ships, 7=Modules, 20=Implants, etc.)
-	IsRig        bool    // derived from group metadata
-	IsContraband bool    // listed in contrabandTypes
+	ID            int32
+	Name          string
+	Volume        float64 // packaged volume in m³
+	BasePrice     float64 // SDE static "base price" — used for PI customs office tax
+	GroupID       int32   // item group (for categorization: rigs, ships, modules, etc.)
+	CategoryID    int32   // item category (6=Ships, 7=Modules, 20=Implants, etc.)
+	MarketGroupID int32   // marketGroupID from SDE (used to detect PI tiers, etc.)
+	IsRig         bool    // derived from group metadata
+	IsContraband  bool    // listed in contrabandTypes
 }
 
 // ItemGroup represents group-level SDE metadata used for type classification.
@@ -309,6 +311,7 @@ func (d *Data) loadTypes(dir string) error {
 			Name           map[string]string `json:"name"`
 			Volume         float64           `json:"volume"`
 			PackagedVolume float64           `json:"packagedVolume"`
+			BasePrice      float64           `json:"basePrice"`
 			Published      bool              `json:"published"`
 			MarketGroupID  *int32            `json:"marketGroupID"`
 			GroupID        int32             `json:"groupID"`
@@ -332,14 +335,20 @@ func (d *Data) loadTypes(dir string) error {
 			}
 		}
 		d.TypeByName[strings.ToLower(name)] = t.Key
+		var mgid int32
+		if t.MarketGroupID != nil {
+			mgid = *t.MarketGroupID
+		}
 		d.Types[t.Key] = &ItemType{
-			ID:           t.Key,
-			Name:         name,
-			Volume:       vol,
-			GroupID:      t.GroupID,
-			CategoryID:   categoryID,
-			IsRig:        groupRig[t.GroupID],
-			IsContraband: d.Contraband[t.Key],
+			ID:            t.Key,
+			Name:          name,
+			Volume:        vol,
+			BasePrice:     t.BasePrice,
+			GroupID:       t.GroupID,
+			CategoryID:    categoryID,
+			MarketGroupID: mgid,
+			IsRig:         groupRig[t.GroupID],
+			IsContraband:  d.Contraband[t.Key],
 		}
 		return nil
 	})

@@ -10,6 +10,7 @@ import { RouteBuilder } from "./components/RouteBuilder";
 import { WatchlistTab } from "./components/WatchlistTab";
 import { StationTrading } from "./components/StationTrading";
 import { PriceAudit } from "./components/PriceAudit";
+import { PIFactory } from "./components/PIFactory";
 import { IndustryTab } from "./components/IndustryTab";
 import { WarTracker } from "./components/WarTracker";
 import { ItemIntelligenceModal } from "./components/ItemIntelligenceModal";
@@ -2444,6 +2445,9 @@ function App() {
           </TabPanel>
           <TabPanel active={tab === "price_audit"}>
             <PriceAudit isLoggedIn={authStatus.logged_in} />
+          </TabPanel>
+          <TabPanel active={tab === "pi_factory"}>
+            <PIFactory isLoggedIn={authStatus.logged_in} />
           </TabPanel>
           <TabPanel active={tab === "route"}>
             <RouteBuilder
