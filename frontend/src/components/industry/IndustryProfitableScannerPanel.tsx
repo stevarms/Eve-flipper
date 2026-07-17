@@ -4,6 +4,7 @@ import { scanProfitableBlueprints, getStations, getStructures } from "@/lib/api"
 import { useEsiFeeImport } from "@/lib/useEsiFeeImport";
 import type { ProfitableScanRequest, ProfitableScanResponse, ProfitableScanRow, ProfitableScanReuseRow, StationInfo } from "@/lib/types";
 import { formatISK } from "@/lib/format";
+import { DECRYPTORS, DECRYPTOR_ORDER, effectiveInventionParams, type DecryptorKey } from "@/lib/industryDecryptors";
 import {
   TabSettingsPanel,
   SettingsField,
@@ -75,6 +76,17 @@ interface PersistedParams {
   runsPerJob: number;
   maxBlueprints: number;
   blueprintFilter: "bpo" | "bpc" | "both";
+  // Include T2 opportunities via invention. When true, each owned T1 BP with
+  // an invention activity is fanned out to its T2 products and scored in
+  // invention mode alongside the T1 mfg rows.
+  includeT2Invention: boolean;
+  decryptor: DecryptorKey;
+  // null = use DECRYPTORS[decryptor].defaultCost.
+  decryptorCostOverride: number | null;
+  // Client-side visibility toggles per row kind — session-persisted so tab
+  // switches don't wipe the user's chip selection.
+  showT1Rows: boolean;
+  showT2Rows: boolean;
   // null = no filter; numeric value (including 0 or negative) is taken literally.
   minISKPerHour: number | null;
   minProfit: number | null;
@@ -96,6 +108,11 @@ const DEFAULT_PARAMS: PersistedParams = {
   runsPerJob: 1,
   maxBlueprints: 500,
   blueprintFilter: "bpo",
+  includeT2Invention: false,
+  decryptor: "none",
+  decryptorCostOverride: null,
+  showT1Rows: true,
+  showT2Rows: true,
   minISKPerHour: null,
   minProfit: null,
   minMarginPct: null,
@@ -135,15 +152,22 @@ export interface ScannerAnalysisHandoff {
   structureBonus: number;
   brokerFee: number;
   salesTaxPercent: number;
-  /** Scanner only ever scans manufacturing; pass it explicitly so analysis
+  /** Scanner rows are either manufacturing or invention. Explicit so analysis
    *  doesn't fall back to its default. */
-  activityMode: "manufacturing";
+  activityMode: "manufacturing" | "invention";
   /** Scanner rows are always BPs the user owns. */
   ownBlueprint: true;
   /** Match the row's BPO/BPC flavor so invention cost decisions are correct. */
   blueprintIsBPO: boolean;
   /** Auto-run handleAnalyze after the analysis state is set. */
   autoAnalyze: boolean;
+  /** Invention params (only set for T2 rows). InventionChance is an
+   *  ABSOLUTE percent already scaled by the decryptor multiplier, matching
+   *  what the engine's InventionChance override expects. */
+  inventionChancePercent?: number;
+  inventionOutputRuns?: number;
+  decryptorCost?: number;
+  decryptorKey?: DecryptorKey;
 }
 
 interface Props {
@@ -217,8 +241,10 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
     () => new Set(initialScanState?.selectedIDs ?? []),
   );
 
+  // Composite so a single BPO fanning out to multiple T2 invention products
+  // gets one distinct key per row.
   const rowKey = (row: ProfitableScanRow) =>
-    `${row.blueprint_type_id}-${row.is_bpo ? "bpo" : "bpc"}`;
+    `${row.blueprint_type_id}-${row.is_bpo ? "bpo" : "bpc"}-${row.scan_mode ?? "t1_mfg"}-${row.product_type_id}`;
   const [addToProjectOpen, setAddToProjectOpen] = useState(false);
   const { importFees, loading: importingFees } = useEsiFeeImport();
   const [searchQuery, setSearchQuery] = useState(initialScanState?.searchQuery ?? "");
@@ -397,26 +423,42 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
     });
   };
 
+  // Resolve the effective decryptor cost — falls back to the decryptor's
+  // default cost if the user hasn't set a manual override.
+  const effectiveDecryptorCost = useCallback((): number => {
+    if (params.decryptorCostOverride != null) return params.decryptorCostOverride;
+    return DECRYPTORS[params.decryptor]?.defaultCost ?? 0;
+  }, [params.decryptor, params.decryptorCostOverride]);
+
   // Build the shared scan-request body. Always sends 0 for min thresholds so
   // the backend returns everything analyzed; threshold filtering is client-side.
-  const buildBaseScanRequest = useCallback((): ProfitableScanRequest => ({
-    scope: params.scope,
-    default_bpc_runs: params.defaultBPCRuns,
-    include_corp_blueprints: params.includeCorpBlueprints,
-    build_system_name: params.buildSystem,
-    pricing_system_name: params.pricingSystem,
-    pricing_station_id: params.pricingStationID,
-    facility_tax: params.facilityTax,
-    structure_bonus: params.structureBonus,
-    broker_fee: params.brokerFee,
-    sales_tax_percent: params.salesTaxPercent,
-    runs_per_job: params.runsPerJob,
-    max_blueprints: params.maxBlueprints,
-    blueprint_filter: params.blueprintFilter,
-    min_isk_per_hour: 0,
-    min_profit: 0,
-    min_margin_percent: 0,
-  }), [params]);
+  const buildBaseScanRequest = useCallback((): ProfitableScanRequest => {
+    const inv = effectiveInventionParams(params.decryptor);
+    return {
+      scope: params.scope,
+      default_bpc_runs: params.defaultBPCRuns,
+      include_corp_blueprints: params.includeCorpBlueprints,
+      build_system_name: params.buildSystem,
+      pricing_system_name: params.pricingSystem,
+      pricing_station_id: params.pricingStationID,
+      facility_tax: params.facilityTax,
+      structure_bonus: params.structureBonus,
+      broker_fee: params.brokerFee,
+      sales_tax_percent: params.salesTaxPercent,
+      runs_per_job: params.runsPerJob,
+      max_blueprints: params.maxBlueprints,
+      blueprint_filter: params.blueprintFilter,
+      include_t2_invention: params.includeT2Invention,
+      invention_me_base: inv.meBase,
+      invention_te_base: inv.teBase,
+      invention_chance_mult: inv.chanceMult,
+      invention_output_runs: inv.outputRuns,
+      decryptor_cost: params.includeT2Invention ? effectiveDecryptorCost() : 0,
+      min_isk_per_hour: 0,
+      min_profit: 0,
+      min_margin_percent: 0,
+    };
+  }, [params, effectiveDecryptorCost]);
 
   const runScan = useCallback(async (req: ProfitableScanRequest, busyLabel: string) => {
     if (!isLoggedIn) {
@@ -487,13 +529,18 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
     // request itself sends 0 so the backend returns everything analyzed.
     const q = searchQuery.trim().toLowerCase();
     const rows = response.rows.filter((r) => {
+      const isT2 = r.scan_mode === "t2_invention";
+      if (isT2 && !params.showT2Rows) return false;
+      if (!isT2 && !params.showT1Rows) return false;
       if (params.minISKPerHour != null && r.isk_per_hour < params.minISKPerHour) return false;
       if (params.minProfit != null && r.profit < params.minProfit) return false;
       if (params.minMarginPct != null && r.profit_percent < params.minMarginPct) return false;
       if (q) {
         const bp = r.blueprint_name?.toLowerCase() ?? "";
         const pr = r.product_name?.toLowerCase() ?? "";
-        if (!bp.includes(q) && !pr.includes(q)) return false;
+        const src = r.invention_source_bp_name?.toLowerCase() ?? "";
+        const out = r.invention_output_bp_name?.toLowerCase() ?? "";
+        if (!bp.includes(q) && !pr.includes(q) && !src.includes(q) && !out.includes(q)) return false;
       }
       return true;
     });
@@ -520,7 +567,7 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
       return 0;
     });
     return rows;
-  }, [response, sortKey, sortDir, selectedIDs, params.minISKPerHour, params.minProfit, params.minMarginPct, searchQuery]);
+  }, [response, sortKey, sortDir, selectedIDs, params.minISKPerHour, params.minProfit, params.minMarginPct, params.showT1Rows, params.showT2Rows, searchQuery]);
 
   const toggleSelect = (key: string) => {
     setSelectedIDs((prev) => {
@@ -626,6 +673,45 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
               ]}
             />
           </SettingsField>
+          <SettingsField label={t("industryScannerIncludeT2InventionLabel")}>
+            <SettingsCheckbox
+              checked={params.includeT2Invention}
+              onChange={(v) => updateParam("includeT2Invention", v)}
+              label={t("industryScannerIncludeT2InventionHint")}
+            />
+          </SettingsField>
+          {params.includeT2Invention && (
+            <>
+              <SettingsField label={t("industryScannerDecryptorLabel")}>
+                <SettingsSelect
+                  value={params.decryptor}
+                  onChange={(v) => {
+                    // Reset cost override when the decryptor changes so the
+                    // new default fills in unless the user retypes.
+                    setParams((prev) => {
+                      const next: PersistedParams = {
+                        ...prev,
+                        decryptor: v as DecryptorKey,
+                        decryptorCostOverride: null,
+                      };
+                      savePersistedParams(next);
+                      return next;
+                    });
+                  }}
+                  options={DECRYPTOR_ORDER.map((k) => ({ value: k, label: DECRYPTORS[k].name }))}
+                />
+              </SettingsField>
+              <SettingsField label={t("industryScannerDecryptorCostLabel")}>
+                <SettingsNumberInput
+                  value={params.decryptorCostOverride ?? DECRYPTORS[params.decryptor].defaultCost}
+                  onChange={(v) => updateParam("decryptorCostOverride", v)}
+                  min={0}
+                  max={100_000_000}
+                  step={1000}
+                />
+              </SettingsField>
+            </>
+          )}
         </SettingsGrid>
 
         <div className="mt-3">
@@ -919,6 +1005,32 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                   </button>
                 )}
               </div>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => updateParam("showT1Rows", !params.showT1Rows)}
+                  title={t("industryScannerScanModeT1")}
+                  className={`px-2 py-0.5 text-[10px] rounded-sm border transition-colors ${
+                    params.showT1Rows
+                      ? "border-emerald-400/60 text-emerald-300 bg-emerald-400/10"
+                      : "border-eve-border text-eve-dim hover:text-eve-text"
+                  }`}
+                >
+                  {t("industryScannerScanModeT1")}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => updateParam("showT2Rows", !params.showT2Rows)}
+                  title={t("industryScannerScanModeT2")}
+                  className={`px-2 py-0.5 text-[10px] rounded-sm border transition-colors ${
+                    params.showT2Rows
+                      ? "border-violet-400/60 text-violet-300 bg-violet-400/10"
+                      : "border-eve-border text-eve-dim hover:text-eve-text"
+                  }`}
+                >
+                  {t("industryScannerScanModeT2")}
+                </button>
+              </div>
               <span className="text-[11px] text-eve-dim">
                 {t("industryScannerSelectedSummary")
                   .replace("{count}", String(selectedIDs.size))
@@ -991,6 +1103,14 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                     const k = rowKey(row);
                     const checked = selectedIDs.has(k);
                     const hours = row.manufacturing_time / 3600;
+                    const isT2 = row.scan_mode === "t2_invention";
+                    const capUnlimited = (row.attempts_cap ?? -1) < 0;
+                    const capLabel = capUnlimited
+                      ? t("industryScannerAttemptsCapUnlimited")
+                      : String(row.attempts_cap ?? 0);
+                    const t2Tooltip = isT2
+                      ? `Invention: ${((row.invention_probability ?? 0) * 100).toFixed(1)}% × ${(row.expected_attempts ?? 0).toFixed(1)} attempts (cap ${capLabel})`
+                      : undefined;
                     return (
                       <tr
                         key={k}
@@ -1005,12 +1125,38 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                             onChange={() => toggleSelect(k)}
                           />
                         </td>
-                        <td className="px-2 py-1 font-medium text-eve-text">
-                          {row.blueprint_name}
+                        <td className="px-2 py-1 font-medium text-eve-text" title={t2Tooltip}>
+                          {isT2 ? (
+                            <span>
+                              <span className="text-eve-dim">
+                                {row.invention_source_bp_name || row.blueprint_name}
+                              </span>
+                              <span className="text-eve-dim/60"> → </span>
+                              <span className="text-eve-text">
+                                {row.invention_output_bp_name || `${row.product_name} Blueprint`}
+                              </span>
+                            </span>
+                          ) : (
+                            row.blueprint_name
+                          )}
                           {row.is_bpo ? (
                             <span className="ml-1 text-[10px] text-emerald-300">[BPO]</span>
                           ) : (
                             <span className="ml-1 text-[10px] text-amber-300">[BPC]</span>
+                          )}
+                          {isT2 && (
+                            <span
+                              className={`ml-1 text-[10px] ${
+                                row.attempts_cap_exceeded ? "text-amber-400" : "text-violet-300"
+                              }`}
+                              title={
+                                row.attempts_cap_exceeded
+                                  ? t("industryScannerAttemptsCapExceeded")
+                                  : undefined
+                              }
+                            >
+                              [T2 INV{row.attempts_cap_exceeded ? "!" : ""}]
+                            </span>
                           )}
                         </td>
                         <td className="px-2 py-1 text-eve-dim">{row.product_name}</td>
@@ -1045,11 +1191,16 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                                 const picked = allStations.find(
                                   (s) => Number(s.id) === params.buildStationID,
                                 );
+                                const isT2Handoff = row.scan_mode === "t2_invention";
+                                const inv = effectiveInventionParams(params.decryptor);
                                 onViewInAnalysis({
                                   productTypeID: row.product_type_id,
                                   productName: row.product_name,
-                                  me: row.me,
-                                  te: row.te,
+                                  // For T2 rows the ME/TE that drive analysis
+                                  // are the *invented T2 BPC's*, not the T1
+                                  // source. Pass the decryptor-adjusted values.
+                                  me: isT2Handoff ? inv.meBase : row.me,
+                                  te: isT2Handoff ? inv.teBase : row.te,
                                   runs: row.runs,
                                   systemName: params.buildSystem,
                                   stationID: params.buildStationID,
@@ -1058,10 +1209,20 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                                   structureBonus: params.structureBonus,
                                   brokerFee: params.brokerFee,
                                   salesTaxPercent: params.salesTaxPercent,
-                                  activityMode: "manufacturing",
+                                  activityMode: isT2Handoff ? "invention" : "manufacturing",
                                   ownBlueprint: true,
                                   blueprintIsBPO: row.is_bpo,
                                   autoAnalyze: true,
+                                  ...(isT2Handoff
+                                    ? {
+                                        // Absolute percent for the engine's
+                                        // InventionChance override.
+                                        inventionChancePercent: (row.invention_probability ?? 0) * 100,
+                                        inventionOutputRuns: inv.outputRuns,
+                                        decryptorCost: effectiveDecryptorCost(),
+                                        decryptorKey: params.decryptor,
+                                      }
+                                    : {}),
                                 });
                               }}
                               title={t("industryScannerViewInAnalysis")}
@@ -1088,6 +1249,16 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
         onClose={() => setAddToProjectOpen(false)}
         rows={selectedRows}
         runsPerJob={params.runsPerJob}
+        analysisContext={{
+          systemName: params.buildSystem,
+          stationID: params.buildStationID,
+          facilityTax: params.facilityTax,
+          structureBonus: params.structureBonus,
+          brokerFee: params.brokerFee,
+          salesTaxPercent: params.salesTaxPercent,
+          decryptorKey: params.decryptor,
+          decryptorCost: effectiveDecryptorCost(),
+        }}
         onSuccess={(projectID, count, summary) => {
           setAddToProjectOpen(false);
           const detail = summary

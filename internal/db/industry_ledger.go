@@ -45,6 +45,17 @@ type IndustryProject struct {
 	Params    json.RawMessage `json:"params"`
 	CreatedAt string          `json:"created_at"`
 	UpdatedAt string          `json:"updated_at"`
+
+	// Summary counts populated by ListIndustryProjectsForUser for the
+	// Projects Overview dashboard. Zero from GetIndustryProject.
+	TasksTotal         int `json:"tasks_total"`
+	TasksDone          int `json:"tasks_done"`
+	JobsTotal          int `json:"jobs_total"`
+	JobsDone           int `json:"jobs_done"`
+	MaterialsTotal     int `json:"materials_total"`
+	MaterialsToBuy     int `json:"materials_to_buy"`
+	BlueprintsTotal    int `json:"blueprints_total"`
+	BlueprintsMissing  int `json:"blueprints_missing"`
 }
 
 type IndustryTask struct {
@@ -1970,26 +1981,72 @@ func (d *DB) ListIndustryProjectsForUser(userID, status string, limit int) ([]In
 	}
 
 	status = normalizeIndustryProjectStatus(status)
+
+	// Aggregate subqueries feed the Projects Overview dashboard so the client
+	// can render progress bars + blocker counts without an N+1 snapshot fetch.
+	// Each subquery is scoped by (user_id, project_id) and joined back to the
+	// project row; missing rows collapse to NULL which we COALESCE to zero.
+	baseSelect := `
+		SELECT p.id, p.user_id, p.name, p.status, p.strategy, p.notes, p.params_json, p.created_at, p.updated_at,
+		       COALESCE(t.total, 0)  AS tasks_total,
+		       COALESCE(t.done, 0)   AS tasks_done,
+		       COALESCE(j.total, 0)  AS jobs_total,
+		       COALESCE(j.done, 0)   AS jobs_done,
+		       COALESCE(m.total, 0)  AS materials_total,
+		       COALESCE(m.to_buy, 0) AS materials_to_buy,
+		       COALESCE(b.total, 0)  AS blueprints_total,
+		       COALESCE(b.missing, 0) AS blueprints_missing
+		  FROM industry_projects p
+		  LEFT JOIN (
+		      SELECT project_id,
+		             COUNT(*) AS total,
+		             SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS done
+		        FROM industry_tasks
+		       WHERE user_id = ?
+		       GROUP BY project_id
+		  ) t ON t.project_id = p.id
+		  LEFT JOIN (
+		      SELECT project_id,
+		             COUNT(*) AS total,
+		             SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS done
+		        FROM industry_jobs
+		       WHERE user_id = ?
+		       GROUP BY project_id
+		  ) j ON j.project_id = p.id
+		  LEFT JOIN (
+		      SELECT project_id,
+		             COUNT(*) AS total,
+		             SUM(CASE WHEN buy_qty > 0 THEN 1 ELSE 0 END) AS to_buy
+		        FROM industry_material_plan
+		       WHERE user_id = ?
+		       GROUP BY project_id
+		  ) m ON m.project_id = p.id
+		  LEFT JOIN (
+		      SELECT project_id,
+		             COUNT(*) AS total,
+		             SUM(CASE WHEN available_runs <= 0 AND is_bpo = 0 THEN 1 ELSE 0 END) AS missing
+		        FROM industry_blueprint_pool
+		       WHERE user_id = ?
+		       GROUP BY project_id
+		  ) b ON b.project_id = p.id
+	`
+
 	var (
 		rows *sql.Rows
 		err  error
 	)
 	if status == "" {
-		rows, err = d.sql.Query(`
-			SELECT id, user_id, name, status, strategy, notes, params_json, created_at, updated_at
-			  FROM industry_projects
-			 WHERE user_id = ?
-			 ORDER BY updated_at DESC, id DESC
+		rows, err = d.sql.Query(baseSelect+`
+			 WHERE p.user_id = ?
+			 ORDER BY p.updated_at DESC, p.id DESC
 			 LIMIT ?
-		`, userID, limit)
+		`, userID, userID, userID, userID, userID, limit)
 	} else {
-		rows, err = d.sql.Query(`
-			SELECT id, user_id, name, status, strategy, notes, params_json, created_at, updated_at
-			  FROM industry_projects
-			 WHERE user_id = ? AND status = ?
-			 ORDER BY updated_at DESC, id DESC
+		rows, err = d.sql.Query(baseSelect+`
+			 WHERE p.user_id = ? AND p.status = ?
+			 ORDER BY p.updated_at DESC, p.id DESC
 			 LIMIT ?
-		`, userID, status, limit)
+		`, userID, userID, userID, userID, userID, status, limit)
 	}
 	if err != nil {
 		return nil, err
@@ -1999,24 +2056,43 @@ func (d *DB) ListIndustryProjectsForUser(userID, status string, limit int) ([]In
 	projects := make([]IndustryProject, 0, limit)
 	for rows.Next() {
 		var (
-			id        int64
-			dbUserID  string
-			name      string
-			dbStatus  string
-			strategy  string
-			notes     string
-			paramsStr string
-			createdAt string
-			updatedAt string
+			id                 int64
+			dbUserID           string
+			name               string
+			dbStatus           string
+			strategy           string
+			notes              string
+			paramsStr          string
+			createdAt          string
+			updatedAt          string
+			tasksTotal         int
+			tasksDone          int
+			jobsTotal          int
+			jobsDone           int
+			materialsTotal     int
+			materialsToBuy     int
+			blueprintsTotal    int
+			blueprintsMissing  int
 		)
 		if err := rows.Scan(
 			&id, &dbUserID, &name, &dbStatus, &strategy, &notes, &paramsStr, &createdAt, &updatedAt,
+			&tasksTotal, &tasksDone, &jobsTotal, &jobsDone,
+			&materialsTotal, &materialsToBuy, &blueprintsTotal, &blueprintsMissing,
 		); err != nil {
 			return nil, err
 		}
-		projects = append(projects, d.scanIndustryProject(
+		p := d.scanIndustryProject(
 			id, dbUserID, name, dbStatus, strategy, notes, paramsStr, createdAt, updatedAt,
-		))
+		)
+		p.TasksTotal = tasksTotal
+		p.TasksDone = tasksDone
+		p.JobsTotal = jobsTotal
+		p.JobsDone = jobsDone
+		p.MaterialsTotal = materialsTotal
+		p.MaterialsToBuy = materialsToBuy
+		p.BlueprintsTotal = blueprintsTotal
+		p.BlueprintsMissing = blueprintsMissing
+		projects = append(projects, p)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -2031,6 +2107,86 @@ func (d *DB) ListIndustryProjectsForUser(userID, status string, limit int) ([]In
 		return []IndustryProject{}, nil
 	}
 	return projects, nil
+}
+
+// DeleteIndustryProjectForUser removes a project and all its child rows
+// (tasks / jobs / materials / blueprints) in a single transaction. Explicit
+// child DELETEs are used rather than relying on ON DELETE CASCADE, so this
+// works even when foreign_keys pragma is off (which is the case for the
+// in-memory test DB). Returns sql.ErrNoRows if the project doesn't exist
+// for this user.
+func (d *DB) DeleteIndustryProjectForUser(userID string, projectID int64) error {
+	userID = normalizeUserID(userID)
+	if projectID <= 0 {
+		return fmt.Errorf("project_id must be positive")
+	}
+
+	// Confirm the project exists for this user before touching child tables,
+	// so a wrong-user or wrong-id request returns 404 without side effects.
+	var exists int
+	if err := d.sql.QueryRow(
+		`SELECT 1 FROM industry_projects WHERE user_id = ? AND id = ?`,
+		userID, projectID,
+	).Scan(&exists); err != nil {
+		if err == sql.ErrNoRows {
+			return sql.ErrNoRows
+		}
+		return err
+	}
+
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Mirrors the Replace-mode child-table wipe in ApplyIndustryPlanForUser.
+	for _, stmt := range []string{
+		`DELETE FROM industry_jobs           WHERE user_id = ? AND project_id = ?`,
+		`DELETE FROM industry_tasks          WHERE user_id = ? AND project_id = ?`,
+		`DELETE FROM industry_material_plan  WHERE user_id = ? AND project_id = ?`,
+		`DELETE FROM industry_blueprint_pool WHERE user_id = ? AND project_id = ?`,
+	} {
+		if _, err := tx.Exec(stmt, userID, projectID); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(
+		`DELETE FROM industry_projects WHERE user_id = ? AND id = ?`,
+		userID, projectID,
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// UpdateIndustryProjectStatusForUser flips a project's status. Used by the
+// Archive / Restore actions in the Projects Overview.
+func (d *DB) UpdateIndustryProjectStatusForUser(userID string, projectID int64, newStatus string) error {
+	userID = normalizeUserID(userID)
+	if projectID <= 0 {
+		return fmt.Errorf("project_id must be positive")
+	}
+	normalized := normalizeIndustryProjectStatus(newStatus)
+	if normalized == "" {
+		return fmt.Errorf("invalid status: %q", newStatus)
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	res, err := d.sql.Exec(
+		`UPDATE industry_projects SET status = ?, updated_at = ? WHERE user_id = ? AND id = ?`,
+		normalized, now, userID, projectID,
+	)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (d *DB) PreviewIndustryPlanForUser(userID string, projectID int64, patch IndustryPlanPatch) (IndustryPlanPreview, error) {

@@ -1965,6 +1965,16 @@ export interface ProfitableScanRequest {
   // Which kinds of blueprints to include. Default "bpo".
   blueprint_filter?: "bpo" | "bpc" | "both";
 
+  // When true, each owned T1 BP with an invention activity is fanned out to
+  // its T2 products and scored in invention mode alongside the T1 mfg rows.
+  include_t2_invention?: boolean;
+  // Effective invention params (decryptor deltas baked in on the frontend).
+  invention_me_base?: number;
+  invention_te_base?: number;
+  invention_chance_mult?: number;
+  invention_output_runs?: number;
+  decryptor_cost?: number;
+
   // When true, the backend skips the ESI blueprint fetch and rescores the
   // supplied reuse_groups instead. Used by the "Refresh prices" button.
   skip_blueprint_fetch?: boolean;
@@ -1999,6 +2009,17 @@ export interface ProfitableScanRow {
   optimal_build_cost: number;
   sell_revenue: number;
   manufacturing_time: number;
+
+  // Invention-specific fields. "" / 0 for T1 manufacturing rows.
+  scan_mode?: "t1_mfg" | "t2_invention";
+  invention_source_bp_id?: number;
+  invention_source_bp_name?: string;
+  invention_output_bp_id?: number; // T2 BPC typeID
+  invention_output_bp_name?: string; // T2 BPC name
+  invention_probability?: number; // effective per-attempt (0..1)
+  expected_attempts?: number;
+  attempts_cap?: number; // -1 = unlimited (BPO source)
+  attempts_cap_exceeded?: boolean;
 }
 
 export interface ProfitableScanStats {
@@ -2025,6 +2046,10 @@ export interface BuildableItem {
   type_id: number;
   type_name: string;
   has_blueprint: boolean;
+  // True when this item's blueprint is a T2 BPC (produced by some other
+  // blueprint's invention activity). Analyze tab uses it to default ME/TE
+  // to 2/4 instead of 10/20.
+  is_t2_bp?: boolean;
 }
 
 export interface IndustrySystem {
@@ -2071,6 +2096,17 @@ export interface IndustryProject {
   params: unknown;
   created_at: string;
   updated_at: string;
+
+  // Summary counts populated by GET /api/auth/industry/projects for the
+  // Projects Overview dashboard. Zero from single-project endpoints.
+  tasks_total?: number;
+  tasks_done?: number;
+  jobs_total?: number;
+  jobs_done?: number;
+  materials_total?: number;
+  materials_to_buy?: number;
+  blueprints_total?: number;
+  blueprints_missing?: number;
 }
 
 export interface IndustryTaskPlanInput {

@@ -15,6 +15,7 @@ import (
 	"eve-flipper/internal/db"
 	"eve-flipper/internal/engine"
 	"eve-flipper/internal/esi"
+	"eve-flipper/internal/sde"
 )
 
 // ownedBlueprintAggregateStats is the per-call telemetry from
@@ -30,6 +31,29 @@ type ownedBlueprintAggregateStats struct {
 	CorporationsScanned          int
 	CorporationsForbidden        int
 	CorporationBlueprintRows     int
+}
+
+// blueprintDisplayName returns a human-readable name for a blueprint type.
+// Falls back to "<product name> Blueprint" when sdeData.Types doesn't
+// carry the BP itself (invented T2 BPCs and some obscure T1 BPs are absent
+// from the market-published type list — see loader.go's marketGroupID gate).
+func blueprintDisplayName(bpTypeID int32, sdeData *sde.Data) string {
+	if sdeData != nil {
+		if t, ok := sdeData.Types[bpTypeID]; ok && strings.TrimSpace(t.Name) != "" {
+			return strings.TrimSpace(t.Name)
+		}
+		if sdeData.Industry != nil {
+			if bp, ok := sdeData.Industry.Blueprints[bpTypeID]; ok && bp != nil {
+				if mfg, ok := bp.Activities["manufacturing"]; ok && mfg != nil && len(mfg.Products) > 0 {
+					prodID := mfg.Products[0].TypeID
+					if pt, ok := sdeData.Types[prodID]; ok && strings.TrimSpace(pt.Name) != "" {
+						return strings.TrimSpace(pt.Name) + " Blueprint"
+					}
+				}
+			}
+		}
+	}
+	return fmt.Sprintf("Type %d", bpTypeID)
 }
 
 // aggregateOwnedBlueprints fetches blueprints for the requested characters
@@ -149,10 +173,7 @@ func (s *Server) aggregateOwnedBlueprints(
 			}
 		}
 
-		typeName := fmt.Sprintf("Type %d", typeID)
-		if t, ok := sdeData.Types[typeID]; ok && strings.TrimSpace(t.Name) != "" {
-			typeName = strings.TrimSpace(t.Name)
-		}
+		typeName := blueprintDisplayName(typeID, sdeData)
 
 		key := bpKey{TypeID: typeID, LocationID: locationID, IsBPO: isBPO}
 		row := aggregated[key]
@@ -437,6 +458,20 @@ type profitableScanRequest struct {
 	// Empty / unknown values are treated as "bpo".
 	BlueprintFilter string `json:"blueprint_filter"`
 
+	// IncludeT2Invention, when true, fans each owned T1 BP that has an
+	// invention activity out to its T2 products and scores them in
+	// invention mode alongside the T1 manufacturing rows.
+	IncludeT2Invention bool `json:"include_t2_invention"`
+
+	// Effective invention parameters — the frontend computes decryptor
+	// deltas and sends the absolute values so the engine stays untouched.
+	// Zero values mean "SDE default".
+	InventionMEBase     int32   `json:"invention_me_base"`
+	InventionTEBase     int32   `json:"invention_te_base"`
+	InventionChanceMult float64 `json:"invention_chance_mult"`
+	InventionOutputRuns int32   `json:"invention_output_runs"`
+	DecryptorCost       float64 `json:"decryptor_cost"`
+
 	// When SkipBlueprintFetch is true, the backend skips the ESI blueprint /
 	// asset fetch and uses ReuseGroups verbatim as the scan input. This is how
 	// the "Refresh prices" flow re-scores the existing table without paying
@@ -477,6 +512,17 @@ type profitableScanRow struct {
 	OptimalBuildCost  float64 `json:"optimal_build_cost"`
 	SellRevenue       float64 `json:"sell_revenue"`
 	ManufacturingTime int32   `json:"manufacturing_time"`
+
+	// Invention-specific fields. Empty / zero for T1 manufacturing rows.
+	ScanMode              string  `json:"scan_mode"`               // "t1_mfg" | "t2_invention"
+	InventionSourceBPID   int32   `json:"invention_source_bp_id"`  // T1 BP typeID (0 for t1_mfg)
+	InventionSourceBPName string  `json:"invention_source_bp_name"`
+	InventionOutputBPID   int32   `json:"invention_output_bp_id"` // T2 BPC typeID (0 for t1_mfg)
+	InventionOutputBPName string  `json:"invention_output_bp_name"`
+	InventionProbability  float64 `json:"invention_probability"` // effective per-attempt (0..1)
+	ExpectedAttempts      float64 `json:"expected_attempts"`
+	AttemptsCap           int64   `json:"attempts_cap"` // -1 = unlimited (BPO source)
+	AttemptsCapExceeded   bool    `json:"attempts_cap_exceeded"`
 }
 
 type profitableScanStats struct {
@@ -561,6 +607,128 @@ func groupBlueprintsByType(rows []db.IndustryBlueprintPoolInput) []blueprintGrou
 		return out[i].IsBPO && !out[j].IsBPO
 	})
 	return out
+}
+
+// scanAnalyzeWork is one row's worth of work for the analyzer pool. For T1
+// manufacturing rows, group is the owned BP, productTypeID is what it makes,
+// and the invention-specific fields stay zero. For T2 invention rows, group
+// is the OWNED T1 BP source, productTypeID is the T2 MODULE (not the T2 BPC),
+// and the invention fields carry the source identity, invented BPC identity,
+// and per-attempt chance.
+type scanAnalyzeWork struct {
+	group         blueprintGroup
+	productTypeID int32
+	productName   string
+
+	scanMode             string // "t1_mfg" | "t2_invention"
+	sourceBlueprintID    int32  // T1 BP typeID (invention only)
+	sourceBlueprintName  string
+	outputBlueprintID    int32 // T2 BPC typeID (invention only)
+	outputBlueprintName  string
+	effectiveProbability float64 // base × mult, clamped to (0, 1]
+	attemptsCap          int64   // -1 = unlimited (BPO source)
+}
+
+// buildScanWork turns blueprint groups into per-row analyzer work items. For
+// each group it emits at most one T1 manufacturing item plus (when
+// includeT2Invention is true) one item per T2 product the group's BP can
+// invent. skipped is the number of groups that produced no work items at all
+// — the caller adds this to stats.SkippedNoActivity.
+//
+// Pure — extracted from handleAuthIndustryProfitableScan so tests can exercise
+// the fan-out without spinning up an HTTP server or an SDE loader.
+func buildScanWork(groups []blueprintGroup, sdeData *sde.Data, includeT2Invention bool, chanceMult float64) (work []scanAnalyzeWork, skipped int) {
+	if sdeData == nil || sdeData.Industry == nil {
+		return nil, len(groups)
+	}
+	if chanceMult <= 0 {
+		chanceMult = 1.0
+	}
+	// Modules and other tradeable products are always in Types; BPs may not
+	// be (invented T2 BPCs, some obscure T1 BPs) so route via the fallback.
+	typeName := func(id int32) string {
+		if t, ok := sdeData.Types[id]; ok && strings.TrimSpace(t.Name) != "" {
+			return strings.TrimSpace(t.Name)
+		}
+		return fmt.Sprintf("Type %d", id)
+	}
+
+	work = make([]scanAnalyzeWork, 0, len(groups))
+	for _, g := range groups {
+		bp, ok := sdeData.Industry.Blueprints[g.BlueprintTypeID]
+		if !ok {
+			skipped++
+			continue
+		}
+		emitted := false
+
+		if mfg, mok := bp.Activities["manufacturing"]; mok && mfg != nil && len(mfg.Products) > 0 {
+			productTypeID := mfg.Products[0].TypeID
+			if productTypeID > 0 {
+				work = append(work, scanAnalyzeWork{
+					group:         g,
+					productTypeID: productTypeID,
+					productName:   typeName(productTypeID),
+					scanMode:      "t1_mfg",
+				})
+				emitted = true
+			}
+		}
+
+		if includeT2Invention {
+			if inv, iok := bp.Activities["invention"]; iok && inv != nil {
+				for _, invProduct := range inv.Products {
+					if invProduct.TypeID <= 0 {
+						continue
+					}
+					t2BP, tbok := sdeData.Industry.Blueprints[invProduct.TypeID]
+					if !tbok || t2BP == nil {
+						continue
+					}
+					t2Mfg, tmok := t2BP.Activities["manufacturing"]
+					if !tmok || t2Mfg == nil || len(t2Mfg.Products) == 0 {
+						continue
+					}
+					t2ModuleID := t2Mfg.Products[0].TypeID
+					if t2ModuleID <= 0 {
+						continue
+					}
+					baseChance := invProduct.Probability
+					if baseChance <= 0 {
+						continue
+					}
+					effChance := baseChance * chanceMult
+					if effChance > 1 {
+						effChance = 1
+					}
+
+					var cap int64 = -1
+					if !g.IsBPO {
+						cap = g.AvailableRuns
+					}
+
+					work = append(work, scanAnalyzeWork{
+						group:                g,
+						productTypeID:        t2ModuleID,
+						productName:          typeName(t2ModuleID),
+						scanMode:             "t2_invention",
+						sourceBlueprintID:    g.BlueprintTypeID,
+						sourceBlueprintName:  g.BlueprintName,
+						outputBlueprintID:    invProduct.TypeID,
+						outputBlueprintName:  blueprintDisplayName(invProduct.TypeID, sdeData),
+						effectiveProbability: effChance,
+						attemptsCap:          cap,
+					})
+					emitted = true
+				}
+			}
+		}
+
+		if !emitted {
+			skipped++
+		}
+	}
+	return work, skipped
 }
 
 // profitableScanRowPassesFilters returns true when the row meets all the
@@ -676,12 +844,7 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 			if rg.BlueprintTypeID <= 0 {
 				continue
 			}
-			name := fmt.Sprintf("Type %d", rg.BlueprintTypeID)
-			if preFetchSDE != nil {
-				if t, ok := preFetchSDE.Types[rg.BlueprintTypeID]; ok && strings.TrimSpace(t.Name) != "" {
-					name = strings.TrimSpace(t.Name)
-				}
-			}
+			name := blueprintDisplayName(rg.BlueprintTypeID, preFetchSDE)
 			groups = append(groups, blueprintGroup{
 				BlueprintTypeID: rg.BlueprintTypeID,
 				BlueprintName:   name,
@@ -738,35 +901,8 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 	}
 	s.mu.RUnlock()
 
-	type analyzeWork struct {
-		group         blueprintGroup
-		productTypeID int32
-		productName   string
-	}
-
-	work := make([]analyzeWork, 0, len(groups))
-	for _, g := range groups {
-		bp, ok := sdeData.Industry.Blueprints[g.BlueprintTypeID]
-		if !ok {
-			stats.SkippedNoActivity++
-			continue
-		}
-		mfg, ok := bp.Activities["manufacturing"]
-		if !ok || mfg == nil || len(mfg.Products) == 0 {
-			stats.SkippedNoActivity++
-			continue
-		}
-		productTypeID := mfg.Products[0].TypeID
-		if productTypeID <= 0 {
-			stats.SkippedNoActivity++
-			continue
-		}
-		productName := fmt.Sprintf("Type %d", productTypeID)
-		if t, ok := sdeData.Types[productTypeID]; ok && strings.TrimSpace(t.Name) != "" {
-			productName = strings.TrimSpace(t.Name)
-		}
-		work = append(work, analyzeWork{group: g, productTypeID: productTypeID, productName: productName})
-	}
+	work, skippedNoActivity := buildScanWork(groups, sdeData, req.IncludeT2Invention, req.InventionChanceMult)
+	stats.SkippedNoActivity += skippedNoActivity
 
 	maxBPs := req.MaxBlueprints
 	if maxBPs <= 0 {
@@ -800,7 +936,7 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 
 		wg.Add(1)
 		sem <- struct{}{}
-		go func(item analyzeWork) {
+		go func(item scanAnalyzeWork) {
 			defer wg.Done()
 			defer func() { <-sem }()
 			if ctx.Err() != nil {
@@ -822,6 +958,20 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 				SalesTaxPercent:    req.SalesTaxPercent,
 				MaxDepth:           req.MaxDepth,
 				OwnBlueprint:       true,
+			}
+
+			if item.scanMode == "t2_invention" {
+				params.ActivityMode = "invention"
+				// The manufacturing step for T2 rows applies to the invented
+				// T2 BPC, whose ME/TE come from the request (T2 base 2/4 plus
+				// any decryptor deltas the frontend baked in).
+				params.MaterialEfficiency = req.InventionMEBase
+				params.TimeEfficiency = req.InventionTEBase
+				// Engine expects InventionChance as a percent (0-100); we
+				// carry the effective probability as a 0..1 fraction.
+				params.InventionChance = item.effectiveProbability * 100
+				params.InventionOutputRuns = req.InventionOutputRuns
+				params.DecryptorCost = req.DecryptorCost
 			}
 
 			// IndustryAnalyzer stores per-call mutable state on the receiver
@@ -850,6 +1000,10 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 				return
 			}
 
+			scanMode := item.scanMode
+			if scanMode == "" {
+				scanMode = "t1_mfg"
+			}
 			row := profitableScanRow{
 				BlueprintTypeID:   item.group.BlueprintTypeID,
 				BlueprintName:     item.group.BlueprintName,
@@ -868,6 +1022,19 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 				OptimalBuildCost:  result.OptimalBuildCost,
 				SellRevenue:       result.SellRevenue,
 				ManufacturingTime: result.ManufacturingTime,
+				ScanMode:          scanMode,
+			}
+			if scanMode == "t2_invention" {
+				row.InventionSourceBPID = item.sourceBlueprintID
+				row.InventionSourceBPName = item.sourceBlueprintName
+				row.InventionOutputBPID = item.outputBlueprintID
+				row.InventionOutputBPName = item.outputBlueprintName
+				row.InventionProbability = result.InventionProbability
+				row.ExpectedAttempts = result.InventionAttempts
+				row.AttemptsCap = item.attemptsCap
+				if item.attemptsCap >= 0 && result.InventionAttempts > float64(item.attemptsCap) {
+					row.AttemptsCapExceeded = true
+				}
 			}
 
 			passes := profitableScanRowPassesFilters(row, req)

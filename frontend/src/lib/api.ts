@@ -33,6 +33,7 @@ import type {
   IndustryPlanSummary,
   IndustryProject,
   IndustryProjectSnapshot,
+  IndustryProjectStatus,
   IndustryTaskRecord,
   IndustryTaskStatus,
   ItemIntelligence,
@@ -1090,6 +1091,25 @@ export async function createAuthIndustryProject(
     body: JSON.stringify(payload),
   });
   return handleResponse<IndustryProjectCreateResponse>(res);
+}
+
+export async function deleteAuthIndustryProject(projectID: number): Promise<void> {
+  const res = await apiFetch(`${BASE}/api/auth/industry/projects/${projectID}`, {
+    method: "DELETE",
+  });
+  await handleResponse<{ ok: boolean; deleted: boolean }>(res);
+}
+
+export async function updateAuthIndustryProjectStatus(
+  projectID: number,
+  status: IndustryProjectStatus,
+): Promise<void> {
+  const res = await apiFetch(`${BASE}/api/auth/industry/projects/${projectID}/status`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status }),
+  });
+  await handleResponse<{ ok: boolean }>(res);
 }
 
 export async function getAuthIndustryProjectSnapshot(

@@ -1,4 +1,5 @@
-import type { Dispatch, SetStateAction } from "react";
+import { useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
+import { useI18n } from "@/lib/i18n";
 import type {
   IndustryBlueprintPoolInput,
   IndustryJobPlanInput,
@@ -7,6 +8,53 @@ import type {
   IndustryTaskPlanInput,
 } from "@/lib/types";
 import type { IndustryJobsWorkspaceTab } from "./IndustryJobsWorkspaceNav";
+
+// AddRowButton is the compact + control that lives in each section header.
+// Replaces the previous four "+Task / +Job / +Material / +Blueprint" buttons
+// that used to clutter the planner action bar above.
+function AddRowButton({ onClick, title }: { onClick: () => void; title: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      className="px-1.5 py-0.5 text-[10px] rounded-sm border border-eve-accent/40 text-eve-accent hover:bg-eve-accent/10 leading-none"
+    >
+      +
+    </button>
+  );
+}
+
+// RowIconButton is a fixed-size square icon button used in each section's
+// last column (delete, and the task-row expand chevron). Keeps the delete
+// controls visually identical across all four sections regardless of which
+// other buttons share the cell.
+function RowIconButton({
+  onClick,
+  title,
+  tone,
+  children,
+}: {
+  onClick: () => void;
+  title: string;
+  tone: "danger" | "neutral";
+  children: ReactNode;
+}) {
+  const toneClass =
+    tone === "danger"
+      ? "border-red-500/40 text-red-300 hover:bg-red-500/10"
+      : "border-eve-border/50 text-eve-dim hover:text-eve-accent hover:border-eve-accent/40";
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      className={`inline-flex items-center justify-center w-6 h-6 rounded-sm border text-[11px] leading-none transition-colors ${toneClass}`}
+    >
+      {children}
+    </button>
+  );
+}
 
 type PlanBuilderSection = "tasks" | "jobs" | "materials" | "blueprints";
 
@@ -64,6 +112,10 @@ interface IndustryPlannerBuilderContext {
   blueprintPageStart: number;
   updateVisualBlueprintRow: (index: number, next: Partial<IndustryBlueprintPoolInput>) => void;
   removeVisualBlueprintRow: (index: number) => void;
+  addVisualTaskRow: () => void;
+  addVisualJobRow: () => void;
+  addVisualMaterialRow: () => void;
+  addVisualBlueprintRow: () => void;
 }
 
 interface IndustryPlannerBuilderPanelProps {
@@ -110,7 +162,25 @@ export function IndustryPlannerBuilderPanel({ ctx }: IndustryPlannerBuilderPanel
     blueprintPageStart,
     updateVisualBlueprintRow,
     removeVisualBlueprintRow,
+    addVisualTaskRow,
+    addVisualJobRow,
+    addVisualMaterialRow,
+    addVisualBlueprintRow,
   } = ctx;
+
+  const { t } = useI18n();
+  // Local per-row expansion state for the Tasks section. Row 2 (bp binding,
+  // station, sec/run, isk/run, ME/TE) collapses by default so the row is
+  // one line at a glance; click the chevron to expand for edits.
+  const [expandedTaskRows, setExpandedTaskRows] = useState<Set<number>>(new Set());
+  const toggleTaskExpanded = (rowIndex: number) => {
+    setExpandedTaskRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(rowIndex)) next.delete(rowIndex);
+      else next.add(rowIndex);
+      return next;
+    });
+  };
 
   return (
     <>
@@ -148,13 +218,16 @@ export function IndustryPlannerBuilderPanel({ ctx }: IndustryPlannerBuilderPanel
     <div className="grid grid-cols-1 xl:grid-cols-2 gap-2">
       <div className="border border-eve-border rounded-sm p-2 bg-eve-dark/20">
         <div className="flex items-center justify-between gap-2 mb-1">
-          <button
-            type="button"
-            onClick={() => togglePlanBuilderSection("tasks")}
-            className="text-[10px] uppercase tracking-wider text-eve-dim hover:text-eve-accent"
-          >
-            {planBuilderCollapsed.tasks ? "▶" : "▼"} Tasks ({planDraftTasks.length})
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => togglePlanBuilderSection("tasks")}
+              className="text-[10px] uppercase tracking-wider text-eve-dim hover:text-eve-accent"
+            >
+              {planBuilderCollapsed.tasks ? "▶" : "▼"} {t("industryPlannerSectionTasks")} ({planDraftTasks.length})
+            </button>
+            <AddRowButton onClick={addVisualTaskRow} title={t("industryLedgerAddTask")} />
+          </div>
           {planBuilderCompactMode && !planBuilderCollapsed.tasks && (
             <div className="inline-flex items-center gap-1 text-[10px] text-eve-dim">
               <button
@@ -180,6 +253,20 @@ export function IndustryPlannerBuilderPanel({ ctx }: IndustryPlannerBuilderPanel
         {planDraftTasks.length > 0 && (
           <div className="mt-1 text-[10px] text-eve-dim">
             bp binding: exact {visualTaskBlueprintBindingStats.exact} | fallback {visualTaskBlueprintBindingStats.fallback} | missing {visualTaskBlueprintBindingStats.missing}
+          </div>
+        )}
+        {!planBuilderCollapsed.tasks && (
+          // Grid-aligned column header for the task rows. Row 1 columns:
+          //   name (3) · activity (3) · product (2) · runs (1) · parent (1) · prio (1) · × / ▾ (1)
+          // The ▾ column doubles as row expand toggle → row 2 (bp binding etc.)
+          <div className="grid grid-cols-12 gap-1 mb-1 text-[10px] uppercase tracking-wider text-eve-dim px-1">
+            <div className="col-span-3">{t("industryPlannerColTaskName")}</div>
+            <div className="col-span-3">{t("industryPlannerColTaskActivity")}</div>
+            <div className="col-span-2">{t("industryPlannerColTaskProduct")}</div>
+            <div className="col-span-1 ">{t("industryPlannerColTaskRuns")}</div>
+            <div className="col-span-1 ">{t("industryPlannerColTaskParent")}</div>
+            <div className="col-span-1 ">{t("industryPlannerColTaskPrio")}</div>
+            <div className="col-span-1 ">{t("industryPlannerColActions")}</div>
           </div>
         )}
         {!planBuilderCollapsed.tasks && (
@@ -263,14 +350,34 @@ export function IndustryPlannerBuilderPanel({ ctx }: IndustryPlannerBuilderPanel
                     placeholder="prio"
                     className="col-span-1 px-1.5 py-1 bg-eve-input border border-eve-border rounded-sm text-[11px] text-eve-text font-mono"
                   />
-                  <button
-                    type="button"
-                    onClick={() => removeVisualTaskRow(rowIndex)}
-                    className="col-span-1 px-1 py-1 border border-red-500/40 text-red-300 rounded-sm text-[10px] hover:bg-red-500/10"
-                  >
-                    x
-                  </button>
+                  <div className="col-span-1 flex items-center justify-end gap-1">
+                    <RowIconButton
+                      onClick={() => toggleTaskExpanded(rowIndex)}
+                      title={expandedTaskRows.has(rowIndex) ? t("industryPlannerCollapseTask") : t("industryPlannerExpandTask")}
+                      tone="neutral"
+                    >
+                      {expandedTaskRows.has(rowIndex) ? "▾" : "▸"}
+                    </RowIconButton>
+                    <RowIconButton
+                      onClick={() => removeVisualTaskRow(rowIndex)}
+                      title={t("industryPlannerDeleteRow")}
+                      tone="danger"
+                    >
+                      ×
+                    </RowIconButton>
+                  </div>
               </div>
+              {expandedTaskRows.has(rowIndex) && (
+              <div className="grid grid-cols-12 gap-1 mb-0.5 text-[10px] uppercase tracking-wider text-eve-dim px-1">
+                <div className="col-span-4">{t("industryPlannerColTaskBpBinding")}</div>
+                <div className="col-span-2 ">{t("industryPlannerColTaskStation")}</div>
+                <div className="col-span-2 ">{t("industryPlannerColTaskSecPerRun")}</div>
+                <div className="col-span-2 ">{t("industryPlannerColTaskIskPerRun")}</div>
+                <div className="col-span-1 ">{t("industryPlannerColTaskME")}</div>
+                <div className="col-span-1 ">{t("industryPlannerColTaskTE")}</div>
+              </div>
+              )}
+              {expandedTaskRows.has(rowIndex) && (
               <div className="grid grid-cols-12 gap-1">
                 <select
                   value={selectedBlueprintBindingValue}
@@ -350,6 +457,7 @@ export function IndustryPlannerBuilderPanel({ ctx }: IndustryPlannerBuilderPanel
                   className="col-span-1 px-1.5 py-1 bg-eve-input border border-eve-border rounded-sm text-[11px] text-eve-text font-mono"
                 />
               </div>
+              )}
               {bindingState === "missing" && (
                 <div className="text-[10px] text-red-300">
                   Blueprint binding missing in pool: bp {bpTypeID} @ {bpLocationID || "any"}.
@@ -372,13 +480,16 @@ export function IndustryPlannerBuilderPanel({ ctx }: IndustryPlannerBuilderPanel
 
       <div className="border border-eve-border rounded-sm p-2 bg-eve-dark/20">
         <div className="flex items-center justify-between gap-2 mb-1">
-          <button
-            type="button"
-            onClick={() => togglePlanBuilderSection("jobs")}
-            className="text-[10px] uppercase tracking-wider text-eve-dim hover:text-eve-accent"
-          >
-            {planBuilderCollapsed.jobs ? "▶" : "▼"} Jobs ({planDraftJobs.length})
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => togglePlanBuilderSection("jobs")}
+              className="text-[10px] uppercase tracking-wider text-eve-dim hover:text-eve-accent"
+            >
+              {planBuilderCollapsed.jobs ? "▶" : "▼"} {t("industryPlannerSectionJobs")} ({planDraftJobs.length})
+            </button>
+            <AddRowButton onClick={addVisualJobRow} title={t("industryLedgerAddJob")} />
+          </div>
           {planBuilderCompactMode && !planBuilderCollapsed.jobs && (
             <div className="inline-flex items-center gap-1 text-[10px] text-eve-dim">
               <button
@@ -401,6 +512,18 @@ export function IndustryPlannerBuilderPanel({ ctx }: IndustryPlannerBuilderPanel
             </div>
           )}
         </div>
+        {!planBuilderCollapsed.jobs && (
+          <div className="grid grid-cols-12 gap-1 mb-1 text-[10px] uppercase tracking-wider text-eve-dim px-1">
+            <div className="col-span-2">{t("industryPlannerColJobActivity")}</div>
+            <div className="col-span-1 ">{t("industryPlannerColJobTaskRef")}</div>
+            <div className="col-span-1 ">{t("industryPlannerColJobFacility")}</div>
+            <div className="col-span-1 ">{t("industryPlannerColJobRuns")}</div>
+            <div className="col-span-2 ">{t("industryPlannerColJobDuration")}</div>
+            <div className="col-span-2 ">{t("industryPlannerColJobCost")}</div>
+            <div className="col-span-2">{t("industryPlannerColJobStatus")}</div>
+            <div className="col-span-1 ">{t("industryPlannerColActions")}</div>
+          </div>
+        )}
         {!planBuilderCollapsed.jobs && (
         <div className="space-y-1.5 max-h-[220px] overflow-auto pr-1">
           {visiblePlanDraftJobs.map((job, idx) => {
@@ -441,9 +564,10 @@ export function IndustryPlannerBuilderPanel({ ctx }: IndustryPlannerBuilderPanel
               />
               <input
                 type="number"
-                value={job.cost_isk ?? 0}
+                value={Math.round(job.cost_isk ?? 0)}
                 onChange={(e) => updateVisualJobRow(rowIndex, { cost_isk: Number(e.target.value) || 0 })}
                 placeholder="cost"
+                title={String(job.cost_isk ?? 0)}
                 className="col-span-2 px-1.5 py-1 bg-eve-input border border-eve-border rounded-sm text-[11px] text-eve-text font-mono"
               />
               <select
@@ -466,13 +590,15 @@ export function IndustryPlannerBuilderPanel({ ctx }: IndustryPlannerBuilderPanel
                 placeholder="notes"
                 className="col-span-1 px-1.5 py-1 bg-eve-input border border-eve-border rounded-sm text-[11px] text-eve-text"
               />
-              <button
-                type="button"
-                onClick={() => removeVisualJobRow(rowIndex)}
-                className="col-span-1 px-1 py-1 border border-red-500/40 text-red-300 rounded-sm text-[10px] hover:bg-red-500/10"
-              >
-                x
-              </button>
+              <div className="col-span-1 flex items-center justify-end">
+                <RowIconButton
+                  onClick={() => removeVisualJobRow(rowIndex)}
+                  title={t("industryPlannerDeleteRow")}
+                  tone="danger"
+                >
+                  ×
+                </RowIconButton>
+              </div>
             </div>
             );
           })}
@@ -485,13 +611,16 @@ export function IndustryPlannerBuilderPanel({ ctx }: IndustryPlannerBuilderPanel
 
       <div className="border border-eve-border rounded-sm p-2 bg-eve-dark/20">
         <div className="flex items-center justify-between gap-2 mb-1">
-          <button
-            type="button"
-            onClick={() => togglePlanBuilderSection("materials")}
-            className="text-[10px] uppercase tracking-wider text-eve-dim hover:text-eve-accent"
-          >
-            {planBuilderCollapsed.materials ? "▶" : "▼"} Materials ({planDraftMaterials.length})
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => togglePlanBuilderSection("materials")}
+              className="text-[10px] uppercase tracking-wider text-eve-dim hover:text-eve-accent"
+            >
+              {planBuilderCollapsed.materials ? "▶" : "▼"} {t("industryPlannerSectionMaterials")} ({planDraftMaterials.length})
+            </button>
+            <AddRowButton onClick={addVisualMaterialRow} title={t("industryLedgerAddMaterial")} />
+          </div>
           {planBuilderCompactMode && !planBuilderCollapsed.materials && (
             <div className="inline-flex items-center gap-1 text-[10px] text-eve-dim">
               <button
@@ -514,6 +643,19 @@ export function IndustryPlannerBuilderPanel({ ctx }: IndustryPlannerBuilderPanel
             </div>
           )}
         </div>
+        {!planBuilderCollapsed.materials && (
+          <div className="grid grid-cols-12 gap-1 mb-1 text-[10px] uppercase tracking-wider text-eve-dim px-1">
+            <div className="col-span-1 ">{t("industryPlannerColMatTypeID")}</div>
+            <div className="col-span-3">{t("industryPlannerColMatName")}</div>
+            <div className="col-span-1 ">{t("industryPlannerColMatRequired")}</div>
+            <div className="col-span-1 ">{t("industryPlannerColMatAvailable")}</div>
+            <div className="col-span-1 ">{t("industryPlannerColMatBuy")}</div>
+            <div className="col-span-1 ">{t("industryPlannerColMatBuild")}</div>
+            <div className="col-span-2 ">{t("industryPlannerColMatUnitCost")}</div>
+            <div className="col-span-1">{t("industryPlannerColMatSource")}</div>
+            <div className="col-span-1 ">{t("industryPlannerColActions")}</div>
+          </div>
+        )}
         {!planBuilderCollapsed.materials && (
         <div className="space-y-1.5 max-h-[220px] overflow-auto pr-1">
           {visiblePlanDraftMaterials.map((material, idx) => {
@@ -557,9 +699,11 @@ export function IndustryPlannerBuilderPanel({ ctx }: IndustryPlannerBuilderPanel
               />
               <input
                 type="number"
-                value={material.unit_cost_isk ?? 0}
+                value={Math.round((material.unit_cost_isk ?? 0) * 100) / 100}
                 onChange={(e) => updateVisualMaterialRow(rowIndex, { unit_cost_isk: Number(e.target.value) || 0 })}
                 placeholder="unit cost"
+                title={String(material.unit_cost_isk ?? 0)}
+                step={0.01}
                 className="col-span-2 px-1.5 py-1 bg-eve-input border border-eve-border rounded-sm text-[11px] text-eve-text font-mono"
               />
               <select
@@ -573,13 +717,15 @@ export function IndustryPlannerBuilderPanel({ ctx }: IndustryPlannerBuilderPanel
                 <option value="reprocess">reprocess</option>
                 <option value="contract">contract</option>
               </select>
-              <button
-                type="button"
-                onClick={() => removeVisualMaterialRow(rowIndex)}
-                className="col-span-1 px-1 py-1 border border-red-500/40 text-red-300 rounded-sm text-[10px] hover:bg-red-500/10"
-              >
-                x
-              </button>
+              <div className="col-span-1 flex items-center justify-end">
+                <RowIconButton
+                  onClick={() => removeVisualMaterialRow(rowIndex)}
+                  title={t("industryPlannerDeleteRow")}
+                  tone="danger"
+                >
+                  ×
+                </RowIconButton>
+              </div>
             </div>
             );
           })}
@@ -592,13 +738,16 @@ export function IndustryPlannerBuilderPanel({ ctx }: IndustryPlannerBuilderPanel
 
       <div className="border border-eve-border rounded-sm p-2 bg-eve-dark/20">
         <div className="flex items-center justify-between gap-2 mb-1">
-          <button
-            type="button"
-            onClick={() => togglePlanBuilderSection("blueprints")}
-            className="text-[10px] uppercase tracking-wider text-eve-dim hover:text-eve-accent"
-          >
-            {planBuilderCollapsed.blueprints ? "▶" : "▼"} Blueprints ({planDraftBlueprints.length})
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => togglePlanBuilderSection("blueprints")}
+              className="text-[10px] uppercase tracking-wider text-eve-dim hover:text-eve-accent"
+            >
+              {planBuilderCollapsed.blueprints ? "▶" : "▼"} {t("industryPlannerSectionBlueprints")} ({planDraftBlueprints.length})
+            </button>
+            <AddRowButton onClick={addVisualBlueprintRow} title={t("industryLedgerAddBlueprint")} />
+          </div>
           {planBuilderCompactMode && !planBuilderCollapsed.blueprints && (
             <div className="inline-flex items-center gap-1 text-[10px] text-eve-dim">
               <button
@@ -621,6 +770,19 @@ export function IndustryPlannerBuilderPanel({ ctx }: IndustryPlannerBuilderPanel
             </div>
           )}
         </div>
+        {!planBuilderCollapsed.blueprints && (
+          <div className="grid grid-cols-12 gap-1 mb-1 text-[10px] uppercase tracking-wider text-eve-dim px-1">
+            <div className="col-span-2 ">{t("industryPlannerColBpTypeID")}</div>
+            <div className="col-span-3">{t("industryPlannerColBpName")}</div>
+            <div className="col-span-1 ">{t("industryPlannerColBpLocation")}</div>
+            <div className="col-span-1 ">{t("industryPlannerColBpQty")}</div>
+            <div className="col-span-1 ">{t("industryPlannerColBpME")}</div>
+            <div className="col-span-1 ">{t("industryPlannerColBpTE")}</div>
+            <div className="col-span-1 ">{t("industryPlannerColBpBPO")}</div>
+            <div className="col-span-1 ">{t("industryPlannerColBpRunsLeft")}</div>
+            <div className="col-span-1 ">{t("industryPlannerColActions")}</div>
+          </div>
+        )}
         {!planBuilderCollapsed.blueprints && (
         <div className="space-y-1.5 max-h-[220px] overflow-auto pr-1">
           {visiblePlanDraftBlueprints.map((bp, idx) => {
@@ -685,13 +847,15 @@ export function IndustryPlannerBuilderPanel({ ctx }: IndustryPlannerBuilderPanel
                 placeholder="runs"
                 className="col-span-1 px-1.5 py-1 bg-eve-input border border-eve-border rounded-sm text-[11px] text-eve-text font-mono disabled:opacity-50"
               />
-              <button
-                type="button"
-                onClick={() => removeVisualBlueprintRow(rowIndex)}
-                className="col-span-1 px-1 py-1 border border-red-500/40 text-red-300 rounded-sm text-[10px] hover:bg-red-500/10"
-              >
-                x
-              </button>
+              <div className="col-span-1 flex items-center justify-end">
+                <RowIconButton
+                  onClick={() => removeVisualBlueprintRow(rowIndex)}
+                  title={t("industryPlannerDeleteRow")}
+                  tone="danger"
+                >
+                  ×
+                </RowIconButton>
+              </div>
             </div>
             );
           })}

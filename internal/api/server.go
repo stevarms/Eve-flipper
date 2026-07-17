@@ -859,6 +859,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auth/achievements/seen", s.handleAuthMarkAchievementsSeen)
 	mux.HandleFunc("GET /api/auth/industry/projects", s.handleAuthListIndustryProjects)
 	mux.HandleFunc("POST /api/auth/industry/projects", s.handleAuthCreateIndustryProject)
+	mux.HandleFunc("DELETE /api/auth/industry/projects/{projectID}", s.handleAuthDeleteIndustryProject)
+	mux.HandleFunc("PATCH /api/auth/industry/projects/{projectID}/status", s.handleAuthUpdateIndustryProjectStatus)
 	mux.HandleFunc("POST /api/auth/industry/coverage", s.handleAuthIndustryCoverage)
 	mux.HandleFunc("GET /api/auth/industry/projects/{projectID}/snapshot", s.handleAuthIndustryProjectSnapshot)
 	mux.HandleFunc("POST /api/auth/industry/projects/{projectID}/plan/preview", s.handleAuthPreviewIndustryProjectPlan)
@@ -5745,6 +5747,68 @@ func (s *Server) handleAuthIndustryProjectSnapshot(w http.ResponseWriter, r *htt
 		return
 	}
 	writeJSON(w, snapshot)
+}
+
+func (s *Server) handleAuthDeleteIndustryProject(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.requireIndustryAuthUser(w, r)
+	if !ok {
+		return
+	}
+	if s.db == nil {
+		writeError(w, 503, "database unavailable")
+		return
+	}
+	projectID, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("projectID")), 10, 64)
+	if err != nil || projectID <= 0 {
+		writeError(w, 400, "invalid project id")
+		return
+	}
+	if err := s.db.DeleteIndustryProjectForUser(userID, projectID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, 404, "project not found")
+			return
+		}
+		writeError(w, 500, "failed to delete industry project")
+		return
+	}
+	writeJSON(w, map[string]interface{}{
+		"ok":      true,
+		"deleted": true,
+	})
+}
+
+func (s *Server) handleAuthUpdateIndustryProjectStatus(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.requireIndustryAuthUser(w, r)
+	if !ok {
+		return
+	}
+	if s.db == nil {
+		writeError(w, 503, "database unavailable")
+		return
+	}
+	projectID, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("projectID")), 10, 64)
+	if err != nil || projectID <= 0 {
+		writeError(w, 400, "invalid project id")
+		return
+	}
+	var req struct {
+		Status string `json:"status"`
+	}
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, 400, "invalid json")
+			return
+		}
+	}
+	if err := s.db.UpdateIndustryProjectStatusForUser(userID, projectID, req.Status); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, 404, "project not found")
+			return
+		}
+		writeError(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, map[string]interface{}{"ok": true})
 }
 
 func (s *Server) handleAuthPreviewIndustryProjectPlan(w http.ResponseWriter, r *http.Request) {

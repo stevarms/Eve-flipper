@@ -80,6 +80,11 @@ type IndustryData struct {
 	Reprocessing       map[int32]*ReprocessingMaterial // oreTypeID -> yields
 	PlanetSchematics   map[int32]*PlanetSchematic      // schematicID -> PI schematic
 	BaseCategories     map[int32]bool                  // categoryIDs that are "base" materials (minerals, PI, etc.)
+	// InventionProducts is the set of blueprint typeIDs that appear as
+	// products of some blueprint's `invention` activity — i.e. T2 BPCs. Used
+	// by the Analyze tab to detect "this is a T2 blueprint" and default
+	// ME/TE to 2/4 instead of the T1 BPO-researched 10/20.
+	InventionProducts map[int32]bool
 }
 
 // NewIndustryData creates a new IndustryData instance.
@@ -90,6 +95,7 @@ func NewIndustryData() *IndustryData {
 		Reprocessing:       make(map[int32]*ReprocessingMaterial),
 		PlanetSchematics:   make(map[int32]*PlanetSchematic),
 		BaseCategories:     make(map[int32]bool),
+		InventionProducts:  make(map[int32]bool),
 	}
 }
 
@@ -306,6 +312,16 @@ func (ind *IndustryData) parseBlueprintLine(raw json.RawMessage) error {
 			for _, product := range rxn.Products {
 				if product.TypeID != 0 {
 					ind.ProductToBlueprint[product.TypeID] = bp.Key
+				}
+			}
+		}
+		// The products of an `invention` activity are T2 blueprint copies.
+		// Recording their typeIDs lets the Analyze tab default ME/TE to 2/4
+		// when the user picks a T2 BPC (or a T2 module whose BP was invented).
+		if inv := blueprint.Activities["invention"]; inv != nil {
+			for _, product := range inv.Products {
+				if product.TypeID != 0 {
+					ind.InventionProducts[product.TypeID] = true
 				}
 			}
 		}

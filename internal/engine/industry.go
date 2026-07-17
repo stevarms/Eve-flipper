@@ -1102,7 +1102,12 @@ type SearchResult struct {
 	TypeID       int32  `json:"type_id"`
 	TypeName     string `json:"type_name"`
 	HasBlueprint bool   `json:"has_blueprint"`
-	relevance    int    // 0 = exact, 1 = starts with, 2 = contains
+	// IsT2BP is true when this item's blueprint is produced via invention
+	// (its blueprintTypeID appears in some other blueprint's invention
+	// products). The Analyze tab uses this to default ME/TE to 2/4 for T2
+	// items instead of the T1 BPO-researched 10/20.
+	IsT2BP    bool `json:"is_t2_bp"`
+	relevance int  // 0 = exact, 1 = starts with, 2 = contains
 }
 
 // SearchBuildableItems returns items matching the query.
@@ -1138,14 +1143,20 @@ func (a *IndustryAnalyzer) SearchBuildableItems(query string, limit int) []Searc
 
 		// Check if this item has a blueprint (safely)
 		hasBlueprint := false
+		isT2 := false
 		if a.SDE.Industry != nil {
-			_, hasBlueprint = a.SDE.Industry.ProductToBlueprint[typeID]
+			bpID, ok := a.SDE.Industry.ProductToBlueprint[typeID]
+			hasBlueprint = ok
+			if ok && a.SDE.Industry.InventionProducts[bpID] {
+				isT2 = true
+			}
 		}
 
 		results = append(results, SearchResult{
 			TypeID:       typeID,
 			TypeName:     t.Name,
 			HasBlueprint: hasBlueprint,
+			IsT2BP:       isT2,
 			relevance:    relevance,
 		})
 	}

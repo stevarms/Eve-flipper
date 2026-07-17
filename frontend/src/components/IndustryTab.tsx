@@ -26,7 +26,6 @@ import type {
   IndustryCoverageBlueprintNeed,
   IndustryCoverageMaterialNeed,
   IndustryCoverageResult,
-  IndustryActivityStep,
   IndustryParams,
   FlatMaterial,
   BuildableItem,
@@ -45,6 +44,7 @@ import type {
   IndustryBlueprintPoolInput,
 } from "@/lib/types";
 import { formatISK } from "@/lib/format";
+import { buildIndustryPlanPatch } from "@/lib/industryPlanPatch";
 import {
   TabSettingsPanel,
   SettingsField,
@@ -81,6 +81,11 @@ const IndustryAnalysisResultsPanel = lazy(async () => {
   return { default: mod.IndustryAnalysisResultsPanel };
 });
 
+const IndustryProfitableScannerPanel = lazy(async () => {
+  const mod = await import("./industry/IndustryProfitableScannerPanel");
+  return { default: mod.IndustryProfitableScannerPanel };
+});
+
 // Highlight matching text in search results
 function HighlightMatch({ text, query }: { text: string; query: string }) {
   if (!query.trim()) return <>{text}</>;
@@ -106,6 +111,8 @@ interface Props {
 }
 
 type IndustryInnerTab = "analysis" | "jobs";
+type AnalysisInnerTab = "analyze" | "scanner";
+const ANALYSIS_INNER_TAB_LS_KEY = "eve-settings:industry-analysis-inner-tab";
 type PlanBuilderSection = "tasks" | "jobs" | "materials" | "blueprints";
 type IndustryStrategyPreset = "conservative" | "balanced" | "aggressive";
 type IndustryActivityMode = "auto" | "manufacturing" | "reaction" | "invention";
@@ -214,19 +221,6 @@ function buildIndustryCoverageNeeds(analysis: IndustryAnalysis): {
   };
 }
 
-function industryStepRuns(step: IndustryActivityStep): number {
-  if (step.activity === "invention" && step.expected_attempts) {
-    return Math.max(1, Math.ceil(step.expected_attempts));
-  }
-  return Math.max(1, Math.ceil(step.runs || 1));
-}
-
-function industryStepLabel(step: IndustryActivityStep): string {
-  const activity = step.activity || "industry";
-  const product = step.product_name || `Type ${step.product_type_id}`;
-  return `${activity} ${product}`;
-}
-
 export function IndustryTab({ onError, isLoggedIn = false }: Props) {
   const { t } = useI18n();
   const { addToast } = useGlobalToast();
@@ -319,6 +313,11 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
   const [ledgerProjectsLoading, setLedgerProjectsLoading] = useState(false);
   const [ledgerLoading, setLedgerLoading] = useState(false);
   const [selectedLedgerProjectId, setSelectedLedgerProjectId] = useState(() => readStoredIndustryLedgerProjectID());
+  // Bumping this triggers Projects Overview to reload its list. Incremented
+  // whenever a project is created / applied / deleted / archived so the
+  // dashboard stays fresh without polling.
+  const [projectListRefresh, setProjectListRefresh] = useState(0);
+  const bumpProjectList = useCallback(() => setProjectListRefresh((n) => n + 1), []);
   const [ledgerData, setLedgerData] = useState<IndustryLedger | null>(null);
   const [ledgerSnapshot, setLedgerSnapshot] = useState<IndustryProjectSnapshot | null>(null);
   const [ledgerSnapshotLoading, setLedgerSnapshotLoading] = useState(false);
@@ -358,6 +357,19 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
   const ledgerLoadSeqRef = useRef(0);
   const schedulerDefaultsProjectKeyRef = useRef("");
   const [industryInnerTab, setIndustryInnerTab] = useState<IndustryInnerTab>("analysis");
+  const [analysisInnerTab, setAnalysisInnerTabRaw] = useState<AnalysisInnerTab>(() => {
+    try {
+      const raw = localStorage.getItem(ANALYSIS_INNER_TAB_LS_KEY);
+      if (raw === "scanner" || raw === "analyze") return raw;
+    } catch { /* ignore */ }
+    return "analyze";
+  });
+  const setAnalysisInnerTab = useCallback((next: AnalysisInnerTab) => {
+    setAnalysisInnerTabRaw(next);
+    try {
+      localStorage.setItem(ANALYSIS_INNER_TAB_LS_KEY, next);
+    } catch { /* ignore */ }
+  }, []);
   const [jobsWorkspaceTab, setJobsWorkspaceTab] = useState<IndustryJobsWorkspaceTab>("guide");
   const [planBuilderCompactMode, setPlanBuilderCompactMode] = useState(true);
   const [planBuilderPageSize, setPlanBuilderPageSize] = useState(6);
@@ -514,8 +526,10 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
       setSelectedLedgerJobIDs([]);
     } finally {
       setLedgerProjectsLoading(false);
+      // Signal the Projects Overview panel to reload its own list too.
+      bumpProjectList();
     }
-  }, [isLoggedIn, onError]);
+  }, [isLoggedIn, onError, bumpProjectList]);
 
   const refreshLedger = useCallback(async (projectId: number) => {
     if (!isLoggedIn || projectId <= 0) {
@@ -991,167 +1005,19 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     if (!result || !selectedItem) {
       return null;
     }
-    const topBlueprintTypeID = result.material_tree?.blueprint?.blueprint_type_id ?? 0;
-    const activitySteps = result.activity_plan ?? [];
-    const tasks: IndustryTaskPlanInput[] = [];
-    const jobs: IndustryJobPlanInput[] = [];
-
-    if (activitySteps.length > 0) {
-      activitySteps.forEach((step, index) => {
-        const targetRuns = industryStepRuns(step);
-        const taskRef = -(index + 1);
-        tasks.push({
-          name: industryStepLabel(step),
-          activity: step.activity || "manufacturing",
-          product_type_id: step.product_type_id,
-          target_runs: targetRuns,
-          priority: 100 + index,
-          status: "planned",
-          constraints: {
-            me,
-            te,
-            system_name: systemName,
-            station_id: selectedStationId || 0,
-            blueprint_type_id: step.blueprint_type_id || 0,
-            blueprint_location_id: selectedStationId || 0,
-            duration_seconds_per_run: targetRuns > 0 ? Math.round((step.time_seconds || 0) / targetRuns) : 0,
-            cost_isk_per_run: targetRuns > 0 ? (step.job_cost || 0) / targetRuns : 0,
-          },
-        });
-        jobs.push({
-          task_id: taskRef,
-          facility_id: selectedStationId || 0,
-          activity: step.activity || "manufacturing",
-          runs: targetRuns,
-          duration_seconds: step.time_seconds ?? 0,
-          cost_isk: step.job_cost ?? 0,
-          status: "planned",
-          started_at: "",
-          finished_at: "",
-          notes: industryCoverage ? "Coverage-aware draft from Industry analyzer" : "Draft from Industry analyzer activity plan",
-        });
-      });
-    } else {
-      const taskName = `Build ${selectedItem.type_name}`;
-      tasks.push({
-        name: taskName,
-        activity: "manufacturing",
-        product_type_id: selectedItem.type_id,
-        target_runs: runs,
-        priority: 100,
-        status: "planned",
-        constraints: {
-          me,
-          te,
-          system_name: systemName,
-          station_id: selectedStationId || 0,
-          blueprint_type_id: topBlueprintTypeID || 0,
-          blueprint_location_id: selectedStationId || 0,
-          duration_seconds_per_run: runs > 0 ? Math.round((result.manufacturing_time ?? 0) / runs) : 0,
-          cost_isk_per_run: runs > 0 ? (result.total_job_cost ?? 0) / runs : 0,
-        },
-      });
-      jobs.push({
-        task_id: -1,
-        facility_id: selectedStationId || 0,
-        activity: "manufacturing",
-        runs,
-        duration_seconds: result.manufacturing_time ?? 0,
-        cost_isk: result.total_job_cost ?? 0,
-        status: "planned",
-        started_at: "",
-        finished_at: "",
-        notes: industryCoverage ? "Coverage-aware draft from Industry analyzer" : "Auto-seeded from Industry analyzer",
-      });
-    }
-
-    const flatByType = new Map((result.flat_materials ?? []).map((m) => [m.type_id, m]));
-    const materialSourceRows = industryCoverage?.materials?.length
-      ? industryCoverage.materials
-      : (result.flat_materials ?? []).map((m) => ({
-          type_id: m.type_id,
-          type_name: m.type_name,
-          required_qty: m.quantity,
-          available_qty: 0,
-          missing_qty: m.quantity,
-          coverage_pct: 0,
-          status: "missing",
-        }));
-    const materials = materialSourceRows.map((m) => {
-      const flat = flatByType.get(m.type_id);
-      const requiredQty = Math.max(0, Math.ceil(m.required_qty ?? 0));
-      const availableQty = Math.max(0, Math.min(requiredQty, Math.ceil(m.available_qty ?? 0)));
-      const buyQty = Math.max(0, Math.ceil(m.missing_qty ?? Math.max(0, requiredQty - availableQty)));
-      return {
-        type_id: m.type_id,
-        type_name: m.type_name || flat?.type_name || "",
-        required_qty: requiredQty,
-        available_qty: availableQty,
-        buy_qty: buyQty,
-        build_qty: 0,
-        unit_cost_isk: flat?.unit_price ?? 0,
-        source: buyQty > 0 ? "market" as const : "stock" as const,
-      };
-    });
-
-    const blueprintsFromCoverage = (industryCoverage?.blueprints ?? [])
-      .filter((bp) => (bp.owned_qty ?? 0) > 0 && ((bp.bpo_qty ?? 0) > 0 || (bp.available_runs ?? 0) > 0))
-      .map((bp) => {
-        const isBPO = (bp.bpo_qty ?? 0) > 0;
-        return {
-          blueprint_type_id: bp.blueprint_type_id,
-          blueprint_name: bp.blueprint_name || "",
-          location_id: selectedStationId || 0,
-          quantity: isBPO ? Math.max(1, bp.bpo_qty || 1) : Math.max(1, bp.bpc_qty || 1),
-          me: bp.best_me || me,
-          te: bp.best_te || te,
-          is_bpo: isBPO,
-          available_runs: isBPO ? 0 : Math.max(0, bp.available_runs || 0),
-        };
-      });
-
-    const fallbackBlueprintMap = new Map<number, IndustryBlueprintPoolInput>();
-    if (blueprintsFromCoverage.length === 0) {
-      for (const step of activitySteps) {
-        if (!step.blueprint_type_id || step.blueprint_type_id <= 0) continue;
-        const requiredRuns = industryStepRuns(step);
-        const existing = fallbackBlueprintMap.get(step.blueprint_type_id);
-        fallbackBlueprintMap.set(step.blueprint_type_id, {
-          blueprint_type_id: step.blueprint_type_id,
-          blueprint_name: step.blueprint_name || existing?.blueprint_name || "",
-          location_id: selectedStationId || 0,
-          quantity: 1,
-          me,
-          te,
-          is_bpo: ownBlueprint,
-          available_runs: ownBlueprint ? 0 : (existing?.available_runs ?? 0) + requiredRuns,
-        });
-      }
-      if (fallbackBlueprintMap.size === 0 && topBlueprintTypeID > 0) {
-        fallbackBlueprintMap.set(topBlueprintTypeID, {
-          blueprint_type_id: topBlueprintTypeID,
-          blueprint_name: `${selectedItem.type_name} Blueprint`,
-          location_id: selectedStationId || 0,
-          quantity: 1,
-          me,
-          te,
-          is_bpo: ownBlueprint,
-          available_runs: ownBlueprint ? 0 : runs,
-        });
-      }
-    }
-    const blueprints = blueprintsFromCoverage.length > 0
-      ? blueprintsFromCoverage
-      : Array.from(fallbackBlueprintMap.values());
-
-    return {
+    return buildIndustryPlanPatch({
+      result,
+      coverage: industryCoverage,
+      productTypeID: selectedItem.type_id,
+      productName: selectedItem.type_name,
+      runs,
+      me,
+      te,
+      systemName,
+      stationID: selectedStationId || 0,
+      ownBlueprint,
       replace: replaceLedgerPlanOnApply,
-      project_status: "planned",
-      tasks,
-      jobs,
-      materials,
-      blueprints,
-    };
+    });
   }, [
     result,
     selectedItem,
@@ -1494,7 +1360,6 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     return { required, stock, buy, build, missing };
   }, [ledgerSnapshot]);
   const activeJobCount = jobStatusBoard.active || 0;
-  const hasPlanSeedSource = Boolean(result && selectedItem);
 
   const taskDependencyBoard = useMemo<IndustryTaskDependencyBoard>(() => {
     const tasks = ledgerSnapshot?.tasks ?? [];
@@ -1815,6 +1680,43 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     setLastLedgerPlanPreviewPatch(null);
     addToast(t("industryLedgerSnapshotLoaded"), "success", 1800);
   }, [ledgerSnapshot, seedVisualPlanBuilderFromSnapshot, addToast, t]);
+
+  // Auto-load the committed snapshot into the visual builder when the user
+  // switches projects, so refreshing the page or picking a project from the
+  // Overview lands them on a populated planner instead of empty tables.
+  // Guarded to fire once per project switch, and only when the builder has
+  // no in-flight draft (so we don't clobber unsaved edits).
+  const autoSeededProjectRef = useRef<number>(0);
+  useEffect(() => {
+    if (selectedLedgerProjectId <= 0) {
+      autoSeededProjectRef.current = 0;
+      return;
+    }
+    if (autoSeededProjectRef.current === selectedLedgerProjectId) return;
+    if (!ledgerSnapshot) return;
+    if (ledgerSnapshot.project?.id !== selectedLedgerProjectId) return;
+    const builderHasRows =
+      planDraftTasks.length > 0 ||
+      planDraftJobs.length > 0 ||
+      planDraftMaterials.length > 0 ||
+      planDraftBlueprints.length > 0;
+    if (builderHasRows) {
+      // Draft in flight — mark this project seen so we don't override later.
+      autoSeededProjectRef.current = selectedLedgerProjectId;
+      return;
+    }
+    autoSeededProjectRef.current = selectedLedgerProjectId;
+    seedVisualPlanBuilderFromSnapshot(ledgerSnapshot);
+    setUseVisualPlanBuilder(true);
+  }, [
+    ledgerSnapshot,
+    selectedLedgerProjectId,
+    planDraftTasks.length,
+    planDraftJobs.length,
+    planDraftMaterials.length,
+    planDraftBlueprints.length,
+    seedVisualPlanBuilderFromSnapshot,
+  ]);
 
   const handlePreviewCurrentAnalysisToLedgerPlan = useCallback(async () => {
     if (!isLoggedIn) return;
@@ -2265,6 +2167,17 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     setResult(null);
     setIndustryCoverage(null);
     setIndustryCoverageMeta("");
+    // T2 items come from invented BPCs, which start at ME 2 / TE 4. T1 items
+    // are researched BPOs that top out at ME 10 / TE 20. Reset defaults so a
+    // user manually searching for a T2 module (e.g. "Vagabond") doesn't have
+    // to remember to lower the ME/TE.
+    if (item.is_t2_bp) {
+      setME(2);
+      setTE(4);
+    } else {
+      setME(10);
+      setTE(20);
+    }
   }, []);
 
   // Keyboard navigation
@@ -2478,6 +2391,10 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
       blueprintPageStart,
       updateVisualBlueprintRow,
       removeVisualBlueprintRow,
+      addVisualTaskRow,
+      addVisualJobRow,
+      addVisualMaterialRow,
+      addVisualBlueprintRow,
     },
   }), [
     jobsWorkspaceTab,
@@ -2516,6 +2433,10 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     blueprintPageStart,
     updateVisualBlueprintRow,
     removeVisualBlueprintRow,
+    addVisualTaskRow,
+    addVisualJobRow,
+    addVisualMaterialRow,
+    addVisualBlueprintRow,
   ]);
 
   const operationsJobsProps = useMemo(() => ({
@@ -2580,6 +2501,96 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
       </div>
 
       {industryInnerTab === "analysis" && (
+        <div className="shrink-0 m-2 mt-1 mb-0">
+          <div className="inline-flex rounded-sm border border-eve-border overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setAnalysisInnerTab("analyze")}
+              className={`px-3 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors ${
+                analysisInnerTab === "analyze"
+                  ? "bg-eve-accent/15 text-eve-accent"
+                  : "bg-eve-panel text-eve-dim hover:text-eve-text"
+              }`}
+            >
+              {t("industryAnalysisSubTabAnalyze")}
+            </button>
+            <button
+              type="button"
+              onClick={() => setAnalysisInnerTab("scanner")}
+              className={`px-3 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors ${
+                analysisInnerTab === "scanner"
+                  ? "bg-eve-accent/15 text-eve-accent"
+                  : "bg-eve-panel text-eve-dim hover:text-eve-text"
+              }`}
+            >
+              {t("industryAnalysisSubTabScanner")}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {industryInnerTab === "analysis" && analysisInnerTab === "scanner" && (
+        <Suspense fallback={<div className="m-2 text-xs text-eve-dim">Loading scanner...</div>}>
+          <IndustryProfitableScannerPanel
+            isLoggedIn={isLoggedIn}
+            onViewInAnalysis={(handoff) => {
+              setSelectedItem({
+                type_id: handoff.productTypeID,
+                type_name: handoff.productName,
+                has_blueprint: true,
+              });
+              setSearchQuery(handoff.productName);
+              setRuns(handoff.runs);
+              setActivityMode(handoff.activityMode);
+              setME(handoff.me);
+              setTE(handoff.te);
+              setSystemName(handoff.systemName);
+              setSelectedStationId(handoff.stationID);
+              if (handoff.stationIsStructure) {
+                setIncludeStructures(true);
+              }
+              setFacilityTax(handoff.facilityTax);
+              setStructureBonus(handoff.structureBonus);
+              setBrokerFee(handoff.brokerFee);
+              setSalesTaxPercent(handoff.salesTaxPercent);
+              setOwnBlueprint(handoff.ownBlueprint);
+              setBlueprintIsBPO(handoff.blueprintIsBPO);
+              setBlueprintCost(0);
+              setInventionChance(handoff.inventionChancePercent ?? 0);
+              setInventionOutputRuns(handoff.inventionOutputRuns ?? 0);
+              setDecryptorCost(handoff.decryptorCost ?? 0);
+              setResult(null);
+              setIndustryCoverage(null);
+              setIndustryCoverageMeta("");
+              setAnalysisInnerTab("analyze");
+              if (handoff.autoAnalyze) {
+                setPendingAutoAnalyze(true);
+              }
+            }}
+            onProjectCreated={(projectID: number) => {
+              setSelectedLedgerProjectId(projectID);
+              setIndustryInnerTab("jobs");
+              setJobsWorkspaceTab("planning");
+              void refreshLedgerProjects(projectID);
+              void (async () => {
+                try {
+                  const snapshot = await getAuthIndustryProjectSnapshot(projectID);
+                  setLedgerSnapshot(snapshot);
+                  seedVisualPlanBuilderFromSnapshot(snapshot);
+                  setUseVisualPlanBuilder(true);
+                  setLastLedgerPlanPreview(null);
+                  setLastLedgerPlanPreviewPatch(null);
+                } catch (e) {
+                  console.error("Industry scanner snapshot seed error:", e);
+                  void refreshLedger(projectID);
+                }
+              })();
+            }}
+          />
+        </Suspense>
+      )}
+
+      {industryInnerTab === "analysis" && analysisInnerTab === "analyze" && (
       <>
       {/* Settings Panel */}
       <div className="shrink-0 m-2">
@@ -2897,22 +2908,21 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
               handleLoadLedgerSnapshotToBuilder,
             }}
             guidePanelProps={{
-              selectedProjectId: selectedLedgerProjectId,
-              hasPlanSeedSource,
-              hasVisualPlanRows,
-              hasPreview: Boolean(lastLedgerPlanPreviewPatch),
-              previewStale: isLastLedgerPreviewStale,
-              strictBlueprintApplyBlocked,
-              missingBindings: visualTaskBlueprintBindingStats.missing,
-              previewing: previewingLedgerPlan,
-              applying: applyingLedgerPlan,
-              lastPreviewPatchExists: Boolean(lastLedgerPlanPreviewPatch),
-              onGenerateDraft: handleGeneratePlanDraft,
-              onPreview: () => { void handlePreviewCurrentAnalysisToLedgerPlan(); },
-              onApplyPreview: () => { void handleApplyLastPreviewToLedgerPlan(); },
-              onApplyCurrent: () => { void handleApplyCurrentAnalysisToLedgerPlan(); },
-              onOpenPlanner: () => setJobsWorkspaceTab("planning"),
-              onOpenOperations: () => setJobsWorkspaceTab("operations"),
+              currentProjectID: selectedLedgerProjectId,
+              refreshCounter: projectListRefresh,
+              isLoggedIn,
+              onOpen: (projectID: number) => {
+                setSelectedLedgerProjectId(projectID);
+                setJobsWorkspaceTab("planning");
+              },
+              onProjectDeleted: (deletedID: number) => {
+                if (deletedID === selectedLedgerProjectId) {
+                  setSelectedLedgerProjectId(0);
+                  setLedgerSnapshot(null);
+                  setLastLedgerPlanPreview(null);
+                  setLastLedgerPlanPreviewPatch(null);
+                }
+              },
             }}
             planningActionsProps={{
               jobsWorkspaceTab,
@@ -2929,10 +2939,6 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
               isLastLedgerPreviewStale,
               handleApplyLastPreviewToLedgerPlan,
               handleApplyCurrentAnalysisToLedgerPlan,
-              addVisualTaskRow,
-              addVisualJobRow,
-              addVisualMaterialRow,
-              addVisualBlueprintRow,
               autoFixVisualTaskBlueprintBindings,
               planDraftTasksLength: planDraftTasks.length,
               planTaskBlueprintOptionsLength: planTaskBlueprintOptions.length,
@@ -2992,73 +2998,12 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
             operationsBoardsProps={operationsBoardsProps}
             plannerBuilderProps={plannerBuilderProps}
             operationsJobsProps={operationsJobsProps}
-            scannerProps={{
-              isLoggedIn,
-              onViewInAnalysis: (handoff) => {
-                // Pre-fill the Analysis sub-tab with the row's parameters,
-                // switch to it, and (optionally) auto-trigger the analyzer
-                // once React has applied the state updates.
-                setSelectedItem({
-                  type_id: handoff.productTypeID,
-                  type_name: handoff.productName,
-                  has_blueprint: true,
-                });
-                setSearchQuery(handoff.productName);
-                setRuns(handoff.runs);
-                setActivityMode(handoff.activityMode);
-                setME(handoff.me);
-                setTE(handoff.te);
-                setSystemName(handoff.systemName);
-                setSelectedStationId(handoff.stationID);
-                if (handoff.stationIsStructure) {
-                  setIncludeStructures(true);
-                }
-                setFacilityTax(handoff.facilityTax);
-                setStructureBonus(handoff.structureBonus);
-                setBrokerFee(handoff.brokerFee);
-                setSalesTaxPercent(handoff.salesTaxPercent);
-                setOwnBlueprint(handoff.ownBlueprint);
-                setBlueprintIsBPO(handoff.blueprintIsBPO);
-                setBlueprintCost(0);
-                setResult(null);
-                setIndustryCoverage(null);
-                setIndustryCoverageMeta("");
-                setIndustryInnerTab("analysis");
-                if (handoff.autoAnalyze) {
-                  // Defer to the next tick so the state setters above have
-                  // committed and the new selectedItem closure flows into
-                  // handleAnalyze.
-                  setPendingAutoAnalyze(true);
-                }
-              },
-              onProjectCreated: (projectID: number) => {
-                setSelectedLedgerProjectId(projectID);
-                setJobsWorkspaceTab("planning");
-                void refreshLedgerProjects(projectID);
-                // Fetch the freshly-committed project snapshot and seed the
-                // visual plan builder so the user lands on a populated planner
-                // and can adjust per-row runs, ME/TE, etc. before re-applying.
-                void (async () => {
-                  try {
-                    const snapshot = await getAuthIndustryProjectSnapshot(projectID);
-                    setLedgerSnapshot(snapshot);
-                    seedVisualPlanBuilderFromSnapshot(snapshot);
-                    setUseVisualPlanBuilder(true);
-                    setLastLedgerPlanPreview(null);
-                    setLastLedgerPlanPreviewPatch(null);
-                  } catch (e) {
-                    console.error("Industry scanner snapshot seed error:", e);
-                    void refreshLedger(projectID);
-                  }
-                })();
-              },
-            }}
           />
         </Suspense>
       )}
 
       {/* Results */}
-      {industryInnerTab === "analysis" && result && (
+      {industryInnerTab === "analysis" && analysisInnerTab === "analyze" && result && (
         <Suspense fallback={<div className="m-2 text-xs text-eve-dim">Loading analysis view...</div>}>
           <IndustryAnalysisResultsPanel
             result={result}
@@ -3087,7 +3032,7 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
       )}
 
       {/* Empty State */}
-      {industryInnerTab === "analysis" && !result && !analyzing && (
+      {industryInnerTab === "analysis" && analysisInnerTab === "analyze" && !result && !analyzing && (
         <div className="flex-1 flex items-center justify-center min-h-[200px]">
           <EmptyState reason="no_item_selected" wikiSlug="Industry-Chain-Optimizer" />
         </div>

@@ -1859,3 +1859,181 @@ func TestIndustryLedgerBPOAvailableRunsAlwaysNormalizedToZero(t *testing.T) {
 		t.Fatalf("bpo available_runs = %d, want 0", snapshot.Blueprints[0].AvailableRuns)
 	}
 }
+
+// applyOverviewFixture creates a project with tasks/jobs/materials/blueprints
+// in enough different states that the aggregate joins in the enriched list
+// path have something to count.
+func applyOverviewFixture(t *testing.T, d *DB, userID, name string) int64 {
+	t.Helper()
+	project, err := d.CreateIndustryProjectForUser(userID, IndustryProjectCreateInput{Name: name})
+	if err != nil {
+		t.Fatalf("CreateIndustryProjectForUser: %v", err)
+	}
+	_, err = d.ApplyIndustryPlanForUser(userID, project.ID, IndustryPlanPatch{
+		Replace: true,
+		Tasks: []IndustryTaskPlanInput{
+			{Name: "t1", Activity: "manufacturing", TargetRuns: 1, Status: IndustryTaskStatusCompleted},
+			{Name: "t2", Activity: "manufacturing", TargetRuns: 1, Status: IndustryTaskStatusPlanned},
+			{Name: "t3", Activity: "manufacturing", TargetRuns: 1, Status: IndustryTaskStatusPlanned},
+		},
+		Jobs: []IndustryJobPlanInput{
+			{Activity: "manufacturing", Runs: 1, Status: IndustryJobStatusCompleted},
+			{Activity: "manufacturing", Runs: 1, Status: IndustryJobStatusPlanned},
+		},
+		Materials: []IndustryMaterialPlanInput{
+			{TypeID: 34, TypeName: "Trit", RequiredQty: 100, AvailableQty: 100, BuyQty: 0, Source: "stock"},
+			{TypeID: 35, TypeName: "Pye", RequiredQty: 50, AvailableQty: 0, BuyQty: 50, Source: "market"},
+			{TypeID: 36, TypeName: "Mex", RequiredQty: 20, AvailableQty: 0, BuyQty: 20, Source: "market"},
+		},
+		Blueprints: []IndustryBlueprintPoolInput{
+			{BlueprintTypeID: 100, BlueprintName: "BPO", LocationID: 60003760, Quantity: 1, IsBPO: true, AvailableRuns: 0},
+			{BlueprintTypeID: 200, BlueprintName: "BPC-out", LocationID: 60003760, Quantity: 1, IsBPO: false, AvailableRuns: 0},
+			{BlueprintTypeID: 201, BlueprintName: "BPC-ok", LocationID: 60003760, Quantity: 1, IsBPO: false, AvailableRuns: 10},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ApplyIndustryPlanForUser: %v", err)
+	}
+	return project.ID
+}
+
+func TestListIndustryProjectsForUser_EnrichedCounts(t *testing.T) {
+	d := openTestDB(t)
+	defer d.Close()
+
+	projectID := applyOverviewFixture(t, d, "user-o", "Overview Test")
+
+	projects, err := d.ListIndustryProjectsForUser("user-o", "", 50)
+	if err != nil {
+		t.Fatalf("ListIndustryProjectsForUser: %v", err)
+	}
+	if len(projects) != 1 {
+		t.Fatalf("len(projects) = %d, want 1", len(projects))
+	}
+	p := projects[0]
+	if p.ID != projectID {
+		t.Fatalf("id = %d, want %d", p.ID, projectID)
+	}
+	if p.TasksTotal != 3 || p.TasksDone != 1 {
+		t.Fatalf("tasks = %d/%d, want 1/3", p.TasksDone, p.TasksTotal)
+	}
+	if p.JobsTotal != 2 || p.JobsDone != 1 {
+		t.Fatalf("jobs = %d/%d, want 1/2", p.JobsDone, p.JobsTotal)
+	}
+	if p.MaterialsTotal != 3 || p.MaterialsToBuy != 2 {
+		t.Fatalf("materials to_buy = %d, total = %d, want 2 of 3", p.MaterialsToBuy, p.MaterialsTotal)
+	}
+	// Missing blueprints: BPCs with available_runs <= 0. BPO doesn't count.
+	if p.BlueprintsTotal != 3 || p.BlueprintsMissing != 1 {
+		t.Fatalf("bp missing = %d, total = %d, want 1 of 3", p.BlueprintsMissing, p.BlueprintsTotal)
+	}
+}
+
+func TestListIndustryProjectsForUser_UserIsolation(t *testing.T) {
+	d := openTestDB(t)
+	defer d.Close()
+
+	// Two users each with a project. user-a's list must not include user-b's
+	// counts (would happen if the aggregate joins forgot to filter by user_id).
+	applyOverviewFixture(t, d, "user-a", "A project")
+	applyOverviewFixture(t, d, "user-b", "B project")
+
+	projA, err := d.ListIndustryProjectsForUser("user-a", "", 50)
+	if err != nil {
+		t.Fatalf("list user-a: %v", err)
+	}
+	if len(projA) != 1 {
+		t.Fatalf("user-a projects = %d, want 1", len(projA))
+	}
+	// Counts must reflect only user-a's rows.
+	if projA[0].TasksTotal != 3 || projA[0].JobsTotal != 2 {
+		t.Fatalf("user-a leaked counts: %+v", projA[0])
+	}
+}
+
+func TestDeleteIndustryProjectForUser_CascadesChildren(t *testing.T) {
+	d := openTestDB(t)
+	defer d.Close()
+
+	projectID := applyOverviewFixture(t, d, "user-del", "Doomed")
+
+	// Sanity: child rows exist before the delete.
+	snapshot, err := d.GetIndustryProjectSnapshotForUser("user-del", projectID)
+	if err != nil {
+		t.Fatalf("pre-delete snapshot: %v", err)
+	}
+	if len(snapshot.Tasks) == 0 || len(snapshot.Jobs) == 0 || len(snapshot.Materials) == 0 || len(snapshot.Blueprints) == 0 {
+		t.Fatalf("expected populated snapshot pre-delete, got %+v", snapshot)
+	}
+
+	if err := d.DeleteIndustryProjectForUser("user-del", projectID); err != nil {
+		t.Fatalf("DeleteIndustryProjectForUser: %v", err)
+	}
+
+	// Project row is gone.
+	if _, err := d.GetIndustryProjectForUser("user-del", projectID); err != sql.ErrNoRows {
+		t.Fatalf("expected sql.ErrNoRows for deleted project, got %v", err)
+	}
+
+	// Cascade child DELETEs happen automatically because the schema has
+	// ON DELETE CASCADE on project_id (and foreign_keys=1 is on).
+	for _, tbl := range []string{"industry_tasks", "industry_jobs", "industry_material_plan", "industry_blueprint_pool"} {
+		var n int
+		if err := d.sql.QueryRow(`SELECT COUNT(*) FROM `+tbl+` WHERE project_id = ?`, projectID).Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", tbl, err)
+		}
+		if n != 0 {
+			t.Errorf("expected 0 rows in %s after delete, got %d", tbl, n)
+		}
+	}
+}
+
+func TestDeleteIndustryProjectForUser_WrongUserSafe(t *testing.T) {
+	d := openTestDB(t)
+	defer d.Close()
+
+	projectID := applyOverviewFixture(t, d, "user-a", "Not yours")
+
+	if err := d.DeleteIndustryProjectForUser("user-b", projectID); err != sql.ErrNoRows {
+		t.Fatalf("expected sql.ErrNoRows deleting another user's project, got %v", err)
+	}
+	// user-a's project must still exist.
+	if _, err := d.GetIndustryProjectForUser("user-a", projectID); err != nil {
+		t.Fatalf("user-a project should still exist: %v", err)
+	}
+}
+
+func TestUpdateIndustryProjectStatusForUser_FlipAndBack(t *testing.T) {
+	d := openTestDB(t)
+	defer d.Close()
+
+	projectID := applyOverviewFixture(t, d, "user-s", "Archive-me")
+
+	if err := d.UpdateIndustryProjectStatusForUser("user-s", projectID, IndustryProjectStatusArchived); err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+	got, err := d.GetIndustryProjectForUser("user-s", projectID)
+	if err != nil {
+		t.Fatalf("get after archive: %v", err)
+	}
+	if got.Status != IndustryProjectStatusArchived {
+		t.Fatalf("status = %q, want archived", got.Status)
+	}
+
+	if err := d.UpdateIndustryProjectStatusForUser("user-s", projectID, IndustryProjectStatusActive); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	got, _ = d.GetIndustryProjectForUser("user-s", projectID)
+	if got.Status != IndustryProjectStatusActive {
+		t.Fatalf("status after restore = %q, want active", got.Status)
+	}
+}
+
+func TestUpdateIndustryProjectStatusForUser_InvalidStatus(t *testing.T) {
+	d := openTestDB(t)
+	defer d.Close()
+	projectID := applyOverviewFixture(t, d, "user-s2", "Bad status")
+	if err := d.UpdateIndustryProjectStatusForUser("user-s2", projectID, "not-a-status"); err == nil {
+		t.Fatalf("expected error for invalid status, got nil")
+	}
+}
