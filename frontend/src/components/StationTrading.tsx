@@ -15,7 +15,6 @@ import {
   clearStationTradeStates,
   deleteStationTradeStates,
   getStationCommand,
-  getStations,
   getStationTradeStates,
   getStructures,
   rebootStationCache,
@@ -53,6 +52,7 @@ import {
   type StationTradingSettings,
 } from "@/lib/presets";
 import { TaxProfileEditor } from "./TaxProfileEditor";
+import { getStationsWhenReady } from "@/lib/stationLookup";
 
 type SortKey = keyof StationTrade;
 type SortDir = "asc" | "desc";
@@ -1163,7 +1163,7 @@ export function StationTrading({
     const requestID = ++stationLookupSeqRef.current;
     const isCurrent = () => !controller.signal.aborted && requestID === stationLookupSeqRef.current;
     setLoadingStations(true);
-    getStations(systemName, controller.signal)
+    getStationsWhenReady(systemName, controller.signal)
       .then((resp) => {
         if (!isCurrent()) return;
         setStations(resp.stations);
@@ -2338,6 +2338,25 @@ export function StationTrading({
     return String(val);
   };
 
+  const exportCSV = () => {
+    const escape = (value: string) =>
+      /[",\r\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+    const header = columnDefs.map((col) => escape(t(col.labelKey))).join(",");
+    const rows = displayRows.map((row) =>
+      columnDefs.map((col) => escape(formatCell(col, row))).join(","),
+    );
+    const blob = new Blob(["\uFEFF", header, "\n", rows.join("\n")], {
+      type: "text/csv;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `eve-station-trading-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+    addToast(`${t("exportCSV")}: ${displayRows.length} rows`, "success", 2000);
+  };
+
   // Get row class with risk indicators
   const getRowClass = (
     row: StationTrade,
@@ -3066,6 +3085,14 @@ export function StationTrading({
               title="Open hidden rows manager"
             >
               Ignored ({hiddenCounts.total + ignoredCategoryIds.size})
+            </button>
+            <button
+              type="button"
+              onClick={exportCSV}
+              className="px-2 py-0.5 rounded-sm border border-eve-border/60 bg-eve-dark/40 text-[11px] hover:border-eve-accent/50 hover:text-eve-accent transition-colors"
+              title={t("exportCSV")}
+            >
+              CSV
             </button>
               <button
                 type="button"
