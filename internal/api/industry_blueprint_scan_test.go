@@ -107,12 +107,57 @@ func buildTestSDE() *sde.Data {
 
 	return &sde.Data{
 		Types: map[int32]*sde.ItemType{
-			622:   {ID: 622, Name: "Stabber"},
-			11999: {ID: 11999, Name: "Vagabond"},
-			12005: {ID: 12005, Name: "Muninn"},
-			587:   {ID: 587, Name: "Rifter"},
+			622: {ID: 622, Name: "Stabber", CategoryID: 6},
+			// Vagabond marked T2, Muninn marked T3 so the tier-classification
+			// tests can assert the split path per output within a single BP.
+			11999: {ID: 11999, Name: "Vagabond", CategoryID: 6, MetaGroupID: sde.MetaGroupT2},
+			12005: {ID: 12005, Name: "Muninn", CategoryID: 6, MetaGroupID: sde.MetaGroupT3},
+			587:   {ID: 587, Name: "Rifter", CategoryID: 6},
 		},
 		Industry: industry,
+	}
+}
+
+func TestBuildScanWork_ClassifiesT2VsT3ByMetaGroup(t *testing.T) {
+	sdeData := buildTestSDE()
+	groups := []blueprintGroup{
+		{BlueprintTypeID: 641, BlueprintName: "Stabber Blueprint", IsBPO: true, OwnedQuantity: 1},
+	}
+
+	// T2 only: should include Vagabond (metaGroup 2), exclude Muninn (14).
+	t2Only, _ := buildScanWork(groups, sdeData, true, false)
+	var seenT2Product, seenT3Product bool
+	for _, w := range t2Only {
+		if w.scanMode == "t2_invention" && w.productTypeID == 11999 {
+			seenT2Product = true
+		}
+		if w.scanMode == "t3_invention" {
+			seenT3Product = true
+		}
+	}
+	if !seenT2Product {
+		t.Fatalf("T2-only scan missing Vagabond invention row: %+v", t2Only)
+	}
+	if seenT3Product {
+		t.Fatalf("T2-only scan should NOT emit T3 rows: %+v", t2Only)
+	}
+
+	// T3 only: should include Muninn, exclude Vagabond.
+	t3Only, _ := buildScanWork(groups, sdeData, false, true)
+	seenT2Product, seenT3Product = false, false
+	for _, w := range t3Only {
+		if w.scanMode == "t2_invention" {
+			seenT2Product = true
+		}
+		if w.scanMode == "t3_invention" && w.productTypeID == 12005 {
+			seenT3Product = true
+		}
+	}
+	if seenT2Product {
+		t.Fatalf("T3-only scan should NOT emit T2 rows: %+v", t3Only)
+	}
+	if !seenT3Product {
+		t.Fatalf("T3-only scan missing Muninn invention row: %+v", t3Only)
 	}
 }
 
@@ -122,7 +167,7 @@ func TestBuildScanWork_T1MfgOnlyWhenInventionDisabled(t *testing.T) {
 		{BlueprintTypeID: 641, BlueprintName: "Stabber Blueprint", IsBPO: true, OwnedQuantity: 1},
 	}
 
-	work, skipped := buildScanWork(groups, sdeData, false, 1.0)
+	work, skipped := buildScanWork(groups, sdeData, false, false)
 
 	if skipped != 0 {
 		t.Fatalf("expected 0 skipped, got %d", skipped)
@@ -144,24 +189,27 @@ func TestBuildScanWork_T2InventionFanoutEmitsPerProduct(t *testing.T) {
 		{BlueprintTypeID: 641, BlueprintName: "Stabber Blueprint", IsBPO: true, OwnedQuantity: 1},
 	}
 
-	work, skipped := buildScanWork(groups, sdeData, true, 1.0)
+	// Both T2 + T3 on so both Vagabond (metaGroup 2) and Muninn (metaGroup 14)
+	// fan out — the fixture now marks these different tiers so tier-classification
+	// tests can distinguish them.
+	work, skipped := buildScanWork(groups, sdeData, true, true)
 
 	if skipped != 0 {
 		t.Fatalf("expected 0 skipped, got %d", skipped)
 	}
-	// 1 T1 mfg + 2 T2 invention (Vagabond, Muninn) = 3 items
+	// 1 T1 mfg + 1 T2 invention (Vagabond) + 1 T3 invention (Muninn) = 3 items
 	if len(work) != 3 {
 		t.Fatalf("expected 3 work items, got %d", len(work))
 	}
 
-	var t1Count, t2Count int
+	var t1Count, invCount int
 	inventionModules := map[int32]bool{}
 	for _, w := range work {
 		switch w.scanMode {
 		case "t1_mfg":
 			t1Count++
-		case "t2_invention":
-			t2Count++
+		case "t2_invention", "t3_invention":
+			invCount++
 			inventionModules[w.productTypeID] = true
 			if w.sourceBlueprintID != 641 {
 				t.Errorf("expected source BP=641, got %d", w.sourceBlueprintID)
@@ -169,19 +217,18 @@ func TestBuildScanWork_T2InventionFanoutEmitsPerProduct(t *testing.T) {
 			if w.attemptsCap != -1 {
 				t.Errorf("BPO source should be unlimited (cap=-1), got %d", w.attemptsCap)
 			}
-			// The T2 BPC name should fall back to "<T2 module name> Blueprint"
-			// when the invented BPC typeID isn't in Types (which is the norm
-			// for invented BPCs). Vagabond BPC (1032) → "Vagabond Blueprint".
+			// The invented BPC name should fall back to "<module name> Blueprint"
+			// when the BPC typeID isn't in Types (the norm for invented BPCs).
 			if w.outputBlueprintID == 0 || w.outputBlueprintName == "" {
 				t.Errorf("expected output BPC name populated, got id=%d name=%q", w.outputBlueprintID, w.outputBlueprintName)
 			}
 		}
 	}
-	if t1Count != 1 || t2Count != 2 {
-		t.Fatalf("expected 1 T1 + 2 T2, got %d T1 + %d T2", t1Count, t2Count)
+	if t1Count != 1 || invCount != 2 {
+		t.Fatalf("expected 1 T1 + 2 invention, got %d T1 + %d inv", t1Count, invCount)
 	}
 	if !inventionModules[11999] || !inventionModules[12005] {
-		t.Fatalf("expected T2 modules 11999 and 12005, got %v", inventionModules)
+		t.Fatalf("expected invention modules 11999 and 12005, got %v", inventionModules)
 	}
 }
 
@@ -214,7 +261,7 @@ func TestBuildScanWork_BPCSourceHasFiniteAttemptsCap(t *testing.T) {
 		{BlueprintTypeID: 641, BlueprintName: "Stabber Blueprint", IsBPO: false, OwnedQuantity: 3, AvailableRuns: 30},
 	}
 
-	work, _ := buildScanWork(groups, sdeData, true, 1.0)
+	work, _ := buildScanWork(groups, sdeData, true, false)
 
 	for _, w := range work {
 		if w.scanMode == "t2_invention" && w.attemptsCap != 30 {
@@ -223,46 +270,33 @@ func TestBuildScanWork_BPCSourceHasFiniteAttemptsCap(t *testing.T) {
 	}
 }
 
-func TestBuildScanWork_ChanceMultiplierApplied(t *testing.T) {
+func TestBuildScanWork_StoresBaseProbability(t *testing.T) {
+	// The T2 worker loops through decryptors and applies each one's chance
+	// multiplier itself, so the fanout just needs to record the per-product
+	// SDE base probability verbatim.
 	sdeData := buildTestSDE()
 	groups := []blueprintGroup{
 		{BlueprintTypeID: 641, BlueprintName: "Stabber Blueprint", IsBPO: true},
 	}
 
-	work, _ := buildScanWork(groups, sdeData, true, 2.0)
+	work, _ := buildScanWork(groups, sdeData, true, false)
 
 	for _, w := range work {
 		if w.scanMode != "t2_invention" {
 			continue
 		}
-		// Vagabond base 0.30 × 2.0 = 0.60; Muninn base 0.25 × 2.0 = 0.50.
-		var wantChance float64
+		var wantBase float64
 		switch w.productTypeID {
 		case 11999:
-			wantChance = 0.60
+			wantBase = 0.30
 		case 12005:
-			wantChance = 0.50
+			wantBase = 0.25
 		default:
 			t.Errorf("unexpected T2 product %d", w.productTypeID)
 			continue
 		}
-		if diff := w.effectiveProbability - wantChance; diff > 0.0001 || diff < -0.0001 {
-			t.Errorf("product %d: expected chance ~%.4f, got %.4f", w.productTypeID, wantChance, w.effectiveProbability)
-		}
-	}
-}
-
-func TestBuildScanWork_ChanceClampedAtOne(t *testing.T) {
-	sdeData := buildTestSDE()
-	groups := []blueprintGroup{
-		{BlueprintTypeID: 641, BlueprintName: "Stabber Blueprint", IsBPO: true},
-	}
-
-	work, _ := buildScanWork(groups, sdeData, true, 100.0)
-
-	for _, w := range work {
-		if w.scanMode == "t2_invention" && w.effectiveProbability > 1.0 {
-			t.Fatalf("chance should be clamped at 1.0, got %.4f", w.effectiveProbability)
+		if diff := w.baseProbability - wantBase; diff > 0.0001 || diff < -0.0001 {
+			t.Errorf("product %d: expected base ~%.4f, got %.4f", w.productTypeID, wantBase, w.baseProbability)
 		}
 	}
 }
@@ -273,7 +307,7 @@ func TestBuildScanWork_SkipsGroupsWithNoActivities(t *testing.T) {
 		{BlueprintTypeID: 9999, BlueprintName: "Broken BP", IsBPO: true},
 	}
 
-	work, skipped := buildScanWork(groups, sdeData, true, 1.0)
+	work, skipped := buildScanWork(groups, sdeData, true, false)
 
 	if len(work) != 0 {
 		t.Fatalf("expected no work items, got %d", len(work))
@@ -283,13 +317,110 @@ func TestBuildScanWork_SkipsGroupsWithNoActivities(t *testing.T) {
 	}
 }
 
+func TestSynthesizeUnownedGroups_SkipsAlreadyOwned(t *testing.T) {
+	sdeData := buildTestSDE()
+	owned := []blueprintGroup{
+		{BlueprintTypeID: 641, BlueprintName: "Stabber Blueprint", IsBPO: true, Owned: true},
+	}
+	unowned := synthesizeUnownedGroups(sdeData, owned, 10, 20, false)
+
+	for _, g := range unowned {
+		if g.BlueprintTypeID == 641 {
+			t.Fatalf("unowned list contained already-owned 641")
+		}
+		if !g.IsBPO {
+			t.Errorf("synth group %d not marked BPO", g.BlueprintTypeID)
+		}
+		if g.Owned {
+			t.Errorf("synth group %d incorrectly marked Owned=true", g.BlueprintTypeID)
+		}
+		if g.ME != 10 || g.TE != 20 {
+			t.Errorf("synth group %d ME/TE = %d/%d, want 10/20", g.BlueprintTypeID, g.ME, g.TE)
+		}
+	}
+	// Rifter (690) has a manufacturing activity + product 587 with a name,
+	// so it must appear.
+	found := false
+	for _, g := range unowned {
+		if g.BlueprintTypeID == 690 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected Rifter Blueprint 690 in synth output, got %+v", unowned)
+	}
+}
+
+// A relic-style BP (invention-only, no manufacturing activity) whose
+// invention product's mfg product IS marketable should be included in
+// the unowned synthesis when includeInvention=true, and excluded when
+// includeInvention=false. This mirrors the T3 destroyer "Hull Section"
+// path: the user rarely owns hull-section BPs but the scanner should
+// still surface Jackdaw etc. via the discovery flow.
+func TestSynthesizeUnownedGroups_InventionOnlyBPIncludedWhenFlagged(t *testing.T) {
+	sdeData := buildTestSDE()
+	// Fixture "relic" BP 12345: no manufacturing activity, invention
+	// activity produces T2 BPC 1032 (Vagabond) — whose mfg product
+	// Vagabond (11999) IS in Types.
+	sdeData.Industry.Blueprints[12345] = &sde.Blueprint{
+		BlueprintTypeID: 12345,
+		Activities: map[string]*sde.ActivityData{
+			"invention": {Products: []sde.BlueprintProduct{
+				{TypeID: 1032, Quantity: 10, Probability: 0.30},
+			}},
+		},
+	}
+
+	// Without the flag: silently dropped (baseline behavior).
+	off := synthesizeUnownedGroups(sdeData, nil, 10, 20, false)
+	for _, g := range off {
+		if g.BlueprintTypeID == 12345 {
+			t.Fatalf("relic BP 12345 must NOT be in unowned synth when includeInvention=false")
+		}
+	}
+
+	// With the flag: included.
+	on := synthesizeUnownedGroups(sdeData, nil, 10, 20, true)
+	found := false
+	for _, g := range on {
+		if g.BlueprintTypeID == 12345 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("relic BP 12345 must be in unowned synth when includeInvention=true; got %+v", on)
+	}
+}
+
+func TestSynthesizeUnownedGroups_SkipsUnmarketableProducts(t *testing.T) {
+	// Product 622 (Stabber) is in Types; product for BP 9999 is not. Only
+	// BPs whose product has a Types entry should be included.
+	sdeData := buildTestSDE()
+	// Add a BP whose product is NOT in sdeData.Types.
+	sdeData.Industry.Blueprints[7777] = &sde.Blueprint{
+		BlueprintTypeID: 7777,
+		Activities: map[string]*sde.ActivityData{
+			"manufacturing": {Products: []sde.BlueprintProduct{{TypeID: 88888, Quantity: 1}}},
+		},
+	}
+
+	unowned := synthesizeUnownedGroups(sdeData, nil, 10, 20, false)
+	for _, g := range unowned {
+		if g.BlueprintTypeID == 7777 {
+			t.Fatalf("synth list contained BP 7777 whose product has no Types entry")
+		}
+	}
+}
+
 func TestBuildScanWork_T1WithoutInventionActivityStillEmitsMfg(t *testing.T) {
 	sdeData := buildTestSDE()
 	groups := []blueprintGroup{
 		{BlueprintTypeID: 690, BlueprintName: "Rifter Blueprint", IsBPO: true},
 	}
 
-	work, skipped := buildScanWork(groups, sdeData, true, 1.0)
+	work, skipped := buildScanWork(groups, sdeData, true, false)
 
 	if skipped != 0 {
 		t.Fatalf("expected 0 skipped, got %d", skipped)

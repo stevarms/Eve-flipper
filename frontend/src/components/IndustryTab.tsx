@@ -45,6 +45,8 @@ import type {
 } from "@/lib/types";
 import { formatISK } from "@/lib/format";
 import { buildIndustryPlanPatch } from "@/lib/industryPlanPatch";
+import { useIndustrySharedPrefs } from "@/lib/useIndustrySharedPrefs";
+import { DECRYPTORS, DECRYPTOR_ORDER, effectiveInventionParams, type DecryptorKey } from "@/lib/industryDecryptors";
 import {
   TabSettingsPanel,
   SettingsField,
@@ -110,9 +112,14 @@ interface Props {
   isLoggedIn?: boolean;
 }
 
-type IndustryInnerTab = "analysis" | "jobs";
-type AnalysisInnerTab = "analyze" | "scanner";
-const ANALYSIS_INNER_TAB_LS_KEY = "eve-settings:industry-analysis-inner-tab";
+// Industry section is a linear workflow-phase pipeline: land on Projects
+// (home base with all your workflows), Discover (find what to build), Plan
+// (per-project build setup), Operations (execution tracking). The old
+// Analysis/Jobs top-level split + nested sub-tabs collapsed into one bar.
+type IndustryTab = "projects" | "discover" | "plan" | "operations";
+type DiscoverSource = "search" | "scan";
+const INDUSTRY_TAB_LS_KEY = "eve-settings:industry-tab";
+const DISCOVER_SOURCE_LS_KEY = "eve-settings:industry-discover-source";
 type PlanBuilderSection = "tasks" | "jobs" | "materials" | "blueprints";
 type IndustryStrategyPreset = "conservative" | "balanced" | "aggressive";
 type IndustryActivityMode = "auto" | "manufacturing" | "reaction" | "invention";
@@ -258,21 +265,43 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
   const [activityMode, setActivityMode] = useState<IndustryActivityMode>("auto");
   const [me, setME] = useState(10);
   const [te, setTE] = useState(20);
-  const [systemName, setSystemName] = useState("Jita");
-  const [facilityTax, setFacilityTax] = useState(0);
-  const [structureBonus, setStructureBonus] = useState(1);
-  const [brokerFee, setBrokerFee] = useState(3);
-  const [salesTaxPercent, setSalesTaxPercent] = useState(8);
+  // System / station / fees are shared with the Scanner panel via a common
+  // prefs hook so users configure them once and both surfaces stay in sync.
+  const [sharedPrefs, updateSharedPrefs] = useIndustrySharedPrefs();
+  const systemName = sharedPrefs.buildSystem;
+  const setSystemName = useCallback((v: string) => updateSharedPrefs({ buildSystem: v }), [updateSharedPrefs]);
+  const facilityTax = sharedPrefs.facilityTax;
+  const setFacilityTax = useCallback((v: number) => updateSharedPrefs({ facilityTax: v }), [updateSharedPrefs]);
+  const structureBonus = sharedPrefs.structureBonus;
+  const setStructureBonus = useCallback((v: number) => updateSharedPrefs({ structureBonus: v }), [updateSharedPrefs]);
+  const brokerFee = sharedPrefs.brokerFee;
+  const setBrokerFee = useCallback((v: number) => updateSharedPrefs({ brokerFee: v }), [updateSharedPrefs]);
+  const salesTaxPercent = sharedPrefs.salesTaxPercent;
+  const setSalesTaxPercent = useCallback((v: number) => updateSharedPrefs({ salesTaxPercent: v }), [updateSharedPrefs]);
   const [ownBlueprint, setOwnBlueprint] = useState(true);
   const [blueprintCost, setBlueprintCost] = useState(0);
   const [blueprintIsBPO, setBlueprintIsBPO] = useState(true);
-  const [inventionChance, setInventionChance] = useState(0);
-  const [decryptorCost, setDecryptorCost] = useState(0);
-  const [inventionOutputRuns, setInventionOutputRuns] = useState(0);
+  // Invention params are derived from the shared decryptor picker at
+  // request-build time (see handleAnalyze). No local state needed.
+  // Sub-material build-vs-buy override — comes from the shared prefs hook so
+  // Analyze and Scanner surface the same current value at all times.
+  const buildMode = sharedPrefs.buildMode;
+  const setBuildMode = useCallback(
+    (next: "auto" | "buy_all" | "build_all") => updateSharedPrefs({ buildMode: next }),
+    [updateSharedPrefs],
+  );
 
-  // Station/Structure selection
+  // Station/Structure selection — station ID is part of the shared prefs so
+  // picking a build station in Analyze carries over to the Scanner too.
   const [stations, setStations] = useState<StationInfo[]>([]);
-  const [selectedStationId, setSelectedStationId] = useState<number>(0);
+  const selectedStationId = sharedPrefs.buildStationID;
+  const setSelectedStationId = useCallback(
+    (v: number | ((prev: number) => number)) => {
+      const next = typeof v === "function" ? v(sharedPrefs.buildStationID) : v;
+      updateSharedPrefs({ buildStationID: next });
+    },
+    [sharedPrefs.buildStationID, updateSharedPrefs],
+  );
   const [loadingStations, setLoadingStations] = useState(false);
   const [systemRegionId, setSystemRegionId] = useState<number>(0);
   const [systemId, setSystemId] = useState<number>(0);
@@ -356,23 +385,82 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
   const plannerWarningSeqRef = useRef(1);
   const ledgerLoadSeqRef = useRef(0);
   const schedulerDefaultsProjectKeyRef = useRef("");
-  const [industryInnerTab, setIndustryInnerTab] = useState<IndustryInnerTab>("analysis");
-  const [analysisInnerTab, setAnalysisInnerTabRaw] = useState<AnalysisInnerTab>(() => {
+  // Single top-level tab: Projects (home base) → Discover → Plan → Operations.
+  // Projects is the default landing so cyclical users see their workflows first.
+  const [industryTab, setIndustryTabRaw] = useState<IndustryTab>(() => {
     try {
-      const raw = localStorage.getItem(ANALYSIS_INNER_TAB_LS_KEY);
-      if (raw === "scanner" || raw === "analyze") return raw;
+      const raw = localStorage.getItem(INDUSTRY_TAB_LS_KEY);
+      if (raw === "projects" || raw === "discover" || raw === "plan" || raw === "operations") return raw;
     } catch { /* ignore */ }
-    return "analyze";
+    return "projects";
   });
-  const setAnalysisInnerTab = useCallback((next: AnalysisInnerTab) => {
-    setAnalysisInnerTabRaw(next);
+  const setIndustryTab = useCallback((next: IndustryTab) => {
+    setIndustryTabRaw(next);
     try {
-      localStorage.setItem(ANALYSIS_INNER_TAB_LS_KEY, next);
+      localStorage.setItem(INDUSTRY_TAB_LS_KEY, next);
     } catch { /* ignore */ }
   }, []);
-  const [jobsWorkspaceTab, setJobsWorkspaceTab] = useState<IndustryJobsWorkspaceTab>("guide");
-  const [planBuilderCompactMode, setPlanBuilderCompactMode] = useState(true);
-  const [planBuilderPageSize, setPlanBuilderPageSize] = useState(6);
+  // Inside Discover, users toggle between item-source modes: search for one
+  // item (deep-dive) or scan owned BPs (batch discovery). Scan is the default
+  // since it matches the primary workflow.
+  const [discoverSource, setDiscoverSourceRaw] = useState<DiscoverSource>(() => {
+    try {
+      const raw = localStorage.getItem(DISCOVER_SOURCE_LS_KEY);
+      if (raw === "search" || raw === "scan") return raw;
+    } catch { /* ignore */ }
+    return "scan";
+  });
+  const setDiscoverSource = useCallback((next: DiscoverSource) => {
+    setDiscoverSourceRaw(next);
+    try {
+      localStorage.setItem(DISCOVER_SOURCE_LS_KEY, next);
+    } catch { /* ignore */ }
+  }, []);
+  // Kept only because IndustryJobsLedgerPanel still reads it to dispatch
+  // between guide / planning / operations content. Derived from industryTab
+  // now — no user-facing sub-nav toggles it anymore.
+  const jobsWorkspaceTab: IndustryJobsWorkspaceTab =
+    industryTab === "operations" ? "operations"
+    : industryTab === "projects" ? "guide"
+    : "planning";
+  // Placeholder setter so existing prop signatures compile until the
+  // downstream panels stop taking it. All new UI drives industryTab instead.
+  const setJobsWorkspaceTab: (t: IndustryJobsWorkspaceTab) => void = useCallback(
+    (t) => {
+      if (t === "operations") setIndustryTab("operations");
+      else if (t === "planning") setIndustryTab("plan");
+      else if (t === "guide") setIndustryTab("projects");
+    },
+    [setIndustryTab],
+  );
+  // Planner Visual Builder compact mode + page size are UX prefs, so they
+  // persist across reloads via localStorage keyed by user (not project).
+  const [planBuilderCompactMode, setPlanBuilderCompactMode] = useState<boolean>(() => {
+    try {
+      const raw = localStorage.getItem("eve-settings:planner-compact-mode");
+      if (raw === "true") return true;
+      if (raw === "false") return false;
+    } catch { /* ignore */ }
+    return true;
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("eve-settings:planner-compact-mode", String(planBuilderCompactMode));
+    } catch { /* ignore */ }
+  }, [planBuilderCompactMode]);
+  const [planBuilderPageSize, setPlanBuilderPageSize] = useState<number>(() => {
+    try {
+      const raw = localStorage.getItem("eve-settings:planner-page-size");
+      const n = raw == null ? NaN : Number(raw);
+      if (Number.isFinite(n) && n >= 1 && n <= 200) return n;
+    } catch { /* ignore */ }
+    return 6;
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("eve-settings:planner-page-size", String(planBuilderPageSize));
+    } catch { /* ignore */ }
+  }, [planBuilderPageSize]);
   const [enablePlanScheduler, setEnablePlanScheduler] = useState(true);
   const [schedulerSlotCount, setSchedulerSlotCount] = useState(2);
   const [schedulerMaxRunsPerJob, setSchedulerMaxRunsPerJob] = useState(200);
@@ -1359,7 +1447,6 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     }
     return { required, stock, buy, build, missing };
   }, [ledgerSnapshot]);
-  const activeJobCount = jobStatusBoard.active || 0;
 
   const taskDependencyBoard = useMemo<IndustryTaskDependencyBoard>(() => {
     const tasks = ledgerSnapshot?.tasks ?? [];
@@ -1556,9 +1643,8 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
 
   const handleSeedCurrentIndustryPlanFromAnalysis = useCallback(() => {
     handleGeneratePlanDraft();
-    setIndustryInnerTab("jobs");
-    setJobsWorkspaceTab("planning");
-  }, [handleGeneratePlanDraft]);
+    setIndustryTab("plan");
+  }, [handleGeneratePlanDraft, setIndustryTab]);
 
   const buildLedgerPlanPatchToSend = useCallback((): IndustryPlanPatch | null => {
     let patch: IndustryPlanPatch | null = null;
@@ -2227,6 +2313,10 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     setIndustryCoverage(null);
     setIndustryCoverageMeta("");
 
+    // Derive invention params from the shared decryptor picker. Backend
+    // applies the chance multiplier against each product's SDE base — the
+    // frontend doesn't need to know per-product probability.
+    const inv = effectiveInventionParams(sharedPrefs.decryptor);
     const params: IndustryParams = {
       type_id: selectedItem.type_id,
       runs,
@@ -2243,9 +2333,11 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
       own_blueprint: ownBlueprint,
       blueprint_cost: ownBlueprint ? 0 : blueprintCost,
       blueprint_is_bpo: blueprintIsBPO,
-      invention_chance: activityMode === "invention" ? inventionChance : 0,
-      decryptor_cost: activityMode === "invention" ? decryptorCost : 0,
-      invention_output_runs: activityMode === "invention" ? inventionOutputRuns : 0,
+      invention_chance_mult: activityMode === "invention" ? inv.chanceMult : 0,
+      invention_output_runs: activityMode === "invention" ? inv.outputRuns : 0,
+      decryptor_cost: activityMode === "invention" ? sharedPrefs.decryptorCost : 0,
+      build_mode: buildMode,
+      skip_reactions: sharedPrefs.skipReactions,
     };
 
     try {
@@ -2266,7 +2358,7 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     } finally {
       setAnalyzing(false);
     }
-  }, [analyzing, selectedItem, runs, activityMode, me, te, systemName, selectedStationId, facilityTax, structureBonus, brokerFee, salesTaxPercent, ownBlueprint, blueprintCost, blueprintIsBPO, inventionChance, decryptorCost, inventionOutputRuns, t, onError, trackAchievementEvent]);
+  }, [analyzing, selectedItem, runs, activityMode, me, te, systemName, selectedStationId, facilityTax, structureBonus, brokerFee, salesTaxPercent, ownBlueprint, blueprintCost, blueprintIsBPO, sharedPrefs.decryptor, sharedPrefs.decryptorCost, sharedPrefs.skipReactions, buildMode, t, onError, trackAchievementEvent]);
 
   const clearPlanPreview = useCallback(() => {
     setLastLedgerPlanPreview(null);
@@ -2471,65 +2563,78 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     updatingLedgerJobId,
   ]);
 
+  const industryTabDefs: Array<{ id: IndustryTab; labelKey: "industryTabProjects" | "industryTabDiscover" | "industryTabPlan" | "industryTabOperations" }> = [
+    { id: "projects", labelKey: "industryTabProjects" },
+    { id: "discover", labelKey: "industryTabDiscover" },
+    { id: "plan", labelKey: "industryTabPlan" },
+    { id: "operations", labelKey: "industryTabOperations" },
+  ];
+
   return (
-    <div className={`flex-1 flex flex-col min-h-0 ${industryInnerTab === "jobs" ? "overflow-y-auto eve-scrollbar" : ""}`}>
+    <div className={`flex-1 flex flex-col min-h-0 ${
+      // Enable page-level scrolling for every tab whose content can exceed
+      // the viewport. Discover-Search's analysis result panel is tall (four
+      // summary cards + material tree + coverage panel), so it also needs
+      // the scrollbar — without it the coverage section at the bottom was
+      // getting clipped when a blueprint was selected.
+      industryTab === "plan" ||
+      industryTab === "operations" ||
+      industryTab === "projects" ||
+      industryTab === "discover"
+        ? "overflow-y-auto eve-scrollbar"
+        : ""
+    }`}>
       <div className="shrink-0 m-2 mb-0">
         <div className="inline-flex rounded-sm border border-eve-border overflow-hidden">
-          <button
-            type="button"
-            onClick={() => setIndustryInnerTab("analysis")}
-            className={`px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition-colors ${
-              industryInnerTab === "analysis"
-                ? "bg-eve-accent/20 text-eve-accent"
-                : "bg-eve-panel text-eve-dim hover:text-eve-text"
-            }`}
-          >
-            Analysis
-          </button>
-          <button
-            type="button"
-            onClick={() => setIndustryInnerTab("jobs")}
-            className={`px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition-colors ${
-              industryInnerTab === "jobs"
-                ? "bg-eve-accent/20 text-eve-accent"
-                : "bg-eve-panel text-eve-dim hover:text-eve-text"
-            }`}
-          >
-            Jobs
-          </button>
+          {industryTabDefs.map((def) => (
+            <button
+              key={def.id}
+              type="button"
+              onClick={() => setIndustryTab(def.id)}
+              className={`px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition-colors ${
+                industryTab === def.id
+                  ? "bg-eve-accent/20 text-eve-accent"
+                  : "bg-eve-panel text-eve-dim hover:text-eve-text"
+              }`}
+            >
+              {t(def.labelKey)}
+            </button>
+          ))}
         </div>
       </div>
 
-      {industryInnerTab === "analysis" && (
+      {/* Discover has an item-source sub-picker (Search one item vs Scan
+          owned BPs) — appears only when Discover is the active top-level tab. */}
+      {industryTab === "discover" && (
         <div className="shrink-0 m-2 mt-1 mb-0">
           <div className="inline-flex rounded-sm border border-eve-border overflow-hidden">
             <button
               type="button"
-              onClick={() => setAnalysisInnerTab("analyze")}
+              onClick={() => setDiscoverSource("scan")}
               className={`px-3 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors ${
-                analysisInnerTab === "analyze"
+                discoverSource === "scan"
                   ? "bg-eve-accent/15 text-eve-accent"
                   : "bg-eve-panel text-eve-dim hover:text-eve-text"
               }`}
             >
-              {t("industryAnalysisSubTabAnalyze")}
+              {t("industryDiscoverSourceScan")}
             </button>
             <button
               type="button"
-              onClick={() => setAnalysisInnerTab("scanner")}
+              onClick={() => setDiscoverSource("search")}
               className={`px-3 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors ${
-                analysisInnerTab === "scanner"
+                discoverSource === "search"
                   ? "bg-eve-accent/15 text-eve-accent"
                   : "bg-eve-panel text-eve-dim hover:text-eve-text"
               }`}
             >
-              {t("industryAnalysisSubTabScanner")}
+              {t("industryDiscoverSourceSearch")}
             </button>
           </div>
         </div>
       )}
 
-      {industryInnerTab === "analysis" && analysisInnerTab === "scanner" && (
+      {industryTab === "discover" && discoverSource === "scan" && (
         <Suspense fallback={<div className="m-2 text-xs text-eve-dim">Loading scanner...</div>}>
           <IndustryProfitableScannerPanel
             isLoggedIn={isLoggedIn}
@@ -2556,21 +2661,19 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
               setOwnBlueprint(handoff.ownBlueprint);
               setBlueprintIsBPO(handoff.blueprintIsBPO);
               setBlueprintCost(0);
-              setInventionChance(handoff.inventionChancePercent ?? 0);
-              setInventionOutputRuns(handoff.inventionOutputRuns ?? 0);
-              setDecryptorCost(handoff.decryptorCost ?? 0);
+              // Invention params come from shared prefs (same decryptor
+              // picker Scanner uses), so no per-handoff wiring needed here.
               setResult(null);
               setIndustryCoverage(null);
               setIndustryCoverageMeta("");
-              setAnalysisInnerTab("analyze");
+              setDiscoverSource("search");
               if (handoff.autoAnalyze) {
                 setPendingAutoAnalyze(true);
               }
             }}
             onProjectCreated={(projectID: number) => {
               setSelectedLedgerProjectId(projectID);
-              setIndustryInnerTab("jobs");
-              setJobsWorkspaceTab("planning");
+              setIndustryTab("plan");
               void refreshLedgerProjects(projectID);
               void (async () => {
                 try {
@@ -2590,7 +2693,7 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
         </Suspense>
       )}
 
-      {industryInnerTab === "analysis" && analysisInnerTab === "analyze" && (
+      {industryTab === "discover" && discoverSource === "search" && (
       <>
       {/* Settings Panel */}
       <div className="shrink-0 m-2">
@@ -2655,8 +2758,110 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
             </SettingsField>
           </div>
 
-          {/* Location settings (System, Station, Include Structures) */}
-          <div className="mb-3">
+          {/* ==== Item & Build ==== */}
+          <div className="mt-3 pt-3 border-t border-eve-border/30">
+            <div className="text-[10px] uppercase tracking-wider text-eve-dim mb-2">
+              {t("industrySectionItemBuild")}
+            </div>
+            <SettingsGrid cols={5}>
+              <SettingsField label="Mode" hint={t("industryAnalyzeModeHint")}>
+                <SettingsSelect
+                  value={activityMode}
+                  onChange={(value) => setActivityMode(value as IndustryActivityMode)}
+                  options={[
+                    { value: "auto", label: "Auto" },
+                    { value: "manufacturing", label: "Manufacturing" },
+                    { value: "reaction", label: "Reaction" },
+                    { value: "invention", label: "Invention + build" },
+                  ]}
+                />
+              </SettingsField>
+              <SettingsField label={t("industryBuildMode")} hint={t("industryBuildModeHint")}>
+                <SettingsSelect
+                  value={buildMode}
+                  onChange={(value) => setBuildMode(value as "auto" | "buy_all" | "build_all")}
+                  options={[
+                    { value: "auto", label: t("industryBuildModeAuto") },
+                    { value: "buy_all", label: t("industryBuildModeBuyAll") },
+                    { value: "build_all", label: t("industryBuildModeBuildAll") },
+                  ]}
+                />
+              </SettingsField>
+              {/* Skip Reactions is meaningless when the root activity IS a
+                  reaction — the whole analysis exists to model that reaction.
+                  Hide the field in that mode; the underlying preference is
+                  preserved in shared prefs and reappears when the user picks
+                  a different activity. */}
+              {activityMode !== "reaction" && (
+                <SettingsField label={t("industrySkipReactions")} hint={t("industrySkipReactionsHint")}>
+                  <SettingsCheckbox
+                    checked={sharedPrefs.skipReactions}
+                    onChange={(v) => updateSharedPrefs({ skipReactions: v })}
+                    label={t("industrySkipReactionsShort")}
+                  />
+                </SettingsField>
+              )}
+              <SettingsField label={t("industryRuns")} hint={t("industryRunsHint")}>
+                <SettingsNumberInput value={runs} onChange={setRuns} min={1} max={10000} />
+              </SettingsField>
+            </SettingsGrid>
+
+            {/* Blueprint efficiency — split from Item & Build so the more
+                blueprint-specific numbers group together and the top row
+                stays focused on "what am I building". */}
+            <div className="mt-3 pt-3 border-t border-eve-border/30">
+              <div className="text-[10px] uppercase tracking-wider text-eve-dim mb-2">
+                {t("industrySectionBlueprintEfficiency")}
+              </div>
+              <SettingsGrid cols={2}>
+                <SettingsField label={t("industryME")} hint={t("industryMEHint")}>
+                  <SettingsNumberInput value={me} onChange={setME} min={0} max={10} />
+                </SettingsField>
+                <SettingsField label={t("industryTE")} hint={t("industryTEHint")}>
+                  <SettingsNumberInput value={te} onChange={setTE} min={0} max={20} />
+                </SettingsField>
+              </SettingsGrid>
+            </div>
+
+            {activityMode === "invention" && (
+              <div className="mt-3">
+                <div className="text-[10px] uppercase tracking-wider text-eve-dim mb-2">Invention</div>
+                <SettingsGrid cols={2}>
+                  <SettingsField label={t("industryScannerDecryptorLabel")} hint={t("industryDecryptorHint")}>
+                    <SettingsSelect
+                      value={sharedPrefs.decryptor}
+                      onChange={(v) => {
+                        const key = v as DecryptorKey;
+                        updateSharedPrefs({
+                          decryptor: key,
+                          decryptorCost: DECRYPTORS[key].defaultCost,
+                        });
+                      }}
+                      options={DECRYPTOR_ORDER.map((k) => ({ value: k, label: DECRYPTORS[k].name }))}
+                    />
+                  </SettingsField>
+                  <SettingsField label={t("industryScannerDecryptorCostLabel")} hint={t("industryDecryptorCostHint")}>
+                    <SettingsNumberInput
+                      value={sharedPrefs.decryptorCost}
+                      onChange={(v) => updateSharedPrefs({ decryptorCost: v })}
+                      min={0}
+                      max={100_000_000}
+                      step={1000}
+                    />
+                  </SettingsField>
+                </SettingsGrid>
+                <div className="text-[10px] text-eve-dim mt-1">
+                  Chance, ME/TE, and BPC-runs come from the decryptor's canonical modifiers applied to each product's SDE base.
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* ==== Location & Fees ==== */}
+          <div className="mt-3 pt-3 border-t border-eve-border/30">
+            <div className="text-[10px] uppercase tracking-wider text-eve-dim mb-2">
+              {t("industrySectionLocationFees")}
+            </div>
             <SettingsGrid cols={3}>
               <SettingsField label={t("system")}>
                 <SystemAutocomplete
@@ -2705,8 +2910,6 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
               )}
             </SettingsGrid>
             {(() => {
-              // Single status line below the grid so column heights stay even
-              // (mirrors the scanner panel — same overlap bug otherwise).
               if (loadingStations) return <div className="mt-2 text-[10px] text-eve-dim">{t("loadingStations")}</div>;
               if (loadingStructures) return <div className="mt-2 text-[10px] text-eve-dim">{t("loadingStructures")}</div>;
               if (includeStructures) {
@@ -2727,85 +2930,24 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
               }
               return null;
             })()}
-          </div>
 
-          {/* Production parameters (Runs, ME, TE, Facility Tax) */}
-          <div className="mb-3">
-            <SettingsGrid cols={5}>
-              <SettingsField label="Mode">
-                <SettingsSelect
-                  value={activityMode}
-                  onChange={(value) => setActivityMode(value as IndustryActivityMode)}
-                  options={[
-                    { value: "auto", label: "Auto" },
-                    { value: "manufacturing", label: "Manufacturing" },
-                    { value: "reaction", label: "Reaction" },
-                    { value: "invention", label: "Invention + build" },
-                  ]}
-                />
-              </SettingsField>
-              <SettingsField label={t("industryRuns")}>
-                <SettingsNumberInput value={runs} onChange={setRuns} min={1} max={10000} />
-              </SettingsField>
-              <SettingsField label={t("industryME")}>
-                <SettingsNumberInput value={me} onChange={setME} min={0} max={10} />
-              </SettingsField>
-              <SettingsField label={t("industryTE")}>
-                <SettingsNumberInput value={te} onChange={setTE} min={0} max={20} />
-              </SettingsField>
-              <SettingsField label={t("industryFacilityTax")}>
-                <SettingsNumberInput value={facilityTax} onChange={setFacilityTax} min={0} max={50} step={0.1} />
-              </SettingsField>
-            </SettingsGrid>
-          </div>
-
-          {activityMode === "invention" && (
-            <div className="mt-3 pt-3 border-t border-eve-border/30">
-              <div className="text-[10px] uppercase tracking-wider text-eve-dim mb-2">Invention</div>
-              <SettingsGrid cols={3}>
-                <SettingsField label="Chance override %">
-                  <SettingsNumberInput value={inventionChance} onChange={setInventionChance} min={0} max={100} step={0.1} />
+            <div className="mt-3">
+              <SettingsGrid cols={4}>
+                <SettingsField label={t("industryFacilityTax")} hint={t("industryFacilityTaxHint")}>
+                  <SettingsNumberInput value={facilityTax} onChange={setFacilityTax} min={0} max={50} step={0.1} />
                 </SettingsField>
-                <SettingsField label="Decryptor / attempt">
-                  <SettingsNumberInput value={decryptorCost} onChange={setDecryptorCost} min={0} max={100000000000} step={100000} />
+                <SettingsField label={t("industryStructureBonus")} hint={t("industryStructureBonusHint")}>
+                  <SettingsNumberInput value={structureBonus} onChange={setStructureBonus} min={-100} max={100} step={0.1} />
                 </SettingsField>
-                <SettingsField label="BPC runs / success">
-                  <SettingsNumberInput value={inventionOutputRuns} onChange={setInventionOutputRuns} min={0} max={100000} />
+                <SettingsField label={t("brokerFee")} hint={t("industryBrokerFeeHint")}>
+                  <SettingsNumberInput value={brokerFee} onChange={setBrokerFee} min={0} max={10} step={0.1} />
                 </SettingsField>
-              </SettingsGrid>
-              <div className="text-[10px] text-eve-dim mt-1">
-                Zero uses SDE probability and output runs.
-              </div>
-            </div>
-          )}
-
-          {/* After broker: broker fee and sales tax */}
-          <div className="mt-3 pt-3 border-t border-eve-border/30">
-            <div className="text-[10px] uppercase tracking-wider text-eve-dim mb-2">{t("industryAfterBroker")}</div>
-            <SettingsGrid cols={5}>
-              <SettingsField label={t("brokerFee")}>
-                <SettingsNumberInput value={brokerFee} onChange={setBrokerFee} min={0} max={10} step={0.1} />
-              </SettingsField>
-              <SettingsField label={t("salesTax")}>
-                <SettingsNumberInput value={salesTaxPercent} onChange={setSalesTaxPercent} min={0} max={100} step={0.1} />
-              </SettingsField>
-            </SettingsGrid>
-          </div>
-
-          {/* Advanced Options */}
-          <details className="mt-3 group">
-            <summary className="cursor-pointer text-xs text-eve-dim hover:text-eve-accent transition-colors flex items-center gap-1">
-              <span className="group-open:rotate-90 transition-transform">▶</span>
-              {t("advancedFilters")}
-            </summary>
-            <div className="mt-3 pt-3 border-t border-eve-border/30">
-              <SettingsGrid cols={3}>
-                <SettingsField label={t("industryStructureBonus")}>
-                  <SettingsNumberInput value={structureBonus} onChange={setStructureBonus} min={0} max={5} step={0.1} />
+                <SettingsField label={t("salesTax")} hint={t("industrySalesTaxHint")}>
+                  <SettingsNumberInput value={salesTaxPercent} onChange={setSalesTaxPercent} min={0} max={100} step={0.1} />
                 </SettingsField>
               </SettingsGrid>
             </div>
-          </details>
+          </div>
 
           {/* Blueprint ownership */}
           <div className="mt-3 pt-3 border-t border-eve-border/30">
@@ -2879,17 +3021,15 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
       </>
       )}
 
-      {/* Industry Ledger Panel (M1 foundation) */}
-      {industryInnerTab === "jobs" && (
+      {/* Projects / Plan / Operations all render through the shared ledger
+          panel, which internally dispatches on jobsWorkspaceTab (derived
+          above from industryTab). */}
+      {(industryTab === "projects" || industryTab === "plan" || industryTab === "operations") && (
         <Suspense fallback={<div className="m-2 text-xs text-eve-dim">Loading jobs workspace...</div>}>
           <IndustryJobsLedgerPanel
             isLoggedIn={isLoggedIn}
             ledgerProjectsLoading={ledgerProjectsLoading}
             jobsWorkspaceTab={jobsWorkspaceTab}
-            setJobsWorkspaceTab={setJobsWorkspaceTab}
-            warningsCount={plannerWarnings.length}
-            missingBindings={visualTaskBlueprintBindingStats.missing}
-            activeJobs={activeJobCount}
             projectHeaderProps={{
               newLedgerProjectName,
               setNewLedgerProjectName,
@@ -2913,7 +3053,7 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
               isLoggedIn,
               onOpen: (projectID: number) => {
                 setSelectedLedgerProjectId(projectID);
-                setJobsWorkspaceTab("planning");
+                setIndustryTab("plan");
               },
               onProjectDeleted: (deletedID: number) => {
                 if (deletedID === selectedLedgerProjectId) {
@@ -3003,7 +3143,7 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
       )}
 
       {/* Results */}
-      {industryInnerTab === "analysis" && analysisInnerTab === "analyze" && result && (
+      {industryTab === "discover" && discoverSource === "search" && result && (
         <Suspense fallback={<div className="m-2 text-xs text-eve-dim">Loading analysis view...</div>}>
           <IndustryAnalysisResultsPanel
             result={result}
@@ -3032,7 +3172,7 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
       )}
 
       {/* Empty State */}
-      {industryInnerTab === "analysis" && analysisInnerTab === "analyze" && !result && !analyzing && (
+      {industryTab === "discover" && discoverSource === "search" && !result && !analyzing && (
         <div className="flex-1 flex items-center justify-center min-h-[200px]">
           <EmptyState reason="no_item_selected" wikiSlug="Industry-Chain-Optimizer" />
         </div>

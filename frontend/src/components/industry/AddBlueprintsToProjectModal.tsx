@@ -47,6 +47,8 @@ export interface ScannerAnalysisContext {
   salesTaxPercent: number;
   decryptorKey: DecryptorKey;
   decryptorCost: number;
+  /** Global build-vs-buy override for the analyze pass on each row. */
+  buildMode: "auto" | "buy_all" | "build_all";
 }
 
 interface Props {
@@ -87,6 +89,7 @@ function buildParamsForRow(row: ProfitableScanRow, ctx: ScannerAnalysisContext, 
     sales_tax_percent: ctx.salesTaxPercent,
     own_blueprint: true,
     blueprint_is_bpo: row.is_bpo,
+    build_mode: ctx.buildMode,
     ...(isT2
       ? {
           invention_chance: (row.invention_probability ?? 0) * 100,

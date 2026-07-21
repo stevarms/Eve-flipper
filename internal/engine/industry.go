@@ -37,8 +37,26 @@ type IndustryParams struct {
 	BlueprintCost       float64 // ISK cost of blueprint (BPO or BPC)
 	BlueprintIsBPO      bool    // true = BPO (amortize over runs), false = BPC (one-time)
 	InventionChance     float64 // Optional invention chance override in percent (0 = SDE probability)
+	// InventionChanceMult multiplies the per-product SDE base probability
+	// (only applied when InventionChance is 0). Lets the frontend send a
+	// decryptor's chance multiplier without needing to know the per-product
+	// SDE base. 0 or 1 = no adjustment.
+	InventionChanceMult float64
 	DecryptorCost       float64 // Optional per-attempt decryptor cost
 	InventionOutputRuns int32   // Optional successful BPC runs override
+	// BuildMode governs the per-node build-vs-buy decision made in
+	// calculateCosts. "" or "auto" (default) picks whichever is cheaper at
+	// runtime. "buy_all" forces buy on every non-root sub-product (falls
+	// back to build if the item has no buy price). "build_all" forces build
+	// on every buildable sub-product (falls back to buy if no blueprint).
+	BuildMode string
+	// SkipReactions, when true, treats any material that would be produced
+	// via a reaction activity as a base (buy-from-market) node instead of
+	// expanding it into a reaction step. Reflects the workflow of a builder
+	// who never runs reactions themselves and always buys reaction outputs
+	// (fuel blocks, moon composites, etc.). Ignored at the root — if the
+	// user asks to analyze a reaction product directly, that request wins.
+	SkipReactions bool
 }
 
 // MaterialNode represents a node in the production tree.
@@ -85,7 +103,12 @@ type IndustryActivityStep struct {
 	TimeSeconds      int32   `json:"time_seconds"`
 	Probability      float64 `json:"probability,omitempty"`
 	ExpectedAttempts float64 `json:"expected_attempts,omitempty"`
-	Reason           string  `json:"reason,omitempty"`
+	// BlueprintIsBPC signals that BlueprintTypeID is a T2 BPC (produced via
+	// invention), so the plan-patch builder can default IsBPO=false on
+	// blueprint-pool rows for this step. Without this hint, sub-BPs default
+	// to BPO which is wrong for every T2 component in a build chain.
+	BlueprintIsBPC bool   `json:"blueprint_is_bpc,omitempty"`
+	Reason         string `json:"reason,omitempty"`
 }
 
 // IndustryAnalysis is the result of analyzing a production chain.
@@ -285,7 +308,9 @@ func (a *IndustryAnalyzer) Analyze(params IndustryParams, progress func(string))
 	// Calculate total items produced: runs × productQuantity.
 	totalQuantity := params.Runs
 	if bp, ok := a.SDE.Industry.GetBlueprintForProduct(params.TypeID); ok {
-		activity := a.activityForProduct(bp, params.TypeID, params.ActivityMode)
+		// Root call: skipReactions=false so an explicit reaction-product
+		// analysis still works when the user has SkipReactions on globally.
+		activity := a.activityForProduct(bp, params.TypeID, params.ActivityMode, false)
 		productQty, _ := blueprintProductForActivity(bp, params.TypeID, activity)
 		if productQty <= 0 {
 			productQty = bp.ProductQuantity
@@ -454,7 +479,10 @@ func (a *IndustryAnalyzer) buildMaterialTree(typeID int32, quantity int32, param
 		node.IsBase = true
 		return node
 	}
-	activity := a.activityForProduct(bp, typeID, params.ActivityMode)
+	// Apply SkipReactions only to children (depth > 0); at the root the
+	// caller passed ActivityMode explicitly and we honor that choice.
+	skipReactions := params.SkipReactions && depth > 0
+	activity := a.activityForProduct(bp, typeID, params.ActivityMode, skipReactions)
 	if activity == "" {
 		node.IsBase = true
 		return node
@@ -528,11 +556,40 @@ func (a *IndustryAnalyzer) calculateCosts(node *MaterialNode, costIndex float64,
 
 	node.BuildCost = materialCost + node.JobCost
 
-	// Decide: buy or build
-	if node.BuyPrice > 0 && node.BuyPrice < node.BuildCost {
-		node.ShouldBuild = false
-	} else {
+	// The tree root (params.TypeID) is what the user asked to analyze — always
+	// build it, regardless of mode. BuildMode only governs sub-node decisions.
+	isRoot := node.TypeID == params.TypeID
+	buildable := node.Blueprint != nil && len(node.Children) > 0
+
+	if isRoot {
 		node.ShouldBuild = true
+		return
+	}
+
+	// Decide: buy or build. BuildMode overrides the cost-based choice:
+	//   "buy_all"   → prefer buy when a buy price exists.
+	//   "build_all" → prefer build when the node is buildable (has children).
+	//   "auto"/""   → pick the cheaper of the two.
+	switch params.BuildMode {
+	case "buy_all":
+		if node.BuyPrice > 0 {
+			node.ShouldBuild = false
+		} else {
+			// No buy price → fall back to build if we can, else buy at 0.
+			node.ShouldBuild = buildable
+		}
+	case "build_all":
+		if buildable {
+			node.ShouldBuild = true
+		} else {
+			node.ShouldBuild = false
+		}
+	default:
+		if node.BuyPrice > 0 && node.BuyPrice < node.BuildCost {
+			node.ShouldBuild = false
+		} else {
+			node.ShouldBuild = true
+		}
 	}
 }
 
@@ -546,7 +603,12 @@ func (a *IndustryAnalyzer) calculateEIV(node *MaterialNode) float64 {
 	}
 	activity := node.Activity
 	if activity == "" {
-		activity = a.activityForProduct(bp, node.TypeID, "")
+		// Post-tree bookkeeping (EIV computation for time/job-cost display).
+		// Passing skipReactions=false is correct here: if the tree already
+		// marked a node as base via SkipReactions, its ShouldBuild=false and
+		// we don't consume the EIV in cost math — recomputing an activity
+		// name here just gives labeling data without changing behavior.
+		activity = a.activityForProduct(bp, node.TypeID, "", false)
 	}
 	productQuantity, _ := blueprintProductForActivity(bp, node.TypeID, activity)
 	if productQuantity <= 0 {
@@ -577,7 +639,12 @@ func normalizeIndustryActivityMode(mode string) string {
 	}
 }
 
-func (a *IndustryAnalyzer) activityForProduct(bp *sde.Blueprint, productTypeID int32, preferred string) string {
+// activityForProduct picks the activity that will produce the given typeID
+// for this blueprint. skipReactions, when true, refuses to fall back to
+// "reaction" — reaction-only materials are then treated as base (buy)
+// nodes. Applied to child materials; the caller passes false at the root
+// so an explicit reaction analysis still works.
+func (a *IndustryAnalyzer) activityForProduct(bp *sde.Blueprint, productTypeID int32, preferred string, skipReactions bool) string {
 	if bp == nil {
 		return ""
 	}
@@ -587,13 +654,15 @@ func (a *IndustryAnalyzer) activityForProduct(bp *sde.Blueprint, productTypeID i
 	}
 	if preferred != "auto" && preferred != "invention" {
 		if activityProduces(bp, preferred, productTypeID) {
+			// Explicit reaction pick at root wins even when skipReactions is on
+			// — the flag is a preference about implicit fallback, not a veto.
 			return preferred
 		}
 	}
 	if activityProduces(bp, "manufacturing", productTypeID) {
 		return "manufacturing"
 	}
-	if activityProduces(bp, "reaction", productTypeID) {
+	if !skipReactions && activityProduces(bp, "reaction", productTypeID) {
 		return "reaction"
 	}
 	if preferred != "auto" && preferred != "invention" {
@@ -748,6 +817,13 @@ func (a *IndustryAnalyzer) calculateInventionStep(params IndustryParams, tree *M
 	chance := normalizeProbability(product.Probability)
 	if params.InventionChance > 0 {
 		chance = normalizeProbability(params.InventionChance)
+	} else if params.InventionChanceMult > 0 && params.InventionChanceMult != 1.0 {
+		// Frontend picked a decryptor without knowing this product's SDE
+		// base probability — apply the picker's multiplier server-side.
+		chance = chance * params.InventionChanceMult
+		if chance > 1 {
+			chance = 1
+		}
 	}
 	if chance <= 0 {
 		return IndustryActivityStep{}, false
@@ -773,12 +849,18 @@ func (a *IndustryAnalyzer) calculateInventionStep(params IndustryParams, tree *M
 	}
 	jobCostPerAttempt := eivPerAttempt * a.costIndexForActivity("invention", fallbackCostIndex) * (1 + params.FacilityTax/100)
 	totalPerAttempt := materialCostPerAttempt + jobCostPerAttempt + params.DecryptorCost
+	// Both source BP and invention output (T2 BPC) are blueprint typeIDs — use
+	// the BP-aware name resolver so we don't emit "Type 41370" when the
+	// invented BPC has no market group entry. BlueprintIsBPC = false because
+	// the SOURCE (input) of invention is a T1 BP the user owns as BPO/BPC —
+	// this step spends that BP, not a T2 BPC.
 	step := IndustryActivityStep{
 		Activity:         "invention",
 		BlueprintTypeID:  sourceBP.BlueprintTypeID,
-		BlueprintName:    a.typeName(sourceBP.BlueprintTypeID),
+		BlueprintName:    a.SDE.BlueprintName(sourceBP.BlueprintTypeID),
 		ProductTypeID:    product.TypeID,
-		ProductName:      a.typeName(product.TypeID),
+		ProductName:      a.SDE.BlueprintName(product.TypeID),
+		BlueprintIsBPC:   false,
 		Runs:             expectedAttempts,
 		OutputQuantity:   int32(math.Ceil(successesNeeded)) * outputRuns,
 		MaterialCost:     materialCostPerAttempt * expectedAttempts,
@@ -823,10 +905,14 @@ func (a *IndustryAnalyzer) buildActivityPlan(root *MaterialNode) []IndustryActiv
 		if node.IsBase || !node.ShouldBuild || node.Blueprint == nil {
 			return
 		}
+		isBPC := false
+		if a.SDE != nil && a.SDE.Industry != nil {
+			isBPC = a.SDE.Industry.InventionProducts[node.Blueprint.BlueprintTypeID]
+		}
 		out = append(out, IndustryActivityStep{
 			Activity:        node.Activity,
 			BlueprintTypeID: node.Blueprint.BlueprintTypeID,
-			BlueprintName:   a.typeName(node.Blueprint.BlueprintTypeID),
+			BlueprintName:   a.SDE.BlueprintName(node.Blueprint.BlueprintTypeID),
 			ProductTypeID:   node.TypeID,
 			ProductName:     node.TypeName,
 			Runs:            float64(node.Runs),
@@ -836,6 +922,7 @@ func (a *IndustryAnalyzer) buildActivityPlan(root *MaterialNode) []IndustryActiv
 			TotalCost:       node.BuildCost,
 			TimeSeconds:     node.Blueprint.Time,
 			Probability:     node.Blueprint.Probability,
+			BlueprintIsBPC:  isBPC,
 		})
 	}
 	walk(root)

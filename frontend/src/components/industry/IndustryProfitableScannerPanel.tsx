@@ -4,7 +4,8 @@ import { scanProfitableBlueprints, getStations, getStructures } from "@/lib/api"
 import { useEsiFeeImport } from "@/lib/useEsiFeeImport";
 import type { ProfitableScanRequest, ProfitableScanResponse, ProfitableScanRow, ProfitableScanReuseRow, StationInfo } from "@/lib/types";
 import { formatISK } from "@/lib/format";
-import { DECRYPTORS, DECRYPTOR_ORDER, effectiveInventionParams, type DecryptorKey } from "@/lib/industryDecryptors";
+import { DECRYPTORS, effectiveInventionParams } from "@/lib/industryDecryptors";
+import { useIndustrySharedPrefs } from "@/lib/useIndustrySharedPrefs";
 import {
   TabSettingsPanel,
   SettingsField,
@@ -19,6 +20,11 @@ import { useGlobalToast } from "../Toast";
 import { AddBlueprintsToProjectModal } from "./AddBlueprintsToProjectModal";
 
 const SCANNER_PERSIST_KEY = "industry-scanner";
+// Display fallback for the period-days label when the backend omits the
+// field (e.g. rows produced before the period-stats feature landed and
+// replayed from sessionStorage). Kept in sync with the backend constant
+// profitableScanPeriodDays.
+const profitableScanPeriodDaysFallback = 30;
 const PARAMS_LS_KEY = "eve-settings:industry-scanner";
 // Keep transient scan results (rows + selection + sort + search) in
 // sessionStorage so the user doesn't lose them when they switch jobs tabs.
@@ -34,6 +40,8 @@ type SortKey =
   | "isk_per_hour"
   | "profit"
   | "profit_percent"
+  | "period_profit"
+  | "period_margin"
   | "optimal_build_cost"
   | "manufacturing_time";
 
@@ -56,37 +64,60 @@ const PRICING_HUB_PRESETS: PricingHubPreset[] = [
   { key: "hek", shortLabel: "Hek", systemName: "Hek", stationID: 60005686 },
 ];
 
+// Type-filter chip catalog. Each chip maps to one-or-more SDE CategoryIDs;
+// the multiplex lets us group related categories under one label (Structures
+// = 65 Structure + 66 Structure Module, Components = 34 Material + 35
+// Component). Order is the display order in the Type chip row.
+interface TypeChipDef {
+  key: string;
+  labelKey: string; // TranslationKey — resolved at render
+  categoryIDs: number[];
+}
+const TYPE_CHIPS: TypeChipDef[] = [
+  { key: "ships", labelKey: "industryScannerTypeChipShips", categoryIDs: [6] },
+  { key: "modules", labelKey: "industryScannerTypeChipModules", categoryIDs: [7] },
+  { key: "charges", labelKey: "industryScannerTypeChipCharges", categoryIDs: [8] },
+  { key: "drones", labelKey: "industryScannerTypeChipDrones", categoryIDs: [18] },
+  { key: "implants", labelKey: "industryScannerTypeChipImplants", categoryIDs: [20] },
+  { key: "deployables", labelKey: "industryScannerTypeChipDeployables", categoryIDs: [22] },
+  { key: "subsystems", labelKey: "industryScannerTypeChipSubsystems", categoryIDs: [32] },
+  { key: "components", labelKey: "industryScannerTypeChipComponents", categoryIDs: [17, 34, 35] },
+  { key: "structures", labelKey: "industryScannerTypeChipStructures", categoryIDs: [65, 66] },
+];
+const ALL_TYPE_CATEGORY_IDS: number[] = TYPE_CHIPS.flatMap((c) => c.categoryIDs);
+
+// Scanner-only params. buildSystem, buildStationID, facilityTax,
+// structureBonus, brokerFee, salesTaxPercent live in the shared prefs hook
+// (used by both Analyze and Scanner), so they intentionally don't appear
+// here — the scanner reads them from useIndustrySharedPrefs on render.
 interface PersistedParams {
-  scope: "single" | "all";
   defaultBPCRuns: number;
   includeCorpBlueprints: boolean;
-  buildSystem: string;
-  /** Station/structure where the user manufactures — drives Structure ME
-   *  Bonus auto-fill (and later Job Cost Bonus). NOT used for price lookup. */
-  buildStationID: number;
-  /** System whose region is queried for product/material market prices. */
+  /** System whose region is queried for product/material market prices.
+   *  Scanner-specific (Analyze uses the same system for both build + price). */
   pricingSystem: string;
   /** Specific NPC station within the pricing system, 0 = region-wide. The
    *  four major-hub presets pre-fill this to the canonical trade station. */
   pricingStationID: number;
-  facilityTax: number;
-  structureBonus: number;
-  brokerFee: number;
-  salesTaxPercent: number;
   runsPerJob: number;
-  maxBlueprints: number;
   blueprintFilter: "bpo" | "bpc" | "both";
-  // Include T2 opportunities via invention. When true, each owned T1 BP with
-  // an invention activity is fanned out to its T2 products and scored in
-  // invention mode alongside the T1 mfg rows.
+  // Invention discovery — the parent "Invention" chip is derived from the
+  // OR of these two so the top row shows one chip; when Invention is on,
+  // a sub-row exposes the T2/T3 toggles independently.
   includeT2Invention: boolean;
-  decryptor: DecryptorKey;
-  // null = use DECRYPTORS[decryptor].defaultCost.
-  decryptorCostOverride: number | null;
+  includeT3Invention: boolean;
+  // When true (default), the scan expands beyond your owned BPs to include
+  // every marketable SDE BP — dimmed rows tagged [unowned] surface
+  // buy-and-build candidates.
+  includeUnowned: boolean;
+  /** Empty array = all types; otherwise SDE CategoryIDs of allowed products. */
+  typeCategories: number[];
   // Client-side visibility toggles per row kind — session-persisted so tab
   // switches don't wipe the user's chip selection.
   showT1Rows: boolean;
   showT2Rows: boolean;
+  showT3Rows: boolean;
+  ownedFilter: "all" | "owned" | "unowned";
   // null = no filter; numeric value (including 0 or negative) is taken literally.
   minISKPerHour: number | null;
   minProfit: number | null;
@@ -94,25 +125,20 @@ interface PersistedParams {
 }
 
 const DEFAULT_PARAMS: PersistedParams = {
-  scope: "all",
   defaultBPCRuns: 1,
   includeCorpBlueprints: false,
-  buildSystem: "Botane",
-  buildStationID: 0,
   pricingSystem: "Jita",
   pricingStationID: 60003760, // Jita IV - Moon 4 - Caldari Navy Assembly Plant
-  facilityTax: 0,
-  structureBonus: 0,
-  brokerFee: 3,
-  salesTaxPercent: 4.5,
   runsPerJob: 1,
-  maxBlueprints: 500,
   blueprintFilter: "bpo",
   includeT2Invention: false,
-  decryptor: "none",
-  decryptorCostOverride: null,
+  includeT3Invention: false,
+  includeUnowned: true,
+  typeCategories: [],
   showT1Rows: true,
   showT2Rows: true,
+  showT3Rows: true,
+  ownedFilter: "all",
   minISKPerHour: null,
   minProfit: null,
   minMarginPct: null,
@@ -161,13 +187,6 @@ export interface ScannerAnalysisHandoff {
   blueprintIsBPO: boolean;
   /** Auto-run handleAnalyze after the analysis state is set. */
   autoAnalyze: boolean;
-  /** Invention params (only set for T2 rows). InventionChance is an
-   *  ABSOLUTE percent already scaled by the decryptor multiplier, matching
-   *  what the engine's InventionChance override expects. */
-  inventionChancePercent?: number;
-  inventionOutputRuns?: number;
-  decryptorCost?: number;
-  decryptorKey?: DecryptorKey;
 }
 
 interface Props {
@@ -184,6 +203,9 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
   const { addToast } = useGlobalToast();
 
   const [params, setParams] = useState<PersistedParams>(() => loadPersistedParams());
+  // Shared prefs (build system/station + fees) so changes made here also
+  // propagate to the Analyze form and vice versa.
+  const [sharedPrefs, updateSharedPrefs] = useIndustrySharedPrefs();
   const [scanning, setScanning] = useState(false);
   const [progressMsg, setProgressMsg] = useState("");
 
@@ -226,6 +248,8 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
     "isk_per_hour",
     "profit",
     "profit_percent",
+    "period_profit",
+    "period_margin",
     "optimal_build_cost",
     "manufacturing_time",
   ];
@@ -268,18 +292,13 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
   }, [response, searchQuery, selectedIDs, sortKey, sortDir]);
 
   const handleImportFees = useCallback(() => {
-    void importFees((fees) =>
-      setParams((prev) => {
-        const next = {
-          ...prev,
-          salesTaxPercent: fees.suggested_sales_tax_percent,
-          brokerFee: fees.suggested_broker_fee_percent,
-        };
-        savePersistedParams(next);
-        return next;
-      }),
-    );
-  }, [importFees]);
+    void importFees((fees) => {
+      updateSharedPrefs({
+        salesTaxPercent: fees.suggested_sales_tax_percent,
+        brokerFee: fees.suggested_broker_fee_percent,
+      });
+    });
+  }, [importFees, updateSharedPrefs]);
 
   // Station picker (mirrors the IndustryTab Analysis flow).
   const [stations, setStations] = useState<StationInfo[]>([]);
@@ -298,7 +317,7 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
     stationsAbortRef.current?.abort();
     stationsRequestSeqRef.current += 1;
     const reqSeq = stationsRequestSeqRef.current;
-    const normalizedSystem = params.buildSystem.trim();
+    const normalizedSystem = sharedPrefs.buildSystem.trim();
     if (!normalizedSystem) {
       setStations([]);
       setSystemRegionId(0);
@@ -327,7 +346,7 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
       .finally(() => {
         if (reqSeq === stationsRequestSeqRef.current) setLoadingStations(false);
       });
-  }, [params.buildSystem]);
+  }, [sharedPrefs.buildSystem]);
 
   useEffect(() => {
     structuresAbortRef.current?.abort();
@@ -383,37 +402,29 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
   //    override after auto-fill.
   useEffect(() => {
     let suggested = 0;
-    if (includeStructures && params.buildStationID > 0) {
-      const picked = allStations.find((s) => Number(s.id) === params.buildStationID);
+    if (includeStructures && sharedPrefs.buildStationID > 0) {
+      const picked = allStations.find((s) => Number(s.id) === sharedPrefs.buildStationID);
       if (picked?.is_structure && picked.type_id) {
         suggested = STRUCTURE_ME_BONUS_BY_TYPE[picked.type_id] ?? 0;
       }
     }
-    if (suggested !== params.structureBonus) {
-      setParams((prev) => {
-        const next = { ...prev, structureBonus: suggested };
-        savePersistedParams(next);
-        return next;
-      });
+    if (suggested !== sharedPrefs.structureBonus) {
+      updateSharedPrefs({ structureBonus: suggested });
     }
     // STRUCTURE_ME_BONUS_BY_TYPE is stable (memo); deps cover the inputs that
     // actually drive a change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [params.buildStationID, allStations, includeStructures]);
+  }, [sharedPrefs.buildStationID, allStations, includeStructures]);
 
   // If the selected build station disappears from the list after a build-system
   // change, clear it (the user must re-pick).
   useEffect(() => {
-    if (params.buildStationID <= 0) return;
-    const exists = allStations.some((s) => Number(s.id) === params.buildStationID);
+    if (sharedPrefs.buildStationID <= 0) return;
+    const exists = allStations.some((s) => Number(s.id) === sharedPrefs.buildStationID);
     if (!exists) {
-      setParams((prev) => {
-        const next = { ...prev, buildStationID: 0 };
-        savePersistedParams(next);
-        return next;
-      });
+      updateSharedPrefs({ buildStationID: 0 });
     }
-  }, [allStations, params.buildStationID]);
+  }, [allStations, sharedPrefs.buildStationID, updateSharedPrefs]);
 
   const updateParam = <K extends keyof PersistedParams>(key: K, value: PersistedParams[K]) => {
     setParams((prev) => {
@@ -423,53 +434,65 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
     });
   };
 
-  // Resolve the effective decryptor cost — falls back to the decryptor's
-  // default cost if the user hasn't set a manual override.
-  const effectiveDecryptorCost = useCallback((): number => {
-    if (params.decryptorCostOverride != null) return params.decryptorCostOverride;
-    return DECRYPTORS[params.decryptor]?.defaultCost ?? 0;
-  }, [params.decryptor, params.decryptorCostOverride]);
-
   // Build the shared scan-request body. Always sends 0 for min thresholds so
   // the backend returns everything analyzed; threshold filtering is client-side.
+  // Decryptor selection is intentionally NOT sent — the backend auto-picks the
+  // winning decryptor per T2 row and reports which one won.
   const buildBaseScanRequest = useCallback((): ProfitableScanRequest => {
-    const inv = effectiveInventionParams(params.decryptor);
     return {
-      scope: params.scope,
+      scope: "all",
       default_bpc_runs: params.defaultBPCRuns,
       include_corp_blueprints: params.includeCorpBlueprints,
-      build_system_name: params.buildSystem,
+      build_system_name: sharedPrefs.buildSystem,
       pricing_system_name: params.pricingSystem,
       pricing_station_id: params.pricingStationID,
-      facility_tax: params.facilityTax,
-      structure_bonus: params.structureBonus,
-      broker_fee: params.brokerFee,
-      sales_tax_percent: params.salesTaxPercent,
+      facility_tax: sharedPrefs.facilityTax,
+      structure_bonus: sharedPrefs.structureBonus,
+      broker_fee: sharedPrefs.brokerFee,
+      sales_tax_percent: sharedPrefs.salesTaxPercent,
       runs_per_job: params.runsPerJob,
-      max_blueprints: params.maxBlueprints,
       blueprint_filter: params.blueprintFilter,
       include_t2_invention: params.includeT2Invention,
-      invention_me_base: inv.meBase,
-      invention_te_base: inv.teBase,
-      invention_chance_mult: inv.chanceMult,
-      invention_output_runs: inv.outputRuns,
-      decryptor_cost: params.includeT2Invention ? effectiveDecryptorCost() : 0,
+      include_t3_invention: params.includeT3Invention,
+      type_categories: params.typeCategories,
+      invention_me_base: 0,
+      invention_te_base: 0,
+      invention_chance_mult: 0,
+      invention_output_runs: 0,
+      decryptor_cost: 0,
+      include_unowned: params.includeUnowned,
+      unowned_default_me: 10,
+      unowned_default_te: 20,
+      skip_reactions: sharedPrefs.skipReactions,
       min_isk_per_hour: 0,
       min_profit: 0,
       min_margin_percent: 0,
     };
-  }, [params, effectiveDecryptorCost]);
+  }, [params, sharedPrefs]);
+
+  // AbortController for the in-flight scan. Cancelling aborts the fetch,
+  // which closes the NDJSON stream. The backend handler is context-aware
+  // (writeLine short-circuits on ctx.Done()), so worker goroutines drain
+  // without touching a closed writer. Ref (not state) so cancel() reads
+  // the current controller even if it fires the same tick a scan starts.
+  const scanAbortRef = useRef<AbortController | null>(null);
 
   const runScan = useCallback(async (req: ProfitableScanRequest, busyLabel: string) => {
     if (!isLoggedIn) {
       addToast(t("industryScannerLoginRequired"), "warning", 2400);
       return;
     }
+    // Kill any previous in-flight scan first — the user starting a new one
+    // implicitly cancels the old.
+    scanAbortRef.current?.abort();
+    const controller = new AbortController();
+    scanAbortRef.current = controller;
+
     setScanning(true);
     setError(null);
     setProgressMsg(busyLabel);
     try {
-      const resp = await scanProfitableBlueprints(req, (m) => setProgressMsg(m));
+      const resp = await scanProfitableBlueprints(req, (m) => setProgressMsg(m), controller.signal);
       setResponse(resp);
       if (resp.stats.cap_hit > 0) {
         addToast(
@@ -482,14 +505,39 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
         addToast(w, "warning", 3000);
       }
     } catch (e: unknown) {
+      // AbortError is the "user cancelled" path — no toast, no error state.
+      if (e instanceof Error && (e.name === "AbortError" || controller.signal.aborted)) {
+        setProgressMsg("");
+        return;
+      }
       const msg = e instanceof Error ? e.message : "Scan failed";
       setError(msg);
       addToast(msg, "error", 3000);
     } finally {
-      setScanning(false);
-      setProgressMsg("");
+      // Only clear busy state if THIS scan is still the current one — a
+      // second scan started mid-await would have replaced the ref.
+      if (scanAbortRef.current === controller) {
+        setScanning(false);
+        setProgressMsg("");
+        scanAbortRef.current = null;
+      }
     }
   }, [isLoggedIn, addToast, t]);
+
+  const cancelScan = useCallback(() => {
+    scanAbortRef.current?.abort();
+    scanAbortRef.current = null;
+    setScanning(false);
+    setProgressMsg("");
+  }, []);
+
+  // On unmount, abort any in-flight scan so it doesn't try to setState on
+  // a torn-down component (React logs a warning otherwise).
+  useEffect(() => {
+    return () => {
+      scanAbortRef.current?.abort();
+    };
+  }, []);
 
   const handleScan = useCallback(async () => {
     setSelectedIDs(new Set());
@@ -505,20 +553,31 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
 
   const handleRefreshPrices = useCallback(async () => {
     if (!response || response.rows.length === 0) return;
-    // Preserve the user's selection across the refresh — same rows come back.
-    const reuse: ProfitableScanReuseRow[] = response.rows.map((r) => ({
-      blueprint_type_id: r.blueprint_type_id,
-      is_bpo: r.is_bpo,
-      me: r.me,
-      te: r.te,
-      owned_quantity: r.owned_quantity,
-      available_runs: r.available_runs,
-      location_ids: r.location_ids ?? [],
-    }));
+    // A single source blueprint can appear as multiple rows when T2
+    // invention is on (1 T1 mfg + N T2 fan-out per source). All those rows
+    // share `blueprint_type_id + is_bpo` — the SOURCE BP identity. Reuse
+    // groups must represent SOURCES not scanned outputs, so dedupe by that
+    // key before sending. Without this, the backend re-fans-out each
+    // duplicate and rows multiply on every refresh.
+    const reuseMap = new Map<string, ProfitableScanReuseRow>();
+    for (const r of response.rows) {
+      const key = `${r.blueprint_type_id}-${r.is_bpo ? "bpo" : "bpc"}`;
+      if (reuseMap.has(key)) continue;
+      reuseMap.set(key, {
+        blueprint_type_id: r.blueprint_type_id,
+        is_bpo: r.is_bpo,
+        me: r.me,
+        te: r.te,
+        owned_quantity: r.owned_quantity,
+        available_runs: r.available_runs,
+        location_ids: r.location_ids ?? [],
+        owned: r.owned ?? false,
+      });
+    }
     const req = {
       ...buildBaseScanRequest(),
       skip_blueprint_fetch: true,
-      reuse_groups: reuse,
+      reuse_groups: Array.from(reuseMap.values()),
     };
     await runScan(req, t("industryScannerRefreshingPrices"));
   }, [response, buildBaseScanRequest, runScan, t]);
@@ -529,9 +588,12 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
     // request itself sends 0 so the backend returns everything analyzed.
     const q = searchQuery.trim().toLowerCase();
     const rows = response.rows.filter((r) => {
-      const isT2 = r.scan_mode === "t2_invention";
-      if (isT2 && !params.showT2Rows) return false;
-      if (!isT2 && !params.showT1Rows) return false;
+      const mode = r.scan_mode ?? "t1_mfg";
+      if (mode === "t3_invention" && !params.showT3Rows) return false;
+      if (mode === "t2_invention" && !params.showT2Rows) return false;
+      if (mode === "t1_mfg" && !params.showT1Rows) return false;
+      if (params.ownedFilter === "owned" && !r.owned) return false;
+      if (params.ownedFilter === "unowned" && r.owned) return false;
       if (params.minISKPerHour != null && r.isk_per_hour < params.minISKPerHour) return false;
       if (params.minProfit != null && r.profit < params.minProfit) return false;
       if (params.minMarginPct != null && r.profit_percent < params.minMarginPct) return false;
@@ -561,13 +623,18 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
       if (typeof av === "string" && typeof bv === "string") {
         return mul * av.localeCompare(bv);
       }
-      if (typeof av === "number" && typeof bv === "number") {
-        return mul * (av - bv);
-      }
-      return 0;
+      // Undefined-aware numeric compare: undefined always sorts to the bottom
+      // (independent of asc/desc) so rows without market-history period stats
+      // don't get mixed in with real zero-value rows at the top of asc sorts.
+      const aNum = typeof av === "number" ? av : undefined;
+      const bNum = typeof bv === "number" ? bv : undefined;
+      if (aNum === undefined && bNum === undefined) return 0;
+      if (aNum === undefined) return 1;
+      if (bNum === undefined) return -1;
+      return mul * (aNum - bNum);
     });
     return rows;
-  }, [response, sortKey, sortDir, selectedIDs, params.minISKPerHour, params.minProfit, params.minMarginPct, params.showT1Rows, params.showT2Rows, searchQuery]);
+  }, [response, sortKey, sortDir, selectedIDs, params.minISKPerHour, params.minProfit, params.minMarginPct, params.showT1Rows, params.showT2Rows, params.showT3Rows, params.ownedFilter, searchQuery]);
 
   const toggleSelect = (key: string) => {
     setSelectedIDs((prev) => {
@@ -620,106 +687,201 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
         defaultExpanded={true}
         persistKey={SCANNER_PERSIST_KEY}
       >
-        <SettingsGrid cols={4}>
-          <SettingsField label={t("industryScannerScopeLabel")}>
-            <SettingsSelect
-              value={params.scope}
-              onChange={(v) => updateParam("scope", v as "single" | "all")}
-              options={[
-                { value: "all", label: t("industryScannerScopeAll") },
-                { value: "single", label: t("industryScannerScopeSingle") },
-              ]}
-            />
-          </SettingsField>
-          <SettingsField label={t("industryScannerDefaultRunsLabel")}>
-            <SettingsNumberInput
-              value={params.defaultBPCRuns}
-              onChange={(v) => updateParam("defaultBPCRuns", v)}
-              min={1}
-              max={1000}
-            />
-          </SettingsField>
-          <SettingsField label={t("industryScannerRunsPerJobLabel")}>
-            <SettingsNumberInput
-              value={params.runsPerJob}
-              onChange={(v) => updateParam("runsPerJob", v)}
-              min={1}
-              max={10000}
-            />
-          </SettingsField>
-          <SettingsField label={t("industryScannerIncludeCorpLabel")}>
-            <SettingsCheckbox
-              checked={params.includeCorpBlueprints}
-              onChange={(v) => updateParam("includeCorpBlueprints", v)}
-              label={t("industryScannerIncludeCorpHint")}
-            />
-          </SettingsField>
-          <SettingsField label={t("industryScannerMaxBlueprintsLabel")}>
-            <SettingsNumberInput
-              value={params.maxBlueprints}
-              onChange={(v) => updateParam("maxBlueprints", v)}
-              min={1}
-              max={20000}
-            />
-          </SettingsField>
-          <SettingsField label={t("industryScannerBPFilterLabel")}>
-            <SettingsSelect
-              value={params.blueprintFilter}
-              onChange={(v) => updateParam("blueprintFilter", v as PersistedParams["blueprintFilter"])}
-              options={[
-                { value: "bpo", label: t("industryScannerBPFilterBPO") },
-                { value: "bpc", label: t("industryScannerBPFilterBPC") },
-                { value: "both", label: t("industryScannerBPFilterBoth") },
-              ]}
-            />
-          </SettingsField>
-          <SettingsField label={t("industryScannerIncludeT2InventionLabel")}>
-            <SettingsCheckbox
-              checked={params.includeT2Invention}
-              onChange={(v) => updateParam("includeT2Invention", v)}
-              label={t("industryScannerIncludeT2InventionHint")}
-            />
-          </SettingsField>
-          {params.includeT2Invention && (
-            <>
-              <SettingsField label={t("industryScannerDecryptorLabel")}>
-                <SettingsSelect
-                  value={params.decryptor}
-                  onChange={(v) => {
-                    // Reset cost override when the decryptor changes so the
-                    // new default fills in unless the user retypes.
+        {/* ==== Item & Build ====
+            Layout: (1) "Include" chip row — three toggles for what feeds the
+            scan pool (Corp BPs / T2 invention fan-out / Unowned SDE BPs). (2)
+            "Kind" chip row — BPO/BPC/Both. (3) A numbers grid for the counts
+            that don't fit chips (max BPs, runs/job, default BPC runs, build
+            mode). No more Scope selector (always "all" characters) and no
+            more decryptor picker (backend auto-picks the winning decryptor
+            per T2 row). */}
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-eve-dim mb-2">
+            {t("industrySectionItemBuild")}
+          </div>
+
+          {/* Include chips — orthogonal toggles for pool composition. The
+              parent "Invention" chip is the OR of T2 + T3. Toggling it off
+              turns both off; toggling on when both were off defaults to T2. */}
+          <div className="mb-2">
+            <div className="text-[10px] text-eve-dim mb-1">{t("industryScannerIncludeGroupLabel")}</div>
+            <div className="flex flex-wrap gap-1">
+              <ToggleChip
+                active={params.includeCorpBlueprints}
+                onClick={() => updateParam("includeCorpBlueprints", !params.includeCorpBlueprints)}
+                label={t("industryScannerIncludeCorpChip")}
+                title={t("industryScannerIncludeCorpHint")}
+              />
+              <ToggleChip
+                active={params.includeT2Invention || params.includeT3Invention}
+                onClick={() => {
+                  const on = params.includeT2Invention || params.includeT3Invention;
+                  if (on) {
+                    // Turn both off.
                     setParams((prev) => {
-                      const next: PersistedParams = {
-                        ...prev,
-                        decryptor: v as DecryptorKey,
-                        decryptorCostOverride: null,
-                      };
+                      const next = { ...prev, includeT2Invention: false, includeT3Invention: false };
                       savePersistedParams(next);
                       return next;
                     });
-                  }}
-                  options={DECRYPTOR_ORDER.map((k) => ({ value: k, label: DECRYPTORS[k].name }))}
+                  } else {
+                    // Enable T2 as the default when the parent chip is turned on.
+                    updateParam("includeT2Invention", true);
+                  }
+                }}
+                label={t("industryScannerIncludeInventionChip")}
+                title={t("industryScannerIncludeT2InventionHint")}
+              />
+              <ToggleChip
+                active={params.includeUnowned}
+                onClick={() => updateParam("includeUnowned", !params.includeUnowned)}
+                label={t("industryScannerIncludeUnownedChip")}
+                title={t("industryScannerIncludeUnownedHint")}
+              />
+            </div>
+            {(params.includeT2Invention || params.includeT3Invention) && (
+              <div className="mt-1 pl-3 flex flex-wrap gap-1 items-center">
+                <span className="text-[10px] text-eve-dim mr-1">
+                  {t("industryScannerInventionTierGroupLabel")}
+                </span>
+                <ToggleChip
+                  active={params.includeT2Invention}
+                  onClick={() => updateParam("includeT2Invention", !params.includeT2Invention)}
+                  label={t("industryScannerIncludeT2Chip")}
                 />
-              </SettingsField>
-              <SettingsField label={t("industryScannerDecryptorCostLabel")}>
-                <SettingsNumberInput
-                  value={params.decryptorCostOverride ?? DECRYPTORS[params.decryptor].defaultCost}
-                  onChange={(v) => updateParam("decryptorCostOverride", v)}
-                  min={0}
-                  max={100_000_000}
-                  step={1000}
+                <ToggleChip
+                  active={params.includeT3Invention}
+                  onClick={() => updateParam("includeT3Invention", !params.includeT3Invention)}
+                  label={t("industryScannerIncludeT3Chip")}
+                  title={t("industryScannerIncludeT3InventionHint")}
                 />
-              </SettingsField>
-            </>
-          )}
-        </SettingsGrid>
+              </div>
+            )}
+          </div>
 
-        <div className="mt-3">
+          {/* Blueprint kind chips — mutually exclusive. */}
+          <div className="mb-2">
+            <div className="text-[10px] text-eve-dim mb-1">{t("industryScannerBPFilterLabel")}</div>
+            <div className="flex flex-wrap gap-1">
+              {(["bpo", "bpc", "both"] as const).map((k) => {
+                const active = params.blueprintFilter === k;
+                const labelKey =
+                  k === "bpo"
+                    ? "industryScannerBPFilterBPO"
+                    : k === "bpc"
+                      ? "industryScannerBPFilterBPC"
+                      : "industryScannerBPFilterBoth";
+                return (
+                  <ToggleChip
+                    key={k}
+                    active={active}
+                    onClick={() => updateParam("blueprintFilter", k)}
+                    label={t(labelKey)}
+                  />
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Type filter — multi-select over product categoryIDs. Empty
+              typeCategories = include all; that's the default so first-time
+              users see the same results they got before this filter existed. */}
+          <div className="mb-2">
+            <div className="text-[10px] text-eve-dim mb-1 flex items-center gap-2">
+              <span>{t("industryScannerTypeFilterLabel")}</span>
+              {params.typeCategories.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => updateParam("typeCategories", [])}
+                  className="text-[10px] text-eve-dim hover:text-eve-text underline"
+                >
+                  {t("industryScannerTypeFilterReset")}
+                </button>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {TYPE_CHIPS.map((chip) => {
+                // Chip is "on" when the filter is empty (all types) OR every
+                // categoryID for this chip is in the whitelist. Toggling adds
+                // or removes this chip's category IDs from the whitelist.
+                const allOn = params.typeCategories.length === 0;
+                const active =
+                  allOn ||
+                  chip.categoryIDs.every((id) => params.typeCategories.includes(id));
+                return (
+                  <ToggleChip
+                    key={chip.key}
+                    active={active}
+                    onClick={() => {
+                      let next: number[];
+                      if (allOn) {
+                        // Transition from "all" → "everything except this chip".
+                        // Starting explicit whitelist = all chips minus this one.
+                        next = ALL_TYPE_CATEGORY_IDS.filter(
+                          (id) => !chip.categoryIDs.includes(id),
+                        );
+                      } else if (active) {
+                        next = params.typeCategories.filter(
+                          (id) => !chip.categoryIDs.includes(id),
+                        );
+                      } else {
+                        next = [...params.typeCategories, ...chip.categoryIDs];
+                      }
+                      // Collapse back to "all types" when every chip would be
+                      // active — avoids sending an unnecessarily large whitelist.
+                      const isAllActive = ALL_TYPE_CATEGORY_IDS.every((id) =>
+                        next.includes(id),
+                      );
+                      updateParam("typeCategories", isAllActive ? [] : next);
+                    }}
+                    label={t(chip.labelKey as Parameters<typeof t>[0])}
+                  />
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Numbers grid — everything that doesn't fit a chip. */}
+          <SettingsGrid cols={4}>
+            <SettingsField label={t("industryBuildMode")}>
+              <SettingsSelect
+                value={sharedPrefs.buildMode}
+                onChange={(v) => updateSharedPrefs({ buildMode: v as "auto" | "buy_all" | "build_all" })}
+                options={[
+                  { value: "auto", label: t("industryBuildModeAuto") },
+                  { value: "buy_all", label: t("industryBuildModeBuyAll") },
+                  { value: "build_all", label: t("industryBuildModeBuildAll") },
+                ]}
+              />
+            </SettingsField>
+            <SettingsField label={t("industryScannerRunsPerJobLabel")}>
+              <SettingsNumberInput
+                value={params.runsPerJob}
+                onChange={(v) => updateParam("runsPerJob", v)}
+                min={1}
+                max={10000}
+              />
+            </SettingsField>
+            <SettingsField label={t("industryScannerDefaultRunsLabel")}>
+              <SettingsNumberInput
+                value={params.defaultBPCRuns}
+                onChange={(v) => updateParam("defaultBPCRuns", v)}
+                min={1}
+                max={1000}
+              />
+            </SettingsField>
+          </SettingsGrid>
+        </div>
+
+        {/* ==== Location & Fees ==== */}
+        <div className="mt-3 pt-3 border-t border-eve-border/30">
+          <div className="text-[10px] uppercase tracking-wider text-eve-dim mb-2">
+            {t("industrySectionLocationFees")}
+          </div>
           <SettingsGrid cols={3}>
             <SettingsField label={t("industryScannerBuildSystemLabel")}>
               <SystemAutocomplete
-                value={params.buildSystem}
-                onChange={(v) => updateParam("buildSystem", v)}
+                value={sharedPrefs.buildSystem}
+                onChange={(v) => updateSharedPrefs({ buildSystem: v })}
                 showLocationButton={false}
                 isLoggedIn={isLoggedIn}
                 suppressInternalHint
@@ -742,8 +904,8 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                 </div>
               ) : (
                 <SettingsSelect
-                  value={params.buildStationID}
-                  onChange={(v) => updateParam("buildStationID", Number(v))}
+                  value={sharedPrefs.buildStationID}
+                  onChange={(v) => updateSharedPrefs({ buildStationID: Number(v) })}
                   options={[
                     { value: 0, label: t("allStations") },
                     ...allStations.map((st) => ({
@@ -762,7 +924,6 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
             </SettingsField>
           </SettingsGrid>
           {(() => {
-            // Single status line below the grid so column heights stay even.
             if (loadingStations) return <div className="mt-2 text-[10px] text-eve-dim">{t("loadingStations")}</div>;
             if (loadingStructures) return <div className="mt-2 text-[10px] text-eve-dim">{t("loadingStructures")}</div>;
             if (includeStructures) {
@@ -774,7 +935,7 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                 </div>
               );
             }
-            if (stations.length === 0 && params.buildSystem.trim()) {
+            if (stations.length === 0 && sharedPrefs.buildSystem.trim()) {
               return (
                 <div className="mt-2 text-[10px] text-amber-400/80">
                   {!isLoggedIn ? t("noNpcStationsLoginHint") : t("noNpcStationsToggleHint")}
@@ -783,11 +944,69 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
             }
             return null;
           })()}
+
+          <div className="mt-3">
+            <SettingsGrid cols={4}>
+              <SettingsField label={t("industryScannerFacilityTaxLabel")} hint={t("industryFacilityTaxHint")}>
+                <SettingsNumberInput
+                  value={sharedPrefs.facilityTax}
+                  onChange={(v) => updateSharedPrefs({ facilityTax: v })}
+                  min={0}
+                  max={100}
+                  step={0.01}
+                />
+              </SettingsField>
+              <SettingsField label={t("industryScannerStructureBonusLabel")} hint={t("industryStructureBonusHint")}>
+                <SettingsNumberInput
+                  value={sharedPrefs.structureBonus}
+                  onChange={(v) => updateSharedPrefs({ structureBonus: v })}
+                  min={-100}
+                  max={100}
+                  step={0.01}
+                />
+              </SettingsField>
+              <SettingsField label={t("industryScannerBrokerFeeLabel")} hint={t("industryBrokerFeeHint")}>
+                <SettingsNumberInput
+                  value={sharedPrefs.brokerFee}
+                  onChange={(v) => updateSharedPrefs({ brokerFee: v })}
+                  min={0}
+                  max={100}
+                  step={0.01}
+                />
+              </SettingsField>
+              <SettingsField label={t("industryScannerSalesTaxLabel")} hint={t("industrySalesTaxHint")}>
+                <SettingsNumberInput
+                  value={sharedPrefs.salesTaxPercent}
+                  onChange={(v) => updateSharedPrefs({ salesTaxPercent: v })}
+                  min={0}
+                  max={100}
+                  step={0.01}
+                />
+              </SettingsField>
+            </SettingsGrid>
+            {isLoggedIn && (
+              <div className="mt-2 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleImportFees}
+                  disabled={importingFees}
+                  className="px-2 py-1 text-[11px] font-semibold rounded-sm border border-eve-accent text-eve-accent
+                             hover:bg-eve-accent/10 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  {importingFees ? t("industryScannerImportFeesPending") : t("industryScannerImportFeesBtn")}
+                </button>
+                <span className="text-[10px] text-eve-dim">Pulls broker fee + sales tax from Accounting / Broker Relations skill levels of the active character.</span>
+              </div>
+            )}
+          </div>
         </div>
 
-        {/* Pricing controls — decoupled from build location so the user can,
-            e.g., build in Botane while reading Jita prices for the product. */}
-        <div className="mt-3">
+        {/* ==== Pricing (Scanner-specific — decoupled from build location so
+            the user can, e.g., build in Botane while reading Jita prices). ==== */}
+        <div className="mt-3 pt-3 border-t border-eve-border/30">
+          <div className="text-[10px] uppercase tracking-wider text-eve-dim mb-2">
+            {t("industrySectionPricing")}
+          </div>
           <SettingsGrid cols={2}>
             <SettingsField label={t("industryScannerPricingSystemLabel")}>
               <SystemAutocomplete
@@ -857,62 +1076,11 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
           </div>
         </div>
 
-        <div className="mt-3">
-          <SettingsGrid cols={4}>
-            <SettingsField label={t("industryScannerFacilityTaxLabel")}>
-              <SettingsNumberInput
-                value={params.facilityTax}
-                onChange={(v) => updateParam("facilityTax", v)}
-                min={0}
-                max={100}
-                step={0.01}
-              />
-            </SettingsField>
-            <SettingsField label={t("industryScannerStructureBonusLabel")}>
-              <SettingsNumberInput
-                value={params.structureBonus}
-                onChange={(v) => updateParam("structureBonus", v)}
-                min={-100}
-                max={100}
-                step={0.01}
-              />
-            </SettingsField>
-            <SettingsField label={t("industryScannerBrokerFeeLabel")}>
-              <SettingsNumberInput
-                value={params.brokerFee}
-                onChange={(v) => updateParam("brokerFee", v)}
-                min={0}
-                max={100}
-                step={0.01}
-              />
-            </SettingsField>
-            <SettingsField label={t("industryScannerSalesTaxLabel")}>
-              <SettingsNumberInput
-                value={params.salesTaxPercent}
-                onChange={(v) => updateParam("salesTaxPercent", v)}
-                min={0}
-                max={100}
-                step={0.01}
-              />
-            </SettingsField>
-          </SettingsGrid>
-          {isLoggedIn && (
-            <div className="mt-2 flex items-center gap-2">
-              <button
-                type="button"
-                onClick={handleImportFees}
-                disabled={importingFees}
-                className="px-2 py-1 text-[11px] font-semibold rounded-sm border border-eve-accent text-eve-accent
-                           hover:bg-eve-accent/10 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                {importingFees ? t("industryScannerImportFeesPending") : t("industryScannerImportFeesBtn")}
-              </button>
-              <span className="text-[10px] text-eve-dim">Pulls broker fee + sales tax from Accounting / Broker Relations skill levels of the active character.</span>
-            </div>
-          )}
-        </div>
-
-        <div className="mt-3">
+        {/* ==== Filters ==== */}
+        <div className="mt-3 pt-3 border-t border-eve-border/30">
+          <div className="text-[10px] uppercase tracking-wider text-eve-dim mb-2">
+            {t("industrySectionFilters")}
+          </div>
           <SettingsGrid cols={3}>
             <SettingsField label={t("industryScannerMinISKPerHourLabel")}>
               <NullableNumberInput
@@ -935,36 +1103,49 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
             </SettingsField>
           </SettingsGrid>
         </div>
+      </TabSettingsPanel>
 
-        <div className="mt-3 flex items-center gap-3">
+      {/* Scan / Refresh live outside the collapsible params panel so the user
+          can trigger them even while the parameters section is collapsed. */}
+      <div className="flex items-center gap-3 px-1">
+        {scanning ? (
+          <button
+            type="button"
+            onClick={cancelScan}
+            title={t("industryScannerCancelHint")}
+            className="px-3 py-1.5 text-xs font-semibold rounded-sm border border-red-500/60 text-red-300
+                       hover:bg-red-500/10 transition-colors"
+          >
+            {t("industryScannerCancelBtn")}
+          </button>
+        ) : (
           <button
             type="button"
             onClick={handleScan}
-            disabled={scanning}
             className="px-3 py-1.5 text-xs font-semibold rounded-sm border border-eve-accent text-eve-accent
-                       hover:bg-eve-accent/10 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                       hover:bg-eve-accent/10 transition-colors"
           >
-            {scanning ? t("industryScannerScanning") : t("industryScannerScanBtn")}
+            {t("industryScannerScanBtn")}
           </button>
-          <button
-            type="button"
-            onClick={handleRefreshPrices}
-            disabled={scanning || !response || response.rows.length === 0}
-            title="Re-runs the analyzer over the same blueprints with fresh ESI prices — no blueprint refetch."
-            className="px-3 py-1.5 text-xs rounded-sm border border-eve-border text-eve-dim
-                       hover:text-eve-accent hover:border-eve-accent disabled:opacity-50
-                       disabled:cursor-not-allowed transition-colors"
-          >
-            {scanning ? t("industryScannerRefreshingPrices") : t("industryScannerRefreshPricesBtn")}
-          </button>
-          {scanning && progressMsg && (
-            <span className="text-xs text-eve-dim">{progressMsg}</span>
-          )}
-          {error && !scanning && (
-            <span className="text-xs text-red-300">{error}</span>
-          )}
-        </div>
-      </TabSettingsPanel>
+        )}
+        <button
+          type="button"
+          onClick={handleRefreshPrices}
+          disabled={scanning || !response || response.rows.length === 0}
+          title="Re-runs the analyzer over the same blueprints with fresh ESI prices — no blueprint refetch."
+          className="px-3 py-1.5 text-xs rounded-sm border border-eve-border text-eve-dim
+                     hover:text-eve-accent hover:border-eve-accent disabled:opacity-50
+                     disabled:cursor-not-allowed transition-colors"
+        >
+          {scanning ? t("industryScannerRefreshingPrices") : t("industryScannerRefreshPricesBtn")}
+        </button>
+        {scanning && progressMsg && (
+          <span className="text-xs text-eve-dim">{progressMsg}</span>
+        )}
+        {error && !scanning && (
+          <span className="text-xs text-red-300">{error}</span>
+        )}
+      </div>
 
       {!response && !scanning && (
         <div className="bg-eve-panel border border-eve-border rounded-sm p-4">
@@ -1030,6 +1211,44 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                 >
                   {t("industryScannerScanModeT2")}
                 </button>
+                <button
+                  type="button"
+                  onClick={() => updateParam("showT3Rows", !params.showT3Rows)}
+                  title={t("industryScannerScanModeT3")}
+                  className={`px-2 py-0.5 text-[10px] rounded-sm border transition-colors ${
+                    params.showT3Rows
+                      ? "border-sky-400/60 text-sky-300 bg-sky-400/10"
+                      : "border-eve-border text-eve-dim hover:text-eve-text"
+                  }`}
+                >
+                  {t("industryScannerScanModeT3")}
+                </button>
+              </div>
+              {/* Owned filter — All / Owned / Unowned. Radio-style, only one active. */}
+              <div className="flex items-center gap-1">
+                {(["all", "owned", "unowned"] as const).map((k) => {
+                  const active = params.ownedFilter === k;
+                  const labelKey =
+                    k === "all"
+                      ? "industryScannerOwnedFilterAll"
+                      : k === "owned"
+                        ? "industryScannerOwnedFilterOwned"
+                        : "industryScannerOwnedFilterUnowned";
+                  return (
+                    <button
+                      key={k}
+                      type="button"
+                      onClick={() => updateParam("ownedFilter", k)}
+                      className={`px-2 py-0.5 text-[10px] rounded-sm border transition-colors ${
+                        active
+                          ? "border-eve-accent/60 text-eve-accent bg-eve-accent/10"
+                          : "border-eve-border text-eve-dim hover:text-eve-text"
+                      }`}
+                    >
+                      {t(labelKey)}
+                    </button>
+                  );
+                })}
               </div>
               <span className="text-[11px] text-eve-dim">
                 {t("industryScannerSelectedSummary")
@@ -1093,6 +1312,8 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                     <SortableHeader sortKey="isk_per_hour" align="right" label={t("industryScannerColISKHour")} active={sortKey} dir={sortDir} onClick={toggleSort} />
                     <SortableHeader sortKey="profit" align="right" label={t("industryScannerColProfit")} active={sortKey} dir={sortDir} onClick={toggleSort} />
                     <SortableHeader sortKey="profit_percent" align="right" label={t("industryScannerColMargin")} active={sortKey} dir={sortDir} onClick={toggleSort} />
+                    <SortableHeader sortKey="period_profit" align="right" label={t("industryScannerColPeriodProfit")} active={sortKey} dir={sortDir} onClick={toggleSort} titleText={t("industryScannerColPeriodProfitTooltip")} />
+                    <SortableHeader sortKey="period_margin" align="right" label={t("industryScannerColPeriodMargin")} active={sortKey} dir={sortDir} onClick={toggleSort} titleText={t("industryScannerColPeriodMarginTooltip")} />
                     <SortableHeader sortKey="optimal_build_cost" align="right" label={t("industryScannerColCapital")} active={sortKey} dir={sortDir} onClick={toggleSort} />
                     <SortableHeader sortKey="manufacturing_time" align="right" label={t("industryScannerColTime")} active={sortKey} dir={sortDir} onClick={toggleSort} />
                     <th className="px-2 py-1.5 text-right w-10" aria-label={t("industryScannerColActions")} title={t("industryScannerColActions")} />
@@ -1104,19 +1325,22 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                     const checked = selectedIDs.has(k);
                     const hours = row.manufacturing_time / 3600;
                     const isT2 = row.scan_mode === "t2_invention";
+                    const isT3 = row.scan_mode === "t3_invention";
+                    const isInvention = isT2 || isT3;
                     const capUnlimited = (row.attempts_cap ?? -1) < 0;
                     const capLabel = capUnlimited
                       ? t("industryScannerAttemptsCapUnlimited")
                       : String(row.attempts_cap ?? 0);
-                    const t2Tooltip = isT2
+                    const inventionTooltip = isInvention
                       ? `Invention: ${((row.invention_probability ?? 0) * 100).toFixed(1)}% × ${(row.expected_attempts ?? 0).toFixed(1)} attempts (cap ${capLabel})`
                       : undefined;
+                    const isUnowned = row.owned === false;
                     return (
                       <tr
                         key={k}
                         className={`border-t border-eve-border/30 hover:bg-eve-accent/5 ${
                           checked ? "bg-eve-accent/10" : ""
-                        }`}
+                        } ${isUnowned ? "opacity-60" : ""}`}
                       >
                         <td className="px-2 py-1">
                           <input
@@ -1125,8 +1349,8 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                             onChange={() => toggleSelect(k)}
                           />
                         </td>
-                        <td className="px-2 py-1 font-medium text-eve-text" title={t2Tooltip}>
-                          {isT2 ? (
+                        <td className="px-2 py-1 font-medium text-eve-text" title={inventionTooltip}>
+                          {isInvention ? (
                             <span>
                               <span className="text-eve-dim">
                                 {row.invention_source_bp_name || row.blueprint_name}
@@ -1144,10 +1368,19 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                           ) : (
                             <span className="ml-1 text-[10px] text-amber-300">[BPC]</span>
                           )}
-                          {isT2 && (
+                          {isUnowned && (
+                            <span className="ml-1 text-[10px] text-slate-400">
+                              {t("industryScannerUnownedBadge")}
+                            </span>
+                          )}
+                          {isInvention && (
                             <span
                               className={`ml-1 text-[10px] ${
-                                row.attempts_cap_exceeded ? "text-amber-400" : "text-violet-300"
+                                row.attempts_cap_exceeded
+                                  ? "text-amber-400"
+                                  : isT3
+                                    ? "text-sky-300"
+                                    : "text-violet-300"
                               }`}
                               title={
                                 row.attempts_cap_exceeded
@@ -1155,22 +1388,75 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                                   : undefined
                               }
                             >
-                              [T2 INV{row.attempts_cap_exceeded ? "!" : ""}]
+                              [{isT3 ? "T3" : "T2"} INV{row.attempts_cap_exceeded ? "!" : ""}]
                             </span>
                           )}
+                          {isInvention && row.best_decryptor_key && (() => {
+                            const dec = DECRYPTORS[row.best_decryptor_key as keyof typeof DECRYPTORS];
+                            const label = dec ? dec.name : row.best_decryptor_key;
+                            const isNone = row.best_decryptor_key === "none";
+                            return (
+                              <span
+                                className={`ml-1 text-[10px] ${
+                                  isNone ? "text-slate-400" : "text-sky-300"
+                                }`}
+                                title={t("industryScannerBestDecryptorTooltip").replace(
+                                  "{name}",
+                                  label,
+                                )}
+                              >
+                                [{isNone ? t("industryScannerBestDecryptorNone") : label}]
+                              </span>
+                            );
+                          })()}
                         </td>
                         <td className="px-2 py-1 text-eve-dim">{row.product_name}</td>
                         <td className="px-2 py-1 text-right font-mono">{row.owned_quantity}</td>
                         <td className="px-2 py-1 text-right font-mono">{row.me}</td>
                         <td className="px-2 py-1 text-right font-mono">{row.te}</td>
-                        <td className="px-2 py-1 text-right font-mono text-emerald-300">
+                        <td className={`px-2 py-1 text-right font-mono ${
+                          row.isk_per_hour >= 0 ? "text-emerald-300" : "text-red-300"
+                        }`}>
                           {formatISK(row.isk_per_hour)}
                         </td>
-                        <td className="px-2 py-1 text-right font-mono text-emerald-300">
+                        <td className={`px-2 py-1 text-right font-mono ${
+                          row.profit >= 0 ? "text-emerald-300" : "text-red-300"
+                        }`}>
                           {formatISK(row.profit)}
                         </td>
-                        <td className="px-2 py-1 text-right font-mono">
+                        <td className={`px-2 py-1 text-right font-mono ${
+                          row.profit_percent >= 0 ? "text-eve-text" : "text-red-300"
+                        }`}>
                           {row.profit_percent.toFixed(1)}%
+                        </td>
+                        <td
+                          className={`px-2 py-1 text-right font-mono ${
+                            row.period_profit === undefined
+                              ? "text-eve-dim"
+                              : row.period_profit >= 0
+                                ? "text-emerald-300"
+                                : "text-red-300"
+                          }`}
+                          title={
+                            row.product_daily_volume !== undefined
+                              ? t("industryScannerPeriodProfitCellTooltip")
+                                  .replace("{days}", String(row.period_days ?? profitableScanPeriodDaysFallback))
+                                  .replace("{volume}", String(row.product_daily_volume))
+                              : undefined
+                          }
+                        >
+                          {row.period_profit === undefined ? "—" : formatISK(row.period_profit)}
+                        </td>
+                        <td
+                          className={`px-2 py-1 text-right font-mono ${
+                            row.period_margin === undefined
+                              ? "text-eve-dim"
+                              : row.period_margin >= 0
+                                ? "text-eve-text"
+                                : "text-red-300"
+                          }`}
+                        >
+                          {row.period_margin === undefined ? "—" : `${row.period_margin.toFixed(1)}%`}
                         </td>
                         <td className="px-2 py-1 text-right font-mono">
                           {formatISK(row.optimal_build_cost)}
@@ -1189,10 +1475,15 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                                 // through; user can switch pricing-side inside
                                 // the analysis tab if they want hub prices.
                                 const picked = allStations.find(
-                                  (s) => Number(s.id) === params.buildStationID,
+                                  (s) => Number(s.id) === sharedPrefs.buildStationID,
                                 );
                                 const isT2Handoff = row.scan_mode === "t2_invention";
-                                const inv = effectiveInventionParams(params.decryptor);
+                                const inv = effectiveInventionParams(sharedPrefs.decryptor);
+                                // Decryptor + fees are already in shared
+                                // prefs, so the handoff no longer needs to
+                                // thread invention-derived numbers through —
+                                // Analyze re-derives them from the same
+                                // shared decryptor selection.
                                 onViewInAnalysis({
                                   productTypeID: row.product_type_id,
                                   productName: row.product_name,
@@ -1202,27 +1493,17 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                                   me: isT2Handoff ? inv.meBase : row.me,
                                   te: isT2Handoff ? inv.teBase : row.te,
                                   runs: row.runs,
-                                  systemName: params.buildSystem,
-                                  stationID: params.buildStationID,
+                                  systemName: sharedPrefs.buildSystem,
+                                  stationID: sharedPrefs.buildStationID,
                                   stationIsStructure: Boolean(picked?.is_structure),
-                                  facilityTax: params.facilityTax,
-                                  structureBonus: params.structureBonus,
-                                  brokerFee: params.brokerFee,
-                                  salesTaxPercent: params.salesTaxPercent,
+                                  facilityTax: sharedPrefs.facilityTax,
+                                  structureBonus: sharedPrefs.structureBonus,
+                                  brokerFee: sharedPrefs.brokerFee,
+                                  salesTaxPercent: sharedPrefs.salesTaxPercent,
                                   activityMode: isT2Handoff ? "invention" : "manufacturing",
                                   ownBlueprint: true,
                                   blueprintIsBPO: row.is_bpo,
                                   autoAnalyze: true,
-                                  ...(isT2Handoff
-                                    ? {
-                                        // Absolute percent for the engine's
-                                        // InventionChance override.
-                                        inventionChancePercent: (row.invention_probability ?? 0) * 100,
-                                        inventionOutputRuns: inv.outputRuns,
-                                        decryptorCost: effectiveDecryptorCost(),
-                                        decryptorKey: params.decryptor,
-                                      }
-                                    : {}),
                                 });
                               }}
                               title={t("industryScannerViewInAnalysis")}
@@ -1250,14 +1531,18 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
         rows={selectedRows}
         runsPerJob={params.runsPerJob}
         analysisContext={{
-          systemName: params.buildSystem,
-          stationID: params.buildStationID,
-          facilityTax: params.facilityTax,
-          structureBonus: params.structureBonus,
-          brokerFee: params.brokerFee,
-          salesTaxPercent: params.salesTaxPercent,
-          decryptorKey: params.decryptor,
-          decryptorCost: effectiveDecryptorCost(),
+          systemName: sharedPrefs.buildSystem,
+          stationID: sharedPrefs.buildStationID,
+          facilityTax: sharedPrefs.facilityTax,
+          structureBonus: sharedPrefs.structureBonus,
+          brokerFee: sharedPrefs.brokerFee,
+          salesTaxPercent: sharedPrefs.salesTaxPercent,
+          decryptorKey: sharedPrefs.decryptor,
+          decryptorCost: sharedPrefs.decryptorCost,
+          // Scanner batch add-to-project uses the same build-mode preference
+          // the Analyze tab does — both surfaces read from the shared prefs
+          // hook so the value is always in sync.
+          buildMode: sharedPrefs.buildMode,
         }}
         onSuccess={(projectID, count, summary) => {
           setAddToProjectOpen(false);
@@ -1284,6 +1569,9 @@ interface SortableHeaderProps {
   active: SortKey;
   dir: SortDir;
   onClick: (key: SortKey) => void;
+  /** Optional hover tooltip explaining the column. When absent falls back to
+   *  the generic "Click to sort" text. */
+  titleText?: string;
 }
 
 interface NullableNumberInputProps {
@@ -1375,7 +1663,31 @@ function NullableNumberInput({
   );
 }
 
-function SortableHeader({ sortKey, label, align, active, dir, onClick }: SortableHeaderProps) {
+interface ToggleChipProps {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+  title?: string;
+}
+
+function ToggleChip({ active, onClick, label, title }: ToggleChipProps) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      className={`px-2 py-0.5 text-[11px] rounded-sm border transition-colors ${
+        active
+          ? "border-eve-accent/60 text-eve-accent bg-eve-accent/10"
+          : "border-eve-border text-eve-dim hover:text-eve-text"
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
+function SortableHeader({ sortKey, label, align, active, dir, onClick, titleText }: SortableHeaderProps) {
   const isActive = active === sortKey;
   const arrow = isActive ? (dir === "desc" ? " ▼" : " ▲") : "";
   return (
@@ -1386,7 +1698,7 @@ function SortableHeader({ sortKey, label, align, active, dir, onClick }: Sortabl
         className={`inline-flex items-center gap-1 ${
           align === "right" ? "justify-end w-full" : ""
         } hover:text-eve-text transition-colors ${isActive ? "text-eve-accent" : ""}`}
-        title="Click to sort"
+        title={titleText ?? "Click to sort"}
       >
         {label}
         <span className="text-[9px]">{arrow || "↕"}</span>

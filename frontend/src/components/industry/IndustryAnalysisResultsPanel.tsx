@@ -201,7 +201,12 @@ export function IndustryAnalysisResultsPanel({
         )}
       </div>
 
-      <div className="flex-1 min-h-0 overflow-auto border border-eve-border rounded-sm bg-eve-panel">
+      {/* Material tree / shopping list. Historically this was a nested-scroll
+          container (flex-1 min-h-0 overflow-auto) so the tree could scroll
+          independently of the summary cards above. The parent tab now
+          enables page-level scrolling, so the tree just extends and the
+          page scrolls — no clipping at the bottom, no double scrollbar. */}
+      <div className="border border-eve-border rounded-sm bg-eve-panel">
         {viewMode === "tree" ? (
           <IndustryMaterialTree node={result.material_tree} />
         ) : (

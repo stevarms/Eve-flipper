@@ -257,16 +257,16 @@ export function IndustryPlannerBuilderPanel({ ctx }: IndustryPlannerBuilderPanel
         )}
         {!planBuilderCollapsed.tasks && (
           // Grid-aligned column header for the task rows. Row 1 columns:
-          //   name (3) · activity (3) · product (2) · runs (1) · parent (1) · prio (1) · × / ▾ (1)
+          //   name (5) · activity (3) · runs (1) · parent (1) · prio (1) · × / ▾ (1)
+          // Product column removed — task name already conveys the product.
           // The ▾ column doubles as row expand toggle → row 2 (bp binding etc.)
           <div className="grid grid-cols-12 gap-1 mb-1 text-[10px] uppercase tracking-wider text-eve-dim px-1">
-            <div className="col-span-3">{t("industryPlannerColTaskName")}</div>
+            <div className="col-span-5">{t("industryPlannerColTaskName")}</div>
             <div className="col-span-3">{t("industryPlannerColTaskActivity")}</div>
-            <div className="col-span-2">{t("industryPlannerColTaskProduct")}</div>
-            <div className="col-span-1 ">{t("industryPlannerColTaskRuns")}</div>
-            <div className="col-span-1 ">{t("industryPlannerColTaskParent")}</div>
-            <div className="col-span-1 ">{t("industryPlannerColTaskPrio")}</div>
-            <div className="col-span-1 ">{t("industryPlannerColActions")}</div>
+            <div className="col-span-1">{t("industryPlannerColTaskRuns")}</div>
+            <div className="col-span-1">{t("industryPlannerColTaskParent")}</div>
+            <div className="col-span-1">{t("industryPlannerColTaskPrio")}</div>
+            <div className="col-span-1">{t("industryPlannerColActions")}</div>
           </div>
         )}
         {!planBuilderCollapsed.tasks && (
@@ -309,7 +309,7 @@ export function IndustryPlannerBuilderPanel({ ctx }: IndustryPlannerBuilderPanel
                     value={task.name ?? ""}
                     onChange={(e) => updateVisualTaskRow(rowIndex, { name: e.target.value })}
                     placeholder="name"
-                    className="col-span-3 px-1.5 py-1 bg-eve-input border border-eve-border rounded-sm text-[11px] text-eve-text"
+                    className="col-span-5 px-1.5 py-1 bg-eve-input border border-eve-border rounded-sm text-[11px] text-eve-text"
                   />
                   <select
                     value={task.activity ?? "manufacturing"}
@@ -321,13 +321,6 @@ export function IndustryPlannerBuilderPanel({ ctx }: IndustryPlannerBuilderPanel
                   <option value="copy">copy</option>
                   <option value="invention">invention</option>
                 </select>
-                <input
-                  type="number"
-                  value={task.product_type_id ?? 0}
-                  onChange={(e) => updateVisualTaskRow(rowIndex, { product_type_id: Number(e.target.value) || 0 })}
-                  placeholder="type"
-                  className="col-span-2 px-1.5 py-1 bg-eve-input border border-eve-border rounded-sm text-[11px] text-eve-text font-mono"
-                />
                   <input
                     type="number"
                     value={task.target_runs ?? 0}
@@ -513,15 +506,16 @@ export function IndustryPlannerBuilderPanel({ ctx }: IndustryPlannerBuilderPanel
           )}
         </div>
         {!planBuilderCollapsed.jobs && (
+          // 7 cells matching the 7-cell row layout below (no more facility
+          // header without a matching input, no more notes column).
           <div className="grid grid-cols-12 gap-1 mb-1 text-[10px] uppercase tracking-wider text-eve-dim px-1">
             <div className="col-span-2">{t("industryPlannerColJobActivity")}</div>
-            <div className="col-span-1 ">{t("industryPlannerColJobTaskRef")}</div>
-            <div className="col-span-1 ">{t("industryPlannerColJobFacility")}</div>
-            <div className="col-span-1 ">{t("industryPlannerColJobRuns")}</div>
-            <div className="col-span-2 ">{t("industryPlannerColJobDuration")}</div>
-            <div className="col-span-2 ">{t("industryPlannerColJobCost")}</div>
-            <div className="col-span-2">{t("industryPlannerColJobStatus")}</div>
-            <div className="col-span-1 ">{t("industryPlannerColActions")}</div>
+            <div className="col-span-1">{t("industryPlannerColJobTaskRef")}</div>
+            <div className="col-span-1">{t("industryPlannerColJobRuns")}</div>
+            <div className="col-span-2">{t("industryPlannerColJobDuration")}</div>
+            <div className="col-span-2">{t("industryPlannerColJobCost")}</div>
+            <div className="col-span-3">{t("industryPlannerColJobStatus")}</div>
+            <div className="col-span-1">{t("industryPlannerColActions")}</div>
           </div>
         )}
         {!planBuilderCollapsed.jobs && (
@@ -573,7 +567,7 @@ export function IndustryPlannerBuilderPanel({ ctx }: IndustryPlannerBuilderPanel
               <select
                 value={job.status ?? "planned"}
                 onChange={(e) => updateVisualJobRow(rowIndex, { status: e.target.value as IndustryJobStatus })}
-                className="col-span-2 px-1.5 py-1 bg-eve-input border border-eve-border rounded-sm text-[11px] text-eve-text"
+                className="col-span-3 px-1.5 py-1 bg-eve-input border border-eve-border rounded-sm text-[11px] text-eve-text"
               >
                 <option value="planned">planned</option>
                 <option value="queued">queued</option>
@@ -583,13 +577,6 @@ export function IndustryPlannerBuilderPanel({ ctx }: IndustryPlannerBuilderPanel
                 <option value="failed">failed</option>
                 <option value="cancelled">cancelled</option>
               </select>
-              <input
-                type="text"
-                value={job.notes ?? ""}
-                onChange={(e) => updateVisualJobRow(rowIndex, { notes: e.target.value })}
-                placeholder="notes"
-                className="col-span-1 px-1.5 py-1 bg-eve-input border border-eve-border rounded-sm text-[11px] text-eve-text"
-              />
               <div className="col-span-1 flex items-center justify-end">
                 <RowIconButton
                   onClick={() => removeVisualJobRow(rowIndex)}
@@ -644,16 +631,17 @@ export function IndustryPlannerBuilderPanel({ ctx }: IndustryPlannerBuilderPanel
           )}
         </div>
         {!planBuilderCollapsed.materials && (
+          // 8 cells matching the 8-cell row layout below (no more Type-ID
+          // column; Have added as a real input so users can see coverage).
           <div className="grid grid-cols-12 gap-1 mb-1 text-[10px] uppercase tracking-wider text-eve-dim px-1">
-            <div className="col-span-1 ">{t("industryPlannerColMatTypeID")}</div>
-            <div className="col-span-3">{t("industryPlannerColMatName")}</div>
-            <div className="col-span-1 ">{t("industryPlannerColMatRequired")}</div>
-            <div className="col-span-1 ">{t("industryPlannerColMatAvailable")}</div>
-            <div className="col-span-1 ">{t("industryPlannerColMatBuy")}</div>
-            <div className="col-span-1 ">{t("industryPlannerColMatBuild")}</div>
-            <div className="col-span-2 ">{t("industryPlannerColMatUnitCost")}</div>
+            <div className="col-span-4">{t("industryPlannerColMatName")}</div>
+            <div className="col-span-1">{t("industryPlannerColMatRequired")}</div>
+            <div className="col-span-1">{t("industryPlannerColMatAvailable")}</div>
+            <div className="col-span-1">{t("industryPlannerColMatBuy")}</div>
+            <div className="col-span-1">{t("industryPlannerColMatBuild")}</div>
+            <div className="col-span-2">{t("industryPlannerColMatUnitCost")}</div>
             <div className="col-span-1">{t("industryPlannerColMatSource")}</div>
-            <div className="col-span-1 ">{t("industryPlannerColActions")}</div>
+            <div className="col-span-1">{t("industryPlannerColActions")}</div>
           </div>
         )}
         {!planBuilderCollapsed.materials && (
@@ -663,24 +651,25 @@ export function IndustryPlannerBuilderPanel({ ctx }: IndustryPlannerBuilderPanel
             return (
             <div key={`material-${rowIndex}`} className="grid grid-cols-12 gap-1">
               <input
-                type="number"
-                value={material.type_id ?? 0}
-                onChange={(e) => updateVisualMaterialRow(rowIndex, { type_id: Number(e.target.value) || 0 })}
-                placeholder="type"
-                className="col-span-2 px-1.5 py-1 bg-eve-input border border-eve-border rounded-sm text-[11px] text-eve-text font-mono"
-              />
-              <input
                 type="text"
                 value={material.type_name ?? ""}
                 onChange={(e) => updateVisualMaterialRow(rowIndex, { type_name: e.target.value })}
                 placeholder="name"
-                className="col-span-3 px-1.5 py-1 bg-eve-input border border-eve-border rounded-sm text-[11px] text-eve-text"
+                title={`type_id ${material.type_id ?? 0}`}
+                className="col-span-4 px-1.5 py-1 bg-eve-input border border-eve-border rounded-sm text-[11px] text-eve-text"
               />
               <input
                 type="number"
                 value={material.required_qty ?? 0}
                 onChange={(e) => updateVisualMaterialRow(rowIndex, { required_qty: Number(e.target.value) || 0 })}
                 placeholder="req"
+                className="col-span-1 px-1.5 py-1 bg-eve-input border border-eve-border rounded-sm text-[11px] text-eve-text font-mono"
+              />
+              <input
+                type="number"
+                value={material.available_qty ?? 0}
+                onChange={(e) => updateVisualMaterialRow(rowIndex, { available_qty: Number(e.target.value) || 0 })}
+                placeholder="have"
                 className="col-span-1 px-1.5 py-1 bg-eve-input border border-eve-border rounded-sm text-[11px] text-eve-text font-mono"
               />
               <input
@@ -771,16 +760,17 @@ export function IndustryPlannerBuilderPanel({ ctx }: IndustryPlannerBuilderPanel
           )}
         </div>
         {!planBuilderCollapsed.blueprints && (
+          // 8 cells matching the 8-cell row layout below (no more Type-ID
+          // column; name expands to col-span-5).
           <div className="grid grid-cols-12 gap-1 mb-1 text-[10px] uppercase tracking-wider text-eve-dim px-1">
-            <div className="col-span-2 ">{t("industryPlannerColBpTypeID")}</div>
-            <div className="col-span-3">{t("industryPlannerColBpName")}</div>
-            <div className="col-span-1 ">{t("industryPlannerColBpLocation")}</div>
-            <div className="col-span-1 ">{t("industryPlannerColBpQty")}</div>
-            <div className="col-span-1 ">{t("industryPlannerColBpME")}</div>
-            <div className="col-span-1 ">{t("industryPlannerColBpTE")}</div>
-            <div className="col-span-1 ">{t("industryPlannerColBpBPO")}</div>
-            <div className="col-span-1 ">{t("industryPlannerColBpRunsLeft")}</div>
-            <div className="col-span-1 ">{t("industryPlannerColActions")}</div>
+            <div className="col-span-5">{t("industryPlannerColBpName")}</div>
+            <div className="col-span-1">{t("industryPlannerColBpLocation")}</div>
+            <div className="col-span-1">{t("industryPlannerColBpQty")}</div>
+            <div className="col-span-1">{t("industryPlannerColBpME")}</div>
+            <div className="col-span-1">{t("industryPlannerColBpTE")}</div>
+            <div className="col-span-1">{t("industryPlannerColBpBPO")}</div>
+            <div className="col-span-1">{t("industryPlannerColBpRunsLeft")}</div>
+            <div className="col-span-1">{t("industryPlannerColActions")}</div>
           </div>
         )}
         {!planBuilderCollapsed.blueprints && (
@@ -790,18 +780,12 @@ export function IndustryPlannerBuilderPanel({ ctx }: IndustryPlannerBuilderPanel
             return (
             <div key={`bp-${rowIndex}`} className="grid grid-cols-12 gap-1">
               <input
-                type="number"
-                value={bp.blueprint_type_id ?? 0}
-                onChange={(e) => updateVisualBlueprintRow(rowIndex, { blueprint_type_id: Number(e.target.value) || 0 })}
-                placeholder="bp type"
-                className="col-span-2 px-1.5 py-1 bg-eve-input border border-eve-border rounded-sm text-[11px] text-eve-text font-mono"
-              />
-              <input
                 type="text"
                 value={bp.blueprint_name ?? ""}
                 onChange={(e) => updateVisualBlueprintRow(rowIndex, { blueprint_name: e.target.value })}
                 placeholder="name"
-                className="col-span-3 px-1.5 py-1 bg-eve-input border border-eve-border rounded-sm text-[11px] text-eve-text"
+                title={`type_id ${bp.blueprint_type_id ?? 0}`}
+                className="col-span-5 px-1.5 py-1 bg-eve-input border border-eve-border rounded-sm text-[11px] text-eve-text"
               />
               <input
                 type="number"

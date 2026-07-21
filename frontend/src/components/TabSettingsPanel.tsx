@@ -81,13 +81,26 @@ export function TabSettingsPanel({
 interface FieldProps {
   label: string;
   children: ReactNode;
+  /** Optional hover-tooltip explaining the field. Rendered as a small
+   *  question-mark badge next to the label; the tooltip appears via the
+   *  native title attribute so it works everywhere without extra libs. */
+  hint?: string;
 }
 
-export function SettingsField({ label, children }: FieldProps) {
+export function SettingsField({ label, children, hint }: FieldProps) {
   return (
     <div className="flex flex-col gap-1">
-      <label className="text-[11px] uppercase tracking-wider text-eve-dim font-medium">
-        {label}
+      <label className="text-[11px] uppercase tracking-wider text-eve-dim font-medium inline-flex items-center gap-1">
+        <span>{label}</span>
+        {hint && (
+          <span
+            className="text-[10px] text-eve-dim/70 hover:text-eve-accent cursor-help border border-eve-border/50 rounded-full w-3.5 h-3.5 inline-flex items-center justify-center leading-none"
+            title={hint}
+            aria-label={hint}
+          >
+            ?
+          </span>
+        )}
       </label>
       {children}
     </div>
@@ -192,19 +205,32 @@ interface CheckboxInputProps {
   checked: boolean;
   onChange: (v: boolean) => void;
   label?: string;
+  /** When true, ignores clicks and grey-styles the control. The underlying
+   *  `checked` value is still displayed so a user re-enabling the field
+   *  gets their preference back — no state loss. */
+  disabled?: boolean;
+  /** Hover tooltip for the disabled state (or the whole control). */
+  title?: string;
 }
 
-export function SettingsCheckbox({ checked, onChange, label }: CheckboxInputProps) {
+export function SettingsCheckbox({ checked, onChange, label, disabled, title }: CheckboxInputProps) {
   return (
-    <div className="flex items-center h-[34px]">
-      <label className="relative inline-flex items-center cursor-pointer gap-2">
+    <div
+      className={`flex items-center h-[34px] ${disabled ? "opacity-50" : ""}`}
+      title={title}
+    >
+      <label className={`relative inline-flex items-center gap-2 ${disabled ? "cursor-not-allowed" : "cursor-pointer"}`}>
         <input
           type="checkbox"
           checked={checked}
-          onChange={(e) => onChange(e.target.checked)}
+          disabled={disabled}
+          onChange={(e) => {
+            if (disabled) return;
+            onChange(e.target.checked);
+          }}
           className="sr-only peer"
         />
-        <div className="w-9 h-5 bg-eve-input border border-eve-border rounded-full peer 
+        <div className="w-9 h-5 bg-eve-input border border-eve-border rounded-full peer
                       peer-checked:bg-eve-accent/30 peer-checked:border-eve-accent
                       after:content-[''] after:absolute after:top-[2px] after:left-[2px]
                       after:bg-eve-dim after:rounded-full after:h-4 after:w-4

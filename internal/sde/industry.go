@@ -99,6 +99,72 @@ func NewIndustryData() *IndustryData {
 	}
 }
 
+// MetaGroup constants — SDE metaGroupIDs. See data/sde/metaGroups.jsonl.
+const (
+	MetaGroupT1        int32 = 1
+	MetaGroupT2        int32 = 2
+	MetaGroupStoryline int32 = 3
+	MetaGroupFaction   int32 = 4
+	MetaGroupOfficer   int32 = 5
+	MetaGroupDeadspace int32 = 6
+	MetaGroupT3        int32 = 14
+	MetaGroupAbyssal   int32 = 15
+)
+
+// InventionProductMetaGroup returns the metaGroupID of the eventual
+// manufacturable item produced by a T2/T3 BPC. Given a BPC typeID
+// (the invention output), it looks up that BPC's manufacturing product
+// and returns Types[product].MetaGroupID. Returns 0 when unclassifiable.
+// Used by the scanner to split T2 vs T3 invention outputs.
+func (d *Data) InventionProductMetaGroup(bpcTypeID int32) int32 {
+	if d == nil || d.Industry == nil {
+		return 0
+	}
+	bp, ok := d.Industry.Blueprints[bpcTypeID]
+	if !ok || bp == nil {
+		return 0
+	}
+	mfg, ok := bp.Activities["manufacturing"]
+	if !ok || mfg == nil || len(mfg.Products) == 0 {
+		return 0
+	}
+	prodID := mfg.Products[0].TypeID
+	if pt, ok := d.Types[prodID]; ok && pt != nil {
+		return pt.MetaGroupID
+	}
+	return 0
+}
+
+// BlueprintName returns a human-readable name for a blueprint typeID.
+// Prefers the Types entry (populated for market-published blueprints); falls
+// back to "<mfg product name> Blueprint" for blueprints without a market
+// group entry (invented T2 BPCs, some T1 BPs). Final fallback is "Type N".
+//
+// Used wherever a blueprint typeID needs to display (activity plans, plan
+// patch tasks, scanner rows) so users see "Vagabond Blueprint" instead of
+// "Type 41370".
+func (d *Data) BlueprintName(bpTypeID int32) string {
+	if d != nil {
+		if t, ok := d.Types[bpTypeID]; ok && t != nil {
+			name := t.Name
+			if name != "" {
+				return name
+			}
+		}
+		if d.Industry != nil {
+			if bp, ok := d.Industry.Blueprints[bpTypeID]; ok && bp != nil {
+				if mfg, ok := bp.Activities["manufacturing"]; ok && mfg != nil && len(mfg.Products) > 0 {
+					prodID := mfg.Products[0].TypeID
+					if pt, ok := d.Types[prodID]; ok && pt != nil && pt.Name != "" {
+						return pt.Name + " Blueprint"
+					}
+				}
+			}
+		}
+	}
+	return fmt.Sprintf("Type %d", bpTypeID)
+}
+
 // LoadIndustry loads industry-related data from the SDE.
 func (d *Data) LoadIndustry(extractDir string) (*IndustryData, error) {
 	ind := NewIndustryData()
@@ -298,8 +364,15 @@ func (ind *IndustryData) parseBlueprintLine(raw json.RawMessage) error {
 		blueprint.Activities["invention"] = actData
 	}
 
-	// Only store blueprints that produce something
-	if blueprint.ProductTypeID != 0 {
+	// Store any blueprint that has at least one activity. Historically the
+	// gate here was `ProductTypeID != 0`, which silently dropped
+	// invention-only relic BPs (Hull Sections, Ancient Relics — the sources
+	// for T3 destroyer / strategic cruiser / subsystem invention). Those
+	// have no manufacturing activity so ProductTypeID stays 0. Callers that
+	// look up ProductTypeID handle the zero value gracefully; ProductToBlueprint
+	// remains gated on manufacturing so lookups by mfg-product typeID are
+	// unaffected.
+	if len(blueprint.Activities) > 0 {
 		ind.Blueprints[bp.Key] = blueprint
 		if mfg := blueprint.Activities["manufacturing"]; mfg != nil {
 			for _, product := range mfg.Products {

@@ -129,6 +129,17 @@ export function SystemAutocomplete({
     setOpen(false);
   };
 
+  // Commit typed-but-not-picked-from-dropdown text on blur, so the parent's
+  // persisted state always reflects what the user actually left in the box.
+  // Without this, typing "Botane" and clicking away silently discards the
+  // change (only `select()` fires onChange in the pick-suggestion path).
+  const handleBlur = () => {
+    const trimmed = query.trim();
+    if (trimmed !== value) {
+      onChange(trimmed);
+    }
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (!open) return;
     if (e.key === "ArrowDown") {
@@ -180,6 +191,7 @@ export function SystemAutocomplete({
         onChange={(e) => handleInput(e.target.value)}
         onKeyDown={handleKeyDown}
         onFocus={() => suggestions.length > 0 && setOpen(true)}
+        onBlur={handleBlur}
         placeholder={t("systemPlaceholder")}
         className={`w-full px-3 py-1.5 bg-eve-input border border-eve-border rounded-sm text-eve-text
                    placeholder:text-eve-dim text-sm font-mono

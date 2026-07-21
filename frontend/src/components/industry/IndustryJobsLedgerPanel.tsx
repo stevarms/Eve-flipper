@@ -1,7 +1,6 @@
 import type { ComponentProps } from "react";
 import { useI18n } from "@/lib/i18n";
 import type { IndustryJobsWorkspaceTab } from "./IndustryJobsWorkspaceNav";
-import { IndustryJobsWorkspaceNav } from "./IndustryJobsWorkspaceNav";
 import { IndustryJobsGuidePanel } from "./IndustryJobsGuidePanel";
 import { IndustryPlannerWarningLog } from "./IndustryPlannerWarningLog";
 import { IndustryDependencyBoard } from "./IndustryDependencyBoard";
@@ -17,11 +16,11 @@ import { IndustryWorkspaceStatusBoards } from "./IndustryWorkspaceStatusBoards";
 interface IndustryJobsLedgerPanelProps {
   isLoggedIn: boolean;
   ledgerProjectsLoading: boolean;
+  /** Which top-level industry tab is active: "guide" (Projects), "planning"
+   *  (Plan), or "operations" (Operations). The internal panels still gate on
+   *  this value; the user-facing sub-nav that used to switch it was removed
+   *  when Projects/Plan/Operations became top-level tabs. */
   jobsWorkspaceTab: IndustryJobsWorkspaceTab;
-  setJobsWorkspaceTab: (tab: IndustryJobsWorkspaceTab) => void;
-  warningsCount: number;
-  missingBindings: number;
-  activeJobs: number;
   projectHeaderProps: ComponentProps<typeof IndustryJobsProjectHeader>;
   guidePanelProps: ComponentProps<typeof IndustryJobsGuidePanel>;
   planningActionsProps: ComponentProps<typeof IndustryJobsPlanningActions>;
@@ -39,10 +38,6 @@ export function IndustryJobsLedgerPanel({
   isLoggedIn,
   ledgerProjectsLoading,
   jobsWorkspaceTab,
-  setJobsWorkspaceTab,
-  warningsCount,
-  missingBindings,
-  activeJobs,
   projectHeaderProps,
   guidePanelProps,
   planningActionsProps,
@@ -56,6 +51,8 @@ export function IndustryJobsLedgerPanel({
   operationsJobsProps,
 }: IndustryJobsLedgerPanelProps) {
   const { t } = useI18n();
+  // Projects tab IS the project picker — no need for the header row too.
+  const showProjectHeader = jobsWorkspaceTab !== "guide";
 
   return (
     <div className="shrink-0 m-2 mt-0 pb-2">
@@ -70,15 +67,7 @@ export function IndustryJobsLedgerPanel({
           </div>
         ) : (
           <>
-            <IndustryJobsWorkspaceNav
-              activeTab={jobsWorkspaceTab}
-              onChange={setJobsWorkspaceTab}
-              warningsCount={warningsCount}
-              missingBindings={missingBindings}
-              activeJobs={activeJobs}
-            />
-
-            <IndustryJobsProjectHeader {...projectHeaderProps} />
+            {showProjectHeader && <IndustryJobsProjectHeader {...projectHeaderProps} />}
 
             {jobsWorkspaceTab === "guide" && (
               <IndustryJobsGuidePanel {...guidePanelProps} />

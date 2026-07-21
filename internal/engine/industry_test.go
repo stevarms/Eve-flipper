@@ -402,20 +402,119 @@ func TestCalculateCosts_PrefersBuyingWhenCheaper(t *testing.T) {
 		},
 	}
 
-	tree := a.buildMaterialTree(1001, 1, IndustryParams{MaxDepth: 10}, 0)
-	a.calculateCosts(tree, 0.1, IndustryParams{})
+	// Analyze 1001 as the ROOT — root is always ShouldBuild=true, so to
+	// exercise the buy-vs-build cost comparison we analyze 1000 (the parent)
+	// and inspect the 1001 CHILD instead.
+	tree := a.buildMaterialTree(1000, 1, IndustryParams{MaxDepth: 10, TypeID: 1000}, 0)
+	a.calculateCosts(tree, 0.1, IndustryParams{TypeID: 1000})
 
-	if tree.ShouldBuild {
-		t.Fatalf("tree.ShouldBuild = true, want false")
+	// Find the 1001 child.
+	var child *MaterialNode
+	for _, c := range tree.Children {
+		if c.TypeID == 1001 {
+			child = c
+			break
+		}
 	}
-	if !industryAlmostEqual(tree.BuyPrice, 5.0) {
-		t.Fatalf("BuyPrice = %v, want 5", tree.BuyPrice)
+	if child == nil {
+		t.Fatalf("expected 1001 child under 1000")
 	}
-	if !industryAlmostEqual(tree.BuildCost, 30.3) {
-		t.Fatalf("BuildCost = %v, want 30.3", tree.BuildCost)
+	if child.ShouldBuild {
+		t.Fatalf("child.ShouldBuild = true, want false (buying is cheaper)")
 	}
-	if !industryAlmostEqual(tree.JobCost, 0.3) {
-		t.Fatalf("JobCost = %v, want 0.3", tree.JobCost)
+	// The child (1001) is required 10× by the root recipe, so its prices
+	// reflect 10-unit totals: BuyPrice = 10 * 5 = 50; job cost + Tritanium
+	// (3 * 10 = 30 units at price 10) scaled to 10 runs yields BuildCost 303,
+	// JobCost 3.0.
+	if !industryAlmostEqual(child.BuyPrice, 50.0) {
+		t.Fatalf("child.BuyPrice = %v, want 50", child.BuyPrice)
+	}
+	if !industryAlmostEqual(child.BuildCost, 303.0) {
+		t.Fatalf("child.BuildCost = %v, want 303", child.BuildCost)
+	}
+	if !industryAlmostEqual(child.JobCost, 3.0) {
+		t.Fatalf("child.JobCost = %v, want 3", child.JobCost)
+	}
+}
+
+// BuildMode variants override the per-node buy-vs-build decision. Uses the
+// same fixture as PrefersBuyingWhenCheaper (child 1001 is cheaper to buy
+// than build) so we can prove the mode flips the decision.
+func TestCalculateCosts_BuildModeBuildAllForcesBuildOnChildren(t *testing.T) {
+	a := &IndustryAnalyzer{
+		SDE: newTestIndustrySDE(),
+		marketPrices: map[int32]float64{
+			1001: 5,
+			34:   10,
+		},
+		adjustedPrices: map[int32]float64{34: 1},
+	}
+	params := IndustryParams{MaxDepth: 10, TypeID: 1000, BuildMode: "build_all"}
+	tree := a.buildMaterialTree(1000, 1, params, 0)
+	a.calculateCosts(tree, 0.1, params)
+
+	var child *MaterialNode
+	for _, c := range tree.Children {
+		if c.TypeID == 1001 {
+			child = c
+			break
+		}
+	}
+	if child == nil {
+		t.Fatalf("expected 1001 child under 1000")
+	}
+	if !child.ShouldBuild {
+		t.Fatalf("build_all: child.ShouldBuild = false, want true (mode forces build)")
+	}
+}
+
+func TestCalculateCosts_BuildModeBuyAllForcesBuyOnChildren(t *testing.T) {
+	a := &IndustryAnalyzer{
+		SDE: newTestIndustrySDE(),
+		marketPrices: map[int32]float64{
+			1001: 5000, // Make buying WAY more expensive than building.
+			34:   10,
+		},
+		adjustedPrices: map[int32]float64{34: 1},
+	}
+	// In auto mode this would ShouldBuild=true (build is cheaper), but with
+	// buy_all we force buying regardless.
+	params := IndustryParams{MaxDepth: 10, TypeID: 1000, BuildMode: "buy_all"}
+	tree := a.buildMaterialTree(1000, 1, params, 0)
+	a.calculateCosts(tree, 0.1, params)
+
+	var child *MaterialNode
+	for _, c := range tree.Children {
+		if c.TypeID == 1001 {
+			child = c
+			break
+		}
+	}
+	if child == nil {
+		t.Fatalf("expected 1001 child under 1000")
+	}
+	if child.ShouldBuild {
+		t.Fatalf("buy_all: child.ShouldBuild = true, want false (mode forces buy)")
+	}
+}
+
+func TestCalculateCosts_BuildModeRootAlwaysBuilds(t *testing.T) {
+	a := &IndustryAnalyzer{
+		SDE: newTestIndustrySDE(),
+		marketPrices: map[int32]float64{
+			1000: 1, // Root is available on market for 1 ISK — buy would seem best.
+			1001: 5,
+			34:   10,
+		},
+		adjustedPrices: map[int32]float64{34: 1},
+	}
+	// Even with buy_all, the ROOT (typeID 1000) must ShouldBuild=true —
+	// otherwise "analyze this thing" produces no plan.
+	params := IndustryParams{MaxDepth: 10, TypeID: 1000, BuildMode: "buy_all"}
+	tree := a.buildMaterialTree(1000, 1, params, 0)
+	a.calculateCosts(tree, 0.1, params)
+	if !tree.ShouldBuild {
+		t.Fatalf("root ShouldBuild = false with buy_all, want true (root is exempt)")
 	}
 }
 

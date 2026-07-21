@@ -1832,8 +1832,21 @@ export interface IndustryParams {
   blueprint_cost?: number;
   blueprint_is_bpo?: boolean;
   invention_chance?: number;
+  /** Multiplier applied to the per-product SDE base probability when
+   *  invention_chance is 0. Used by the decryptor picker so the frontend
+   *  doesn't need to know each product's base chance. 0 or 1 = no change. */
+  invention_chance_mult?: number;
   decryptor_cost?: number;
   invention_output_runs?: number;
+  /** Global build-vs-buy override for sub-materials.
+   *   "auto" (default) — pick whichever is cheaper per node.
+   *   "buy_all"        — force buy on every sub-material with a market price.
+   *   "build_all"      — force build on every buildable sub-material. */
+  build_mode?: "auto" | "buy_all" | "build_all";
+  /** When true, reaction-only child materials are treated as buy-from-market
+   *  instead of being expanded into a reaction step. Matches the workflow
+   *  of a builder who doesn't run reactions. Ignored at the analyzed root. */
+  skip_reactions?: boolean;
 }
 
 export interface BlueprintInfo {
@@ -1886,6 +1899,9 @@ export interface IndustryActivityStep {
   time_seconds: number;
   probability?: number;
   expected_attempts?: number;
+  /** True when blueprint_type_id is a T2 BPC (produced via invention) — the
+   *  plan-patch builder uses this to default is_bpo=false on sub-BPs. */
+  blueprint_is_bpc?: boolean;
   reason?: string;
 }
 
@@ -1965,15 +1981,38 @@ export interface ProfitableScanRequest {
   // Which kinds of blueprints to include. Default "bpo".
   blueprint_filter?: "bpo" | "bpc" | "both";
 
-  // When true, each owned T1 BP with an invention activity is fanned out to
-  // its T2 products and scored in invention mode alongside the T1 mfg rows.
+  // When true, each BP with an invention activity is fanned out to its
+  // T2 outputs and scored in invention mode. Independent of T3.
   include_t2_invention?: boolean;
+  // When true, T3 invention paths (Tactical Destroyers, Strategic Cruisers,
+  // T3 Subsystems) are included. Source BPs are typically relic BPs (Hull
+  // Sections, Ancient Relics) that the user rarely owns — with `include_unowned`
+  // also on, synthetic groups cover invention-only relic BPs so the T3 path
+  // still surfaces. Independent of T2.
+  include_t3_invention?: boolean;
+  /** When true, reaction-only child materials are treated as buy-from-market
+   *  instead of expanded into a reaction step. Matches the "I don't run
+   *  reactions, I just buy the components" workflow. */
+  skip_reactions?: boolean;
+  // Product category filter (SDE CategoryID). Empty/omitted = all categories.
+  // Common IDs: 6=Ships, 7=Modules, 8=Charges, 17=Commodity, 18=Drone,
+  // 20=Implant, 22=Deployable, 32=Subsystem, 34=Material, 35=Component,
+  // 65/66=Structure.
+  type_categories?: number[];
   // Effective invention params (decryptor deltas baked in on the frontend).
   invention_me_base?: number;
   invention_te_base?: number;
   invention_chance_mult?: number;
   invention_output_runs?: number;
   decryptor_cost?: number;
+
+  // When true, extend the scan with synthetic groups for every marketable
+  // SDE blueprint the user doesn't own — surfacing buy-and-build candidates.
+  include_unowned?: boolean;
+  /** Assumed ME on synthetic unowned groups (default 10). */
+  unowned_default_me?: number;
+  /** Assumed TE on synthetic unowned groups (default 20). */
+  unowned_default_te?: number;
 
   // When true, the backend skips the ESI blueprint fetch and rescores the
   // supplied reuse_groups instead. Used by the "Refresh prices" button.
@@ -1989,6 +2028,9 @@ export interface ProfitableScanReuseRow {
   owned_quantity: number;
   available_runs: number;
   location_ids: number[];
+  /** Preserves the owned/unowned tag through refresh so synthetic rows
+   *  aren't re-tagged as owned on rescore. */
+  owned?: boolean;
 }
 
 export interface ProfitableScanRow {
@@ -2009,9 +2051,12 @@ export interface ProfitableScanRow {
   optimal_build_cost: number;
   sell_revenue: number;
   manufacturing_time: number;
+  /** True when this row comes from a BP the user actually owns. False for
+   *  synthetic rows added when include_unowned is on. */
+  owned?: boolean;
 
   // Invention-specific fields. "" / 0 for T1 manufacturing rows.
-  scan_mode?: "t1_mfg" | "t2_invention";
+  scan_mode?: "t1_mfg" | "t2_invention" | "t3_invention";
   invention_source_bp_id?: number;
   invention_source_bp_name?: string;
   invention_output_bp_id?: number; // T2 BPC typeID
@@ -2020,6 +2065,22 @@ export interface ProfitableScanRow {
   expected_attempts?: number;
   attempts_cap?: number; // -1 = unlimited (BPO source)
   attempts_cap_exceeded?: boolean;
+  /** Winning decryptor key for T2 rows — the scanner auto-picks the highest-
+   *  ISK/h decryptor per row (or "none" if no decryptor is best). Empty on
+   *  T1 rows. Frontend maps this back through DECRYPTORS[key] for display. */
+  best_decryptor_key?: string;
+
+  /** Average units traded per day over `period_days` in the pricing region. */
+  product_daily_volume?: number;
+  /** ISK profit realized over `period_days` when sales are capped by market
+   *  absorption. Falls below (profit × runs) when market volume is thin. */
+  period_profit?: number;
+  /** period_profit / (unit_cost × units_producible_in_period) × 100. Equals
+   *  profit_percent when market absorbs all output; drops as unsold inventory
+   *  grows. Captures the "shortage fills before I finish" penalty. */
+  period_margin?: number;
+  /** Window used for period stats (server-controlled; typically 30). */
+  period_days?: number;
 }
 
 export interface ProfitableScanStats {

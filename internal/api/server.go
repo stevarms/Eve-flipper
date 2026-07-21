@@ -11010,8 +11010,11 @@ func (s *Server) handleIndustryAnalyze(w http.ResponseWriter, r *http.Request) {
 		BlueprintCost       float64 `json:"blueprint_cost"`
 		BlueprintIsBPO      bool    `json:"blueprint_is_bpo"`
 		InventionChance     float64 `json:"invention_chance"`
+		InventionChanceMult float64 `json:"invention_chance_mult"`
 		DecryptorCost       float64 `json:"decryptor_cost"`
 		InventionOutputRuns int32   `json:"invention_output_runs"`
+		BuildMode           string  `json:"build_mode"`
+		SkipReactions       bool    `json:"skip_reactions"`
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, industryAnalyzeMaxBodyBytes)
@@ -11061,6 +11064,13 @@ func (s *Server) handleIndustryAnalyze(w http.ResponseWriter, r *http.Request) {
 		req.DecryptorCost = 0
 	}
 	req.InventionOutputRuns = clampInt32(req.InventionOutputRuns, 0, 100000)
+	req.BuildMode = strings.TrimSpace(strings.ToLower(req.BuildMode))
+	switch req.BuildMode {
+	case "", "auto", "buy_all", "build_all":
+	default:
+		writeError(w, 400, "invalid build_mode")
+		return
+	}
 	req.SystemName = strings.TrimSpace(req.SystemName)
 
 	// Resolve system ID
@@ -11088,8 +11098,11 @@ func (s *Server) handleIndustryAnalyze(w http.ResponseWriter, r *http.Request) {
 		BlueprintCost:       req.BlueprintCost,
 		BlueprintIsBPO:      req.BlueprintIsBPO,
 		InventionChance:     req.InventionChance,
+		InventionChanceMult: req.InventionChanceMult,
 		DecryptorCost:       req.DecryptorCost,
 		InventionOutputRuns: req.InventionOutputRuns,
+		BuildMode:           req.BuildMode,
+		SkipReactions:       req.SkipReactions,
 	}
 
 	// Use NDJSON streaming for progress

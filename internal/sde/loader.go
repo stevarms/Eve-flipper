@@ -69,8 +69,14 @@ type ItemType struct {
 	GroupID       int32   // item group (for categorization: rigs, ships, modules, etc.)
 	CategoryID    int32   // item category (6=Ships, 7=Modules, 20=Implants, etc.)
 	MarketGroupID int32   // marketGroupID from SDE (used to detect PI tiers, etc.)
-	IsRig         bool    // derived from group metadata
-	IsContraband  bool    // listed in contrabandTypes
+	// MetaGroupID identifies the tech tier of this item. 1=T1, 2=T2,
+	// 3=Storyline, 4=Faction, 5=Officer, 6=Deadspace, 14=T3, 15=Abyssal.
+	// Zero when the SDE type has no metaGroupID (T1-equivalent commodities,
+	// raw materials, base BPCs, etc.). The scanner uses it to distinguish
+	// T2 vs T3 invention outputs.
+	MetaGroupID  int32
+	IsRig        bool // derived from group metadata
+	IsContraband bool // listed in contrabandTypes
 }
 
 // ItemGroup represents group-level SDE metadata used for type classification.
@@ -315,6 +321,7 @@ func (d *Data) loadTypes(dir string) error {
 			Published      bool              `json:"published"`
 			MarketGroupID  *int32            `json:"marketGroupID"`
 			GroupID        int32             `json:"groupID"`
+			MetaGroupID    int32             `json:"metaGroupID"`
 		}
 		if err := json.Unmarshal(raw, &t); err != nil {
 			return err
@@ -347,6 +354,7 @@ func (d *Data) loadTypes(dir string) error {
 			GroupID:       t.GroupID,
 			CategoryID:    categoryID,
 			MarketGroupID: mgid,
+			MetaGroupID:   t.MetaGroupID,
 			IsRig:         groupRig[t.GroupID],
 			IsContraband:  d.Contraband[t.Key],
 		}

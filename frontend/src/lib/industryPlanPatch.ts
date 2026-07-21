@@ -99,7 +99,7 @@ export function buildIndustryPlanPatch(input: BuildIndustryPlanPatchInput): Indu
         status: "planned",
         started_at: "",
         finished_at: "",
-        notes: coverage ? "Coverage-aware draft from Industry analyzer" : "Draft from Industry analyzer activity plan",
+        notes: "",
       });
     });
   } else {
@@ -132,7 +132,7 @@ export function buildIndustryPlanPatch(input: BuildIndustryPlanPatchInput): Indu
       status: "planned",
       started_at: "",
       finished_at: "",
-      notes: coverage ? "Coverage-aware draft from Industry analyzer" : "Auto-seeded from Industry analyzer",
+      notes: "",
     });
   }
 
@@ -187,6 +187,11 @@ export function buildIndustryPlanPatch(input: BuildIndustryPlanPatchInput): Indu
       if (!step.blueprint_type_id || step.blueprint_type_id <= 0) continue;
       const requiredRuns = stepRuns(step);
       const existing = fallbackBlueprintMap.get(step.blueprint_type_id);
+      // T2 BPCs (produced via invention) are always copies; T1 BPs default
+      // to ownBlueprint (BPO). Without this, every sub-BP in a T2 chain
+      // shows as BPO which is wrong for every T2 component.
+      const isBpc = Boolean(step.blueprint_is_bpc);
+      const isBpo = isBpc ? false : ownBlueprint;
       fallbackBlueprintMap.set(step.blueprint_type_id, {
         blueprint_type_id: step.blueprint_type_id,
         blueprint_name: step.blueprint_name || existing?.blueprint_name || "",
@@ -194,8 +199,8 @@ export function buildIndustryPlanPatch(input: BuildIndustryPlanPatchInput): Indu
         quantity: 1,
         me,
         te,
-        is_bpo: ownBlueprint,
-        available_runs: ownBlueprint ? 0 : (existing?.available_runs ?? 0) + requiredRuns,
+        is_bpo: isBpo,
+        available_runs: isBpo ? 0 : (existing?.available_runs ?? 0) + requiredRuns,
       });
     }
     if (fallbackBlueprintMap.size === 0 && topBlueprintTypeID > 0) {
