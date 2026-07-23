@@ -76,6 +76,67 @@ export function TabSettingsPanel({
   );
 }
 
+interface SettingsSubsectionProps {
+  title: string;
+  /** localStorage key for persisting expanded/collapsed state. Same
+   *  STORAGE_PREFIX namespace as TabSettingsPanel so subsections and
+   *  outer panels share a consistent keying scheme. */
+  persistKey?: string;
+  defaultExpanded?: boolean;
+  /** When true, suppresses the top divider + spacing. Set on the first
+   *  subsection under a TabSettingsPanel so it doesn't draw a second
+   *  border immediately below the panel header. */
+  first?: boolean;
+  children: ReactNode;
+}
+
+/**
+ * Lightweight collapsible subsection for use inside a TabSettingsPanel.
+ * Renders as a small header row with an expand chevron — no border box, no
+ * icon, no padded card — so nested subsections don't visually compete with
+ * the parent panel's chrome. Users click the header to hide grouped fields
+ * once they're happy with the values inside.
+ */
+export function SettingsSubsection({
+  title,
+  persistKey,
+  defaultExpanded = true,
+  first,
+  children,
+}: SettingsSubsectionProps) {
+  const [expanded, setExpanded] = useState(() => {
+    if (persistKey) {
+      const stored = localStorage.getItem(STORAGE_PREFIX + persistKey);
+      if (stored !== null) return stored === "1";
+    }
+    return defaultExpanded;
+  });
+
+  const toggle = () => {
+    setExpanded((prev) => {
+      const next = !prev;
+      if (persistKey) {
+        localStorage.setItem(STORAGE_PREFIX + persistKey, next ? "1" : "0");
+      }
+      return next;
+    });
+  };
+
+  return (
+    <div className={first ? "" : "mt-3 pt-3 border-t border-eve-border/30"}>
+      <button
+        type="button"
+        onClick={toggle}
+        className="w-full flex items-center gap-2 text-left mb-2 text-[10px] uppercase tracking-wider text-eve-dim hover:text-eve-text transition-colors"
+      >
+        <span className="text-[9px]">{expanded ? "▼" : "▶"}</span>
+        <span>{title}</span>
+      </button>
+      {expanded && <div>{children}</div>}
+    </div>
+  );
+}
+
 // --- Reusable input components for settings ---
 
 interface FieldProps {

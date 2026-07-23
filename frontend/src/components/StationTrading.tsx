@@ -105,6 +105,7 @@ interface Props {
 // Metric tooltip keys mapping
 type MetricTooltipKey =
   | "CTS"
+  | "DS"
   | "SDS"
   | "PVI"
   | "VWAP"
@@ -116,6 +117,7 @@ type MetricTooltipKey =
 
 const metricTooltipKeys: Partial<Record<SortKey, MetricTooltipKey>> = {
   CTS: "CTS",
+  DS: "DS",
   SDS: "SDS",
   PVI: "PVI",
   VWAP: "VWAP",
@@ -149,6 +151,25 @@ const baseStationColumnDefs: StationColumnDef[] = [
     numeric: false,
   },
   { key: "CTS", labelKey: "colCTS", width: "min-w-[60px]", numeric: true },
+  { key: "DS", labelKey: "colDS", width: "min-w-[60px]", numeric: true },
+  {
+    key: "RegionAvg",
+    labelKey: "colRegionAvg",
+    width: "min-w-[95px]",
+    numeric: true,
+  },
+  {
+    key: "SuggestedBid",
+    labelKey: "colSuggestedBid",
+    width: "min-w-[95px]",
+    numeric: true,
+  },
+  {
+    key: "BuyOrderCount",
+    labelKey: "colCompetingBuys",
+    width: "min-w-[70px]",
+    numeric: true,
+  },
   {
     key: "BuyPrice",
     labelKey: "colStationBuyPrice",
@@ -226,6 +247,8 @@ const OPERATOR_PANEL_DEFAULT = 50;
 const STATION_CACHE_TTL_MS = 20 * 60 * 1000;
 const STATION_TRADING_LOCATION_STORAGE_KEY = "station.location";
 const STATION_IGNORED_CATEGORIES_STORAGE_KEY = "station.ignored_categories";
+const STATION_DISCOUNT_TARGET_KEY = "station.discount_bid_target";
+const DEFAULT_DISCOUNT_TARGET = 0.5;
 
 function loadIgnoredCategories(): Set<number> {
   if (typeof window === "undefined") return new Set();
@@ -553,6 +576,22 @@ export function StationTrading({
   const lastSyncedTaxProfileRef = useRef(taxProfileKey(params));
   const taxSyncInProgressRef = useRef<string | null>(null);
   const [ctsProfile, setCTSProfile] = useState<CTSProfile>("balanced");
+  const [discountBidTarget, setDiscountBidTargetState] = useState<number>(() => {
+    if (typeof window === "undefined") return DEFAULT_DISCOUNT_TARGET;
+    const raw = window.localStorage.getItem(STATION_DISCOUNT_TARGET_KEY);
+    const n = raw == null ? NaN : Number(raw);
+    if (!Number.isFinite(n) || n <= 0 || n >= 1) return DEFAULT_DISCOUNT_TARGET;
+    return n;
+  });
+  const setDiscountBidTarget = (n: number) => {
+    // Clamp to (0, 1) — a 100% bid is just the region avg (nonsensical for
+    // this workflow) and 0% would suggest bidding 0 ISK.
+    const clamped = Math.min(0.99, Math.max(0.01, n));
+    setDiscountBidTargetState(clamped);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(STATION_DISCOUNT_TARGET_KEY, String(clamped));
+    }
+  };
   const [radius, setRadius] = useState(0);
   const [minDailyVolume, setMinDailyVolume] = useState(5);
   const [results, setResults] = useState<StationTrade[]>([]);
@@ -1776,8 +1815,23 @@ export function StationTrading({
     return () => window.clearInterval(timer);
   }, [autoRefreshEnabled, cacheMeta, canScan, handleScan, scanning]);
 
+  // Attach the client-derived SuggestedBid to each row so the column and
+  // its sort work off a real number without a rescan when the user
+  // slides the target %.
+  const resultsWithBid = useMemo(
+    () =>
+      results.map((r) => ({
+        ...r,
+        SuggestedBid:
+          r.RegionAvg && r.RegionAvg > 0
+            ? r.RegionAvg * discountBidTarget
+            : undefined,
+      })),
+    [results, discountBidTarget],
+  );
+
   const sorted = useMemo(() => {
-    const copy = [...results];
+    const copy = [...resultsWithBid];
     copy.sort((a, b) => {
       const av = a[sortKey];
       const bv = b[sortKey];
@@ -1789,7 +1843,7 @@ export function StationTrading({
         : String(bv).localeCompare(String(av));
     });
     return copy;
-  }, [results, sortKey, sortDir]);
+  }, [resultsWithBid, sortKey, sortDir]);
 
   const hiddenEntries = useMemo(() => {
     return Object.values(hiddenTradeMap).sort((a, b) =>
@@ -1932,7 +1986,15 @@ export function StationTrading({
       displayRows.length;
     const avgCTS =
       displayRows.reduce((sum, r) => sum + r.CTS, 0) / displayRows.length;
-    return { totalProfit, avgMargin, avgCTS, count: displayRows.length };
+    // Only count rows where DS actually scored (RegionAvg present + local
+    // sell-side) — otherwise avg would trend toward 0 and look like a bug.
+    const scoredDS = displayRows.filter(
+      (r) => r.DS != null && r.DS > 0,
+    );
+    const avgDS = scoredDS.length
+      ? scoredDS.reduce((sum, r) => sum + (r.DS ?? 0), 0) / scoredDS.length
+      : 0;
+    return { totalProfit, avgMargin, avgCTS, avgDS, count: displayRows.length };
   }, [displayRows]);
   const operatorPanelAvailable = showOperatorColumns && displayRows.length > 0;
   const operatorPanelVisible =
@@ -2246,7 +2308,9 @@ export function StationTrading({
       col.key === "ExpectedPnL" ||
       col.key === "ProfitPerUnit" ||
       col.key === "CapitalRequired" ||
-      col.key === "VWAP"
+      col.key === "VWAP" ||
+      col.key === "RegionAvg" ||
+      col.key === "SuggestedBid"
     ) {
       const n =
         col.key === "DailyProfit"
@@ -2266,8 +2330,9 @@ export function StationTrading({
     if (col.key === "S2BBfSRatio" || col.key === "DOS" || col.key === "OBDS") {
       return (val as number).toFixed(2);
     }
-    if (col.key === "CTS") {
-      return (val as number).toFixed(1);
+    if (col.key === "CTS" || col.key === "DS") {
+      const n = val as number | undefined;
+      return n != null && Number.isFinite(n) ? n.toFixed(1) : "—";
     }
     if (typeof val === "number") return formatNumber(val);
     return String(val);
@@ -2300,6 +2365,14 @@ export function StationTrading({
   const getCTSColor = (cts: number) => {
     if (cts >= 70) return "text-green-400";
     if (cts >= 40) return "text-yellow-400";
+    return "text-red-400";
+  };
+
+  // Discount Score uses the same thresholds as CTS — both are 0-100
+  // composites and users learn one color scale.
+  const getDSColor = (ds: number) => {
+    if (ds >= 70) return "text-green-400";
+    if (ds >= 40) return "text-yellow-400";
     return "text-red-400";
   };
 
@@ -2808,6 +2881,15 @@ export function StationTrading({
                             label: t("ctsProfileDefensive"),
                           },
                         ]}
+                      />
+                    </SettingsField>
+                    <SettingsField label={t("discountBidTarget")}>
+                      <SettingsNumberInput
+                        value={Math.round(discountBidTarget * 100)}
+                        onChange={(v) => setDiscountBidTarget(v / 100)}
+                        min={1}
+                        max={99}
+                        step={5}
                       />
                     </SettingsField>
                     <SettingsField label={t("avgPricePeriod")}>
@@ -3587,15 +3669,47 @@ export function StationTrading({
                     style={{ width: 28, minWidth: 28, maxWidth: 28 }}
                     className="px-1 py-1 text-center"
                   >
-                    {hiddenEntry
-                      ? hiddenEntry.mode === "ignored"
-                        ? "✖"
-                        : "✓"
-                      : row.IsHighRiskFlag
-                        ? "🚨"
-                        : row.IsExtremePriceFlag
-                          ? "⚠️"
-                          : ""}
+                    {hiddenEntry ? (
+                      <span
+                        title={
+                          hiddenEntry.mode === "ignored"
+                            ? t("rowIgnoredHint")
+                            : t("rowDoneHint")
+                        }
+                        className="cursor-help"
+                      >
+                        {hiddenEntry.mode === "ignored" ? "✖" : "✓"}
+                      </span>
+                    ) : row.IsHighRiskFlag ? (
+                      <span
+                        title={t("riskHighRiskHint", {
+                          sds: String(row.SDS ?? 0),
+                        })}
+                        className="cursor-help"
+                      >
+                        🚨
+                      </span>
+                    ) : row.IsExtremePriceFlag ? (
+                      <span
+                        title={t("riskExtremePriceHint", {
+                          buy: formatISK(row.BuyPrice ?? 0),
+                          vwap: formatISK(row.VWAP ?? 0),
+                          deviation:
+                            row.VWAP > 0
+                              ? (
+                                  (Math.abs(
+                                    (row.BuyPrice ?? 0) - row.VWAP,
+                                  ) /
+                                    row.VWAP) *
+                                  100
+                                ).toFixed(0)
+                              : "?",
+                        })}
+                        className="cursor-help"
+                      >
+                        ⚠️
+                      </span>
+                    ) : null}
                   </td>
                   <td
                     style={{ width: 32, minWidth: 32, maxWidth: 32 }}
@@ -3663,11 +3777,13 @@ export function StationTrading({
                     className={`px-2 py-1 ${col.width} truncate ${col.pinned ? "sticky z-10 bg-inherit shadow-[2px_0_0_rgba(230,149,0,0.12)]" : ""} ${
                       col.key === "CTS"
                         ? `font-mono font-bold ${getCTSColor(row.CTS)}`
-                        : col.key === "SDS"
-                          ? `font-mono ${getSDSColor(row.SDS)}`
-                          : col.numeric
-                            ? "text-eve-accent font-mono"
-                            : "text-eve-text"
+                        : col.key === "DS"
+                          ? `font-mono font-bold ${getDSColor(row.DS ?? 0)}`
+                          : col.key === "SDS"
+                            ? `font-mono ${getSDSColor(row.SDS)}`
+                            : col.numeric
+                              ? "text-eve-accent font-mono"
+                              : "text-eve-text"
                     }`}
                   >
                     {col.key === "TypeName" ? (
@@ -3711,6 +3827,53 @@ export function StationTrading({
                             OWN
                           </span>
                         )}
+                      </div>
+                    ) : col.key === "DS" ? (
+                      <span
+                        title={(() => {
+                          const noAvg = !row.RegionAvg || row.RegionAvg <= 0;
+                          const noSell = !row.SellPrice || row.SellPrice <= 0;
+                          if (noAvg && noSell) return t("colDSZeroBothHint");
+                          if (noAvg) return t("colDSZeroNoRegionAvgHint");
+                          if (noSell) return t("colDSZeroNoSellHint");
+                          return t("colDSValueHint", {
+                            ds: (row.DS ?? 0).toFixed(1),
+                            topBuy: formatISK(row.BuyPrice ?? 0),
+                            regionAvg: formatISK(row.RegionAvg ?? 0),
+                            lowSell: formatISK(row.SellPrice ?? 0),
+                            competing: String(row.BuyOrderCount ?? 0),
+                            dailyVol: String(row.DailyVolume ?? 0),
+                            depthPct: (() => {
+                              const avg = row.RegionAvg ?? 0;
+                              if (avg <= 0) return "0";
+                              return (
+                                ((avg - (row.BuyPrice ?? 0)) / avg) *
+                                100
+                              ).toFixed(0);
+                            })(),
+                            marginPct: (() => {
+                              const sell = row.SellPrice ?? 0;
+                              if (sell <= 0) return "0";
+                              return (
+                                ((sell - (row.BuyPrice ?? 0)) / sell) *
+                                100
+                              ).toFixed(0);
+                            })(),
+                          });
+                        })()}
+                        className="cursor-help"
+                      >
+                        {formatCell(col, row)}
+                      </span>
+                    ) : col.key === "RegionAvg" && row.RegionAvgSource === "sde" ? (
+                      <div className="flex items-center justify-end gap-1">
+                        <span className="truncate">{formatCell(col, row)}</span>
+                        <span
+                          title={t("regionAvgSdeBadgeHint")}
+                          className="shrink-0 inline-flex items-center px-1 py-px rounded-[2px] border border-eve-dim/50 bg-eve-dim/10 text-eve-dim text-[9px] leading-none font-medium uppercase"
+                        >
+                          SDE
+                        </span>
                       </div>
                     ) : (
                       formatCell(col, row)
@@ -3765,6 +3928,15 @@ export function StationTrading({
               className={`font-mono font-semibold ${getCTSColor(summary.avgCTS)}`}
             >
               {summary.avgCTS.toFixed(1)}
+            </span>
+          </span>
+          <span className="text-eve-dim">
+            {t("avgDS")}:{" "}
+            <span
+              className={`font-mono font-semibold ${getDSColor(summary.avgDS)}`}
+              title={t("avgDSHint")}
+            >
+              {summary.avgDS.toFixed(1)}
             </span>
           </span>
           {showOperatorColumns && commandSummary && (
@@ -4390,6 +4562,12 @@ function MetricTooltipContent({
       descKey: "metricCTSDesc",
       goodKey: "metricCTSGood",
       badKey: "metricCTSBad",
+    },
+    DS: {
+      titleKey: "metricDSTitle",
+      descKey: "metricDSDesc",
+      goodKey: "metricDSGood",
+      badKey: "metricDSBad",
     },
     SDS: {
       titleKey: "metricSDSTitle",

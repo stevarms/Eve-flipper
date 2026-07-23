@@ -476,6 +476,83 @@ func CalcCTS(spreadROI, obds, drvi float64, ci, sds int, dailyVolume float64) fl
 	return CalcCTSWithWeights(spreadROI, obds, drvi, ci, sds, dailyVolume, DefaultCTSWeights)
 }
 
+// DiscountWeights parameterise the Discount Score (DS) — a rating of how
+// promising an item is for a "patient deep-discount buy order" workflow:
+// bid well below region average, wait for a seller to dump, flip at the
+// local sell price. Different question from CTS, which rates same-day
+// tradeability. Weights normalize to 1.
+type DiscountWeights struct {
+	Depth     float64 // how far below regionAvg the current topBuy sits
+	Uncrowded float64 // how sparse the competing buy orders are
+	Volume    float64 // does the item actually move in the region
+	Margin    float64 // spread between local topBuy and lowSell (resale headroom)
+}
+
+var DefaultDiscountWeights = DiscountWeights{
+	Depth:     0.40,
+	Uncrowded: 0.20,
+	Volume:    0.25,
+	Margin:    0.15,
+}
+
+func normalizeDiscountWeights(w DiscountWeights) DiscountWeights {
+	if w.Depth < 0 {
+		w.Depth = 0
+	}
+	if w.Uncrowded < 0 {
+		w.Uncrowded = 0
+	}
+	if w.Volume < 0 {
+		w.Volume = 0
+	}
+	if w.Margin < 0 {
+		w.Margin = 0
+	}
+	total := w.Depth + w.Uncrowded + w.Volume + w.Margin
+	if total <= 0 {
+		return DefaultDiscountWeights
+	}
+	return DiscountWeights{
+		Depth:     w.Depth / total,
+		Uncrowded: w.Uncrowded / total,
+		Volume:    w.Volume / total,
+		Margin:    w.Margin / total,
+	}
+}
+
+// CalcDiscountScore returns a 0-100 rating. Returns 0 when we have no
+// regional reference price or no local sell-side to flip into — either
+// case, the "deep discount buy" thesis can't be evaluated.
+func CalcDiscountScore(topBuy, lowSell, regionAvg, dailyVolume float64, buyOrderCount int, weights DiscountWeights) float64 {
+	if regionAvg <= 0 || lowSell <= 0 {
+		return 0
+	}
+	weights = normalizeDiscountWeights(weights)
+
+	// Depth: 100 × (1 - topBuy/regionAvg), clamped so a topBuy above
+	// regionAvg (rare) doesn't produce a negative score.
+	depthScore := normalize(1-topBuy/regionAvg, 0, 1) * 100
+
+	// Uncrowded: 100/(1+n). 0 buys=100, 1=50, 2=33, 5=17. Decays fast
+	// so items with a handful of existing bidders drop out quickly.
+	uncrowdedScore := 100.0 / (1.0 + float64(buyOrderCount))
+
+	// Volume: same log-scale as CTS so 10k units/day = 100, 100/day ≈ 50.
+	var volScore float64
+	if dailyVolume > 1 {
+		volScore = normalize(math.Log10(dailyVolume), 0, 4) * 100
+	}
+
+	// Margin: 100 × (1 - topBuy/lowSell). Ensures items with a real
+	// resale spread rank above items where topBuy is nearly lowSell.
+	marginScore := normalize(1-topBuy/lowSell, 0, 1) * 100
+
+	return depthScore*weights.Depth +
+		uncrowdedScore*weights.Uncrowded +
+		volScore*weights.Volume +
+		marginScore*weights.Margin
+}
+
 // normalize clamps value to [0, 1] range based on min/max.
 func normalize(value, minVal, maxVal float64) float64 {
 	if maxVal <= minVal {

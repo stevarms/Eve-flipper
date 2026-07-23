@@ -2447,6 +2447,8 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
       structure_rig_type_ids: sharedPrefs.structureRigTypeIDs,
       structure_type_id: sharedPrefs.structureTypeID,
       structure_job_cost_reduction: sharedPrefs.structureJobCostReduction,
+      revenue_model: sharedPrefs.revenueModel,
+      cost_model: sharedPrefs.costModel,
     };
 
     try {
@@ -3100,6 +3102,26 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
                 </SettingsField>
                 <SettingsField label={t("salesTax")} hint={t("industrySalesTaxHint")}>
                   <SettingsNumberInput value={salesTaxPercent} onChange={setSalesTaxPercent} min={0} max={100} step={0.1} />
+                </SettingsField>
+                <SettingsField label={t("industryProductDestinationLabel")} hint={t("industryProductDestinationHint")}>
+                  <SettingsSelect
+                    value={sharedPrefs.revenueModel}
+                    onChange={(v) => updateSharedPrefs({ revenueModel: v as "sell_to_sell" | "sell_to_buy" })}
+                    options={[
+                      { value: "sell_to_sell", label: t("industryOrderSideSellOrders") },
+                      { value: "sell_to_buy", label: t("industryOrderSideBuyOrders") },
+                    ]}
+                  />
+                </SettingsField>
+                <SettingsField label={t("industryMaterialSourceLabel")} hint={t("industryMaterialSourceHint")}>
+                  <SettingsSelect
+                    value={sharedPrefs.costModel}
+                    onChange={(v) => updateSharedPrefs({ costModel: v as "buy_to_sell" | "buy_to_buy" })}
+                    options={[
+                      { value: "buy_to_sell", label: t("industryOrderSideSellOrders") },
+                      { value: "buy_to_buy", label: t("industryOrderSideBuyOrders") },
+                    ]}
+                  />
                 </SettingsField>
               </SettingsGrid>
               {sharedPrefs.structureTypeID > 0 && (

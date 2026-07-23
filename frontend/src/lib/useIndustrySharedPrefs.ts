@@ -12,6 +12,21 @@ import { DECRYPTORS, type DecryptorKey } from "./industryDecryptors";
 
 export type IndustryBuildMode = "auto" | "buy_all" | "build_all";
 
+/** How revenue is quoted for the built product.
+ *  - `sell_to_sell` (default): list price = best ask; assumes you list your
+ *    own sell order and wait. Matches every external industry planner's
+ *    headline number.
+ *  - `sell_to_buy`: fill against the buy order book; models dumping stock
+ *    for a fast turnover at a worse fill price. */
+export type IndustryRevenueModel = "sell_to_sell" | "sell_to_buy";
+
+/** How materials are quoted on the buy side — mirror of IndustryRevenueModel.
+ *  - `buy_to_sell` (default): fill against the sell order book, i.e. buy off
+ *    someone else's sell order; the cost of instant procurement.
+ *  - `buy_to_buy`: list price = best bid; models placing your own buy order
+ *    and waiting for a seller. Cheaper per unit but slower to fill. */
+export type IndustryCostModel = "buy_to_sell" | "buy_to_buy";
+
 export interface IndustrySharedPrefs {
   buildSystem: string;
   buildStationID: number;
@@ -52,6 +67,10 @@ export interface IndustrySharedPrefs {
   analyzePricingSystem: string;
   /** Specific NPC station within the pricing system (0 = region-wide). */
   analyzePricingStationID: number;
+  /** How to quote the sell price for the built product. See IndustryRevenueModel. */
+  revenueModel: IndustryRevenueModel;
+  /** How to quote the buy-side price for materials. See IndustryCostModel. */
+  costModel: IndustryCostModel;
 }
 
 const STORAGE_KEY = "eve-settings:industry-shared-prefs";
@@ -73,6 +92,8 @@ const DEFAULTS: IndustrySharedPrefs = {
   structureRigTypeIDs: [],
   analyzePricingSystem: "",
   analyzePricingStationID: 0,
+  revenueModel: "sell_to_sell",
+  costModel: "buy_to_sell",
 };
 
 function loadFromStorage(): IndustrySharedPrefs {

@@ -13,6 +13,7 @@ import {
   SettingsSelect,
   SettingsCheckbox,
   SettingsGrid,
+  SettingsSubsection,
 } from "../TabSettingsPanel";
 import { SystemAutocomplete } from "../SystemAutocomplete";
 import { EmptyState } from "../EmptyState";
@@ -528,6 +529,8 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
       structure_rig_type_ids: sharedPrefs.structureRigTypeIDs,
       structure_type_id: sharedPrefs.structureTypeID,
       structure_job_cost_reduction: sharedPrefs.structureJobCostReduction,
+      revenue_model: sharedPrefs.revenueModel,
+      cost_model: sharedPrefs.costModel,
       min_isk_per_hour: 0,
       min_profit: 0,
       min_margin_percent: 0,
@@ -724,6 +727,114 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
     return rows;
   }, [response, sortKey, sortDir, selectedIDs, params.minISKPerHour, params.minProfit, params.minMarginPct, params.showT1Rows, params.showT2Rows, params.showT3Rows, params.showReactionRows, params.ownedFilter, searchQuery]);
 
+  const handleExportCsv = useCallback(() => {
+    // Export the CURRENTLY VISIBLE rows (sortedRows applies search + filters
+    // + sort) so what the user sees on screen matches the file — matches
+    // typical spreadsheet-app UX and makes cross-tool comparisons easy.
+    // Uses \r\n line endings + a UTF-8 BOM so Excel opens it cleanly on
+    // Windows without garbling non-ASCII item names.
+    const rows = sortedRows;
+    if (rows.length === 0) return;
+
+    const escapeCsv = (v: string): string => {
+      if (v.includes(",") || v.includes('"') || v.includes("\n") || v.includes("\r")) {
+        return '"' + v.replace(/"/g, '""') + '"';
+      }
+      return v;
+    };
+    const fmtNum = (n: number | undefined | null, decimals = 2): string =>
+      n == null || !Number.isFinite(n) ? "" : n.toFixed(decimals);
+    const fmtInt = (n: number | undefined | null): string =>
+      n == null || !Number.isFinite(n) ? "" : String(Math.round(n));
+    const fmtDuration = (seconds: number | undefined | null): string => {
+      if (!seconds || seconds <= 0) return "";
+      const s = Math.floor(seconds);
+      const d = Math.floor(s / 86400);
+      const h = Math.floor((s % 86400) / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const ss = s % 60;
+      const hms = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
+      return d > 0 ? `${d}d ${hms}` : hms;
+    };
+    const scanModeLabel = (mode: string | undefined): string => {
+      switch (mode) {
+        case "t1_mfg": return "Tech I";
+        case "t2_invention": return "Tech II (invention)";
+        case "t3_invention": return "Tech III (invention)";
+        case "reaction": return "Reaction";
+        default: return mode ?? "";
+      }
+    };
+
+    const headers = [
+      "Product", "Blueprint", "Group", "Category", "Meta",
+      "ME", "TE", "Runs", "Quantity",
+      "ROI %", "Build Cost", "Materials", "Job Cost", "Invention Cost", "BP Amortization",
+      "Sell Revenue", "Profit", "ISK/Hour",
+      "Manufacturing Time", "Duration (sec)",
+      "Daily Volume", "Period Profit", "Period ROI %",
+      "Owned", "Owned Qty", "Available Runs",
+      "Decryptor", "Invention Probability %", "Expected Attempts",
+    ];
+
+    const bpAmortByRow = (r: ProfitableScanRow): number => {
+      // total_material_cost already includes invention datacores per the
+      // engine's semantic, and total_job_cost already includes the
+      // invention install. So the leftover between optimal_build_cost and
+      // (materials + job) is blueprint amortization only — no double-count.
+      const optimal = r.optimal_build_cost ?? 0;
+      const mats = r.total_material_cost ?? 0;
+      const job = r.total_job_cost ?? 0;
+      return Math.max(0, optimal - mats - job);
+    };
+
+    const csvRows = rows.map((r) => [
+      r.product_name ?? "",
+      r.blueprint_name ?? "",
+      r.group_name ?? "",
+      r.category_name ?? "",
+      scanModeLabel(r.scan_mode),
+      String(r.me),
+      String(r.te),
+      String(r.runs),
+      fmtInt(r.total_quantity),
+      fmtNum(r.profit_percent, 2),
+      fmtNum(r.optimal_build_cost, 2),
+      fmtNum(r.total_material_cost, 2),
+      fmtNum(r.total_job_cost, 2),
+      fmtNum(r.invention_cost, 2),
+      fmtNum(bpAmortByRow(r), 2),
+      fmtNum(r.sell_revenue, 2),
+      fmtNum(r.profit, 2),
+      fmtNum(r.isk_per_hour, 2),
+      fmtDuration(r.manufacturing_time),
+      fmtInt(r.manufacturing_time),
+      fmtInt(r.product_daily_volume),
+      fmtNum(r.period_profit, 2),
+      fmtNum(r.period_margin, 2),
+      r.owned ? "true" : "false",
+      fmtInt(r.owned_quantity),
+      fmtInt(r.available_runs),
+      r.best_decryptor_key ?? "",
+      fmtNum((r.invention_probability ?? 0) * 100, 2),
+      fmtNum(r.expected_attempts, 2),
+    ]);
+
+    const csv = "﻿" + [headers, ...csvRows]
+      .map((row) => row.map((v) => escapeCsv(String(v))).join(","))
+      .join("\r\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `industry-scan-${stamp}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [sortedRows]);
+
   const toggleSelect = (key: string) => {
     setSelectedIDs((prev) => {
       const next = new Set(prev);
@@ -787,10 +898,11 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
             mode). No more Scope selector (always "all" characters) and no
             more decryptor picker (backend auto-picks the winning decryptor
             per T2 row). */}
-        <div>
-          <div className="text-[10px] uppercase tracking-wider text-eve-dim mb-2">
-            {t("industrySectionItemBuild")}
-          </div>
+        <SettingsSubsection
+          title={t("industrySectionItemBuild")}
+          persistKey="industry-scanner-item-build"
+          first
+        >
 
           {/* Include chips — orthogonal toggles for pool composition. The
               parent "Invention" chip is the OR of T2 + T3. Toggling it off
@@ -952,13 +1064,71 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
               />
             </SettingsField>
           </SettingsGrid>
-        </div>
+        </SettingsSubsection>
+
+        {/* ==== Sell / market side (pricing region + revenue model). Sits
+            above the build side so the mental flow reads "here's what I'm
+            selling, here's how I'm selling it → now here's how I'm building
+            it". The revenue model dropdown lives here (not in build fees)
+            because it's a property of the sale, not the build. ==== */}
+        <SettingsSubsection
+          title={t("industrySectionPricing")}
+          persistKey="industry-scanner-pricing"
+        >
+          <PricingHubPicker
+            systemName={params.pricingSystem}
+            stationID={params.pricingStationID}
+            onChange={(sys, stationID) => {
+              setParams((prev) => {
+                const next: PersistedParams = {
+                  ...prev,
+                  pricingSystem: sys,
+                  pricingStationID: stationID,
+                };
+                savePersistedParams(next);
+                return next;
+              });
+            }}
+            isLoggedIn={isLoggedIn}
+          />
+          <div className="mt-1 text-[10px] text-eve-dim">
+            {params.pricingStationID > 0
+              ? `Pricing from station ${params.pricingStationID} (${params.pricingSystem || "unknown"} region).`
+              : params.pricingSystem.trim()
+                ? `Pricing region-wide in ${params.pricingSystem}.`
+                : "Pricing falls back to the build system's region."}
+          </div>
+          <div className="mt-3">
+            <SettingsGrid cols={2}>
+              <SettingsField label={t("industryProductDestinationLabel")} hint={t("industryProductDestinationHint")}>
+                <SettingsSelect
+                  value={sharedPrefs.revenueModel}
+                  onChange={(v) => updateSharedPrefs({ revenueModel: v as "sell_to_sell" | "sell_to_buy" })}
+                  options={[
+                    { value: "sell_to_sell", label: t("industryOrderSideSellOrders") },
+                    { value: "sell_to_buy", label: t("industryOrderSideBuyOrders") },
+                  ]}
+                />
+              </SettingsField>
+              <SettingsField label={t("industryMaterialSourceLabel")} hint={t("industryMaterialSourceHint")}>
+                <SettingsSelect
+                  value={sharedPrefs.costModel}
+                  onChange={(v) => updateSharedPrefs({ costModel: v as "buy_to_sell" | "buy_to_buy" })}
+                  options={[
+                    { value: "buy_to_sell", label: t("industryOrderSideSellOrders") },
+                    { value: "buy_to_buy", label: t("industryOrderSideBuyOrders") },
+                  ]}
+                />
+              </SettingsField>
+            </SettingsGrid>
+          </div>
+        </SettingsSubsection>
 
         {/* ==== Location & Fees ==== */}
-        <div className="mt-3 pt-3 border-t border-eve-border/30">
-          <div className="text-[10px] uppercase tracking-wider text-eve-dim mb-2">
-            {t("industrySectionLocationFees")}
-          </div>
+        <SettingsSubsection
+          title={t("industrySectionLocationFees")}
+          persistKey="industry-scanner-location-fees"
+        >
           <SettingsGrid cols={3}>
             <SettingsField label={t("industryScannerBuildSystemLabel")}>
               <SystemAutocomplete
@@ -1120,66 +1290,40 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
               </div>
             )}
           </div>
-        </div>
+        </SettingsSubsection>
+      </TabSettingsPanel>
 
-        {/* ==== Pricing (Scanner-specific — decoupled from build location so
-            the user can, e.g., build in Botane while reading Jita prices). ==== */}
-        <div className="mt-3 pt-3 border-t border-eve-border/30">
-          <div className="text-[10px] uppercase tracking-wider text-eve-dim mb-2">
-            {t("industrySectionPricing")}
-          </div>
-          <PricingHubPicker
-            systemName={params.pricingSystem}
-            stationID={params.pricingStationID}
-            onChange={(sys, stationID) => {
-              setParams((prev) => {
-                const next: PersistedParams = {
-                  ...prev,
-                  pricingSystem: sys,
-                  pricingStationID: stationID,
-                };
-                savePersistedParams(next);
-                return next;
-              });
-            }}
-            isLoggedIn={isLoggedIn}
-          />
-          <div className="mt-1 text-[10px] text-eve-dim">
-            {params.pricingStationID > 0
-              ? `Pricing from station ${params.pricingStationID} (${params.pricingSystem || "unknown"} region).`
-              : params.pricingSystem.trim()
-                ? `Pricing region-wide in ${params.pricingSystem}.`
-                : "Pricing falls back to the build system's region."}
-          </div>
-        </div>
-
-        {/* ==== Filters ==== */}
-        <div className="mt-3 pt-3 border-t border-eve-border/30">
-          <div className="text-[10px] uppercase tracking-wider text-eve-dim mb-2">
-            {t("industrySectionFilters")}
-          </div>
-          <SettingsGrid cols={3}>
-            <SettingsField label={t("industryScannerMinISKPerHourLabel")}>
-              <NullableNumberInput
-                value={params.minISKPerHour}
-                onChange={(v) => updateParam("minISKPerHour", v)}
-              />
-            </SettingsField>
-            <SettingsField label={t("industryScannerMinProfitLabel")}>
-              <NullableNumberInput
-                value={params.minProfit}
-                onChange={(v) => updateParam("minProfit", v)}
-              />
-            </SettingsField>
-            <SettingsField label={t("industryScannerMinMarginLabel")}>
-              <NullableNumberInput
-                value={params.minMarginPct}
-                onChange={(v) => updateParam("minMarginPct", v)}
-                step={0.1}
-              />
-            </SettingsField>
-          </SettingsGrid>
-        </div>
+      {/* Filters live in their own collapsible panel outside the Settings
+          panel so the user can hide the (mostly-static) settings once they're
+          tuned while still adjusting result-table thresholds live. Separate
+          persistKey means each panel remembers its own open/closed state. */}
+      <TabSettingsPanel
+        title={t("industrySectionFilters")}
+        icon="🔍"
+        defaultExpanded={true}
+        persistKey={SCANNER_PERSIST_KEY + ":filters"}
+      >
+        <SettingsGrid cols={3}>
+          <SettingsField label={t("industryScannerMinISKPerHourLabel")}>
+            <NullableNumberInput
+              value={params.minISKPerHour}
+              onChange={(v) => updateParam("minISKPerHour", v)}
+            />
+          </SettingsField>
+          <SettingsField label={t("industryScannerMinProfitLabel")}>
+            <NullableNumberInput
+              value={params.minProfit}
+              onChange={(v) => updateParam("minProfit", v)}
+            />
+          </SettingsField>
+          <SettingsField label={t("industryScannerMinMarginLabel")}>
+            <NullableNumberInput
+              value={params.minMarginPct}
+              onChange={(v) => updateParam("minMarginPct", v)}
+              step={0.1}
+            />
+          </SettingsField>
+        </SettingsGrid>
       </TabSettingsPanel>
 
       {/* Scan / Refresh live outside the collapsible params panel so the user
@@ -1356,6 +1500,17 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
               </button>
               <button
                 type="button"
+                onClick={handleExportCsv}
+                disabled={sortedRows.length === 0}
+                title={t("industryScannerExportCsvTitle")}
+                className="px-2 py-1 text-[11px] rounded-sm border border-eve-border text-eve-dim
+                           hover:text-eve-accent hover:border-eve-accent/40 disabled:opacity-40
+                           disabled:cursor-not-allowed transition-colors"
+              >
+                {t("industryScannerExportCsv")}
+              </button>
+              <button
+                type="button"
                 onClick={handleClearResults}
                 title={t("industryScannerClearResultsTitle")}
                 className="px-2 py-1 text-[11px] rounded-sm border border-eve-border text-eve-dim
@@ -1451,7 +1606,7 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                     if (invCost > 0) profitTooltipLines.push(`  (of which invention: ${formatISK(invCost)})`);
                     profitTooltipLines.push("");
                     profitTooltipLines.push(`Profit:         ${formatISK(row.profit)}`);
-                    profitTooltipLines.push(`Margin:         ${row.profit_percent.toFixed(1)}%`);
+                    profitTooltipLines.push(`ROI:            ${row.profit_percent.toFixed(1)}%`);
                     if (row.manufacturing_time > 0) {
                       const hoursDisp = row.manufacturing_time / 3600;
                       profitTooltipLines.push(`Time:           ${hoursDisp.toFixed(1)}h`);

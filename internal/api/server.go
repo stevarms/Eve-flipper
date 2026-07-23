@@ -3962,6 +3962,31 @@ func (s *Server) handleScanStation(w http.ResponseWriter, r *http.Request) {
 
 	startTime := time.Now()
 
+	// Build the region-average reference map used by Discount Score.
+	// ESI's /markets/prices AveragePrice is preferred; SDE BasePrice
+	// fills gaps so thin-market items still score against *something*
+	// (SDE prices are notional so we tag the source for the UI badge).
+	// The endpoint is global and 10-min-cached in the ESI layer — one
+	// call covers every region in this scan.
+	regionAvgByType := make(map[int32]float64)
+	regionAvgSourceByType := make(map[int32]string)
+	if prices, err := s.esi.FetchMarketPrices(); err == nil {
+		for _, p := range prices {
+			if p.AveragePrice > 0 {
+				regionAvgByType[p.TypeID] = p.AveragePrice
+				regionAvgSourceByType[p.TypeID] = "esi"
+			}
+		}
+	} else {
+		log.Printf("[API] ScanStation FetchMarketPrices failed: %v (falling back on SDE base prices only)", err)
+	}
+	for typeID, t := range sdeData.Types {
+		if _, ok := regionAvgByType[typeID]; !ok && t.BasePrice > 0 {
+			regionAvgByType[typeID] = t.BasePrice
+			regionAvgSourceByType[typeID] = "sde"
+		}
+	}
+
 	// Scan each region and merge results
 	var allResults []engine.StationTrade
 	for regionID := range regionIDs {
@@ -3969,19 +3994,21 @@ func (s *Server) handleScanStation(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		params := engine.StationTradeParams{
-			StationIDs:           stationIDs,
-			AllowedSystems:       allowedSystemsByRegion[regionID],
-			IgnoredSystems:       ignoredSystems,
-			RegionID:             regionID,
-			MinMargin:            req.MinMargin,
-			SalesTaxPercent:      req.SalesTaxPercent,
-			BrokerFee:            req.BrokerFee,
-			CTSProfile:           req.CTSProfile,
-			SplitTradeFees:       req.SplitTradeFees,
-			BuyBrokerFeePercent:  req.BuyBrokerFeePercent,
-			SellBrokerFeePercent: req.SellBrokerFeePercent,
-			BuySalesTaxPercent:   req.BuySalesTaxPercent,
-			SellSalesTaxPercent:  req.SellSalesTaxPercent,
+			StationIDs:            stationIDs,
+			AllowedSystems:        allowedSystemsByRegion[regionID],
+			IgnoredSystems:        ignoredSystems,
+			RegionID:              regionID,
+			MinMargin:             req.MinMargin,
+			SalesTaxPercent:       req.SalesTaxPercent,
+			BrokerFee:             req.BrokerFee,
+			CTSProfile:            req.CTSProfile,
+			SplitTradeFees:        req.SplitTradeFees,
+			BuyBrokerFeePercent:   req.BuyBrokerFeePercent,
+			SellBrokerFeePercent:  req.SellBrokerFeePercent,
+			BuySalesTaxPercent:    req.BuySalesTaxPercent,
+			SellSalesTaxPercent:   req.SellSalesTaxPercent,
+			RegionAvgByType:       regionAvgByType,
+			RegionAvgSourceByType: regionAvgSourceByType,
 			MinDailyVolume:       req.MinDailyVolume,
 			MinItemProfit:        req.MinItemProfit,
 			MinDailyProfit:       req.MinDailyProfit,
@@ -11025,6 +11052,8 @@ func (s *Server) handleIndustryAnalyze(w http.ResponseWriter, r *http.Request) {
 		StructureRigTypeIDs       []int32 `json:"structure_rig_type_ids"`
 		StructureTypeID           int32   `json:"structure_type_id"`
 		StructureJobCostReduction float64 `json:"structure_job_cost_reduction"`
+		RevenueModel              string  `json:"revenue_model"`
+		CostModel                 string  `json:"cost_model"`
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, industryAnalyzeMaxBodyBytes)
@@ -11082,6 +11111,20 @@ func (s *Server) handleIndustryAnalyze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.StructureJobCostReduction = clampFloat64(req.StructureJobCostReduction, 0, 100)
+	req.RevenueModel = strings.TrimSpace(strings.ToLower(req.RevenueModel))
+	switch req.RevenueModel {
+	case "", "sell_to_sell", "sell_to_buy":
+	default:
+		writeError(w, 400, "invalid revenue_model")
+		return
+	}
+	req.CostModel = strings.TrimSpace(strings.ToLower(req.CostModel))
+	switch req.CostModel {
+	case "", "buy_to_sell", "buy_to_buy":
+	default:
+		writeError(w, 400, "invalid cost_model")
+		return
+	}
 	// Truncate rig list to the 3 slots any Upwell structure supports; drop
 	// zero/negative typeIDs.
 	if len(req.StructureRigTypeIDs) > 3 {
@@ -11147,6 +11190,8 @@ func (s *Server) handleIndustryAnalyze(w http.ResponseWriter, r *http.Request) {
 			RigTypeIDs:      req.StructureRigTypeIDs,
 			StructureTypeID: req.StructureTypeID,
 		},
+		RevenueModel: req.RevenueModel,
+		CostModel:    req.CostModel,
 	}
 
 	// Use NDJSON streaming for progress

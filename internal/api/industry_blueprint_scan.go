@@ -526,6 +526,16 @@ type profitableScanRequest struct {
 	StructureTypeID           int32   `json:"structure_type_id"`
 	StructureJobCostReduction float64 `json:"structure_job_cost_reduction"`
 
+	// RevenueModel picks how to quote the sell price. "sell_to_sell" (default)
+	// uses the best-ask list price. "sell_to_buy" walks the buy order book
+	// and models dumping into buys now for a faster turnover at a worse fill.
+	// Empty string preserves the engine's pre-toggle behavior.
+	RevenueModel string `json:"revenue_model"`
+	// CostModel is the buy-side mirror. "buy_to_sell" (default) walks sell
+	// orders for the fill cost of an immediate purchase. "buy_to_buy" uses
+	// the best-bid quote, modelling a patient buy order.
+	CostModel string `json:"cost_model"`
+
 	// TypeCategories filters rows by their product's SDE CategoryID (6=Ships,
 	// 7=Modules, 8=Charges, 17=Commodity, 18=Drone, 20=Implant, 22=Deployable,
 	// 32=Subsystem, 34=Material, 35=Component, 65+66=Structure).
@@ -1166,6 +1176,20 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 		}
 	}
 	req.StructureRigTypeIDs = cleanedRigs
+	req.RevenueModel = strings.TrimSpace(strings.ToLower(req.RevenueModel))
+	switch req.RevenueModel {
+	case "", "sell_to_sell", "sell_to_buy":
+	default:
+		writeError(w, 400, "invalid revenue_model")
+		return
+	}
+	req.CostModel = strings.TrimSpace(strings.ToLower(req.CostModel))
+	switch req.CostModel {
+	case "", "buy_to_sell", "buy_to_buy":
+	default:
+		writeError(w, 400, "invalid cost_model")
+		return
+	}
 	req.BuildSystemName = strings.TrimSpace(req.BuildSystemName)
 
 	// Stream progress and the final result over NDJSON, matching the
@@ -1469,6 +1493,8 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 					RigTypeIDs:      req.StructureRigTypeIDs,
 					StructureTypeID: req.StructureTypeID,
 				},
+				RevenueModel: req.RevenueModel,
+				CostModel:    req.CostModel,
 			}
 
 			// IndustryAnalyzer stores per-call mutable state on the receiver
@@ -1490,9 +1516,12 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 			localAnalyzer := scanAnalyzer
 
 			var (
-				result     *engine.IndustryAnalysis
-				analyzeErr error
-				bestDecKey string
+				result       *engine.IndustryAnalysis
+				analyzeErr   error
+				bestDecKey   string
+				outputME     int32
+				outputTE     int32
+				outputMESet  bool
 			)
 
 			if item.scanMode == "t2_invention" || item.scanMode == "t3_invention" {
@@ -1537,6 +1566,9 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 						bestISKPerHour = r.ISKPerHour
 						result = r
 						bestDecKey = dec.Key
+						outputME = meBase
+						outputTE = teBase
+						outputMESet = true
 						analyzeErr = nil
 					}
 				}
@@ -1576,6 +1608,20 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 				}
 			}
 
+			// ME/TE reported on the row = the ME/TE of the blueprint that
+			// PRODUCES the item, not whatever T1 source BP was scanned. For
+			// T1 manufacturing / reactions those are the same. For invention
+			// they differ: item.group.ME/TE is the owned T1 source BP's ME/TE,
+			// which has zero effect on the T2 output; the T2 BPC's ME/TE
+			// (base 2/4 plus the winning decryptor's delta) is what the mfg
+			// step will actually use. Substitute here so downstream displays
+			// (table, CSV export, tooltips) show the right numbers.
+			rowME := item.group.ME
+			rowTE := item.group.TE
+			if outputMESet {
+				rowME = outputME
+				rowTE = outputTE
+			}
 			row := profitableScanRow{
 				BlueprintTypeID:   item.group.BlueprintTypeID,
 				BlueprintName:     item.group.BlueprintName,
@@ -1586,8 +1632,8 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 				OwnedQuantity:     item.group.OwnedQuantity,
 				IsBPO:             item.group.IsBPO,
 				AvailableRuns:     item.group.AvailableRuns,
-				ME:                item.group.ME,
-				TE:                item.group.TE,
+				ME:                rowME,
+				TE:                rowTE,
 				LocationIDs:       append([]int64(nil), item.group.LocationIDs...),
 				// For invention rows the analyzer bumps Runs up to a full
 				// BPC's worth so amortization spreads correctly; result.Runs

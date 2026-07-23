@@ -65,6 +65,22 @@ type IndustryParams struct {
 	// the structure (Raitaru=3, Azbel=4, Sotiyo=5, refineries=0). Distinct
 	// from rig job-cost reductions, which stack on top via StructureRigs.
 	StructureJobCostReduction float64
+	// RevenueModel picks between two ways of quoting the sell price:
+	// "sell_to_sell" (default, aka maker) uses the visible best ask — models
+	// listing your own sell order and waiting. "sell_to_buy" (aka instant)
+	// walks the buy order book and models dumping into buy orders now for a
+	// faster turnover at a worse fill price. Empty string preserves the
+	// pre-toggle behavior (prefer instant when buy book has liquidity) so
+	// older callers see no change.
+	RevenueModel string
+	// CostModel is the buy-side mirror of RevenueModel — how the analyzer
+	// prices materials off the market. "buy_to_sell" (default) walks the
+	// sell order book for the fill cost of an instant purchase, matching
+	// the historical behavior. "buy_to_buy" uses the visible best bid — the
+	// price at which you'd list a buy order and wait for someone to hit it,
+	// modelling patient procurement. Empty string keeps the default so
+	// older callers see no change.
+	CostModel string
 }
 
 // StructureRigConfig describes the rig loadout for the analyzer's build
@@ -432,7 +448,7 @@ func (a *IndustryAnalyzer) Analyze(params IndustryParams, progress func(string))
 	flatMaterials := a.flattenMaterials(tree)
 
 	// MarketBuyPrice is cost to buy from visible sell-order depth (no broker fee).
-	marketBuyPrice := a.marketBuyCost(params.TypeID, totalQuantity)
+	marketBuyPrice := a.materialCost(params.TypeID, totalQuantity, params.CostModel)
 
 	optimalCost := tree.BuildCost
 	if params.ActivityMode == "auto" && tree.BuyPrice < tree.BuildCost && tree.BuyPrice > 0 {
@@ -476,9 +492,25 @@ func (a *IndustryAnalyzer) Analyze(params IndustryParams, progress func(string))
 		totalQuantity,
 		1.0-params.SalesTaxPercent/100,
 	)
+	// Pick the revenue quote per the caller's chosen model. "sell_to_sell"
+	// (list at the best ask) is the natural default a builder uses when
+	// pricing "if I list these, what do I get?" — matches every other
+	// industry planner's headline number. "sell_to_buy" (dump into buys)
+	// is the fast-turnover alternative. Empty RevenueModel keeps the old
+	// prefer-instant-when-available behavior so pre-toggle scans don't
+	// silently change results.
 	sellRevenue := makerSellRevenue
-	if instantSellAvailable {
-		sellRevenue = instantSellRevenue
+	switch params.RevenueModel {
+	case "sell_to_sell":
+		// keep makerSellRevenue
+	case "sell_to_buy":
+		if instantSellAvailable {
+			sellRevenue = instantSellRevenue
+		}
+	default:
+		if instantSellAvailable {
+			sellRevenue = instantSellRevenue
+		}
 	}
 	profit := sellRevenue - optimalCost
 	profitPercent := 0.0
@@ -583,7 +615,7 @@ func (a *IndustryAnalyzer) buildMaterialTree(typeID int32, quantity int32, param
 		TypeName: typeName,
 		Quantity: quantity,
 		Depth:    depth,
-		BuyPrice: a.marketBuyCost(typeID, quantity),
+		BuyPrice: a.materialCost(typeID, quantity, params.CostModel),
 		Activity: "base",
 	}
 
@@ -1127,7 +1159,7 @@ func (a *IndustryAnalyzer) calculateInventionStep(params IndustryParams, tree *M
 	materialCostPerAttempt := 0.0
 	eivPerAttempt := 0.0
 	for _, mat := range attemptMaterials {
-		materialCostPerAttempt += a.marketBuyCost(mat.TypeID, mat.Quantity)
+		materialCostPerAttempt += a.materialCost(mat.TypeID, mat.Quantity, params.CostModel)
 		eivPerAttempt += a.adjustedPrices[mat.TypeID] * float64(mat.Quantity)
 	}
 	// Same CCP formula as the tree job cost: SystemCost − StructureBonus
@@ -1419,6 +1451,40 @@ func (a *IndustryAnalyzer) marketBuyCost(typeID int32, quantity int32) float64 {
 		}
 	}
 	return a.marketBestAsk(typeID) * float64(quantity)
+}
+
+// marketBestBid returns the highest live buy-order price for the type, or 0
+// when the buy side of the book is empty. Used by the "buy_to_buy" cost model
+// which prices materials at the price a patient buyer would list at.
+func (a *IndustryAnalyzer) marketBestBid(typeID int32) float64 {
+	orders := a.marketBuyOrders[typeID]
+	best := 0.0
+	for _, o := range orders {
+		if o.Price <= 0 || o.VolumeRemain <= 0 {
+			continue
+		}
+		if o.Price > best {
+			best = o.Price
+		}
+	}
+	return best
+}
+
+// materialCost dispatches the per-material buy-side quote based on the
+// caller's CostModel. Falls back to the ask-side walk (buy_to_sell) when the
+// buy book is empty for the type — a patient buy order on a type nobody's
+// currently bidding on has no meaningful reference price, so we degrade to the
+// instant-cost quote rather than emit 0 and pretend materials are free.
+func (a *IndustryAnalyzer) materialCost(typeID int32, quantity int32, model string) float64 {
+	if quantity <= 0 {
+		return 0
+	}
+	if model == "buy_to_buy" {
+		if bid := a.marketBestBid(typeID); bid > 0 {
+			return bid * float64(quantity)
+		}
+	}
+	return a.marketBuyCost(typeID, quantity)
 }
 
 func (a *IndustryAnalyzer) marketInstantSellRevenue(typeID int32, quantity int32, revenueMult float64) (float64, bool) {

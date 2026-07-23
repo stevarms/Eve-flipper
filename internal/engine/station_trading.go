@@ -118,6 +118,15 @@ type StationTrade struct {
 	CI   int     `json:"CI"`   // Competition Index
 	CTS  float64 `json:"CTS"`  // Composite Trading Score (final rating 0-100)
 
+	// Discount-buyer signals — regional reference price and DS (Discount
+	// Score) for the "bid below region avg, wait, flip" workflow. See
+	// CalcDiscountScore for the formula. RegionAvg falls back to SDE base
+	// price when ESI's global market prices endpoint has no entry;
+	// RegionAvgSource ("esi" | "sde") tells the UI when to badge a fallback.
+	RegionAvg       float64 `json:"RegionAvg,omitempty"`
+	RegionAvgSource string  `json:"RegionAvgSource,omitempty"`
+	DS              float64 `json:"DS"`
+
 	// Price history
 	AvgPrice  float64 `json:"AvgPrice"`  // Average price over period
 	PriceHigh float64 `json:"PriceHigh"` // Max price over period
@@ -417,6 +426,17 @@ type StationTradeParams struct {
 	// before scoring. User-defined; built up via the right-click
 	// "Ignore category" action in the UI.
 	IgnoredCategories map[int32]bool
+
+	// RegionAvgByType maps TypeID → regional-reference price used by
+	// CalcDiscountScore. Populated once by the API layer, ESI global
+	// market AveragePrice preferred, SDE base price as fallback.
+	// Missing entries (0) yield DS = 0 for that row.
+	RegionAvgByType map[int32]float64
+
+	// RegionAvgSourceByType tracks which side supplied each entry above:
+	// "esi" (live market average) or "sde" (CCP-set base price fallback,
+	// worth flagging in the UI because it's often stale for thin markets).
+	RegionAvgSourceByType map[int32]string
 
 	// Ctx allows cooperative cancellation for long-running station scans.
 	Ctx context.Context
@@ -1237,5 +1257,22 @@ func (s *Scanner) enrichStationWithHistory(results []StationTrade, regionID int3
 			ctsWeights,
 		))
 
+		// Discount Score for the patient-buy workflow — bid below region
+		// avg, wait, flip. Independent of the user's target bid %.
+		if params.RegionAvgByType != nil {
+			regionAvg := params.RegionAvgByType[results[idx].TypeID]
+			results[idx].RegionAvg = regionAvg
+			if params.RegionAvgSourceByType != nil {
+				results[idx].RegionAvgSource = params.RegionAvgSourceByType[results[idx].TypeID]
+			}
+			results[idx].DS = sanitizeFloat(CalcDiscountScore(
+				results[idx].BuyPrice,
+				results[idx].SellPrice,
+				regionAvg,
+				flowPerDay,
+				results[idx].BuyOrderCount,
+				DefaultDiscountWeights,
+			))
+		}
 	}
 }

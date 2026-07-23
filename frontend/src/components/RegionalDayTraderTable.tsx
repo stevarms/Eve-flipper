@@ -119,7 +119,7 @@ function exportCSV(hubs: RegionalDayTradeHub[]) {
     "Buy Units", "Source Units", "Demand/Day", "Supply Units", "DOS",
     "Source Price", "Target Now Price", "Target Period Price",
     "Now Profit", "Period Profit", "ROI Now %", "ROI Period %",
-    "Margin Now %", "Margin Period %", "Capital", "Shipping", "Jumps", "Vol m3",
+    "Item ROI Now %", "Item ROI Period %", "Capital", "Shipping", "Jumps", "Vol m3",
   ];
   const rows: string[][] = [header];
   for (const hub of hubs) {
@@ -244,8 +244,8 @@ function DetailPanel({
               <Row label="Period Profit" value={formatISK(item.target_period_profit)} accent={item.target_period_profit > 0} />
               <Row label="ROI Now" value={formatMargin(item.roi_now)} accent={item.roi_now > 0} />
               <Row label="ROI Period" value={formatMargin(item.roi_period)} accent={item.roi_period > 0} />
-              <Row label="Margin Now" value={formatMargin(item.margin_now)} />
-              <Row label="Margin Period" value={formatMargin(item.margin_period)} />
+              <Row label="Item ROI Now" value={formatMargin(item.margin_now)} />
+              <Row label="Item ROI Period" value={formatMargin(item.margin_period)} />
             </div>
           </div>
 
@@ -432,8 +432,8 @@ export function RegionalDayTraderTable({
               <SortTh label="Period Profit" sortKey="period_profit"    className="w-[115px]" {...thProps} />
               <SortTh label="ROI Now"      sortKey="roi_now"           className="w-[85px]"  {...thProps} />
               <SortTh label="ROI Period"   sortKey="roi_period"        className="w-[90px]"  {...thProps} />
-              <SortTh label="Margin Now"   sortKey="margin_now"        className="w-[95px]"  {...thProps} />
-              <SortTh label="Margin Period" sortKey="margin_period"    className="w-[100px]" {...thProps} />
+              <SortTh label="Item ROI Now"   sortKey="margin_now"        className="w-[95px]"  {...thProps} />
+              <SortTh label="Item ROI Period" sortKey="margin_period"    className="w-[100px]" {...thProps} />
               <SortTh label="Capital"      sortKey="capital"           className="w-[105px]" {...thProps} />
               <SortTh label="Shipping"     sortKey="shipping"          className="w-[95px]"  {...thProps} />
               <SortTh label="Jumps"        sortKey="jumps"             className="w-[60px]"  {...thProps} />

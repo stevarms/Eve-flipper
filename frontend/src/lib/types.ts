@@ -848,6 +848,13 @@ export interface StationTrade {
   SDS: number;
   CI: number;
   CTS: number;
+  /** Regional reference price for the Discount Score — ESI market avg, or SDE base price as fallback. */
+  RegionAvg?: number;
+  RegionAvgSource?: "esi" | "sde" | "";
+  /** Discount Score (0-100) — rating for the patient-buy workflow. */
+  DS?: number;
+  /** Suggested bid = RegionAvg × user's target %. Derived client-side, not sent by backend. */
+  SuggestedBid?: number;
   AvgPrice: number;
   PriceHigh: number;
   PriceLow: number;
@@ -1863,6 +1870,14 @@ export interface IndustryParams {
    *  refineries typically 0). Applied multiplicatively on top of rig-derived
    *  cost reductions. */
   structure_job_cost_reduction?: number;
+  /** How to quote the sell price for the built product. "sell_to_sell"
+   *  (default) uses the best-ask list price; "sell_to_buy" dumps into the
+   *  buy order book. */
+  revenue_model?: "sell_to_sell" | "sell_to_buy";
+  /** How to quote the buy-side cost of materials. "buy_to_sell" (default)
+   *  walks the sell order book for immediate purchase; "buy_to_buy" uses the
+   *  best-bid quote for a patient buy order. */
+  cost_model?: "buy_to_sell" | "buy_to_buy";
 }
 
 /** Wire shape of a Standup rig catalog entry, served by GET /api/industry/structure-rigs. */
@@ -2057,6 +2072,12 @@ export interface ProfitableScanRequest {
   structure_rig_type_ids?: number[];
   structure_type_id?: number;
   structure_job_cost_reduction?: number;
+  /** How to quote the sell price for the built product. Same semantics as
+   *  the Analyze request. */
+  revenue_model?: "sell_to_sell" | "sell_to_buy";
+  /** How to quote the buy-side cost of materials. Same semantics as the
+   *  Analyze request. */
+  cost_model?: "buy_to_sell" | "buy_to_buy";
   // Product category filter (SDE CategoryID). Empty/omitted = all categories.
   // Common IDs: 6=Ships, 7=Modules, 8=Charges, 17=Commodity, 18=Drone,
   // 20=Implant, 22=Deployable, 32=Subsystem, 34=Material, 35=Component,
