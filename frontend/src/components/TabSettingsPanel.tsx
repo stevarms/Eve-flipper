@@ -85,11 +85,18 @@ interface FieldProps {
    *  question-mark badge next to the label; the tooltip appears via the
    *  native title attribute so it works everywhere without extra libs. */
   hint?: string;
+  /** Optional caption slot rendered immediately below the input. Used
+   *  e.g. by the structure-rig split-field UX to show a "+ rigs: -4.4%"
+   *  read-only companion under an auto-filled numeric field. */
+  belowChildren?: ReactNode;
 }
 
-export function SettingsField({ label, children, hint }: FieldProps) {
+export function SettingsField({ label, children, hint, belowChildren }: FieldProps) {
   return (
-    <div className="flex flex-col gap-1">
+    // min-w-44 = 176px, matching SettingsNumberInput's w-44 so number labels
+    // aren't wider than their inputs. w-fit lets fields with wider content
+    // (autocompletes, longer selects) expand naturally beyond the floor.
+    <div className="flex flex-col gap-1 w-fit min-w-44">
       <label className="text-[11px] uppercase tracking-wider text-eve-dim font-medium inline-flex items-center gap-1">
         <span>{label}</span>
         {hint && (
@@ -103,6 +110,7 @@ export function SettingsField({ label, children, hint }: FieldProps) {
         )}
       </label>
       {children}
+      {belowChildren && <div className="text-[10px] text-eve-dim leading-tight">{belowChildren}</div>}
     </div>
   );
 }
@@ -114,6 +122,12 @@ interface NumberInputProps {
   max?: number;
   step?: number;
   placeholder?: string;
+  /** When true, the input renders read-only (greyed, blocks edits). Value
+   *  is still shown so users see the current auto-filled figure. */
+  disabled?: boolean;
+  /** Hover tooltip, especially useful with disabled to explain the field
+   *  is auto-derived from something else. */
+  title?: string;
 }
 
 export function SettingsNumberInput({
@@ -123,6 +137,8 @@ export function SettingsNumberInput({
   max = 999999999,
   step = 1,
   placeholder,
+  disabled,
+  title,
 }: NumberInputProps) {
   const [draft, setDraft] = useState(String(value));
   const [focused, setFocused] = useState(false);
@@ -153,7 +169,11 @@ export function SettingsNumberInput({
     <input
       type="number"
       value={draft}
+      disabled={disabled}
+      readOnly={disabled}
+      title={title}
       onChange={(e) => {
+        if (disabled) return;
         const raw = e.target.value;
         setDraft(raw);
         if (raw.trim() === "" || raw === "-" || raw === "." || raw === "-.") return;
@@ -163,16 +183,17 @@ export function SettingsNumberInput({
       onFocus={() => setFocused(true)}
       onBlur={(e) => {
         setFocused(false);
-        commit(e.target.value);
+        if (!disabled) commit(e.target.value);
       }}
       min={min}
       max={max}
       step={step}
       placeholder={placeholder}
-      className="w-full px-3 py-1.5 bg-eve-input border border-eve-border rounded-sm text-eve-text text-sm font-mono
+      className={`w-44 px-2 py-1 bg-eve-input border border-eve-border rounded-sm text-eve-text text-sm font-mono
                  focus:outline-none focus:border-eve-accent focus:ring-1 focus:ring-eve-accent/30
                  transition-colors
-                 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none
+                 ${disabled ? "opacity-70 cursor-not-allowed text-eve-dim" : ""}`}
     />
   );
 }
@@ -188,7 +209,7 @@ export function SettingsSelect({ value, onChange, options }: SelectInputProps) {
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="w-full px-3 py-1.5 bg-eve-input border border-eve-border rounded-sm text-eve-text text-sm font-mono
+      className="w-full px-2 py-1 bg-eve-input border border-eve-border rounded-sm text-eve-text text-sm font-mono
                  focus:outline-none focus:border-eve-accent focus:ring-1 focus:ring-eve-accent/30
                  transition-colors"
     >
@@ -247,16 +268,20 @@ interface SettingsGridProps {
   cols?: number;
 }
 
-export function SettingsGrid({ children, cols = 4 }: SettingsGridProps) {
-  const colsClass = {
-    2: "grid-cols-2",
-    3: "grid-cols-2 sm:grid-cols-3",
-    4: "grid-cols-2 sm:grid-cols-3 md:grid-cols-4",
-    5: "grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5",
-  }[cols] ?? "grid-cols-2 sm:grid-cols-4";
-
+export function SettingsGrid({ children, cols: _cols }: SettingsGridProps) {
+  // Historical: this was a CSS grid with a fixed column count. That made
+  // narrow number-inputs float in wide cells, wasting horizontal space.
+  // Switched to flex-wrap so each field takes its natural width and left-
+  // aligns tight; wider inputs (selects, autocompletes) wrap to the next
+  // row as needed. cols is accepted for backwards compat but no longer
+  // used — layout is driven by each SettingsField's own child width.
+  //
+  // items-start (not items-end) so fields with an optional `belowChildren`
+  // caption line don't push their siblings vertically out of alignment —
+  // labels stay level across the row.
+  void _cols;
   return (
-    <div className={`grid ${colsClass} gap-x-3 gap-y-3 items-end`}>
+    <div className="flex flex-wrap gap-x-3 gap-y-3 items-start">
       {children}
     </div>
   );

@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -420,8 +421,24 @@ func (s *Server) aggregateOwnedBlueprints(
 // the scope explicitly rather than by a shotgun-blast row limit.
 const profitableScanHardMaxBPs = 20000
 
-// profitableScanWorkers is the analyzer fan-out for one scan.
-const profitableScanWorkers = 5
+// profitableScanWorkers is the analyzer fan-out for one scan. Scaled to
+// the host's core count so users on modern desktops (8-16 cores) don't sit
+// waiting behind an old-conservative cap of 5. Bounded to 16 to avoid
+// oversubscribing ESI rate limits on the very-large-machine case — most
+// per-Analyze fetches hit the IndustryCache anyway, but market book pulls
+// still hit ESI once per (region, product) uncached, so a huge fan-out
+// can burst-fire enough calls to trip the client-level semaphore. Floor
+// of 4 keeps behavior predictable on constrained machines.
+var profitableScanWorkers = func() int {
+	n := runtime.NumCPU()
+	if n < 4 {
+		return 4
+	}
+	if n > 16 {
+		return 16
+	}
+	return n
+}()
 
 // profitableScanPeriodDays is the market-absorption horizon used to compute
 // PeriodProfit / PeriodMargin on each row. Captures the "shortage fills up
@@ -431,6 +448,15 @@ const profitableScanWorkers = 5
 // production rate. 30 days is a stable window (less noisy than 7-14 day
 // averages) and comfortably longer than typical T2 build times.
 const profitableScanPeriodDays = 30
+
+// profitableScanMarketShare is the share of aggressive-buy volume a single
+// builder is assumed to capture when computing PeriodProfit / PeriodMargin.
+// Full-market (1.0) would model "you sell 100% of what changes hands in
+// Jita" which is unrealistic for one seller. 10% matches the modal's
+// default runs-suggestion share and is comfortable for a mid-size hub
+// presence — tune here if the whole scanner should optimize against a
+// different share (later this could be lifted to a per-scan request field).
+const profitableScanMarketShare = 0.10
 
 type profitableScanRequest struct {
 	Scope                   string  `json:"scope"`
@@ -481,11 +507,24 @@ type profitableScanRequest struct {
 	// who has never touched a data site. Independent of IncludeT2Invention.
 	IncludeT3Invention bool `json:"include_t3_invention"`
 
+	// IncludeReactions, when true, emits reaction rows for BPs with a
+	// reaction activity (fuel-block formulas, composite reactions, etc.).
+	// Off by default — most builders don't run reactions themselves — but
+	// users who do want to score them alongside mfg + invention rows.
+	IncludeReactions bool `json:"include_reactions"`
+
 	// SkipReactions, when true, forces reaction-only child materials to be
 	// treated as base (buy) nodes rather than expanded into a reaction step.
 	// Reflects the workflow of a builder who buys reaction outputs from the
 	// market rather than running reactions themselves.
 	SkipReactions bool `json:"skip_reactions"`
+
+	// Structure rig loadout for the build structure. Empty RigTypeIDs =
+	// no rig math applied. StructureTypeID is the hull typeID (Raitaru,
+	// Sotiyo, etc.) used to validate rig fit; zero → engine skips rig math.
+	StructureRigTypeIDs       []int32 `json:"structure_rig_type_ids"`
+	StructureTypeID           int32   `json:"structure_type_id"`
+	StructureJobCostReduction float64 `json:"structure_job_cost_reduction"`
 
 	// TypeCategories filters rows by their product's SDE CategoryID (6=Ships,
 	// 7=Modules, 8=Charges, 17=Commodity, 18=Drone, 20=Implant, 22=Deployable,
@@ -542,6 +581,13 @@ type profitableScanRow struct {
 	BlueprintName     string  `json:"blueprint_name"`
 	ProductTypeID     int32   `json:"product_type_id"`
 	ProductName       string  `json:"product_name"`
+	// GroupName and CategoryName come from the product's SDE group + category
+	// (e.g. "Heavy Assault Cruiser" / "Ship" for Ishtar). Included per-row so
+	// the frontend search box can filter by any of name / group / category
+	// without an extra lookup table on the client. Empty when the SDE isn't
+	// loaded or the type is missing group metadata.
+	GroupName    string `json:"group_name"`
+	CategoryName string `json:"category_name"`
 	OwnedQuantity     int64   `json:"owned_quantity"`
 	IsBPO             bool    `json:"is_bpo"`
 	AvailableRuns     int64   `json:"available_runs"`
@@ -561,7 +607,7 @@ type profitableScanRow struct {
 	Owned bool `json:"owned"`
 
 	// Invention-specific fields. Empty / zero for T1 manufacturing rows.
-	ScanMode              string  `json:"scan_mode"`               // "t1_mfg" | "t2_invention" | "t3_invention"
+	ScanMode              string  `json:"scan_mode"`               // "t1_mfg" | "t2_invention" | "t3_invention" | "reaction"
 	InventionSourceBPID   int32   `json:"invention_source_bp_id"`  // T1 BP typeID (0 for t1_mfg)
 	InventionSourceBPName string  `json:"invention_source_bp_name"`
 	InventionOutputBPID   int32   `json:"invention_output_bp_id"` // T2 BPC typeID (0 for t1_mfg)
@@ -593,6 +639,24 @@ type profitableScanRow struct {
 	PeriodProfit       float64 `json:"period_profit"`
 	PeriodMargin       float64 `json:"period_margin"`
 	PeriodDays         int32   `json:"period_days"`
+	// OutputQtyPerRun is how many product units come out of one blueprint
+	// run. For T1 mfg it's the mfg activity's product quantity; for T2/T3
+	// invention it's the invented BPC's mfg activity's product quantity
+	// (typically 1 for modules, 100 for charges, higher for drones).
+	// Lets the frontend convert "units of market demand" → "BP runs" in
+	// its per-row runs suggestion.
+	OutputQtyPerRun int32 `json:"output_qty_per_run"`
+
+	// Cost breakdown (all ISK, sourced from IndustryAnalysis). Lets the
+	// frontend render a full profit-math tooltip without extra API calls.
+	// TotalQuantity is how many units this row produces across all runs.
+	TotalMaterialCost float64 `json:"total_material_cost"`
+	TotalJobCost      float64 `json:"total_job_cost"`
+	InventionCost     float64 `json:"invention_cost"`
+	TotalQuantity     int32   `json:"total_quantity"`
+	// UnitSellPrice is the per-unit revenue AFTER sales tax + broker fee
+	// (i.e. sell_revenue / total_quantity). Used in the tooltip breakdown.
+	UnitSellPrice float64 `json:"unit_sell_price"`
 }
 
 type profitableScanStats struct {
@@ -696,8 +760,12 @@ type scanAnalyzeWork struct {
 	group         blueprintGroup
 	productTypeID int32
 	productName   string
+	// outputQtyPerRun mirrors the emitting BP activity's product quantity —
+	// so the row can carry it forward for the "runs suggestion" UI without
+	// re-consulting the SDE per row on the frontend.
+	outputQtyPerRun int32
 
-	scanMode            string // "t1_mfg" | "t2_invention" | "t3_invention"
+	scanMode            string // "t1_mfg" | "t2_invention" | "t3_invention" | "reaction"
 	sourceBlueprintID   int32  // T1 BP typeID (invention only)
 	sourceBlueprintName string
 	outputBlueprintID   int32 // T2 BPC typeID (invention only)
@@ -709,16 +777,19 @@ type scanAnalyzeWork struct {
 	attemptsCap     int64 // -1 = unlimited (BPO source)
 }
 
-// buildScanWork turns blueprint groups into per-row analyzer work items. For
-// each group it emits at most one T1 manufacturing item plus (when
-// includeT2Invention/includeT3Invention are true) one item per invention
-// product the group's BP can produce, filtered by the tier of the output.
+// buildScanWork turns blueprint groups into per-row analyzer work items.
+// Emissions per group (any combination):
+//   - T1 manufacturing row, when the BP has a manufacturing activity whose
+//     product is marketable.
+//   - One row per invention output whose eventual product is marketable,
+//     gated by includeT2Invention / includeT3Invention based on the
+//     product's MetaGroupID (2 = T2, 14 = T3; unknown treated as T2).
+//   - Reaction row (scan_mode="reaction"), when includeReactions is on and
+//     the BP has a reaction activity whose product is marketable. Reaction
+//     BPs typically have ONLY a reaction activity (fuel-block formulas,
+//     moon-composite reactions, hybrid polymers, etc.).
 // skipped is the number of groups that produced no work items at all —
 // the caller adds this to stats.SkippedNoActivity.
-//
-// Tech-tier classification uses sdeData.InventionProductMetaGroup — the
-// BPC's manufacturing product's MetaGroupID (2=T2, 14=T3). Unclassifiable
-// outputs (metaGroupID 0) are treated as T2 for backward compatibility.
 //
 // The invention worker later loops through every decryptor and picks the
 // winning one per row, so no chance multiplier / decryptor selection is
@@ -726,17 +797,9 @@ type scanAnalyzeWork struct {
 //
 // Pure — extracted from handleAuthIndustryProfitableScan so tests can exercise
 // the fan-out without spinning up an HTTP server or an SDE loader.
-func buildScanWork(groups []blueprintGroup, sdeData *sde.Data, includeT2Invention, includeT3Invention bool) (work []scanAnalyzeWork, skipped int) {
+func buildScanWork(groups []blueprintGroup, sdeData *sde.Data, includeT2Invention, includeT3Invention, includeReactions bool) (work []scanAnalyzeWork, skipped int) {
 	if sdeData == nil || sdeData.Industry == nil {
 		return nil, len(groups)
-	}
-	// Modules and other tradeable products are always in Types; BPs may not
-	// be (invented T2 BPCs, some obscure T1 BPs) so route via the fallback.
-	typeName := func(id int32) string {
-		if t, ok := sdeData.Types[id]; ok && strings.TrimSpace(t.Name) != "" {
-			return strings.TrimSpace(t.Name)
-		}
-		return fmt.Sprintf("Type %d", id)
 	}
 
 	work = make([]scanAnalyzeWork, 0, len(groups))
@@ -766,14 +829,26 @@ func buildScanWork(groups []blueprintGroup, sdeData *sde.Data, includeT2Inventio
 
 		if mfg, mok := bp.Activities["manufacturing"]; mok && mfg != nil && len(mfg.Products) > 0 {
 			productTypeID := mfg.Products[0].TypeID
+			outputQty := mfg.Products[0].Quantity
+			if outputQty <= 0 {
+				outputQty = 1
+			}
+			// Require the product to be marketable — a published Types entry
+			// with a real name. Dev-only items and unreleased content have
+			// no market, so surfacing them as scan rows would just show
+			// "Type 12345" labels with nonsense ISK/h. Owned rows previously
+			// skipped this filter (only synth applied it); now symmetric.
 			if productTypeID > 0 {
-				work = append(work, scanAnalyzeWork{
-					group:         g,
-					productTypeID: productTypeID,
-					productName:   typeName(productTypeID),
-					scanMode:      "t1_mfg",
-				})
-				emitted = true
+				if pt, ok := sdeData.Types[productTypeID]; ok && pt != nil && strings.TrimSpace(pt.Name) != "" {
+					work = append(work, scanAnalyzeWork{
+						group:           g,
+						productTypeID:   productTypeID,
+						productName:     strings.TrimSpace(pt.Name),
+						outputQtyPerRun: outputQty,
+						scanMode:        "t1_mfg",
+					})
+					emitted = true
+				}
 			}
 		}
 
@@ -803,17 +878,28 @@ func buildScanWork(groups []blueprintGroup, sdeData *sde.Data, includeT2Inventio
 					if moduleID <= 0 {
 						continue
 					}
+					// Units per single mfg run of the invented BPC. Same
+					// semantics as T1 mfg rows so "Per run" reads consistently
+					// regardless of invention vs direct mfg. The analyzer's
+					// Runs param = desired mfg runs of the invented item; it
+					// derives the required invention attempts internally.
+					moduleQty := invMfg.Products[0].Quantity
+					if moduleQty <= 0 {
+						moduleQty = 1
+					}
 					baseChance := invProduct.Probability
 					if baseChance <= 0 {
 						continue
 					}
-
-					// Classify by the eventual product's metaGroupID.
-					// 0/unknown → treat as T2 for backward compatibility.
-					metaGroup := int32(0)
-					if pt, ok := sdeData.Types[moduleID]; ok && pt != nil {
-						metaGroup = pt.MetaGroupID
+					// Same marketable-product filter as the T1 mfg branch:
+					// drop invention outputs whose eventual product isn't in
+					// Types (dev-only / unpublished). Also captures the
+					// classify-by-metaGroup lookup in one pass.
+					pt, hasProduct := sdeData.Types[moduleID]
+					if !hasProduct || pt == nil || strings.TrimSpace(pt.Name) == "" {
+						continue
 					}
+					metaGroup := pt.MetaGroupID
 					isT3 := metaGroup == sde.MetaGroupT3
 					if isT3 && !includeT3Invention {
 						continue
@@ -834,7 +920,8 @@ func buildScanWork(groups []blueprintGroup, sdeData *sde.Data, includeT2Inventio
 					work = append(work, scanAnalyzeWork{
 						group:               g,
 						productTypeID:       moduleID,
-						productName:         typeName(moduleID),
+						productName:         strings.TrimSpace(pt.Name),
+						outputQtyPerRun:     moduleQty,
 						scanMode:            mode,
 						sourceBlueprintID:   g.BlueprintTypeID,
 						sourceBlueprintName: g.BlueprintName,
@@ -844,6 +931,28 @@ func buildScanWork(groups []blueprintGroup, sdeData *sde.Data, includeT2Inventio
 						attemptsCap:         cap,
 					})
 					emitted = true
+				}
+			}
+		}
+
+		if includeReactions {
+			if rxn, rok := bp.Activities["reaction"]; rok && rxn != nil && len(rxn.Products) > 0 {
+				productTypeID := rxn.Products[0].TypeID
+				productQty := rxn.Products[0].Quantity
+				if productQty <= 0 {
+					productQty = 1
+				}
+				if productTypeID > 0 {
+					if pt, ok := sdeData.Types[productTypeID]; ok && pt != nil && strings.TrimSpace(pt.Name) != "" {
+						work = append(work, scanAnalyzeWork{
+							group:           g,
+							productTypeID:   productTypeID,
+							productName:     strings.TrimSpace(pt.Name),
+							outputQtyPerRun: productQty,
+							scanMode:        "reaction",
+						})
+						emitted = true
+					}
 				}
 			}
 		}
@@ -864,12 +973,15 @@ func buildScanWork(groups []blueprintGroup, sdeData *sde.Data, includeT2Inventio
 //     least one output whose eventual product is in Types (relic BPs like
 //     the Hull Sections used for T3 destroyer invention — these have NO
 //     manufacturing activity, only invention, and would otherwise be silently
-//     dropped, hiding the T3 discovery path entirely).
+//     dropped, hiding the T3 discovery path entirely), OR
+//   - includeReactions is true AND it has a reaction activity whose product
+//     is marketable (fuel-block formulas, moon-composite reactions, etc.
+//     that a user might want to run themselves rather than buy the output).
 //
 // Synthetic groups get IsBPO=true and the caller-provided default ME/TE
 // (typically 10/20 — assume the user would buy a fully-researched BPO).
 // Rows are tagged Owned=false so the frontend can style + filter them.
-func synthesizeUnownedGroups(sdeData *sde.Data, ownedGroups []blueprintGroup, defaultME, defaultTE int32, includeInvention bool) []blueprintGroup {
+func synthesizeUnownedGroups(sdeData *sde.Data, ownedGroups []blueprintGroup, defaultME, defaultTE int32, includeInvention, includeReactions bool) []blueprintGroup {
 	if sdeData == nil || sdeData.Industry == nil {
 		return nil
 	}
@@ -933,6 +1045,21 @@ func synthesizeUnownedGroups(sdeData *sde.Data, ownedGroups []blueprintGroup, de
 		return false
 	}
 
+	// reactionSourceIsMarketable returns true when the BP has a reaction
+	// activity whose product is marketable. Reaction BPs (fuel-block formulas,
+	// composite reactions, hybrid polymers) typically have ONLY a reaction
+	// activity — no mfg — so they'd otherwise be silently skipped.
+	reactionSourceIsMarketable := func(bp *sde.Blueprint) bool {
+		if bp == nil {
+			return false
+		}
+		rxn, ok := bp.Activities["reaction"]
+		if !ok || rxn == nil || len(rxn.Products) == 0 {
+			return false
+		}
+		return isMarketableTypeID(rxn.Products[0].TypeID)
+	}
+
 	out := make([]blueprintGroup, 0)
 	for bpTypeID, bp := range sdeData.Industry.Blueprints {
 		if bp == nil {
@@ -948,6 +1075,9 @@ func synthesizeUnownedGroups(sdeData *sde.Data, ownedGroups []blueprintGroup, de
 			// Invention-only relic BP path (e.g. T3 Hull Sections). Skipped
 			// unless the caller asked for invention discovery — otherwise
 			// these would produce zero output rows via buildScanWork anyway.
+		} else if includeReactions && reactionSourceIsMarketable(bp) {
+			// Reaction-only BP path (fuel-block formulas, composites, etc.).
+			// Skipped unless the caller asked for reactions.
 		} else {
 			continue
 		}
@@ -1020,11 +1150,22 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 	req.MaxDepth = clampInt(req.MaxDepth, 1, industryAnalyzeMaxDepth)
 	req.FacilityTax = clampFloat64(req.FacilityTax, 0, 100)
 	req.StructureBonus = clampFloat64(req.StructureBonus, -100, 100)
+	req.StructureJobCostReduction = clampFloat64(req.StructureJobCostReduction, 0, 100)
 	req.BrokerFee = clampFloat64(req.BrokerFee, 0, 100)
 	req.SalesTaxPercent = clampFloat64(req.SalesTaxPercent, 0, 100)
 	if req.PricingStationID < 0 {
 		req.PricingStationID = 0
 	}
+	if len(req.StructureRigTypeIDs) > 3 {
+		req.StructureRigTypeIDs = req.StructureRigTypeIDs[:3]
+	}
+	cleanedRigs := req.StructureRigTypeIDs[:0]
+	for _, id := range req.StructureRigTypeIDs {
+		if id > 0 {
+			cleanedRigs = append(cleanedRigs, id)
+		}
+	}
+	req.StructureRigTypeIDs = cleanedRigs
 	req.BuildSystemName = strings.TrimSpace(req.BuildSystemName)
 
 	// Stream progress and the final result over NDJSON, matching the
@@ -1149,6 +1290,7 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 			unownedSDE, groups,
 			req.UnownedDefaultME, req.UnownedDefaultTE,
 			req.IncludeT2Invention || req.IncludeT3Invention,
+			req.IncludeReactions,
 		)
 		groups = append(groups, unownedGroups...)
 	}
@@ -1171,7 +1313,7 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 	}
 	s.mu.RUnlock()
 
-	work, skippedNoActivity := buildScanWork(groups, sdeData, req.IncludeT2Invention, req.IncludeT3Invention)
+	work, skippedNoActivity := buildScanWork(groups, sdeData, req.IncludeT2Invention, req.IncludeT3Invention, req.IncludeReactions)
 	stats.SkippedNoActivity += skippedNoActivity
 
 	// Type-category filter — drop work items whose product isn't in the
@@ -1212,6 +1354,58 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 	rows := make([]profitableScanRow, 0, len(work))
 	var rowsMu sync.Mutex
 
+	// Scan-scoped memoization for the three heavy per-Analyze fetches.
+	// Without this, every worker's Analyze() call re-fetches AND re-groups
+	// the entire pricing region's order book (~500k orders per side in
+	// The Forge). ESI itself caches the raw fetch, but groupIndustryOrdersByType
+	// still iterates the whole list every call — for a 100-row scan that's
+	// ~100M redundant iterations. Same story for adjusted prices and the
+	// per-region best-ask price map: cached network, uncached aggregation.
+	//
+	// Every row in one scan uses the same PricingSystemID / StationID /
+	// BuildSystem, so a single cached tuple covers the whole scan. Compute
+	// lazy-on-first-hit rather than eagerly: work items that don't survive
+	// filtering never trigger the fetch. sync.Once gives us "compute once,
+	// block later callers until done, then return the cached value" for free.
+	var (
+		booksOnce                                 sync.Once
+		cachedSell, cachedBuy                     map[int32][]esi.MarketOrder
+		booksErr                                  error
+		pricesOnce                                sync.Once
+		cachedPrices                              map[int32]float64
+		pricesErr                                 error
+		adjustedOnce                              sync.Once
+		cachedAdjusted                            map[int32]float64
+		adjustedErr                               error
+	)
+	scanAnalyzer := *analyzer
+	scanAnalyzer.SetMarketBooksOverride(func(p engine.IndustryParams) (map[int32][]esi.MarketOrder, map[int32][]esi.MarketOrder, error) {
+		booksOnce.Do(func() {
+			// Call the default path once via a temporary analyzer with
+			// no override, so we don't recurse.
+			tmp := *analyzer
+			tmp.SetMarketBooksOverride(nil)
+			cachedSell, cachedBuy, booksErr = tmp.LoadMarketBooksForParams(p)
+		})
+		return cachedSell, cachedBuy, booksErr
+	})
+	scanAnalyzer.SetMarketPricesOverride(func(p engine.IndustryParams) (map[int32]float64, error) {
+		pricesOnce.Do(func() {
+			tmp := *analyzer
+			tmp.SetMarketPricesOverride(nil)
+			cachedPrices, pricesErr = tmp.LoadMarketPricesForParams(p)
+		})
+		return cachedPrices, pricesErr
+	})
+	scanAnalyzer.SetAdjustedPricesOverride(func(_ *esi.IndustryCache) (map[int32]float64, error) {
+		adjustedOnce.Do(func() {
+			tmp := *analyzer
+			tmp.SetAdjustedPricesOverride(nil)
+			cachedAdjusted, adjustedErr = tmp.LoadAdjustedPrices()
+		})
+		return cachedAdjusted, adjustedErr
+	})
+
 	sem := make(chan struct{}, profitableScanWorkers)
 	var wg sync.WaitGroup
 	var progressMu sync.Mutex
@@ -1247,10 +1441,17 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 				return
 			}
 
+			// ActivityMode: manufacturing by default; reaction for reaction
+			// rows so the engine follows the reaction production path. T2/T3
+			// invention rows override to "invention" per-decryptor below.
+			rootActivity := "manufacturing"
+			if item.scanMode == "reaction" {
+				rootActivity = "reaction"
+			}
 			baseParams := engine.IndustryParams{
 				TypeID:             item.productTypeID,
 				Runs:               req.RunsPerJob,
-				ActivityMode:       "manufacturing",
+				ActivityMode:       rootActivity,
 				MaterialEfficiency: item.group.ME,
 				TimeEfficiency:     item.group.TE,
 				SystemID:           systemID,
@@ -1263,6 +1464,11 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 				MaxDepth:           req.MaxDepth,
 				OwnBlueprint:       true,
 				SkipReactions:      req.SkipReactions,
+				StructureJobCostReduction: req.StructureJobCostReduction,
+				StructureRigs: engine.StructureRigConfig{
+					RigTypeIDs:      req.StructureRigTypeIDs,
+					StructureTypeID: req.StructureTypeID,
+				},
 			}
 
 			// IndustryAnalyzer stores per-call mutable state on the receiver
@@ -1276,8 +1482,12 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 			// SDE pointer, ESI client and IndustryCache are all goroutine-safe
 			// (sync.Map / RWMutex internally), so it's safe to share them.
 			// For T2 rows we reuse this single copy across all 9 decryptor
-			// probes so the price cache warms once per row.
-			localAnalyzer := *analyzer
+			// probes so the price cache warms once per row. Copies from
+			// scanAnalyzer so each worker inherits the scan-scoped memoized
+			// fetcher closures (books, prices, adjusted prices) — the first
+			// worker to hit each closure pays the fetch/group cost; the rest
+			// return the cached map instantly.
+			localAnalyzer := scanAnalyzer
 
 			var (
 				result     *engine.IndustryAnalysis
@@ -1302,6 +1512,21 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 					params.InventionChance = chance
 					params.InventionOutputRuns = outputRuns
 					params.DecryptorCost = cost
+					// Round Runs UP to the nearest full BPC's worth so
+					// invention amortization always spreads over a real
+					// output. A default RunsPerJob of 1 against a 10-run
+					// T2 BPC otherwise inflates unit invention cost by
+					// 10x and flips a profitable row into a loss. If the
+					// user set RunsPerJob higher (e.g. 30 wanting 3 BPCs
+					// of a 10-run module) we still keep that intent and
+					// only round up to the next full multiple.
+					if outputRuns > 0 {
+						bpcs := (req.RunsPerJob + outputRuns - 1) / outputRuns
+						if bpcs < 1 {
+							bpcs = 1
+						}
+						params.Runs = bpcs * outputRuns
+					}
 
 					r, err := localAnalyzer.Analyze(params, func(string) {})
 					if err != nil {
@@ -1341,18 +1566,34 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 			if scanMode == "" {
 				scanMode = "t1_mfg"
 			}
+			var groupName, categoryName string
+			if pt, ok := sdeData.Types[item.productTypeID]; ok && pt != nil {
+				if g, ok := sdeData.Groups[pt.GroupID]; ok && g != nil {
+					groupName = g.Name
+					if c, ok := sdeData.Categories[g.CategoryID]; ok && c != nil {
+						categoryName = c.Name
+					}
+				}
+			}
+
 			row := profitableScanRow{
 				BlueprintTypeID:   item.group.BlueprintTypeID,
 				BlueprintName:     item.group.BlueprintName,
 				ProductTypeID:     item.productTypeID,
 				ProductName:       item.productName,
+				GroupName:         groupName,
+				CategoryName:      categoryName,
 				OwnedQuantity:     item.group.OwnedQuantity,
 				IsBPO:             item.group.IsBPO,
 				AvailableRuns:     item.group.AvailableRuns,
 				ME:                item.group.ME,
 				TE:                item.group.TE,
 				LocationIDs:       append([]int64(nil), item.group.LocationIDs...),
-				Runs:              req.RunsPerJob,
+				// For invention rows the analyzer bumps Runs up to a full
+				// BPC's worth so amortization spreads correctly; result.Runs
+				// reflects that bump. For non-invention rows it's just
+				// req.RunsPerJob.
+				Runs: result.Runs,
 				Profit:            result.Profit,
 				ProfitPercent:     result.ProfitPercent,
 				ISKPerHour:        result.ISKPerHour,
@@ -1361,6 +1602,14 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 				ManufacturingTime: result.ManufacturingTime,
 				ScanMode:          scanMode,
 				Owned:             item.group.Owned,
+				OutputQtyPerRun:   item.outputQtyPerRun,
+				TotalJobCost:      result.TotalJobCost,
+				InventionCost:     result.InventionCost,
+				TotalQuantity:     result.TotalQuantity,
+			}
+			row.TotalMaterialCost = result.TotalMaterialCost
+			if result.TotalQuantity > 0 {
+				row.UnitSellPrice = result.SellRevenue / float64(result.TotalQuantity)
 			}
 			if scanMode == "t2_invention" || scanMode == "t3_invention" {
 				row.InventionSourceBPID = item.sourceBlueprintID
@@ -1402,11 +1651,32 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 
 				if len(entries) > 0 {
 					cutoff := time.Now().UTC().AddDate(0, 0, -profitableScanPeriodDays).Format("2006-01-02")
+					// Estimate the aggressive-buy fraction of daily volume using
+					// the day's price position: how far up between low and high
+					// the day's average traded. Average near the high → trades
+					// clustered at the ask → mostly sell-order fills (aggressive
+					// buys). Average near the low → mostly buy-order fills.
+					//   fraction = (avg - low) / (high - low), clamped to [0, 1]
+					// When high == low (thin day, one price), assume 0.5 as a
+					// neutral default. This is what a builder actually cares
+					// about: how many buyers came and hit their sell orders,
+					// not total loot-liquidation churn.
 					var volumeSum int64
 					for _, e := range entries {
-						if e.Date >= cutoff {
-							volumeSum += e.Volume
+						if e.Date < cutoff {
+							continue
 						}
+						spread := e.Highest - e.Lowest
+						fraction := 0.5
+						if spread > 0 {
+							fraction = (e.Average - e.Lowest) / spread
+							if fraction < 0 {
+								fraction = 0
+							} else if fraction > 1 {
+								fraction = 1
+							}
+						}
+						volumeSum += int64(float64(e.Volume) * fraction)
 					}
 					row.ProductDailyVolume = volumeSum / int64(profitableScanPeriodDays)
 
@@ -1420,7 +1690,10 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 					if secsPerUnit > 0 {
 						producible = int64(float64(periodSeconds) / secsPerUnit)
 					}
-					sellable := volumeSum
+					// Scale the market's absorption cap by our realistic share
+					// of it — a single builder captures a slice of daily
+					// aggressive-buy volume, not the whole thing.
+					sellable := int64(float64(volumeSum) * profitableScanMarketShare)
 					if producible < sellable {
 						sellable = producible
 					}

@@ -10,10 +10,13 @@ import (
 	"eve-flipper/internal/esi"
 )
 
-// priceAuditItem is one entry in the request payload.
+// priceAuditItem is one entry in the request payload. Name and TypeID are
+// both accepted — TypeID wins when set (lets programmatic callers skip the
+// SDE name-lookup roundtrip). Qty is preserved verbatim in the response.
 type priceAuditItem struct {
-	Name string `json:"name"`
-	Qty  int64  `json:"qty"`
+	Name   string `json:"name"`
+	TypeID int32  `json:"type_id,omitempty"`
+	Qty    int64  `json:"qty"`
 }
 
 // priceAuditResult mirrors one input item after ESI lookup.
@@ -140,15 +143,21 @@ func (s *Server) handlePriceAudit(w http.ResponseWriter, r *http.Request) {
 			Qty:    in.Qty,
 			Source: "none",
 		}
-		key := strings.ToLower(strings.TrimSpace(in.Name))
-		if key == "" {
-			results[i].Unresolved = true
-			continue
-		}
-		typeID, ok := sdeData.TypeByName[key]
-		if !ok {
-			results[i].Unresolved = true
-			continue
+		var typeID int32
+		if in.TypeID > 0 {
+			typeID = in.TypeID
+		} else {
+			key := strings.ToLower(strings.TrimSpace(in.Name))
+			if key == "" {
+				results[i].Unresolved = true
+				continue
+			}
+			var ok bool
+			typeID, ok = sdeData.TypeByName[key]
+			if !ok {
+				results[i].Unresolved = true
+				continue
+			}
 		}
 		itemType, ok := sdeData.Types[typeID]
 		if !ok {

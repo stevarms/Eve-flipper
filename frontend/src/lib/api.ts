@@ -64,6 +64,7 @@ import type {
   StationCommandResponse,
   StationInfo,
   StationsResponse,
+  StructureRigsResponse,
   StationTrade,
   StationTradeState,
   StationTradeStateMode,
@@ -879,6 +880,22 @@ export async function getStructures(
   }
   const res = await apiFetch(`${BASE}/api/auth/structures?${params.toString()}`, { signal });
   return handleResponse<StationInfo[]>(res);
+}
+
+// Standup rig catalog — served static once per SDE load, cached in-memory
+// via a module-level Promise so all rig-picker mounts share one fetch.
+let structureRigsCache: Promise<StructureRigsResponse> | null = null;
+export function getStructureRigs(): Promise<StructureRigsResponse> {
+  if (structureRigsCache == null) {
+    structureRigsCache = apiFetch(`${BASE}/api/industry/structure-rigs`)
+      .then((res) => handleResponse<StructureRigsResponse>(res))
+      .catch((e) => {
+        // Cache invalidates on failure so a retry has a chance to succeed.
+        structureRigsCache = null;
+        throw e;
+      });
+  }
+  return structureRigsCache;
 }
 
 export async function getExecutionPlan(params: {
@@ -2286,7 +2303,7 @@ export interface PriceAuditResponse {
 
 export async function priceAudit(params: {
   station_id: number;
-  items: { name: string; qty: number }[];
+  items: { name?: string; type_id?: number; qty: number }[];
 }): Promise<PriceAuditResponse> {
   const res = await apiFetch(`${BASE}/api/market/price-audit`, {
     method: "POST",

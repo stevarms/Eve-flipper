@@ -20,6 +20,7 @@ import {
   updateAuthIndustryTaskPriorityBulk,
   updateAuthIndustryJobStatus,
   updateAuthIndustryJobStatusBulk,
+  priceAudit,
 } from "@/lib/api";
 import type {
   IndustryAnalysis,
@@ -46,7 +47,7 @@ import type {
 import { formatISK } from "@/lib/format";
 import { buildIndustryPlanPatch } from "@/lib/industryPlanPatch";
 import { useIndustrySharedPrefs } from "@/lib/useIndustrySharedPrefs";
-import { DECRYPTORS, DECRYPTOR_ORDER, effectiveInventionParams, type DecryptorKey } from "@/lib/industryDecryptors";
+import { DECRYPTORS, DECRYPTOR_ORDER, T2_BPC_BASE_ME, T2_BPC_BASE_TE, effectiveInventionParams, type DecryptorKey } from "@/lib/industryDecryptors";
 import {
   TabSettingsPanel,
   SettingsField,
@@ -72,6 +73,10 @@ import {
   type IndustryTaskDependencyBoard,
 } from "./industry/industryHelpers";
 import type { IndustryJobsWorkspaceTab } from "./industry/IndustryJobsWorkspaceNav";
+import { StructureRigPicker, computeRigTotals } from "./industry/StructureRigPicker";
+import { PricingHubPicker } from "./industry/PricingHubPicker";
+import { getStructureRigs } from "@/lib/api";
+import type { StructureRig } from "@/lib/types";
 
 const IndustryJobsLedgerPanel = lazy(async () => {
   const mod = await import("./industry/IndustryJobsLedgerPanel");
@@ -278,6 +283,23 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
   const setBrokerFee = useCallback((v: number) => updateSharedPrefs({ brokerFee: v }), [updateSharedPrefs]);
   const salesTaxPercent = sharedPrefs.salesTaxPercent;
   const setSalesTaxPercent = useCallback((v: number) => updateSharedPrefs({ salesTaxPercent: v }), [updateSharedPrefs]);
+
+  // Rig catalog for the rig-derived display totals under the read-only
+  // Structure ME + Job Cost fields. Same module-level fetch cache as the
+  // Scanner uses — this second consumer just triggers a shared hydration.
+  const [analyzeRigCatalog, setAnalyzeRigCatalog] = useState<StructureRig[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    getStructureRigs()
+      .then((r) => { if (!cancelled) setAnalyzeRigCatalog(r.rigs); })
+      .catch(() => { /* silent */ });
+    return () => { cancelled = true; };
+  }, []);
+  const analyzeRigTotals = useMemo(
+    () => computeRigTotals(analyzeRigCatalog, sharedPrefs.structureRigTypeIDs, 0.5, "manufacturing"),
+    [analyzeRigCatalog, sharedPrefs.structureRigTypeIDs],
+  );
+
   const [ownBlueprint, setOwnBlueprint] = useState(true);
   const [blueprintCost, setBlueprintCost] = useState(0);
   const [blueprintIsBPO, setBlueprintIsBPO] = useState(true);
@@ -305,7 +327,13 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
   const [loadingStations, setLoadingStations] = useState(false);
   const [systemRegionId, setSystemRegionId] = useState<number>(0);
   const [systemId, setSystemId] = useState<number>(0);
-  const [includeStructures, setIncludeStructures] = useState(false);
+  // includeStructures is shared with the Scanner via sharedPrefs so the
+  // toggle stays in sync across surfaces and survives page reloads.
+  const includeStructures = sharedPrefs.includeStructures;
+  const setIncludeStructures = useCallback(
+    (v: boolean) => updateSharedPrefs({ includeStructures: v }),
+    [updateSharedPrefs],
+  );
   const [structureStations, setStructureStations] = useState<StationInfo[]>([]);
   const [loadingStructures, setLoadingStructures] = useState(false);
   const stationsAbortRef = useRef<AbortController | null>(null);
@@ -423,16 +451,6 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     industryTab === "operations" ? "operations"
     : industryTab === "projects" ? "guide"
     : "planning";
-  // Placeholder setter so existing prop signatures compile until the
-  // downstream panels stop taking it. All new UI drives industryTab instead.
-  const setJobsWorkspaceTab: (t: IndustryJobsWorkspaceTab) => void = useCallback(
-    (t) => {
-      if (t === "operations") setIndustryTab("operations");
-      else if (t === "planning") setIndustryTab("plan");
-      else if (t === "guide") setIndustryTab("projects");
-    },
-    [setIndustryTab],
-  );
   // Planner Visual Builder compact mode + page size are UX prefs, so they
   // persist across reloads via localStorage keyed by user (not project).
   const [planBuilderCompactMode, setPlanBuilderCompactMode] = useState<boolean>(() => {
@@ -512,7 +530,13 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
         setStations(resp.stations);
         setSystemRegionId(resp.region_id);
         setSystemId(resp.system_id);
-        setSelectedStationId(0);
+        // Historically we cleared buildStationID here on every completed
+        // fetch. That fires on mount + every system-name change, so a user
+        // who picks a station in the Scanner while IndustryTab's initial
+        // fetch is still in flight would see their pick immediately wiped.
+        // The "clear if station not in current allStations" effect below
+        // (line ~570) handles the legitimate case — an old station that no
+        // longer belongs to the new system — without touching valid picks.
         setStructureStations([]);
       })
       .catch((e: unknown) => {
@@ -569,11 +593,24 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
 
   useEffect(() => {
     if (selectedStationId <= 0) return;
+    // When the Scanner is the visible surface, IT owns the buildStationID
+    // authoritatively via its own clear-effect. Running this effect at
+    // the same time causes a race where IndustryTab's fetch may lag and
+    // wrongly clear a fresh pick. Skip while Discover→Scan is active.
+    if (industryTab === "discover" && discoverSource === "scan") return;
+    // Skip when data isn't authoritative yet:
+    //   - stations still loading (allStations may be empty for a beat)
+    //   - includeStructures off + non-NPC-shaped ID (another surface owns it)
+    //   - includeStructures on but structures fetch not complete
+    if (loadingStations) return;
+    if (!includeStructures && selectedStationId > 100_000_000) return;
+    if (includeStructures && loadingStructures) return;
+    if (includeStructures && selectedStationId > 100_000_000 && structureStations.length === 0) return;
     const exists = allStations.some((station) => Number(station.id) === selectedStationId);
     if (!exists) {
       setSelectedStationId(0);
     }
-  }, [allStations, selectedStationId]);
+  }, [allStations, selectedStationId, includeStructures, loadingStations, loadingStructures, structureStations.length, industryTab, discoverSource]);
 
   const refreshLedgerProjects = useCallback(async (preferredProjectId?: number) => {
     if (!isLoggedIn) {
@@ -751,7 +788,10 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
       materials: 1,
       blueprints: 1,
     });
-    setJobsWorkspaceTab("guide");
+    // Historically this effect force-navigated to the Projects overview on
+    // every project change, which clobbered the Scanner's "add to project →
+    // land in Plan tab" flow. Navigation is now the caller's responsibility;
+    // this effect only resets planner draft state.
   }, [selectedLedgerProjectId]);
 
   useEffect(() => {
@@ -2253,18 +2293,78 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     setResult(null);
     setIndustryCoverage(null);
     setIndustryCoverageMeta("");
-    // T2 items come from invented BPCs, which start at ME 2 / TE 4. T1 items
-    // are researched BPOs that top out at ME 10 / TE 20. Reset defaults so a
-    // user manually searching for a T2 module (e.g. "Vagabond") doesn't have
-    // to remember to lower the ME/TE.
-    if (item.is_t2_bp) {
-      setME(2);
-      setTE(4);
-    } else {
+    // T1 items are researched BPOs that top out at ME 10 / TE 20. T2 items
+    // (is_t2_bp) get their defaults from the decryptor-aware effect below —
+    // handled there because those numbers also need to react to decryptor
+    // changes, not just item selection.
+    if (!item.is_t2_bp) {
       setME(10);
       setTE(20);
     }
   }, []);
+
+  // T2 invention defaults — reapplied on item change, decryptor change,
+  // and activity-mode change. Base T2 BPC is ME 2 / TE 4; decryptors add
+  // meDelta/teDelta/outputRunsBonus on top. Runs snaps to one full BPC's
+  // worth so invention amortization spreads correctly — if the user
+  // wants multiple BPCs they can type over it after.
+  //
+  // Decryptor modifiers only apply when activityMode is "invention"
+  // (that's the only mode where the invention step actually runs). In
+  // Auto / Manufacturing / Reaction modes the decryptor UI is hidden
+  // and its values are irrelevant, so we force "none" here to avoid
+  // silently baking a decryptor's ME/TE/Runs delta into a mode that
+  // doesn't consume it — surprising behavior users flagged as a bug.
+  useEffect(() => {
+    if (!selectedItem?.is_t2_bp) return;
+    const effectiveKey = activityMode === "invention" ? sharedPrefs.decryptor : "none";
+    const dec = DECRYPTORS[effectiveKey];
+    if (!dec) return;
+    setME(T2_BPC_BASE_ME + dec.meDelta);
+    setTE(T2_BPC_BASE_TE + dec.teDelta);
+    // Only snap runs to a full BPC's worth in invention mode — that's the
+    // only mode where invention cost needs amortizing across the whole
+    // BPC output. In Manufacturing / Reaction / Auto the user is picturing
+    // "how many units do I want to build", so default to 1 to avoid
+    // sticker-shock from seeing "10 × Acolyte II = 3.7M ISK" when they
+    // meant to price a single unit.
+    if (activityMode === "invention" && selectedItem.base_invention_runs && selectedItem.base_invention_runs > 0) {
+      setRuns(selectedItem.base_invention_runs + dec.outputRunsBonus);
+    } else {
+      setRuns(1);
+    }
+  }, [selectedItem, sharedPrefs.decryptor, activityMode]);
+
+  // Fetch decryptor market price at the configured pricing station so
+  // decryptorCost reflects real prices instead of the hardcoded ballpark
+  // defaults. Pricing station falls back to the build station when the
+  // user hasn't explicitly picked a sell/pricing hub. Skips when the
+  // decryptor is "none" (typeID 0, cost is 0 by definition). User can
+  // still hand-edit the cost after the fetch — but the next decryptor
+  // or station change refetches.
+  useEffect(() => {
+    const dec = DECRYPTORS[sharedPrefs.decryptor];
+    if (!dec || dec.typeID === 0) return;
+    const pricingStation = sharedPrefs.analyzePricingStationID > 0
+      ? sharedPrefs.analyzePricingStationID
+      : selectedStationId;
+    if (!pricingStation || pricingStation <= 0) return;
+    let cancelled = false;
+    priceAudit({
+      station_id: pricingStation,
+      items: [{ type_id: dec.typeID, qty: 1 }],
+    })
+      .then((resp) => {
+        if (cancelled) return;
+        const row = resp.results?.[0];
+        const price = row?.low_sell ?? row?.suggested_price;
+        if (typeof price === "number" && price > 0) {
+          updateSharedPrefs({ decryptorCost: Math.round(price) });
+        }
+      })
+      .catch(() => { /* silent — user can still hand-edit */ });
+    return () => { cancelled = true; };
+  }, [sharedPrefs.decryptor, sharedPrefs.analyzePricingStationID, selectedStationId, updateSharedPrefs]);
 
   // Keyboard navigation
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
@@ -2325,6 +2425,12 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
       te,
       system_name: systemName,
       station_id: selectedStationId > 0 ? selectedStationId : undefined,
+      // Decoupled pricing (optional): when the user sets Sell system in
+      // the fees panel, backend reads market prices from that region
+      // instead of the build system's. Falls back to the build system
+      // when blank so legacy analyses stay identical.
+      pricing_system_name: sharedPrefs.analyzePricingSystem || undefined,
+      pricing_station_id: sharedPrefs.analyzePricingStationID > 0 ? sharedPrefs.analyzePricingStationID : undefined,
       facility_tax: facilityTax,
       structure_bonus: structureBonus,
       broker_fee: brokerFee,
@@ -2338,6 +2444,9 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
       decryptor_cost: activityMode === "invention" ? sharedPrefs.decryptorCost : 0,
       build_mode: buildMode,
       skip_reactions: sharedPrefs.skipReactions,
+      structure_rig_type_ids: sharedPrefs.structureRigTypeIDs,
+      structure_type_id: sharedPrefs.structureTypeID,
+      structure_job_cost_reduction: sharedPrefs.structureJobCostReduction,
     };
 
     try {
@@ -2803,6 +2912,18 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
               )}
               <SettingsField label={t("industryRuns")} hint={t("industryRunsHint")}>
                 <SettingsNumberInput value={runs} onChange={setRuns} min={1} max={10000} />
+                {selectedItem?.is_t2_bp && selectedItem.base_invention_runs && selectedItem.base_invention_runs > 0 && (() => {
+                  const effectiveKey = activityMode === "invention" ? sharedPrefs.decryptor : "none";
+                  const decBonus = DECRYPTORS[effectiveKey]?.outputRunsBonus ?? 0;
+                  const runsPerBPC = selectedItem.base_invention_runs + decBonus;
+                  const bpcs = runs / runsPerBPC;
+                  return (
+                    <div className="text-[10px] text-eve-dim mt-1">
+                      {`1 BPC = ${runsPerBPC} runs (${selectedItem.base_invention_runs} base${decBonus !== 0 ? ` ${decBonus > 0 ? "+" : ""}${decBonus} decryptor` : ""})`}
+                      {runs > 0 && `  ·  ${bpcs === Math.floor(bpcs) ? bpcs.toString() : bpcs.toFixed(2)} BPC${bpcs !== 1 ? "s" : ""}`}
+                    </div>
+                  );
+                })()}
               </SettingsField>
             </SettingsGrid>
 
@@ -2936,8 +3057,43 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
                 <SettingsField label={t("industryFacilityTax")} hint={t("industryFacilityTaxHint")}>
                   <SettingsNumberInput value={facilityTax} onChange={setFacilityTax} min={0} max={50} step={0.1} />
                 </SettingsField>
-                <SettingsField label={t("industryStructureBonus")} hint={t("industryStructureBonusHint")}>
-                  <SettingsNumberInput value={structureBonus} onChange={setStructureBonus} min={-100} max={100} step={0.1} />
+                <SettingsField
+                  label={t("industryStructureInherentMELabel")}
+                  hint={t("industryStructureInherentMEHint")}
+                  belowChildren={analyzeRigTotals.me > 0 ? (
+                    <span title={t("industryStructureRigDerivedTooltip")}>
+                      {t("industryStructureRigDerivedLabel")}: up to −{analyzeRigTotals.me.toFixed(2)}%
+                    </span>
+                  ) : undefined}
+                >
+                  <SettingsNumberInput
+                    value={structureBonus}
+                    onChange={setStructureBonus}
+                    disabled
+                    title={t("industryStructureInherentMEHint")}
+                    min={-100}
+                    max={100}
+                    step={0.1}
+                  />
+                </SettingsField>
+                <SettingsField
+                  label={t("industryStructureInherentJobCostLabel")}
+                  hint={t("industryStructureInherentJobCostHint")}
+                  belowChildren={analyzeRigTotals.cost > 0 ? (
+                    <span title={t("industryStructureRigDerivedTooltip")}>
+                      {t("industryStructureRigDerivedLabel")}: up to −{analyzeRigTotals.cost.toFixed(2)}%
+                    </span>
+                  ) : undefined}
+                >
+                  <SettingsNumberInput
+                    value={sharedPrefs.structureJobCostReduction}
+                    onChange={(v) => updateSharedPrefs({ structureJobCostReduction: v })}
+                    disabled
+                    title={t("industryStructureInherentJobCostHint")}
+                    min={0}
+                    max={100}
+                    step={0.1}
+                  />
                 </SettingsField>
                 <SettingsField label={t("brokerFee")} hint={t("industryBrokerFeeHint")}>
                   <SettingsNumberInput value={brokerFee} onChange={setBrokerFee} min={0} max={10} step={0.1} />
@@ -2946,6 +3102,40 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
                   <SettingsNumberInput value={salesTaxPercent} onChange={setSalesTaxPercent} min={0} max={100} step={0.1} />
                 </SettingsField>
               </SettingsGrid>
+              {sharedPrefs.structureTypeID > 0 && (
+                <div className="mt-3">
+                  <StructureRigPicker
+                    structureTypeID={sharedPrefs.structureTypeID}
+                    selectedRigTypeIDs={sharedPrefs.structureRigTypeIDs}
+                    onChange={(ids) => updateSharedPrefs({ structureRigTypeIDs: ids })}
+                    systemSecurity={0.5}
+                  />
+                </div>
+              )}
+
+              {/* Optional sell-side decoupling. Empty system name = quote
+                  from the build system's region (legacy behaviour). Uses the
+                  shared PricingHubPicker so the Scanner and Analyze surfaces
+                  behave identically — same hub chips, same autocomplete. */}
+              <div className="mt-3">
+                <div className="text-[10px] uppercase tracking-wider text-eve-dim mb-2">
+                  {t("industryAnalyzeSellSystemLabel")}
+                </div>
+                <PricingHubPicker
+                  systemName={sharedPrefs.analyzePricingSystem}
+                  stationID={sharedPrefs.analyzePricingStationID}
+                  onChange={(sys, stationID) =>
+                    updateSharedPrefs({
+                      analyzePricingSystem: sys,
+                      analyzePricingStationID: stationID,
+                    })
+                  }
+                  isLoggedIn={isLoggedIn}
+                />
+                <div className="mt-1 text-[10px] text-eve-dim">
+                  {t("industryAnalyzeSellSystemHint")}
+                </div>
+              </div>
             </div>
           </div>
 

@@ -85,17 +85,25 @@ type IndustryData struct {
 	// by the Analyze tab to detect "this is a T2 blueprint" and default
 	// ME/TE to 2/4 instead of the T1 BPO-researched 10/20.
 	InventionProducts map[int32]bool
+	// InventionOutputRunsByBPC maps a T2/T3 BPC typeID to the base runs of
+	// one successful invention (before decryptor bonuses). Comes from the
+	// source blueprint's invention activity product quantity. T2 modules
+	// = 10, T2 ammo = 100, T2/T3 ships = 1. Lets the Analyze tab auto-size
+	// the "runs" input to one full BPC's worth of manufacturing so the
+	// invention amortization isn't crushed by a single-run default.
+	InventionOutputRunsByBPC map[int32]int32
 }
 
 // NewIndustryData creates a new IndustryData instance.
 func NewIndustryData() *IndustryData {
 	return &IndustryData{
-		Blueprints:         make(map[int32]*Blueprint),
-		ProductToBlueprint: make(map[int32]int32),
-		Reprocessing:       make(map[int32]*ReprocessingMaterial),
-		PlanetSchematics:   make(map[int32]*PlanetSchematic),
-		BaseCategories:     make(map[int32]bool),
-		InventionProducts:  make(map[int32]bool),
+		Blueprints:               make(map[int32]*Blueprint),
+		ProductToBlueprint:       make(map[int32]int32),
+		Reprocessing:             make(map[int32]*ReprocessingMaterial),
+		PlanetSchematics:         make(map[int32]*PlanetSchematic),
+		BaseCategories:           make(map[int32]bool),
+		InventionProducts:        make(map[int32]bool),
+		InventionOutputRunsByBPC: make(map[int32]int32),
 	}
 }
 
@@ -395,6 +403,9 @@ func (ind *IndustryData) parseBlueprintLine(raw json.RawMessage) error {
 			for _, product := range inv.Products {
 				if product.TypeID != 0 {
 					ind.InventionProducts[product.TypeID] = true
+					if product.Quantity > 0 {
+						ind.InventionOutputRunsByBPC[product.TypeID] = product.Quantity
+					}
 				}
 			}
 		}

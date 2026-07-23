@@ -18,6 +18,10 @@ import { SystemAutocomplete } from "../SystemAutocomplete";
 import { EmptyState } from "../EmptyState";
 import { useGlobalToast } from "../Toast";
 import { AddBlueprintsToProjectModal } from "./AddBlueprintsToProjectModal";
+import { StructureRigPicker, computeRigTotals } from "./StructureRigPicker";
+import { PricingHubPicker } from "./PricingHubPicker";
+import { getStructureRigs } from "@/lib/api";
+import type { StructureRig } from "@/lib/types";
 
 const SCANNER_PERSIST_KEY = "industry-scanner";
 // Display fallback for the period-days label when the backend omits the
@@ -35,6 +39,7 @@ type SortKey =
   | "blueprint_name"
   | "product_name"
   | "owned_quantity"
+  | "available_runs"
   | "me"
   | "te"
   | "isk_per_hour"
@@ -46,23 +51,6 @@ type SortKey =
   | "manufacturing_time";
 
 type SortDir = "asc" | "desc";
-
-// Quick-pick presets for the most common pricing hubs. The user can also type
-// any system into the pricing-system autocomplete — these just one-click the
-// canonical NPC station + system for each major trade hub.
-interface PricingHubPreset {
-  key: string;
-  shortLabel: string;
-  systemName: string;
-  stationID: number;
-}
-const PRICING_HUB_PRESETS: PricingHubPreset[] = [
-  { key: "jita", shortLabel: "Jita", systemName: "Jita", stationID: 60003760 },
-  { key: "amarr", shortLabel: "Amarr", systemName: "Amarr", stationID: 60008494 },
-  { key: "dodixie", shortLabel: "Dodixie", systemName: "Dodixie", stationID: 60011866 },
-  { key: "rens", shortLabel: "Rens", systemName: "Rens", stationID: 60004588 },
-  { key: "hek", shortLabel: "Hek", systemName: "Hek", stationID: 60005686 },
-];
 
 // Type-filter chip catalog. Each chip maps to one-or-more SDE CategoryIDs;
 // the multiplex lets us group related categories under one label (Structures
@@ -91,7 +79,6 @@ const ALL_TYPE_CATEGORY_IDS: number[] = TYPE_CHIPS.flatMap((c) => c.categoryIDs)
 // (used by both Analyze and Scanner), so they intentionally don't appear
 // here — the scanner reads them from useIndustrySharedPrefs on render.
 interface PersistedParams {
-  defaultBPCRuns: number;
   includeCorpBlueprints: boolean;
   /** System whose region is queried for product/material market prices.
    *  Scanner-specific (Analyze uses the same system for both build + price). */
@@ -99,13 +86,15 @@ interface PersistedParams {
   /** Specific NPC station within the pricing system, 0 = region-wide. The
    *  four major-hub presets pre-fill this to the canonical trade station. */
   pricingStationID: number;
-  runsPerJob: number;
   blueprintFilter: "bpo" | "bpc" | "both";
   // Invention discovery — the parent "Invention" chip is derived from the
   // OR of these two so the top row shows one chip; when Invention is on,
   // a sub-row exposes the T2/T3 toggles independently.
   includeT2Invention: boolean;
   includeT3Invention: boolean;
+  /** When true, reaction BPs (fuel-block formulas, moon composites) score
+   *  alongside mfg/invention rows in reaction mode. Off by default. */
+  includeReactions: boolean;
   // When true (default), the scan expands beyond your owned BPs to include
   // every marketable SDE BP — dimmed rows tagged [unowned] surface
   // buy-and-build candidates.
@@ -117,6 +106,7 @@ interface PersistedParams {
   showT1Rows: boolean;
   showT2Rows: boolean;
   showT3Rows: boolean;
+  showReactionRows: boolean;
   ownedFilter: "all" | "owned" | "unowned";
   // null = no filter; numeric value (including 0 or negative) is taken literally.
   minISKPerHour: number | null;
@@ -125,19 +115,19 @@ interface PersistedParams {
 }
 
 const DEFAULT_PARAMS: PersistedParams = {
-  defaultBPCRuns: 1,
   includeCorpBlueprints: false,
   pricingSystem: "Jita",
   pricingStationID: 60003760, // Jita IV - Moon 4 - Caldari Navy Assembly Plant
-  runsPerJob: 1,
   blueprintFilter: "bpo",
   includeT2Invention: false,
   includeT3Invention: false,
+  includeReactions: false,
   includeUnowned: true,
   typeCategories: [],
   showT1Rows: true,
   showT2Rows: true,
   showT3Rows: true,
+  showReactionRows: true,
   ownedFilter: "all",
   minISKPerHour: null,
   minProfit: null,
@@ -243,6 +233,7 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
   const NUMERIC_DEFAULT_DESC: SortKey[] = [
     "selected",
     "owned_quantity",
+    "available_runs",
     "me",
     "te",
     "isk_per_hour",
@@ -270,6 +261,13 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
   const rowKey = (row: ProfitableScanRow) =>
     `${row.blueprint_type_id}-${row.is_bpo ? "bpo" : "bpc"}-${row.scan_mode ?? "t1_mfg"}-${row.product_type_id}`;
   const [addToProjectOpen, setAddToProjectOpen] = useState(false);
+  // Add-to-project runs state, LIFTED FROM THE MODAL so cancelling out (to
+  // fix a selection or add another row) doesn't wipe manual runs edits.
+  // Keyed by rowKey — stable across selection changes and modal
+  // open/close cycles. Reset on new scan / clear so we never carry
+  // zombie overrides from a previous scan's row set.
+  const [manualRunsByRowKey, setManualRunsByRowKey] = useState<Map<string, number>>(new Map());
+  const [dirtyRunsByRowKey, setDirtyRunsByRowKey] = useState<Set<string>>(new Set());
   const { importFees, loading: importingFees } = useEsiFeeImport();
   const [searchQuery, setSearchQuery] = useState(initialScanState?.searchQuery ?? "");
 
@@ -303,7 +301,13 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
   // Station picker (mirrors the IndustryTab Analysis flow).
   const [stations, setStations] = useState<StationInfo[]>([]);
   const [structureStations, setStructureStations] = useState<StationInfo[]>([]);
-  const [includeStructures, setIncludeStructures] = useState(false);
+  // includeStructures lives in sharedPrefs so the toggle persists across
+  // page reloads and syncs between the Scanner and Analyze surfaces.
+  const includeStructures = sharedPrefs.includeStructures;
+  const setIncludeStructures = useCallback(
+    (v: boolean) => updateSharedPrefs({ includeStructures: v }),
+    [updateSharedPrefs],
+  );
   const [loadingStations, setLoadingStations] = useState(false);
   const [loadingStructures, setLoadingStructures] = useState(false);
   const [systemId, setSystemId] = useState<number>(0);
@@ -312,6 +316,30 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
   const stationsRequestSeqRef = useRef(0);
   const structuresAbortRef = useRef<AbortController | null>(null);
   const structuresRequestSeqRef = useRef(0);
+
+  // Rig catalog (loaded once via getStructureRigs). Used for the rig-derived
+  // display totals next to Structure ME/Job Cost fields. Picker manages its
+  // own fetch too; the module-level cache in api.ts dedupes.
+  const [rigCatalog, setRigCatalog] = useState<StructureRig[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    getStructureRigs()
+      .then((r) => { if (!cancelled) setRigCatalog(r.rigs); })
+      .catch(() => { /* silent — picker also handles catalog errors */ });
+    return () => { cancelled = true; };
+  }, []);
+  // Sec of the current build system for rig-multiplier math. Falls back to
+  // hisec (0.5) when we don't yet know — errs on the safe side (no advanced
+  // rigs). Real value comes from getStations resp; we already read it into
+  // `systemRegionId` etc., so lean on that pattern later if needed.
+  const buildSystemSec = 0.5; // TODO: wire real sec once systems endpoint exposes it here
+  const rigTotals = useMemo(() => {
+    // Aggregate rig-derived reductions for the row-type UI display. Uses
+    // "manufacturing" activity as the display baseline — reaction/invention
+    // rigs would show a different figure but the field placement is under
+    // the structure hull, so a single canonical number is fine.
+    return computeRigTotals(rigCatalog, sharedPrefs.structureRigTypeIDs, buildSystemSec, "manufacturing");
+  }, [rigCatalog, sharedPrefs.structureRigTypeIDs, buildSystemSec]);
 
   useEffect(() => {
     stationsAbortRef.current?.abort();
@@ -382,9 +410,8 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
     return stations;
   }, [stations, structureStations, includeStructures]);
 
-  // Built-in ME bonus by Engineering Complex type. Rigs add more, but we don't
-  // have rig data over the wire — user can override after auto-fill.
-  // Source: EVE community wiki structure bonuses.
+  // Hull-inherent bonuses by structure typeID. Rigs stack on top (via the
+  // separate StructureRigPicker → rigContribution → engine math).
   const STRUCTURE_ME_BONUS_BY_TYPE: Record<number, number> = useMemo(
     () => ({
       35825: 1, // Raitaru
@@ -393,38 +420,68 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
     }),
     [],
   );
+  const STRUCTURE_JOB_COST_REDUCTION_BY_TYPE: Record<number, number> = useMemo(
+    () => ({
+      35825: 3, // Raitaru
+      35826: 4, // Azbel
+      35827: 5, // Sotiyo
+    }),
+    [],
+  );
 
-  // Auto-fill Structure ME Bonus %. Rules:
-  //  - "Include player structures" off, OR no station selected, OR station is
-  //    an NPC station → bonus = 0 (NPC stations give no ME role bonus).
-  //  - Player structure selected → bonus = base structure-type bonus from the
-  //    lookup table (Raitaru/Azbel/Sotiyo = 1). Rigs not modeled — user can
-  //    override after auto-fill.
+  // Auto-fill hull-inherent ME + job-cost bonuses and the structure type
+  // ID that the rig picker uses. Clears the rig loadout when the hull
+  // TRULY changes — but stays put during transient states like tab
+  // switches where the stations list momentarily empties (in which case
+  // `picked` would be undefined and we'd wrongly conclude "no hull").
   useEffect(() => {
-    let suggested = 0;
+    if (loadingStations || loadingStructures) return; // don't write until data settles
+    let suggestedME = 0;
+    let suggestedJobCost = 0;
+    let suggestedType = 0;
+    let stationFound = false;
     if (includeStructures && sharedPrefs.buildStationID > 0) {
       const picked = allStations.find((s) => Number(s.id) === sharedPrefs.buildStationID);
-      if (picked?.is_structure && picked.type_id) {
-        suggested = STRUCTURE_ME_BONUS_BY_TYPE[picked.type_id] ?? 0;
+      if (picked) {
+        stationFound = true;
+        if (picked.is_structure && picked.type_id) {
+          suggestedME = STRUCTURE_ME_BONUS_BY_TYPE[picked.type_id] ?? 0;
+          suggestedJobCost = STRUCTURE_JOB_COST_REDUCTION_BY_TYPE[picked.type_id] ?? 0;
+          suggestedType = picked.type_id;
+        }
       }
     }
-    if (suggested !== sharedPrefs.structureBonus) {
-      updateSharedPrefs({ structureBonus: suggested });
+    // Skip writes when a station is selected but not yet in the list —
+    // the list is still hydrating and we'd otherwise clobber good state.
+    if (sharedPrefs.buildStationID > 0 && !stationFound) return;
+    const patch: Partial<typeof sharedPrefs> = {};
+    if (suggestedME !== sharedPrefs.structureBonus) patch.structureBonus = suggestedME;
+    if (suggestedJobCost !== sharedPrefs.structureJobCostReduction) patch.structureJobCostReduction = suggestedJobCost;
+    if (suggestedType !== sharedPrefs.structureTypeID) {
+      patch.structureTypeID = suggestedType;
+      patch.structureRigTypeIDs = []; // stale rig fit — clear
     }
-    // STRUCTURE_ME_BONUS_BY_TYPE is stable (memo); deps cover the inputs that
-    // actually drive a change.
+    if (Object.keys(patch).length > 0) updateSharedPrefs(patch);
+    // STRUCTURE_ME_BONUS_BY_TYPE + STRUCTURE_JOB_COST_REDUCTION_BY_TYPE are
+    // stable (memo); deps cover the inputs that actually drive a change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sharedPrefs.buildStationID, allStations, includeStructures]);
+  }, [sharedPrefs.buildStationID, allStations, includeStructures, loadingStations, loadingStructures]);
 
   // If the selected build station disappears from the list after a build-system
-  // change, clear it (the user must re-pick).
+  // change, clear it (the user must re-pick). Skip when the ID looks like a
+  // structure and this component isn't loading structures — same-shared-prefs
+  // symmetry so we don't clobber an ID another surface owns.
   useEffect(() => {
     if (sharedPrefs.buildStationID <= 0) return;
+    if (loadingStations) return;
+    if (!includeStructures && sharedPrefs.buildStationID > 100_000_000) return;
+    if (includeStructures && loadingStructures) return;
+    if (includeStructures && sharedPrefs.buildStationID > 100_000_000 && structureStations.length === 0) return;
     const exists = allStations.some((s) => Number(s.id) === sharedPrefs.buildStationID);
     if (!exists) {
       updateSharedPrefs({ buildStationID: 0 });
     }
-  }, [allStations, sharedPrefs.buildStationID, updateSharedPrefs]);
+  }, [allStations, sharedPrefs.buildStationID, includeStructures, loadingStations, loadingStructures, structureStations.length, updateSharedPrefs]);
 
   const updateParam = <K extends keyof PersistedParams>(key: K, value: PersistedParams[K]) => {
     setParams((prev) => {
@@ -441,7 +498,10 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
   const buildBaseScanRequest = useCallback((): ProfitableScanRequest => {
     return {
       scope: "all",
-      default_bpc_runs: params.defaultBPCRuns,
+      // Scoring baseline: 1 run per job. Per-unit profit and ISK/h are
+      // invariant across run counts, and "how many to build" is a separate
+      // decision made when adding to a project.
+      default_bpc_runs: 1,
       include_corp_blueprints: params.includeCorpBlueprints,
       build_system_name: sharedPrefs.buildSystem,
       pricing_system_name: params.pricingSystem,
@@ -450,10 +510,11 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
       structure_bonus: sharedPrefs.structureBonus,
       broker_fee: sharedPrefs.brokerFee,
       sales_tax_percent: sharedPrefs.salesTaxPercent,
-      runs_per_job: params.runsPerJob,
+      runs_per_job: 1,
       blueprint_filter: params.blueprintFilter,
       include_t2_invention: params.includeT2Invention,
       include_t3_invention: params.includeT3Invention,
+      include_reactions: params.includeReactions,
       type_categories: params.typeCategories,
       invention_me_base: 0,
       invention_te_base: 0,
@@ -464,6 +525,9 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
       unowned_default_me: 10,
       unowned_default_te: 20,
       skip_reactions: sharedPrefs.skipReactions,
+      structure_rig_type_ids: sharedPrefs.structureRigTypeIDs,
+      structure_type_id: sharedPrefs.structureTypeID,
+      structure_job_cost_reduction: sharedPrefs.structureJobCostReduction,
       min_isk_per_hour: 0,
       min_profit: 0,
       min_margin_percent: 0,
@@ -541,6 +605,12 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
 
   const handleScan = useCallback(async () => {
     setSelectedIDs(new Set());
+    // New scan = fresh row set. Purge manual runs overrides so we don't
+    // carry stale edits from a previous scan's rows into unrelated new
+    // ones. Reset happens BEFORE the fetch so if the scan fails the user
+    // still sees the reset (which matches selection also being cleared).
+    setManualRunsByRowKey(new Map());
+    setDirtyRunsByRowKey(new Set());
     await runScan(buildBaseScanRequest(), t("industryScannerScanning"));
   }, [buildBaseScanRequest, runScan, t]);
 
@@ -549,6 +619,8 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
     setSelectedIDs(new Set());
     setSearchQuery("");
     setError(null);
+    setManualRunsByRowKey(new Map());
+    setDirtyRunsByRowKey(new Set());
   }, []);
 
   const handleRefreshPrices = useCallback(async () => {
@@ -591,6 +663,7 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
       const mode = r.scan_mode ?? "t1_mfg";
       if (mode === "t3_invention" && !params.showT3Rows) return false;
       if (mode === "t2_invention" && !params.showT2Rows) return false;
+      if (mode === "reaction" && !params.showReactionRows) return false;
       if (mode === "t1_mfg" && !params.showT1Rows) return false;
       if (params.ownedFilter === "owned" && !r.owned) return false;
       if (params.ownedFilter === "unowned" && r.owned) return false;
@@ -598,11 +671,26 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
       if (params.minProfit != null && r.profit < params.minProfit) return false;
       if (params.minMarginPct != null && r.profit_percent < params.minMarginPct) return false;
       if (q) {
+        // Match against every human-readable field the row carries:
+        // blueprint + product names cover the direct lookup ("ishtar"),
+        // group covers the ship-class query ("heavy assault cruiser"),
+        // category covers the broad-type query ("ship" / "module").
+        // group_name / category_name may be missing on cached results
+        // from older builds, so guard with ?? "".
         const bp = r.blueprint_name?.toLowerCase() ?? "";
         const pr = r.product_name?.toLowerCase() ?? "";
+        const grp = r.group_name?.toLowerCase() ?? "";
+        const cat = r.category_name?.toLowerCase() ?? "";
         const src = r.invention_source_bp_name?.toLowerCase() ?? "";
         const out = r.invention_output_bp_name?.toLowerCase() ?? "";
-        if (!bp.includes(q) && !pr.includes(q) && !src.includes(q) && !out.includes(q)) return false;
+        if (
+          !bp.includes(q) &&
+          !pr.includes(q) &&
+          !grp.includes(q) &&
+          !cat.includes(q) &&
+          !src.includes(q) &&
+          !out.includes(q)
+        ) return false;
       }
       return true;
     });
@@ -634,7 +722,7 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
       return mul * (aNum - bNum);
     });
     return rows;
-  }, [response, sortKey, sortDir, selectedIDs, params.minISKPerHour, params.minProfit, params.minMarginPct, params.showT1Rows, params.showT2Rows, params.showT3Rows, params.ownedFilter, searchQuery]);
+  }, [response, sortKey, sortDir, selectedIDs, params.minISKPerHour, params.minProfit, params.minMarginPct, params.showT1Rows, params.showT2Rows, params.showT3Rows, params.showReactionRows, params.ownedFilter, searchQuery]);
 
   const toggleSelect = (key: string) => {
     setSelectedIDs((prev) => {
@@ -653,10 +741,14 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
     }
   };
 
-  const selectedRows: ProfitableScanRow[] = useMemo(
-    () => sortedRows.filter((r) => selectedIDs.has(rowKey(r))),
-    [sortedRows, selectedIDs],
-  );
+  // Derive selections from the FULL scan response, not the current filtered
+  // view. Otherwise: pick 5 items → type in the search box → the ones filtered
+  // out silently disappear from the "Add to project" bundle. Selections must
+  // persist regardless of what's currently visible.
+  const selectedRows: ProfitableScanRow[] = useMemo(() => {
+    if (!response) return [];
+    return response.rows.filter((r) => selectedIDs.has(rowKey(r)));
+  }, [response, selectedIDs]);
 
   const selectionTotals = useMemo(() => {
     let capital = 0;
@@ -730,6 +822,12 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                 }}
                 label={t("industryScannerIncludeInventionChip")}
                 title={t("industryScannerIncludeT2InventionHint")}
+              />
+              <ToggleChip
+                active={params.includeReactions}
+                onClick={() => updateParam("includeReactions", !params.includeReactions)}
+                label={t("industryScannerIncludeReactionsChip")}
+                title={t("industryScannerIncludeReactionsHint")}
               />
               <ToggleChip
                 active={params.includeUnowned}
@@ -853,22 +951,6 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                 ]}
               />
             </SettingsField>
-            <SettingsField label={t("industryScannerRunsPerJobLabel")}>
-              <SettingsNumberInput
-                value={params.runsPerJob}
-                onChange={(v) => updateParam("runsPerJob", v)}
-                min={1}
-                max={10000}
-              />
-            </SettingsField>
-            <SettingsField label={t("industryScannerDefaultRunsLabel")}>
-              <SettingsNumberInput
-                value={params.defaultBPCRuns}
-                onChange={(v) => updateParam("defaultBPCRuns", v)}
-                min={1}
-                max={1000}
-              />
-            </SettingsField>
           </SettingsGrid>
         </div>
 
@@ -956,11 +1038,40 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                   step={0.01}
                 />
               </SettingsField>
-              <SettingsField label={t("industryScannerStructureBonusLabel")} hint={t("industryStructureBonusHint")}>
+              <SettingsField
+                label={t("industryStructureInherentMELabel")}
+                hint={t("industryStructureInherentMEHint")}
+                belowChildren={rigTotals.me > 0 ? (
+                  <span title={t("industryStructureRigDerivedTooltip")}>
+                    {t("industryStructureRigDerivedLabel")}: up to −{rigTotals.me.toFixed(2)}%
+                  </span>
+                ) : undefined}
+              >
                 <SettingsNumberInput
                   value={sharedPrefs.structureBonus}
                   onChange={(v) => updateSharedPrefs({ structureBonus: v })}
+                  disabled
+                  title={t("industryStructureInherentMEHint")}
                   min={-100}
+                  max={100}
+                  step={0.01}
+                />
+              </SettingsField>
+              <SettingsField
+                label={t("industryStructureInherentJobCostLabel")}
+                hint={t("industryStructureInherentJobCostHint")}
+                belowChildren={rigTotals.cost > 0 ? (
+                  <span title={t("industryStructureRigDerivedTooltip")}>
+                    {t("industryStructureRigDerivedLabel")}: up to −{rigTotals.cost.toFixed(2)}%
+                  </span>
+                ) : undefined}
+              >
+                <SettingsNumberInput
+                  value={sharedPrefs.structureJobCostReduction}
+                  onChange={(v) => updateSharedPrefs({ structureJobCostReduction: v })}
+                  disabled
+                  title={t("industryStructureInherentJobCostHint")}
+                  min={0}
                   max={100}
                   step={0.01}
                 />
@@ -998,6 +1109,16 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                 <span className="text-[10px] text-eve-dim">Pulls broker fee + sales tax from Accounting / Broker Relations skill levels of the active character.</span>
               </div>
             )}
+            {sharedPrefs.structureTypeID > 0 && (
+              <div className="mt-3">
+                <StructureRigPicker
+                  structureTypeID={sharedPrefs.structureTypeID}
+                  selectedRigTypeIDs={sharedPrefs.structureRigTypeIDs}
+                  onChange={(ids) => updateSharedPrefs({ structureRigTypeIDs: ids })}
+                  systemSecurity={buildSystemSec}
+                />
+              </div>
+            )}
           </div>
         </div>
 
@@ -1007,66 +1128,22 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
           <div className="text-[10px] uppercase tracking-wider text-eve-dim mb-2">
             {t("industrySectionPricing")}
           </div>
-          <SettingsGrid cols={2}>
-            <SettingsField label={t("industryScannerPricingSystemLabel")}>
-              <SystemAutocomplete
-                value={params.pricingSystem}
-                onChange={(v) => {
-                  // Typing a non-hub system clears the canonical station ID so
-                  // the backend falls back to region-wide pricing for that
-                  // system. Matching a preset still keeps its known station ID.
-                  const trimmed = v.trim();
-                  const preset = PRICING_HUB_PRESETS.find(
-                    (h) => h.systemName.toLowerCase() === trimmed.toLowerCase(),
-                  );
-                  setParams((prev) => {
-                    const next: PersistedParams = {
-                      ...prev,
-                      pricingSystem: v,
-                      pricingStationID: preset ? preset.stationID : 0,
-                    };
-                    savePersistedParams(next);
-                    return next;
-                  });
-                }}
-                showLocationButton={false}
-                isLoggedIn={isLoggedIn}
-                suppressInternalHint
-              />
-            </SettingsField>
-            <SettingsField label={t("industryScannerPricingHubsLabel")}>
-              <div className="flex flex-wrap gap-1">
-                {PRICING_HUB_PRESETS.map((hub) => {
-                  const active =
-                    params.pricingSystem.trim().toLowerCase() === hub.systemName.toLowerCase();
-                  return (
-                    <button
-                      key={hub.key}
-                      type="button"
-                      onClick={() => {
-                        setParams((prev) => {
-                          const next: PersistedParams = {
-                            ...prev,
-                            pricingSystem: hub.systemName,
-                            pricingStationID: hub.stationID,
-                          };
-                          savePersistedParams(next);
-                          return next;
-                        });
-                      }}
-                      className={`px-2 py-1 text-[11px] rounded-sm border transition-colors ${
-                        active
-                          ? "border-eve-accent text-eve-accent bg-eve-accent/10"
-                          : "border-eve-border text-eve-dim hover:text-eve-text hover:border-eve-border/80"
-                      }`}
-                    >
-                      {hub.shortLabel}
-                    </button>
-                  );
-                })}
-              </div>
-            </SettingsField>
-          </SettingsGrid>
+          <PricingHubPicker
+            systemName={params.pricingSystem}
+            stationID={params.pricingStationID}
+            onChange={(sys, stationID) => {
+              setParams((prev) => {
+                const next: PersistedParams = {
+                  ...prev,
+                  pricingSystem: sys,
+                  pricingStationID: stationID,
+                };
+                savePersistedParams(next);
+                return next;
+              });
+            }}
+            isLoggedIn={isLoggedIn}
+          />
           <div className="mt-1 text-[10px] text-eve-dim">
             {params.pricingStationID > 0
               ? `Pricing from station ${params.pricingStationID} (${params.pricingSystem || "unknown"} region).`
@@ -1223,6 +1300,18 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                 >
                   {t("industryScannerScanModeT3")}
                 </button>
+                <button
+                  type="button"
+                  onClick={() => updateParam("showReactionRows", !params.showReactionRows)}
+                  title={t("industryScannerScanModeReaction")}
+                  className={`px-2 py-0.5 text-[10px] rounded-sm border transition-colors ${
+                    params.showReactionRows
+                      ? "border-amber-400/60 text-amber-300 bg-amber-400/10"
+                      : "border-eve-border text-eve-dim hover:text-eve-text"
+                  }`}
+                >
+                  {t("industryScannerScanModeReaction")}
+                </button>
               </div>
               {/* Owned filter — All / Owned / Unowned. Radio-style, only one active. */}
               <div className="flex items-center gap-1">
@@ -1307,6 +1396,7 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                     <SortableHeader sortKey="blueprint_name" align="left" label={t("industryScannerColBlueprint")} active={sortKey} dir={sortDir} onClick={toggleSort} />
                     <SortableHeader sortKey="product_name" align="left" label={t("industryScannerColProduct")} active={sortKey} dir={sortDir} onClick={toggleSort} />
                     <SortableHeader sortKey="owned_quantity" align="right" label={t("industryScannerColOwned")} active={sortKey} dir={sortDir} onClick={toggleSort} />
+                    <SortableHeader sortKey="available_runs" align="right" label={t("industryScannerColRunsAvail")} active={sortKey} dir={sortDir} onClick={toggleSort} titleText={t("industryScannerColRunsAvailTooltip")} />
                     <SortableHeader sortKey="me" align="right" label={t("industryScannerColME")} active={sortKey} dir={sortDir} onClick={toggleSort} />
                     <SortableHeader sortKey="te" align="right" label={t("industryScannerColTE")} active={sortKey} dir={sortDir} onClick={toggleSort} />
                     <SortableHeader sortKey="isk_per_hour" align="right" label={t("industryScannerColISKHour")} active={sortKey} dir={sortDir} onClick={toggleSort} />
@@ -1335,6 +1425,46 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                       ? `Invention: ${((row.invention_probability ?? 0) * 100).toFixed(1)}% × ${(row.expected_attempts ?? 0).toFixed(1)} attempts (cap ${capLabel})`
                       : undefined;
                     const isUnowned = row.owned === false;
+
+                    // Per-row profit-math breakdown for the Profit/Margin/ISK-h
+                    // tooltips. Native title attribute handles multi-line via \n
+                    // — plaintext keeps it drama-free and works everywhere.
+                    // Falls back gracefully when the extra fields aren't set
+                    // (older cached scan results).
+                    const totalUnits = row.total_quantity ?? row.runs * (row.output_qty_per_run ?? 1);
+                    const matCost = row.total_material_cost ?? Math.max(0, row.optimal_build_cost - (row.total_job_cost ?? 0) - (row.invention_cost ?? 0));
+                    const jobCost = row.total_job_cost ?? 0;
+                    const invCost = row.invention_cost ?? 0;
+                    const unitPrice = row.unit_sell_price ?? (totalUnits > 0 ? row.sell_revenue / totalUnits : 0);
+                    const profitTooltipLines: string[] = [];
+                    profitTooltipLines.push(`═ ${row.product_name || "Product"} ═`);
+                    profitTooltipLines.push(`Runs: ${row.runs} × ${row.output_qty_per_run ?? 1} = ${totalUnits.toLocaleString()} units`);
+                    profitTooltipLines.push("");
+                    profitTooltipLines.push(`Sell revenue:   ${formatISK(row.sell_revenue)}`);
+                    if (unitPrice > 0) {
+                      profitTooltipLines.push(`  ${totalUnits.toLocaleString()} × ${formatISK(unitPrice)}/unit (after tax + broker fee)`);
+                    }
+                    profitTooltipLines.push("");
+                    profitTooltipLines.push(`Build cost:     ${formatISK(row.optimal_build_cost)}`);
+                    if (matCost > 0) profitTooltipLines.push(`  Materials:    ${formatISK(matCost)}`);
+                    if (jobCost > 0) profitTooltipLines.push(`  Job cost:     ${formatISK(jobCost)}`);
+                    if (invCost > 0) profitTooltipLines.push(`  (of which invention: ${formatISK(invCost)})`);
+                    profitTooltipLines.push("");
+                    profitTooltipLines.push(`Profit:         ${formatISK(row.profit)}`);
+                    profitTooltipLines.push(`Margin:         ${row.profit_percent.toFixed(1)}%`);
+                    if (row.manufacturing_time > 0) {
+                      const hoursDisp = row.manufacturing_time / 3600;
+                      profitTooltipLines.push(`Time:           ${hoursDisp.toFixed(1)}h`);
+                      profitTooltipLines.push(`ISK/hour:       ${formatISK(row.isk_per_hour)}`);
+                    }
+                    if (isInvention) {
+                      profitTooltipLines.push("");
+                      profitTooltipLines.push(`Invention: ${((row.invention_probability ?? 0) * 100).toFixed(1)}% × ${(row.expected_attempts ?? 0).toFixed(1)} attempts (cap ${capLabel})`);
+                      if (row.best_decryptor_key) {
+                        profitTooltipLines.push(`Best decryptor: ${row.best_decryptor_key}`);
+                      }
+                    }
+                    const profitTooltip = profitTooltipLines.join("\n");
                     return (
                       <tr
                         key={k}
@@ -1371,6 +1501,11 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                           {isUnowned && (
                             <span className="ml-1 text-[10px] text-slate-400">
                               {t("industryScannerUnownedBadge")}
+                            </span>
+                          )}
+                          {row.scan_mode === "reaction" && (
+                            <span className="ml-1 text-[10px] text-amber-300">
+                              [REACT]
                             </span>
                           )}
                           {isInvention && (
@@ -1412,21 +1547,41 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                         </td>
                         <td className="px-2 py-1 text-eve-dim">{row.product_name}</td>
                         <td className="px-2 py-1 text-right font-mono">{row.owned_quantity}</td>
+                        <td className="px-2 py-1 text-right font-mono text-eve-dim">
+                          {/* BPOs are unlimited by definition; invention and unowned
+                              rows have no "stock" concept — dash out those cells. */}
+                          {row.is_bpo
+                            ? "∞"
+                            : row.owned === false
+                              ? "—"
+                              : isInvention
+                                ? "—"
+                                : row.available_runs.toLocaleString()}
+                        </td>
                         <td className="px-2 py-1 text-right font-mono">{row.me}</td>
                         <td className="px-2 py-1 text-right font-mono">{row.te}</td>
-                        <td className={`px-2 py-1 text-right font-mono ${
-                          row.isk_per_hour >= 0 ? "text-emerald-300" : "text-red-300"
-                        }`}>
+                        <td
+                          className={`px-2 py-1 text-right font-mono cursor-help ${
+                            row.isk_per_hour >= 0 ? "text-emerald-300" : "text-red-300"
+                          }`}
+                          title={profitTooltip}
+                        >
                           {formatISK(row.isk_per_hour)}
                         </td>
-                        <td className={`px-2 py-1 text-right font-mono ${
-                          row.profit >= 0 ? "text-emerald-300" : "text-red-300"
-                        }`}>
+                        <td
+                          className={`px-2 py-1 text-right font-mono cursor-help ${
+                            row.profit >= 0 ? "text-emerald-300" : "text-red-300"
+                          }`}
+                          title={profitTooltip}
+                        >
                           {formatISK(row.profit)}
                         </td>
-                        <td className={`px-2 py-1 text-right font-mono ${
-                          row.profit_percent >= 0 ? "text-eve-text" : "text-red-300"
-                        }`}>
+                        <td
+                          className={`px-2 py-1 text-right font-mono cursor-help ${
+                            row.profit_percent >= 0 ? "text-eve-text" : "text-red-300"
+                          }`}
+                          title={profitTooltip}
+                        >
                           {row.profit_percent.toFixed(1)}%
                         </td>
                         <td
@@ -1458,7 +1613,7 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                         >
                           {row.period_margin === undefined ? "—" : `${row.period_margin.toFixed(1)}%`}
                         </td>
-                        <td className="px-2 py-1 text-right font-mono">
+                        <td className="px-2 py-1 text-right font-mono cursor-help" title={profitTooltip}>
                           {formatISK(row.optimal_build_cost)}
                         </td>
                         <td className="px-2 py-1 text-right font-mono text-eve-dim">
@@ -1529,7 +1684,29 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
         open={addToProjectOpen}
         onClose={() => setAddToProjectOpen(false)}
         rows={selectedRows}
-        runsPerJob={params.runsPerJob}
+        // Fallback default when a row has no market volume history; the
+        // modal drives real per-row values via daily_volume × target_days.
+        runsPerJob={1}
+        // Persist runs edits across modal open/close cycles within the
+        // same scan so cancelling to fix a selection doesn't lose the
+        // user's manual runs numbers. Parent resets these on new scan
+        // or clear results.
+        rowKeyFor={rowKey}
+        manualRunsByRowKey={manualRunsByRowKey}
+        dirtyRunsByRowKey={dirtyRunsByRowKey}
+        onManualRunsChange={(rk, runs) => {
+          setManualRunsByRowKey((prev) => {
+            const next = new Map(prev);
+            next.set(rk, runs);
+            return next;
+          });
+          setDirtyRunsByRowKey((prev) => {
+            if (prev.has(rk)) return prev;
+            const next = new Set(prev);
+            next.add(rk);
+            return next;
+          });
+        }}
         analysisContext={{
           systemName: sharedPrefs.buildSystem,
           stationID: sharedPrefs.buildStationID,
@@ -1555,6 +1732,10 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
             3600,
           );
           setSelectedIDs(new Set());
+          // Rows just got committed to a project — flush their overrides so
+          // if the user re-selects them they start from defaults again.
+          setManualRunsByRowKey(new Map());
+          setDirtyRunsByRowKey(new Set());
           if (onProjectCreated) onProjectCreated(projectID);
         }}
       />
@@ -1641,7 +1822,7 @@ function NullableNumberInput({
           commit(e.target.value);
         }}
         step={step}
-        className="w-full px-3 py-1.5 pr-7 bg-eve-input border border-eve-border rounded-sm text-eve-text text-sm font-mono
+        className="w-44 px-2 py-1 pr-6 bg-eve-input border border-eve-border rounded-sm text-eve-text text-sm font-mono
                    focus:outline-none focus:border-eve-accent focus:ring-1 focus:ring-eve-accent/30
                    transition-colors"
       />

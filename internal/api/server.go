@@ -897,6 +897,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/industry/search", s.handleIndustrySearch)
 	mux.HandleFunc("GET /api/industry/systems", s.handleIndustrySystems)
 	mux.HandleFunc("GET /api/industry/status", s.handleIndustryStatus)
+	mux.HandleFunc("GET /api/industry/structure-rigs", s.handleIndustryStructureRigs)
 	mux.HandleFunc("POST /api/execution/plan", s.handleExecutionPlan)
 	// Demand / War Tracker
 	mux.HandleFunc("GET /api/demand/regions", s.handleDemandRegions)
@@ -11001,6 +11002,12 @@ func (s *Server) handleIndustryAnalyze(w http.ResponseWriter, r *http.Request) {
 		TimeEfficiency      int32   `json:"te"`
 		SystemName          string  `json:"system_name"`
 		StationID           int64   `json:"station_id"` // Optional: specific station/structure for price lookup
+		// Optional pricing-system decoupling: when set, product/material market
+		// prices are read from PricingSystemName's region (falling back to
+		// PricingStationID) instead of SystemName's. Lets users build in one
+		// system and quote prices from another (e.g. build Botane, sell Jita).
+		PricingSystemName string  `json:"pricing_system_name"`
+		PricingStationID  int64   `json:"pricing_station_id"`
 		FacilityTax         float64 `json:"facility_tax"`
 		StructureBonus      float64 `json:"structure_bonus"`
 		BrokerFee           float64 `json:"broker_fee"`
@@ -11013,8 +11020,11 @@ func (s *Server) handleIndustryAnalyze(w http.ResponseWriter, r *http.Request) {
 		InventionChanceMult float64 `json:"invention_chance_mult"`
 		DecryptorCost       float64 `json:"decryptor_cost"`
 		InventionOutputRuns int32   `json:"invention_output_runs"`
-		BuildMode           string  `json:"build_mode"`
-		SkipReactions       bool    `json:"skip_reactions"`
+		BuildMode                 string  `json:"build_mode"`
+		SkipReactions             bool    `json:"skip_reactions"`
+		StructureRigTypeIDs       []int32 `json:"structure_rig_type_ids"`
+		StructureTypeID           int32   `json:"structure_type_id"`
+		StructureJobCostReduction float64 `json:"structure_job_cost_reduction"`
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, industryAnalyzeMaxBodyBytes)
@@ -11071,13 +11081,33 @@ func (s *Server) handleIndustryAnalyze(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid build_mode")
 		return
 	}
+	req.StructureJobCostReduction = clampFloat64(req.StructureJobCostReduction, 0, 100)
+	// Truncate rig list to the 3 slots any Upwell structure supports; drop
+	// zero/negative typeIDs.
+	if len(req.StructureRigTypeIDs) > 3 {
+		req.StructureRigTypeIDs = req.StructureRigTypeIDs[:3]
+	}
+	cleanedRigs := req.StructureRigTypeIDs[:0]
+	for _, id := range req.StructureRigTypeIDs {
+		if id > 0 {
+			cleanedRigs = append(cleanedRigs, id)
+		}
+	}
+	req.StructureRigTypeIDs = cleanedRigs
 	req.SystemName = strings.TrimSpace(req.SystemName)
+	req.PricingSystemName = strings.TrimSpace(req.PricingSystemName)
 
-	// Resolve system ID
-	var systemID int32
-	if req.SystemName != "" {
+	// Resolve system IDs. Pricing system is optional and only used when the
+	// user wants the sell side quoted from a different region than the build.
+	var systemID, pricingSystemID int32
+	if req.SystemName != "" || req.PricingSystemName != "" {
 		s.mu.RLock()
-		systemID = s.sdeData.SystemByName[strings.ToLower(req.SystemName)]
+		if req.SystemName != "" {
+			systemID = s.sdeData.SystemByName[strings.ToLower(req.SystemName)]
+		}
+		if req.PricingSystemName != "" {
+			pricingSystemID = s.sdeData.SystemByName[strings.ToLower(req.PricingSystemName)]
+		}
 		s.mu.RUnlock()
 	}
 
@@ -11088,7 +11118,16 @@ func (s *Server) handleIndustryAnalyze(w http.ResponseWriter, r *http.Request) {
 		MaterialEfficiency:  req.MaterialEfficiency,
 		TimeEfficiency:      req.TimeEfficiency,
 		SystemID:            systemID,
-		StationID:           req.StationID,
+		PricingSystemID:     pricingSystemID,
+		// StationID drives per-station price lookup. When the user has
+		// decoupled pricing via PricingSystemName/PricingStationID, prefer
+		// the pricing station over the build station.
+		StationID:           func() int64 {
+			if req.PricingSystemName != "" && req.PricingStationID > 0 {
+				return req.PricingStationID
+			}
+			return req.StationID
+		}(),
 		FacilityTax:         req.FacilityTax,
 		StructureBonus:      req.StructureBonus,
 		BrokerFee:           req.BrokerFee,
@@ -11103,6 +11142,11 @@ func (s *Server) handleIndustryAnalyze(w http.ResponseWriter, r *http.Request) {
 		InventionOutputRuns: req.InventionOutputRuns,
 		BuildMode:           req.BuildMode,
 		SkipReactions:       req.SkipReactions,
+		StructureJobCostReduction: req.StructureJobCostReduction,
+		StructureRigs: engine.StructureRigConfig{
+			RigTypeIDs:      req.StructureRigTypeIDs,
+			StructureTypeID: req.StructureTypeID,
+		},
 	}
 
 	// Use NDJSON streaming for progress

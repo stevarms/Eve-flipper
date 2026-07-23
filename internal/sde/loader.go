@@ -43,6 +43,13 @@ type Data struct {
 	Universe     *graph.Universe
 	Industry     *IndustryData // blueprints, reprocessing, etc.
 
+	// Structure rig catalog (Standup rigs on Upwell industry structures).
+	// Populated by loadRigs after types/groups are ready. Empty when SDE
+	// files don't parse (older SDE dumps, etc.).
+	Rigs            map[int32]*StructureRig
+	RigsByFitsGroup map[int32][]*StructureRig
+	RigAffinities   map[int32]StructureRigCategory
+
 	shipTypesMissingPackagedVolume map[int32]bool
 }
 
@@ -170,6 +177,13 @@ func Load(dataDir string) (*Data, error) {
 		return nil, fmt.Errorf("load industry: %w", err)
 	}
 	data.Industry = industry
+
+	// Load Standup structure rigs. Non-fatal — if typeDogma.jsonl is missing
+	// we silently degrade to "no rigs known" so older SDE snapshots still work.
+	logger.Info("SDE", "Loading structure rigs...")
+	if err := data.loadRigs(extractDir); err != nil {
+		logger.Warn("SDE", fmt.Sprintf("Failed to load structure rigs: %v", err))
+	}
 
 	// Initialize BFS path cache now that the universe graph is fully loaded.
 	data.Universe.InitPathCache()

@@ -125,7 +125,7 @@ func TestBuildScanWork_ClassifiesT2VsT3ByMetaGroup(t *testing.T) {
 	}
 
 	// T2 only: should include Vagabond (metaGroup 2), exclude Muninn (14).
-	t2Only, _ := buildScanWork(groups, sdeData, true, false)
+	t2Only, _ := buildScanWork(groups, sdeData, true, false, false)
 	var seenT2Product, seenT3Product bool
 	for _, w := range t2Only {
 		if w.scanMode == "t2_invention" && w.productTypeID == 11999 {
@@ -143,7 +143,7 @@ func TestBuildScanWork_ClassifiesT2VsT3ByMetaGroup(t *testing.T) {
 	}
 
 	// T3 only: should include Muninn, exclude Vagabond.
-	t3Only, _ := buildScanWork(groups, sdeData, false, true)
+	t3Only, _ := buildScanWork(groups, sdeData, false, true, false)
 	seenT2Product, seenT3Product = false, false
 	for _, w := range t3Only {
 		if w.scanMode == "t2_invention" {
@@ -161,13 +161,84 @@ func TestBuildScanWork_ClassifiesT2VsT3ByMetaGroup(t *testing.T) {
 	}
 }
 
+// Owned BPs whose mfg product isn't in Types (dev-only / unpublished items)
+// must be dropped from scan work rather than surfaced with a "Type N" name
+// and nonsense ISK/h. Symmetric with synthesizeUnownedGroups' filter.
+func TestBuildScanWork_SkipsOwnedBPsWithUnmarketableProduct(t *testing.T) {
+	sdeData := buildTestSDE()
+	// BP 8888 has a valid mfg activity, but its product (77777) is NOT in
+	// sdeData.Types — the analog of an unpublished dev item that's still
+	// wired into a blueprint entry.
+	sdeData.Industry.Blueprints[8888] = &sde.Blueprint{
+		BlueprintTypeID: 8888,
+		Activities: map[string]*sde.ActivityData{
+			"manufacturing": {Products: []sde.BlueprintProduct{{TypeID: 77777, Quantity: 1}}},
+		},
+	}
+	groups := []blueprintGroup{
+		{BlueprintTypeID: 8888, BlueprintName: "Dev-only BP", IsBPO: true, OwnedQuantity: 1, Owned: true},
+	}
+
+	work, skipped := buildScanWork(groups, sdeData, false, false, false)
+
+	if len(work) != 0 {
+		t.Fatalf("expected 0 work items for unmarketable-product BP, got %d: %+v", len(work), work)
+	}
+	if skipped != 1 {
+		t.Fatalf("expected 1 skipped, got %d", skipped)
+	}
+}
+
+// Reaction BPs (fuel-block formulas, composite reactions) are silently
+// skipped by default because most builders don't run reactions themselves.
+// When include_reactions is on, the reaction path emits a "reaction" work
+// item — output feeds Analyze in reaction mode. Skip filter still applies
+// when off. Marketable-product filter applies (unpublished reaction
+// products get dropped).
+func TestBuildScanWork_ReactionRowsGatedByIncludeReactions(t *testing.T) {
+	sdeData := buildTestSDE()
+	// Fuel-block-analogue reaction BP: only a reaction activity, product
+	// (typeID 44444) is in Types so it's marketable.
+	sdeData.Types[44444] = &sde.ItemType{ID: 44444, Name: "Nitrogen Fuel Block", CategoryID: 4}
+	sdeData.Industry.Blueprints[5555] = &sde.Blueprint{
+		BlueprintTypeID: 5555,
+		Activities: map[string]*sde.ActivityData{
+			"reaction": {Products: []sde.BlueprintProduct{{TypeID: 44444, Quantity: 40}}},
+		},
+	}
+	groups := []blueprintGroup{
+		{BlueprintTypeID: 5555, BlueprintName: "Nitrogen Fuel Block Formula", IsBPO: true, OwnedQuantity: 1, Owned: true},
+	}
+
+	// include_reactions OFF: skipped, no work items.
+	off, skippedOff := buildScanWork(groups, sdeData, false, false, false)
+	if len(off) != 0 || skippedOff != 1 {
+		t.Fatalf("reactions off: expected 0 work + 1 skipped, got %d work, %d skipped", len(off), skippedOff)
+	}
+
+	// include_reactions ON: one reaction row.
+	on, skippedOn := buildScanWork(groups, sdeData, false, false, true)
+	if skippedOn != 0 {
+		t.Fatalf("reactions on: expected 0 skipped, got %d", skippedOn)
+	}
+	if len(on) != 1 {
+		t.Fatalf("reactions on: expected 1 work item, got %d: %+v", len(on), on)
+	}
+	if on[0].scanMode != "reaction" {
+		t.Fatalf("expected scanMode=reaction, got %q", on[0].scanMode)
+	}
+	if on[0].productTypeID != 44444 {
+		t.Fatalf("expected productTypeID=44444, got %d", on[0].productTypeID)
+	}
+}
+
 func TestBuildScanWork_T1MfgOnlyWhenInventionDisabled(t *testing.T) {
 	sdeData := buildTestSDE()
 	groups := []blueprintGroup{
 		{BlueprintTypeID: 641, BlueprintName: "Stabber Blueprint", IsBPO: true, OwnedQuantity: 1},
 	}
 
-	work, skipped := buildScanWork(groups, sdeData, false, false)
+	work, skipped := buildScanWork(groups, sdeData, false, false, false)
 
 	if skipped != 0 {
 		t.Fatalf("expected 0 skipped, got %d", skipped)
@@ -192,7 +263,7 @@ func TestBuildScanWork_T2InventionFanoutEmitsPerProduct(t *testing.T) {
 	// Both T2 + T3 on so both Vagabond (metaGroup 2) and Muninn (metaGroup 14)
 	// fan out — the fixture now marks these different tiers so tier-classification
 	// tests can distinguish them.
-	work, skipped := buildScanWork(groups, sdeData, true, true)
+	work, skipped := buildScanWork(groups, sdeData, true, true, false)
 
 	if skipped != 0 {
 		t.Fatalf("expected 0 skipped, got %d", skipped)
@@ -261,7 +332,7 @@ func TestBuildScanWork_BPCSourceHasFiniteAttemptsCap(t *testing.T) {
 		{BlueprintTypeID: 641, BlueprintName: "Stabber Blueprint", IsBPO: false, OwnedQuantity: 3, AvailableRuns: 30},
 	}
 
-	work, _ := buildScanWork(groups, sdeData, true, false)
+	work, _ := buildScanWork(groups, sdeData, true, false, false)
 
 	for _, w := range work {
 		if w.scanMode == "t2_invention" && w.attemptsCap != 30 {
@@ -279,7 +350,7 @@ func TestBuildScanWork_StoresBaseProbability(t *testing.T) {
 		{BlueprintTypeID: 641, BlueprintName: "Stabber Blueprint", IsBPO: true},
 	}
 
-	work, _ := buildScanWork(groups, sdeData, true, false)
+	work, _ := buildScanWork(groups, sdeData, true, false, false)
 
 	for _, w := range work {
 		if w.scanMode != "t2_invention" {
@@ -307,7 +378,7 @@ func TestBuildScanWork_SkipsGroupsWithNoActivities(t *testing.T) {
 		{BlueprintTypeID: 9999, BlueprintName: "Broken BP", IsBPO: true},
 	}
 
-	work, skipped := buildScanWork(groups, sdeData, true, false)
+	work, skipped := buildScanWork(groups, sdeData, true, false, false)
 
 	if len(work) != 0 {
 		t.Fatalf("expected no work items, got %d", len(work))
@@ -322,7 +393,7 @@ func TestSynthesizeUnownedGroups_SkipsAlreadyOwned(t *testing.T) {
 	owned := []blueprintGroup{
 		{BlueprintTypeID: 641, BlueprintName: "Stabber Blueprint", IsBPO: true, Owned: true},
 	}
-	unowned := synthesizeUnownedGroups(sdeData, owned, 10, 20, false)
+	unowned := synthesizeUnownedGroups(sdeData, owned, 10, 20, false, false)
 
 	for _, g := range unowned {
 		if g.BlueprintTypeID == 641 {
@@ -373,7 +444,7 @@ func TestSynthesizeUnownedGroups_InventionOnlyBPIncludedWhenFlagged(t *testing.T
 	}
 
 	// Without the flag: silently dropped (baseline behavior).
-	off := synthesizeUnownedGroups(sdeData, nil, 10, 20, false)
+	off := synthesizeUnownedGroups(sdeData, nil, 10, 20, false, false)
 	for _, g := range off {
 		if g.BlueprintTypeID == 12345 {
 			t.Fatalf("relic BP 12345 must NOT be in unowned synth when includeInvention=false")
@@ -381,7 +452,7 @@ func TestSynthesizeUnownedGroups_InventionOnlyBPIncludedWhenFlagged(t *testing.T
 	}
 
 	// With the flag: included.
-	on := synthesizeUnownedGroups(sdeData, nil, 10, 20, true)
+	on := synthesizeUnownedGroups(sdeData, nil, 10, 20, true, false)
 	found := false
 	for _, g := range on {
 		if g.BlueprintTypeID == 12345 {
@@ -406,7 +477,7 @@ func TestSynthesizeUnownedGroups_SkipsUnmarketableProducts(t *testing.T) {
 		},
 	}
 
-	unowned := synthesizeUnownedGroups(sdeData, nil, 10, 20, false)
+	unowned := synthesizeUnownedGroups(sdeData, nil, 10, 20, false, false)
 	for _, g := range unowned {
 		if g.BlueprintTypeID == 7777 {
 			t.Fatalf("synth list contained BP 7777 whose product has no Types entry")
@@ -420,7 +491,7 @@ func TestBuildScanWork_T1WithoutInventionActivityStillEmitsMfg(t *testing.T) {
 		{BlueprintTypeID: 690, BlueprintName: "Rifter Blueprint", IsBPO: true},
 	}
 
-	work, skipped := buildScanWork(groups, sdeData, true, false)
+	work, skipped := buildScanWork(groups, sdeData, true, false, false)
 
 	if skipped != 0 {
 		t.Fatalf("expected 0 skipped, got %d", skipped)

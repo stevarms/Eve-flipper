@@ -58,6 +58,14 @@ interface Props {
   runsPerJob: number;
   analysisContext: ScannerAnalysisContext;
   onSuccess: (projectID: number, count: number, summary: PlanApplySummaryLike | null) => void;
+  /** Optional: parent-persisted manual runs overrides. Keyed by rowKeyFor(row).
+   *  When present the modal seeds from these on open so cancel+reopen keeps
+   *  the user's edits, and reports every edit back via onManualRunsChange
+   *  so the parent can reset them on new scan / clear results. */
+  rowKeyFor?: (row: ProfitableScanRow) => string;
+  manualRunsByRowKey?: Map<string, number>;
+  dirtyRunsByRowKey?: Set<string>;
+  onManualRunsChange?: (rowKey: string, runs: number) => void;
 }
 
 interface RowStatus {
@@ -66,6 +74,48 @@ interface RowStatus {
   state: "pending" | "analyzing" | "done" | "error";
   errorMsg?: string;
   analysis?: IndustryAnalysis;
+}
+
+// Default per-row runs from the row's 30-day market volume. Aim to capture
+// `marketSharePct` of one day of aggressive-buy demand, then convert units
+// → runs via the BP's output-per-run.
+//
+// Rounding chosen to match the natural granularity of T2 BPCs (10 runs):
+//   raw < 10   → round to nearest whole number
+//   raw ≥ 10   → round to nearest 10
+// Weird numbers like 5 or 15 rarely reflect how people run T2 jobs.
+//
+// Availability cap: for owned BPCs (limited-run copies), the suggestion is
+// capped at the row's available_runs so we don't propose building more
+// than the user's stock can cover. BPOs (unlimited) and invention rows
+// (which mint fresh BPCs) don't need capping; unowned synthetic rows
+// don't cap either since the user would buy the BP.
+//
+// Falls back to `fallbackRuns` when the row has no volume data.
+function defaultRunsForRow(
+  row: ProfitableScanRow,
+  marketSharePct: number,
+  fallbackRuns: number,
+): number {
+  const daily = row.product_daily_volume ?? 0;
+  const outputQty = row.output_qty_per_run && row.output_qty_per_run > 0 ? row.output_qty_per_run : 1;
+  const isInvention = row.scan_mode === "t2_invention" || row.scan_mode === "t3_invention";
+  const isOwnedBPC = (row.owned ?? true) && !row.is_bpo && !isInvention;
+
+  let suggestion: number;
+  if (daily <= 0) {
+    suggestion = Math.max(1, fallbackRuns);
+  } else {
+    const shareFraction = Math.max(0.001, marketSharePct / 100);
+    const unitsTarget = daily * shareFraction;
+    const rawRuns = unitsTarget / outputQty;
+    suggestion = rawRuns < 10 ? Math.max(1, Math.round(rawRuns)) : Math.max(10, Math.round(rawRuns / 10) * 10);
+  }
+
+  if (isOwnedBPC && row.available_runs > 0 && suggestion > row.available_runs) {
+    suggestion = row.available_runs;
+  }
+  return Math.max(1, suggestion);
 }
 
 // Build the analyzer request body from a scanner row + shared context. Mirrors
@@ -100,7 +150,7 @@ function buildParamsForRow(row: ProfitableScanRow, ctx: ScannerAnalysisContext, 
   };
 }
 
-export function AddBlueprintsToProjectModal({ open, onClose, rows, runsPerJob, analysisContext, onSuccess }: Props) {
+export function AddBlueprintsToProjectModal({ open, onClose, rows, runsPerJob, analysisContext, onSuccess, rowKeyFor, manualRunsByRowKey, dirtyRunsByRowKey, onManualRunsChange }: Props) {
   const { t } = useI18n();
   const [mode, setMode] = useState<Mode>("new");
   const [name, setName] = useState("");
@@ -113,6 +163,17 @@ export function AddBlueprintsToProjectModal({ open, onClose, rows, runsPerJob, a
   const [progressMsg, setProgressMsg] = useState<string>("");
   const [rowStatuses, setRowStatuses] = useState<RowStatus[]>([]);
   const abortRef = useRef<AbortController | null>(null);
+  // Market-share % of one day's aggressive-buy volume you plan to capture.
+  // Default 10% is a comfortable "one production run" target — often lines
+  // up with a full 10-run T2 BPC's worth of output. The "one day" horizon
+  // is intentional: multi-day multipliers just amplify the share number
+  // one-for-one, so a single knob is enough.
+  const [marketSharePct, setMarketSharePct] = useState<number>(10);
+  // Per-row runs. Keyed by index into the rows array so it stays stable
+  // when rows change. Only rows in dirtyRuns are protected from the
+  // target-days / market-share recompute.
+  const [runsByIdx, setRunsByIdx] = useState<Record<number, number>>({});
+  const [dirtyRuns, setDirtyRuns] = useState<Set<number>>(new Set());
 
   useEffect(() => {
     if (!open) return;
@@ -121,7 +182,39 @@ export function AddBlueprintsToProjectModal({ open, onClose, rows, runsPerJob, a
     setMode("new");
     setProgressMsg("");
     setRowStatuses(rows.map((row, index) => ({ index, row, state: "pending" })));
-  }, [open, rows]);
+    // Seed per-row runs from parent's persisted overrides (if any) so
+    // cancelling out and reopening keeps the user's manual edits. Rows
+    // the parent hasn't seen fall back to the default. Also seed dirty
+    // markers so those seeded overrides survive the marketSharePct
+    // recompute below.
+    const initialRuns: Record<number, number> = {};
+    const initialDirty = new Set<number>();
+    rows.forEach((row, idx) => {
+      const rk = rowKeyFor?.(row);
+      if (rk && manualRunsByRowKey?.has(rk)) {
+        initialRuns[idx] = manualRunsByRowKey.get(rk)!;
+        if (dirtyRunsByRowKey?.has(rk)) initialDirty.add(idx);
+      } else {
+        initialRuns[idx] = defaultRunsForRow(row, 10, runsPerJob);
+      }
+    });
+    setRunsByIdx(initialRuns);
+    setDirtyRuns(initialDirty);
+    setMarketSharePct(10);
+  }, [open, rows, runsPerJob, rowKeyFor, manualRunsByRowKey, dirtyRunsByRowKey]);
+
+  // Recompute defaults when marketSharePct changes — but skip rows the user
+  // has manually edited (dirtyRuns).
+  useEffect(() => {
+    setRunsByIdx((prev) => {
+      const next: Record<number, number> = { ...prev };
+      rows.forEach((row, idx) => {
+        if (dirtyRuns.has(idx)) return;
+        next[idx] = defaultRunsForRow(row, marketSharePct, runsPerJob);
+      });
+      return next;
+    });
+  }, [marketSharePct, rows, dirtyRuns, runsPerJob]);
 
   useEffect(() => {
     if (!open || mode !== "existing") return;
@@ -178,7 +271,7 @@ export function AddBlueprintsToProjectModal({ open, onClose, rows, runsPerJob, a
     // status so the user sees which rows failed.
     const statuses: RowStatus[] = rows.map((row, index) => ({ index, row, state: "pending" }));
     setRowStatuses(statuses);
-    const analyses: { row: ProfitableScanRow; analysis: IndustryAnalysis }[] = [];
+    const analyses: { row: ProfitableScanRow; analysis: IndustryAnalysis; runs: number }[] = [];
 
     for (let i = 0; i < rows.length; i++) {
       if (controller.signal.aborted) break;
@@ -192,9 +285,12 @@ export function AddBlueprintsToProjectModal({ open, onClose, rows, runsPerJob, a
           .replace("{name}", row.product_name || `Type ${row.product_type_id}`),
       );
       try {
-        const params = buildParamsForRow(row, analysisContext, runsPerJob);
+        // Use the per-row runs override the user configured; fall back to
+        // the modal-wide runsPerJob prop if the map somehow lacks an entry.
+        const perRow = runsByIdx[i] ?? runsPerJob;
+        const params = buildParamsForRow(row, analysisContext, perRow);
         const analysis = await analyzeIndustry(params, () => {}, controller.signal);
-        analyses.push({ row, analysis });
+        analyses.push({ row, analysis, runs: perRow });
         statuses[i] = { ...statuses[i], state: "done", analysis };
       } catch (e: unknown) {
         if (controller.signal.aborted) break;
@@ -269,7 +365,7 @@ export function AddBlueprintsToProjectModal({ open, onClose, rows, runsPerJob, a
 
     // Phase 3: per-row patch build, then merge.
     setProgressMsg(t("industryScannerMergingPlans"));
-    const patches: IndustryPlanPatch[] = analyses.map(({ row, analysis }) => {
+    const patches: IndustryPlanPatch[] = analyses.map(({ row, analysis, runs }) => {
       const isT2 = row.scan_mode === "t2_invention";
       const inv = effectiveInventionParams(analysisContext.decryptorKey);
       return buildIndustryPlanPatch({
@@ -277,7 +373,7 @@ export function AddBlueprintsToProjectModal({ open, onClose, rows, runsPerJob, a
         coverage,
         productTypeID: row.product_type_id,
         productName: row.product_name,
-        runs: runsPerJob,
+        runs,
         me: isT2 ? inv.meBase : row.me,
         te: isT2 ? inv.teBase : row.te,
         systemName: analysisContext.systemName,
@@ -327,18 +423,18 @@ export function AddBlueprintsToProjectModal({ open, onClose, rows, runsPerJob, a
       setSubmitting(false);
       abortRef.current = null;
     }
-  }, [rows, selectedProjectID, mode, name, strategy, runsPerJob, analysisContext, onSuccess, t]);
+  }, [rows, selectedProjectID, mode, name, strategy, runsPerJob, runsByIdx, analysisContext, onSuccess, t]);
 
   return (
     <Modal
       open={open}
       onClose={submitting ? handleCancel : onClose}
       title={t("industryScannerAddToProjectModalTitle")}
-      width="max-w-lg"
+      width="max-w-3xl"
     >
       <div className="p-4 space-y-4 text-sm">
         <div className="text-xs text-eve-dim">
-          {rows.length} blueprint(s) selected • {runsPerJob} runs per job
+          {rows.length} blueprint(s) selected
           {decryptorLabel && (
             <span className="ml-2 text-violet-300">• decryptor: {decryptorLabel}</span>
           )}
@@ -384,8 +480,15 @@ export function AddBlueprintsToProjectModal({ open, onClose, rows, runsPerJob, a
               />
             </div>
             <div>
-              <label className="block text-[11px] uppercase tracking-wider text-eve-dim mb-1">
-                {t("industryScannerStrategy")}
+              <label className="block text-[11px] uppercase tracking-wider text-eve-dim mb-1 inline-flex items-center gap-1">
+                <span>{t("industryScannerStrategy")}</span>
+                <span
+                  className="text-[10px] text-eve-dim/70 hover:text-eve-accent cursor-help border border-eve-border/50 rounded-full w-3.5 h-3.5 inline-flex items-center justify-center leading-none"
+                  title={t("industryScannerStrategyHint")}
+                  aria-label={t("industryScannerStrategyHint")}
+                >
+                  ?
+                </span>
               </label>
               <select
                 value={strategy}
@@ -428,6 +531,123 @@ export function AddBlueprintsToProjectModal({ open, onClose, rows, runsPerJob, a
                 ))}
               </select>
             )}
+          </div>
+        )}
+
+        {/* Target days + per-row runs. Only shown pre-submit; the row-status
+            list below replaces it during submit. Volume-driven defaults let
+            "500 drones, 50 guns, 1 ship" fall out of one target-days number,
+            while the per-row input handles anything you want to nudge. */}
+        {!submitting && (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <label className="text-[11px] uppercase tracking-wider text-eve-dim inline-flex items-center gap-1">
+                <span>{t("industryScannerMarketShare")}</span>
+                <span
+                  className="text-[10px] text-eve-dim/70 hover:text-eve-accent cursor-help border border-eve-border/50 rounded-full w-3.5 h-3.5 inline-flex items-center justify-center leading-none"
+                  title={t("industryScannerMarketShareHint")}
+                  aria-label={t("industryScannerMarketShareHint")}
+                >
+                  ?
+                </span>
+              </label>
+              <input
+                type="number"
+                min={1}
+                max={100}
+                step={1}
+                value={marketSharePct}
+                onChange={(e) => {
+                  const n = Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 1));
+                  setMarketSharePct(n);
+                }}
+                className="w-14 px-2 py-1 bg-eve-input border border-eve-border rounded-sm text-eve-text text-xs font-mono
+                           focus:outline-none focus:border-eve-accent focus:ring-1 focus:ring-eve-accent/30"
+              />
+              <span className="text-[10px] text-eve-dim">
+                {t("industryScannerMarketShareUnit")}
+              </span>
+            </div>
+            <div className="max-h-96 overflow-y-auto border border-eve-border/40 rounded-sm">
+              <table className="w-full text-[11px]">
+                <thead className="text-eve-dim bg-eve-dark/40">
+                  <tr>
+                    <th className="px-2 py-1 text-left font-normal">
+                      {t("industryScannerRowProduct")}
+                    </th>
+                    <th className="px-2 py-1 text-right font-normal w-20" title={t("industryScannerRowDailyHint")}>
+                      {t("industryScannerRowDaily")}
+                    </th>
+                    <th className="px-2 py-1 text-right font-normal w-16">
+                      {t("industryScannerRowPerRun")}
+                    </th>
+                    <th className="px-2 py-1 text-right font-normal w-24">
+                      {t("industryScannerRowRuns")}
+                    </th>
+                    <th className="px-2 py-1 text-right font-normal w-24">
+                      {t("industryScannerRowUnits")}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((row, idx) => {
+                    const runs = runsByIdx[idx] ?? runsPerJob;
+                    const daily = row.product_daily_volume ?? 0;
+                    const perRun = row.output_qty_per_run && row.output_qty_per_run > 0 ? row.output_qty_per_run : 1;
+                    const units = runs * perRun;
+                    return (
+                      <tr key={idx} className="border-t border-eve-border/30">
+                        <td className="px-2 py-1 truncate">
+                          {row.product_name || `Type ${row.product_type_id}`}
+                          {row.scan_mode === "t3_invention" && (
+                            <span className="ml-1 text-[9px] text-sky-300">T3 INV</span>
+                          )}
+                          {row.scan_mode === "t2_invention" && (
+                            <span className="ml-1 text-[9px] text-violet-300">T2 INV</span>
+                          )}
+                          {row.scan_mode === "reaction" && (
+                            <span className="ml-1 text-[9px] text-amber-300">RX</span>
+                          )}
+                        </td>
+                        <td className="px-2 py-1 text-right font-mono text-eve-dim">
+                          {daily > 0 ? daily.toLocaleString() : "—"}
+                        </td>
+                        <td className="px-2 py-1 text-right font-mono text-eve-dim">
+                          {perRun.toLocaleString()}
+                        </td>
+                        <td className="px-2 py-1 text-right">
+                          <input
+                            type="number"
+                            min={1}
+                            max={100000}
+                            value={runs}
+                            onChange={(e) => {
+                              const n = Math.max(1, Math.min(100000, parseInt(e.target.value, 10) || 1));
+                              setRunsByIdx((prev) => ({ ...prev, [idx]: n }));
+                              setDirtyRuns((prev) => {
+                                const next = new Set(prev);
+                                next.add(idx);
+                                return next;
+                              });
+                              // Echo edits to parent so they survive modal
+                              // close/reopen within the same scan.
+                              if (onManualRunsChange && rowKeyFor) {
+                                onManualRunsChange(rowKeyFor(rows[idx]), n);
+                              }
+                            }}
+                            className="w-20 px-1 py-0.5 bg-eve-input border border-eve-border rounded-sm text-right text-eve-text text-[11px] font-mono
+                                       focus:outline-none focus:border-eve-accent focus:ring-1 focus:ring-eve-accent/30"
+                          />
+                        </td>
+                        <td className="px-2 py-1 text-right font-mono text-eve-text">
+                          {units.toLocaleString()}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
 

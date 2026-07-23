@@ -8,46 +8,6 @@ import (
 	"eve-flipper/internal/sde"
 )
 
-// sumJobCosts sums JobCost for all nodes where ShouldBuild && !IsBase, recursively.
-
-func TestSumJobCosts_EmptyAndBase(t *testing.T) {
-	a := &IndustryAnalyzer{}
-	// Nil node would panic; we don't call with nil. Base node with ShouldBuild=false has no job cost.
-	base := &MaterialNode{IsBase: true, ShouldBuild: false}
-	if got := a.sumJobCosts(base); got != 0 {
-		t.Errorf("sumJobCosts(base node) = %v, want 0", got)
-	}
-}
-
-func TestSumJobCosts_SingleLevel(t *testing.T) {
-	a := &IndustryAnalyzer{}
-	root := &MaterialNode{IsBase: false, ShouldBuild: true, JobCost: 100.0, Children: nil}
-	if got := a.sumJobCosts(root); got != 100 {
-		t.Errorf("sumJobCosts(single node JobCost=100) = %v, want 100", got)
-	}
-}
-
-func TestSumJobCosts_Tree(t *testing.T) {
-	a := &IndustryAnalyzer{}
-	// Root: JobCost 50, ShouldBuild true. Child1: 30, Child2: 20. Total = 50+30+20 = 100
-	child1 := &MaterialNode{IsBase: false, ShouldBuild: true, JobCost: 30, Children: nil}
-	child2 := &MaterialNode{IsBase: false, ShouldBuild: true, JobCost: 20, Children: nil}
-	root := &MaterialNode{IsBase: false, ShouldBuild: true, JobCost: 50, Children: []*MaterialNode{child1, child2}}
-	if got := a.sumJobCosts(root); got != 100 {
-		t.Errorf("sumJobCosts(tree 50+30+20) = %v, want 100", got)
-	}
-}
-
-func TestSumJobCosts_SkipsNonBuildAndBase(t *testing.T) {
-	a := &IndustryAnalyzer{}
-	// Root ShouldBuild=false -> no root JobCost. Child ShouldBuild=true -> count child only.
-	child := &MaterialNode{IsBase: false, ShouldBuild: true, JobCost: 25, Children: nil}
-	root := &MaterialNode{IsBase: false, ShouldBuild: false, JobCost: 100, Children: []*MaterialNode{child}}
-	if got := a.sumJobCosts(root); got != 25 {
-		t.Errorf("sumJobCosts(root skip, child count) = %v, want 25", got)
-	}
-}
-
 func TestGetBlueprintInfo_DelegatesToSDE(t *testing.T) {
 	// Minimal SDE: IndustryData with one product -> blueprint
 	ind := sde.NewIndustryData()
@@ -211,23 +171,40 @@ func TestAnalyze_EndToEndInjectedPricing(t *testing.T) {
 	if !industryAlmostEqual(result.MarketBuyPrice, 600.0) {
 		t.Fatalf("MarketBuyPrice = %v, want 600", result.MarketBuyPrice)
 	}
-	if !industryAlmostEqual(result.TotalBuildCost, 223.0) {
-		t.Fatalf("TotalBuildCost = %v, want 223", result.TotalBuildCost)
+	// TotalJobCost is ROOT-ONLY (matches CCP's in-game display): the one
+	// install cost the player pays for the queued job at the top level.
+	// Sub-material install costs live inside their own build costs and
+	// bubble up via tree.BuildCost's recursive material cost. Summing
+	// every buildable node's JobCost here would double-count against
+	// tree.BuildCost.
+	//
+	// Fixture geometry: two built layers (root 1000 + component 1001) each
+	// with material 34. EIV × SCI = 4.9 per node ⇒ system cost 4.9,
+	// SCC = 4% × 49 EIV = 1.96, gross = 4.9 (no rig/structure bonus),
+	// facility tax = 0 (params.FacilityTax not set). Node install ≈ 4.9 + 1.96 ≈ 6.86.
+	// Legacy sum across the two built nodes gave ~13.7; earlier tests had 18.2
+	// after the SCC fix while it was still summed. Root-only ≈ 9.8 (only root).
+	if !industryAlmostEqual(result.TotalBuildCost, 228.2) {
+		t.Fatalf("TotalBuildCost = %v, want 228.2", result.TotalBuildCost)
 	}
-	if !industryAlmostEqual(result.OptimalBuildCost, 223.0) {
-		t.Fatalf("OptimalBuildCost = %v, want 223", result.OptimalBuildCost)
+	if !industryAlmostEqual(result.OptimalBuildCost, 228.2) {
+		t.Fatalf("OptimalBuildCost = %v, want 228.2", result.OptimalBuildCost)
 	}
-	if !industryAlmostEqual(result.TotalJobCost, 13.0) {
-		t.Fatalf("TotalJobCost = %v, want 13", result.TotalJobCost)
+	if !industryAlmostEqual(result.TotalJobCost, 9.8) {
+		t.Fatalf("TotalJobCost = %v, want 9.8", result.TotalJobCost)
 	}
 	if !industryAlmostEqual(result.SellRevenue, 513.0) {
 		t.Fatalf("SellRevenue = %v, want 513", result.SellRevenue)
 	}
-	if !industryAlmostEqual(result.Profit, 290.0) {
-		t.Fatalf("Profit = %v, want 290", result.Profit)
+	if !industryAlmostEqual(result.Profit, 284.8) {
+		t.Fatalf("Profit = %v, want 284.8", result.Profit)
 	}
-	if !industryAlmostEqual(result.ISKPerHour, 54.375) {
-		t.Fatalf("ISKPerHour = %v, want 54.375 using full activity-chain time", result.ISKPerHour)
+	// ISK/h uses ROOT activity time only (matches CCP's "this job's slot
+	// throughput" semantic; sub-material builds run in independent slots and
+	// don't gate the queued job). Root blueprint time = 7200s = 2h, so
+	// ISK/h = 284.8 / 2 = 142.4.
+	if !industryAlmostEqual(result.ISKPerHour, 142.4) {
+		t.Fatalf("ISKPerHour = %v, want 142.4", result.ISKPerHour)
 	}
 	if result.MaterialTree == nil {
 		t.Fatalf("MaterialTree is nil")
@@ -346,8 +323,9 @@ func TestAnalyze_UsesDepthAwareBuyCostAndInstantSellProfit(t *testing.T) {
 	if !industryAlmostEqual(result.SellRevenue, result.InstantSellRevenue) {
 		t.Fatalf("SellRevenue = %v, want conservative instant revenue %v", result.SellRevenue, result.InstantSellRevenue)
 	}
-	if !industryAlmostEqual(result.Profit, 227.0) {
-		t.Fatalf("Profit = %v, want instant liquidation profit 227", result.Profit)
+	// Pre-SCC: 227. New: 227 − 5.2 (SCC bump to job cost same as prior test) = 221.8.
+	if !industryAlmostEqual(result.Profit, 221.8) {
+		t.Fatalf("Profit = %v, want instant liquidation profit 221.8", result.Profit)
 	}
 }
 
@@ -422,18 +400,23 @@ func TestCalculateCosts_PrefersBuyingWhenCheaper(t *testing.T) {
 	if child.ShouldBuild {
 		t.Fatalf("child.ShouldBuild = true, want false (buying is cheaper)")
 	}
-	// The child (1001) is required 10× by the root recipe, so its prices
-	// reflect 10-unit totals: BuyPrice = 10 * 5 = 50; job cost + Tritanium
-	// (3 * 10 = 30 units at price 10) scaled to 10 runs yields BuildCost 303,
-	// JobCost 3.0.
+	// The child (1001) is required 10× by the root recipe. Prices reflect
+	// 10-unit totals: BuyPrice = 10 × 5 = 50. Materials: Tritanium (base 3
+	// per run × 10 runs = 30 units × price 10 = 300 ISK). Job cost breakdown:
+	//   EIV       = 30 units × adjustedPrice 1 = 30
+	//   SystemCost = 30 × 0.1 SCI = 3.0
+	//   Gross     = 3.0 (no structure/rig/facility tax in this fixture)
+	//   SCC       = 30 × 4% = 1.2 (CCP flat surcharge)
+	//   JobCost   = 3.0 + 1.2 = 4.2
+	// BuildCost = 300 materials + 4.2 job cost = 304.2.
 	if !industryAlmostEqual(child.BuyPrice, 50.0) {
 		t.Fatalf("child.BuyPrice = %v, want 50", child.BuyPrice)
 	}
-	if !industryAlmostEqual(child.BuildCost, 303.0) {
-		t.Fatalf("child.BuildCost = %v, want 303", child.BuildCost)
+	if !industryAlmostEqual(child.BuildCost, 304.2) {
+		t.Fatalf("child.BuildCost = %v, want 304.2", child.BuildCost)
 	}
-	if !industryAlmostEqual(child.JobCost, 3.0) {
-		t.Fatalf("child.JobCost = %v, want 3", child.JobCost)
+	if !industryAlmostEqual(child.JobCost, 4.2) {
+		t.Fatalf("child.JobCost = %v, want 4.2", child.JobCost)
 	}
 }
 
@@ -580,11 +563,13 @@ func TestAnalyze_ReactionActivityUsesReactionMaterialsAndCostIndex(t *testing.T)
 	if result.MaterialTree.Activity != "reaction" {
 		t.Fatalf("root activity = %q, want reaction", result.MaterialTree.Activity)
 	}
-	if !industryAlmostEqual(result.TotalBuildCost, 102) {
-		t.Fatalf("TotalBuildCost = %v, want 102", result.TotalBuildCost)
+	// Pre-SCC: TotalJobCost 2, TotalBuildCost 102. This reaction uses EIV 10
+	// (adjustedPrice-weighted material total), SCC = 10 × 4% = 0.4.
+	if !industryAlmostEqual(result.TotalBuildCost, 102.4) {
+		t.Fatalf("TotalBuildCost = %v, want 102.4", result.TotalBuildCost)
 	}
-	if !industryAlmostEqual(result.TotalJobCost, 2) {
-		t.Fatalf("TotalJobCost = %v, want reaction-index job cost 2", result.TotalJobCost)
+	if !industryAlmostEqual(result.TotalJobCost, 2.4) {
+		t.Fatalf("TotalJobCost = %v, want reaction-index job cost 2.4", result.TotalJobCost)
 	}
 	if len(result.FlatMaterials) != 1 || result.FlatMaterials[0].TypeID != 34 || result.FlatMaterials[0].Quantity != 10 {
 		t.Fatalf("flat materials = %+v, want 10 Tritanium", result.FlatMaterials)
@@ -664,11 +649,14 @@ func TestAnalyze_InventionAddsExpectedBPCCost(t *testing.T) {
 	if !industryAlmostEqual(result.InventionProbability, 0.4) {
 		t.Fatalf("InventionProbability = %v, want 0.4", result.InventionProbability)
 	}
-	if !industryAlmostEqual(result.InventionCost, 1050) {
-		t.Fatalf("InventionCost = %v, want 1050", result.InventionCost)
+	// Pre-SCC: InventionCost 1050. New: +20 SCC (invention EIV 500 × 4% =
+	// 20, × expected attempts). Build side may also gain SCC — verify via
+	// OptimalBuildCost update.
+	if !industryAlmostEqual(result.InventionCost, 1070) {
+		t.Fatalf("InventionCost = %v, want 1070", result.InventionCost)
 	}
-	if !industryAlmostEqual(result.OptimalBuildCost, 2050) {
-		t.Fatalf("OptimalBuildCost = %v, want build 1000 + invention 1050", result.OptimalBuildCost)
+	if !industryAlmostEqual(result.OptimalBuildCost, 2078) {
+		t.Fatalf("OptimalBuildCost = %v, want build 1008 (+8 SCC) + invention 1070", result.OptimalBuildCost)
 	}
 	if len(result.ActivityPlan) < 2 || result.ActivityPlan[0].Activity != "invention" || result.ActivityPlan[1].Activity != "manufacturing" {
 		t.Fatalf("activity plan = %+v, want invention then manufacturing", result.ActivityPlan)

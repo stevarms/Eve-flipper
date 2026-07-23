@@ -1823,6 +1823,11 @@ export interface IndustryParams {
   te: number; // Time Efficiency 0-20
   system_name: string;
   station_id?: number; // Optional station/structure ID for price lookup
+  /** Optional pricing-system override. When present, product/material market
+   *  prices are read from this system's region instead of `system_name`'s.
+   *  Lets users build in one place (cost index / rigs) and sell in another. */
+  pricing_system_name?: string;
+  pricing_station_id?: number;
   facility_tax: number;
   structure_bonus: number;
   broker_fee?: number;
@@ -1847,6 +1852,44 @@ export interface IndustryParams {
    *  instead of being expanded into a reaction step. Matches the workflow
    *  of a builder who doesn't run reactions. Ignored at the analyzed root. */
   skip_reactions?: boolean;
+  /** Standup rig typeIDs fitted to the build structure (0-3). Empty = no
+   *  rig math applied. Rigs whose FitsStructureGroups doesn't include the
+   *  hull's groupID are silently dropped server-side. */
+  structure_rig_type_ids?: number[];
+  /** Structure hull typeID (Raitaru=35825, Azbel=35826, Sotiyo=35827,
+   *  Athanor, Tatara, etc.). Zero = no player structure (rig math skipped). */
+  structure_type_id?: number;
+  /** Hull-inherent job-cost reduction % (Raitaru 3, Azbel 4, Sotiyo 5;
+   *  refineries typically 0). Applied multiplicatively on top of rig-derived
+   *  cost reductions. */
+  structure_job_cost_reduction?: number;
+}
+
+/** Wire shape of a Standup rig catalog entry, served by GET /api/industry/structure-rigs. */
+export interface StructureRig {
+  type_id: number;
+  name: string;
+  group_id: number;
+  group_name: string;
+  meta_group_id: number;    // 53 = T2, 54 = T1
+  rig_size: number;         // 2=M, 3=L, 4=XL
+  family: string;           // "engineering" | "reaction"
+  activity: string;         // "manufacturing" | "reaction" | "invention" | "copying"
+  product_category_ids: number[];
+  product_group_ids: number[];
+  product_meta_group_ids: number[];
+  affinity_description: string;
+  me_bonus: number;         // negative % (reduction). 0 = no ME effect
+  te_bonus: number;
+  cost_bonus: number;
+  hi_sec_mult: number;      // 0 = cannot run in hisec
+  low_sec_mult: number;
+  null_sec_mult: number;
+  fits_structure_groups: number[];
+}
+
+export interface StructureRigsResponse {
+  rigs: StructureRig[];
 }
 
 export interface BlueprintInfo {
@@ -1927,8 +1970,7 @@ export interface IndustryAnalysis {
   manufacturing_time: number;
   total_activity_time?: number;
   total_job_cost: number;
-  manufacturing_cost?: number;
-  reaction_cost?: number;
+  total_material_cost?: number;
   invention_cost?: number;
   invention_job_cost?: number;
   invention_attempts?: number;
@@ -1941,6 +1983,19 @@ export interface IndustryAnalysis {
   region_id: number;
   region_name?: string;
   blueprint_cost_included: number;
+  /** EVE-canonical Job Installation Cost breakdown, aggregated across the
+   *  whole activity tree (including invention). NetInstall matches
+   *  total_job_cost within rounding. */
+  job_cost_breakdown?: {
+    eiv: number;
+    system_cost: number;       // EIV × SCI
+    structure_bonus: number;   // reduction in ISK (positive)
+    rig_bonus: number;         // reduction in ISK (positive)
+    gross_install: number;     // system_cost − structure_bonus − rig_bonus
+    facility_tax: number;      // gross_install × facility_tax%
+    scc_surcharge: number;     // EIV × 4% (CCP flat fee)
+    net_install: number;       // gross_install + facility_tax + scc_surcharge
+  };
 }
 
 export type NdjsonIndustryMessage =
@@ -1990,10 +2045,18 @@ export interface ProfitableScanRequest {
   // also on, synthetic groups cover invention-only relic BPs so the T3 path
   // still surfaces. Independent of T2.
   include_t3_invention?: boolean;
+  /** When true, reaction BPs (fuel-block formulas, moon composites, hybrid
+   *  polymers) emit reaction rows scored via reaction mode. Off by default. */
+  include_reactions?: boolean;
   /** When true, reaction-only child materials are treated as buy-from-market
    *  instead of expanded into a reaction step. Matches the "I don't run
    *  reactions, I just buy the components" workflow. */
   skip_reactions?: boolean;
+  /** Standup rig loadout for the build structure. Same semantics as the
+   *  Analyze request. */
+  structure_rig_type_ids?: number[];
+  structure_type_id?: number;
+  structure_job_cost_reduction?: number;
   // Product category filter (SDE CategoryID). Empty/omitted = all categories.
   // Common IDs: 6=Ships, 7=Modules, 8=Charges, 17=Commodity, 18=Drone,
   // 20=Implant, 22=Deployable, 32=Subsystem, 34=Material, 35=Component,
@@ -2038,6 +2101,11 @@ export interface ProfitableScanRow {
   blueprint_name: string;
   product_type_id: number;
   product_name: string;
+  /** Product's SDE group name (e.g. "Heavy Assault Cruiser"). Optional
+   *  for backwards compat with cached scan results from older builds. */
+  group_name?: string;
+  /** Product's SDE category name (e.g. "Ship"). Optional as above. */
+  category_name?: string;
   owned_quantity: number;
   is_bpo: boolean;
   available_runs: number;
@@ -2056,7 +2124,7 @@ export interface ProfitableScanRow {
   owned?: boolean;
 
   // Invention-specific fields. "" / 0 for T1 manufacturing rows.
-  scan_mode?: "t1_mfg" | "t2_invention" | "t3_invention";
+  scan_mode?: "t1_mfg" | "t2_invention" | "t3_invention" | "reaction";
   invention_source_bp_id?: number;
   invention_source_bp_name?: string;
   invention_output_bp_id?: number; // T2 BPC typeID
@@ -2081,6 +2149,22 @@ export interface ProfitableScanRow {
   period_margin?: number;
   /** Window used for period stats (server-controlled; typically 30). */
   period_days?: number;
+  /** Units of product produced per one blueprint run. 1 for most modules,
+   *  100 for charges, higher for drones/ammo. Used by the add-to-project
+   *  modal to convert market-demand units → BP runs when suggesting a
+   *  default runs value. Zero/undefined = fall back to 1. */
+  output_qty_per_run?: number;
+
+  /** Cost breakdown for the profit-math tooltip. All in ISK. */
+  total_material_cost?: number;
+  total_job_cost?: number;
+  invention_cost?: number;
+  /** Units produced across the whole plan (Runs × output_qty_per_run for
+   *  T1; equivalent for T2/T3 invention including expected successes). */
+  total_quantity?: number;
+  /** Per-unit sell price AFTER sales tax + broker fee. Equals
+   *  sell_revenue / total_quantity server-side. */
+  unit_sell_price?: number;
 }
 
 export interface ProfitableScanStats {
@@ -2111,6 +2195,11 @@ export interface BuildableItem {
   // blueprint's invention activity). Analyze tab uses it to default ME/TE
   // to 2/4 instead of 10/20.
   is_t2_bp?: boolean;
+  // Base runs per successful invention (before decryptor bonuses). Present
+  // on invented items only: 10 for T2 modules, 100 for T2 ammo, 1 for T2/T3
+  // ships. Analyze tab uses it to auto-scale the "runs" field to one full
+  // BPC so invention cost amortizes across a real BPC's output.
+  base_invention_runs?: number;
 }
 
 export interface IndustrySystem {

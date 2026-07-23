@@ -58,14 +58,86 @@ export function IndustryAnalysisResultsPanel({
   const { t } = useI18n();
   const { addToast } = useGlobalToast();
 
+  // Full profit-math breakdown, rendered once and reused across every summary
+  // card's hover tooltip. Native title attribute honors newlines — no popover
+  // library needed. Falls back gracefully when optional fields are absent.
+  const totalUnits = result.total_quantity ?? 0;
+  const jobCost = result.total_job_cost ?? 0;
+  const invCost = result.invention_cost ?? 0;
+  const bpCost = result.blueprint_cost_included ?? 0;
+  const optimal = result.optimal_build_cost ?? 0;
+  const totalBuild = result.total_build_cost ?? 0;
+  // total_material_cost is the authoritative field from the engine —
+  // includes mfg-tree materials plus invention datacores/decryptor when the
+  // row uses invention, so Materials + JobCost + BP always reconciles to
+  // optimal without invention appearing as its own line (which would
+  // double-count against the material and job totals).
+  const matCost = result.total_material_cost ?? Math.max(0, optimal - jobCost - invCost - bpCost);
+  const unitSell = totalUnits > 0 ? (result.sell_revenue ?? 0) / totalUnits : 0;
+  const unitMarketPrice = totalUnits > 0 ? (result.market_buy_price ?? 0) / totalUnits : 0;
+  const sci = (result.system_cost_index ?? 0) * 100;
+  const hours = (result.manufacturing_time ?? 0) / 3600;
+  const l: string[] = [];
+  l.push(`═ ${result.target_type_name || "Product"} ═`);
+  l.push(`Runs: ${(result.runs ?? 1).toLocaleString()} · Output: ${totalUnits.toLocaleString()} units`);
+  l.push("");
+  l.push(`Market buy (all sell orders):  ${formatISK(result.market_buy_price ?? 0)}`);
+  if (unitMarketPrice > 0) l.push(`  ${totalUnits.toLocaleString()} × ${formatISK(unitMarketPrice)}/unit`);
+  l.push("");
+  l.push(`Sell revenue:                  ${formatISK(result.sell_revenue ?? 0)}`);
+  if (unitSell > 0) l.push(`  ${totalUnits.toLocaleString()} × ${formatISK(unitSell)}/unit (after ${salesTaxPercent}% tax, ${brokerFee}% broker)`);
+  l.push("");
+  l.push(`Build cost:                    ${formatISK(optimal)}`);
+  if (matCost > 0) l.push(`  Materials:                   ${formatISK(matCost)}`);
+  if (jobCost > 0) l.push(`  Job cost:                    ${formatISK(jobCost)}`);
+  if (bpCost > 0) l.push(`  Blueprint amortization:      ${formatISK(bpCost)}`);
+  if (invCost > 0) l.push(`  (of which invention:         ${formatISK(invCost)} incl. datacores + install)`);
+  if (totalBuild > 0 && Math.abs(totalBuild - optimal) > 1) {
+    l.push(`  (all-build cost:             ${formatISK(totalBuild)})`);
+  }
+  // Full job-cost breakdown per CCP formula — inline in the tooltip so
+  // hovering any summary card shows the whole picture without a separate
+  // Job Installation Cost section cluttering the page.
+  const bd = result.job_cost_breakdown;
+  if (bd) {
+    l.push("");
+    l.push("Job Installation Cost:");
+    l.push(`  Estimated Item Value:        ${formatISK(bd.eiv)}`);
+    l.push(`  System Cost Index:           ${sci.toFixed(2)} %`);
+    l.push(`  System Cost:                 ${formatISK(bd.system_cost)}`);
+    if (bd.structure_bonus > 0) l.push(`  Structure Bonus:            −${formatISK(bd.structure_bonus)}`);
+    if (bd.rig_bonus > 0)       l.push(`  Rig Bonus:                  −${formatISK(bd.rig_bonus)}`);
+    l.push(`  Gross Install Cost:          ${formatISK(bd.gross_install)}`);
+    if (bd.facility_tax > 0)    l.push(`  Facility Tax:                ${formatISK(bd.facility_tax)}`);
+    l.push(`  SCC Surcharge (4% of EIV):   ${formatISK(bd.scc_surcharge)}`);
+    l.push(`  Net Install Cost:            ${formatISK(bd.net_install)}`);
+  }
+  l.push("");
+  l.push(`Savings vs market:             ${formatISK(result.savings ?? 0)}  (${(result.savings_percent ?? 0).toFixed(1)}%)`);
+  l.push(`Profit (revenue - build):      ${formatISK(result.profit ?? 0)}  (${(result.profit_percent ?? 0).toFixed(1)}%)`);
+  l.push("");
+  l.push(`Manufacturing time:            ${formatDuration(result.manufacturing_time ?? 0)}`);
+  l.push(`ISK/hour:                      ${formatISK(result.isk_per_hour ?? 0)}`);
+  if ((result.invention_probability ?? 0) > 0) {
+    l.push("");
+    l.push(`Invention: ${((result.invention_probability ?? 0) * 100).toFixed(1)}% × ${(result.invention_attempts ?? 0).toFixed(1)} expected attempts`);
+  }
+  if ((result.region_name ?? "") !== "") {
+    l.push("");
+    l.push(`Pricing region: ${result.region_name}`);
+  }
+  const breakdownTooltip = l.join("\n");
+  void hours; // used implicitly via ISK/hour formula — silence lint
+
   return (
     <div className="flex-1 min-h-0 m-2 mt-0 flex flex-col">
-      <div className="shrink-0 grid grid-cols-2 md:grid-cols-4 gap-2 mb-2">
+      <div className="shrink-0 grid grid-cols-2 md:grid-cols-5 gap-2 mb-2">
         <IndustrySummaryCard
           label={t("industryMarketPrice")}
           value={formatISK(result.market_buy_price ?? 0)}
           subtext={`${(result.total_quantity ?? 0).toLocaleString()} ${t("industryUnits")}`}
           color="text-eve-dim"
+          tooltip={breakdownTooltip}
         />
         <IndustrySummaryCard
           label={t("industryBuildCost")}
@@ -74,18 +146,27 @@ export function IndustryAnalysisResultsPanel({
             ? `${t("industryJobCost")}: ${formatISK(result.total_job_cost ?? 0)} · ${t("industryBPCostIncluded")}: ${formatISK(result.blueprint_cost_included)}`
             : `${t("industryJobCost")}: ${formatISK(result.total_job_cost ?? 0)}`}
           color="text-eve-accent"
+          tooltip={breakdownTooltip}
         />
         <IndustrySummaryCard
           label={t("industrySavings")}
           value={formatISK(result.savings ?? 0)}
           subtext={`${(result.savings_percent ?? 0).toFixed(1)}%`}
           color={(result.savings ?? 0) > 0 ? "text-green-400" : "text-red-400"}
+          tooltip={breakdownTooltip}
         />
         <IndustrySummaryCard
           label={t("industryProfit")}
           value={formatISK(result.profit ?? 0)}
-          subtext={`${(result.profit_percent ?? 0).toFixed(1)}% ROI`}
           color={(result.profit ?? 0) > 0 ? "text-green-400" : "text-red-400"}
+          tooltip={breakdownTooltip}
+        />
+        <IndustrySummaryCard
+          label={t("industryMargin")}
+          value={`${(result.profit_percent ?? 0).toFixed(1)}%`}
+          subtext={t("industryMarginSubtext")}
+          color={(result.profit_percent ?? 0) > 0 ? "text-green-400" : "text-red-400"}
+          tooltip={breakdownTooltip}
         />
       </div>
 
@@ -94,23 +175,27 @@ export function IndustryAnalysisResultsPanel({
           label={t("industryISKPerHour")}
           value={formatISK(result.isk_per_hour ?? 0)}
           color={(result.isk_per_hour ?? 0) > 0 ? "text-yellow-400" : "text-red-400"}
+          tooltip={breakdownTooltip}
         />
         <IndustrySummaryCard
           label={t("industryMfgTime")}
           value={formatDuration(result.manufacturing_time ?? 0)}
           color="text-eve-dim"
+          tooltip={breakdownTooltip}
         />
         <IndustrySummaryCard
           label={t("industrySellRevenue")}
           value={formatISK(result.sell_revenue ?? 0)}
           subtext={`-${salesTaxPercent}% tax -${brokerFee}% broker`}
           color="text-eve-dim"
+          tooltip={breakdownTooltip}
         />
         <IndustrySummaryCard
           label={t("industryJobCost")}
           value={formatISK(result.total_job_cost ?? 0)}
           subtext={`SCI: ${((result.system_cost_index ?? 0) * 100).toFixed(2)}%`}
           color="text-eve-dim"
+          tooltip={breakdownTooltip}
         />
       </div>
 

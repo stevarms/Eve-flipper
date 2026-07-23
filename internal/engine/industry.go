@@ -57,6 +57,30 @@ type IndustryParams struct {
 	// (fuel blocks, moon composites, etc.). Ignored at the root — if the
 	// user asks to analyze a reaction product directly, that request wins.
 	SkipReactions bool
+	// StructureRigs describes the Standup rig loadout on the build structure.
+	// Empty RigTypeIDs → no rig math applied (backward-compatible with
+	// scans that predate rig support).
+	StructureRigs StructureRigConfig
+	// StructureJobCostReduction is the hull-inherent job-cost bonus % for
+	// the structure (Raitaru=3, Azbel=4, Sotiyo=5, refineries=0). Distinct
+	// from rig job-cost reductions, which stack on top via StructureRigs.
+	StructureJobCostReduction float64
+}
+
+// StructureRigConfig describes the rig loadout for the analyzer's build
+// structure. All fields optional; zero-value = no rig contribution.
+type StructureRigConfig struct {
+	// Up to 3 rig typeIDs. Unknown IDs and rigs that don't fit
+	// StructureTypeID are silently dropped.
+	RigTypeIDs []int32
+	// Structure hull typeID (Raitaru=35825, Azbel=35826, Sotiyo=35827,
+	// Athanor/Tatara etc.). Zero → engine skips rig math entirely.
+	StructureTypeID int32
+	// SystemSecurity in [0.0, 1.0] range. When zero, engine looks it up
+	// from SDE.Systems[SystemID].Security. Set explicitly by callers who
+	// want to override (e.g. scanning for a "what if this were nullsec"
+	// scenario).
+	SystemSecurity float64
 }
 
 // MaterialNode represents a node in the production tree.
@@ -130,12 +154,11 @@ type IndustryAnalysis struct {
 	InstantSellRevenue    float64                `json:"instant_sell_revenue"` // Selling into visible buy orders after sales tax
 	InstantSellProfit     float64                `json:"instant_sell_profit"`
 	InstantSellAvailable  bool                   `json:"instant_sell_available"`
-	ISKPerHour            float64                `json:"isk_per_hour"`       // Profit / manufacturing hours
-	ManufacturingTime     int32                  `json:"manufacturing_time"` // Total time in seconds
-	TotalActivityTime     int32                  `json:"total_activity_time"`
-	TotalJobCost          float64                `json:"total_job_cost"` // Sum of all job installation costs
-	ManufacturingCost     float64                `json:"manufacturing_cost"`
-	ReactionCost          float64                `json:"reaction_cost"`
+	ISKPerHour            float64                `json:"isk_per_hour"`       // Profit / manufacturing hours (root activity time)
+	ManufacturingTime     int32                  `json:"manufacturing_time"` // Root activity's own time in seconds (matches in-game display)
+	TotalActivityTime     int32                  `json:"total_activity_time"` // Sum of every step's time across the plan (for planners that serialize all sub-builds)
+	TotalJobCost          float64                `json:"total_job_cost"`      // Root install cost (+ invention install if any) — matches in-game single-job display
+	TotalMaterialCost     float64                `json:"total_material_cost"` // All non-install spending: mfg materials + (for invention rows) datacores/decryptor. Reconciles: material + job + bp = optimal.
 	InventionCost         float64                `json:"invention_cost"`
 	InventionJobCost      float64                `json:"invention_job_cost"`
 	InventionAttempts     float64                `json:"invention_attempts"`
@@ -148,6 +171,12 @@ type IndustryAnalysis struct {
 	RegionID              int32                  `json:"region_id"`               // Market region for execution plan
 	RegionName            string                 `json:"region_name"`             // Optional display name
 	BlueprintCostIncluded float64                `json:"blueprint_cost_included"` // BP cost added to build cost
+	// JobCostBreakdown carries the EVE-canonical Job Installation Cost line
+	// items (EIV, System Cost, Structure Bonus, Rig Bonus, Gross Install,
+	// Facility Tax, SCC Surcharge, Net Install) summed across the whole
+	// activity tree — invention step included. NetInstall matches
+	// TotalJobCost within rounding.
+	JobCostBreakdown JobCostBreakdown `json:"job_cost_breakdown"`
 }
 
 // FlatMaterial is a simplified material for the shopping list.
@@ -160,6 +189,25 @@ type FlatMaterial struct {
 	Volume     float64 `json:"volume"`
 }
 
+// jobCostSCCSurchargePercent is CCP's flat "Secure Commerce Commission"
+// surcharge, added to every job's install cost as a fixed % of EIV
+// regardless of structure or location. Currently 4% (post-Uprising).
+const jobCostSCCSurchargePercent = 4.0
+
+// JobCostBreakdown is the aggregate job-install-cost math for a single
+// Analyze() call. Mirrors CCP's canonical line items so the UI can render
+// the breakdown without recomputing from scalars.
+type JobCostBreakdown struct {
+	EIV            float64 `json:"eiv"`
+	SystemCost     float64 `json:"system_cost"`
+	StructureBonus float64 `json:"structure_bonus"` // reduction, positive ISK
+	RigBonus       float64 `json:"rig_bonus"`       // reduction, positive ISK
+	GrossInstall   float64 `json:"gross_install"`
+	FacilityTax    float64 `json:"facility_tax"`
+	SCCSurcharge   float64 `json:"scc_surcharge"`
+	NetInstall     float64 `json:"net_install"`
+}
+
 // IndustryAnalyzer performs industry calculations.
 type IndustryAnalyzer struct {
 	SDE                  *sde.Data
@@ -170,6 +218,7 @@ type IndustryAnalyzer struct {
 	marketSellOrders     map[int32][]esi.MarketOrder
 	marketBuyOrders      map[int32][]esi.MarketOrder
 	systemCostIndices    *esi.SystemCostIndices
+	jobCostBreakdown     JobCostBreakdown // reset at Analyze() start
 	getAllAdjustedPrices func(cache *esi.IndustryCache) (map[int32]float64, error)
 	getSystemCostIndex   func(cache *esi.IndustryCache, systemID int32) (*esi.SystemCostIndices, error)
 	fetchMarketPricesFn  func(params IndustryParams) (map[int32]float64, error)
@@ -183,6 +232,49 @@ func NewIndustryAnalyzer(sdeData *sde.Data, esiClient *esi.Client) *IndustryAnal
 		ESI:           esiClient,
 		IndustryCache: esi.NewIndustryCache(),
 	}
+}
+
+// SetMarketBooksOverride injects a custom market-book fetcher. Used by the
+// profitable-blueprints scanner to memoize book fetches once per scan
+// instead of re-fetching + re-grouping the entire region's order book
+// (~500k orders per side in The Forge) for every row. Pass nil to clear
+// the override and restore default ESI-backed fetching.
+func (a *IndustryAnalyzer) SetMarketBooksOverride(fn func(IndustryParams) (map[int32][]esi.MarketOrder, map[int32][]esi.MarketOrder, error)) {
+	a.fetchMarketBooksFn = fn
+}
+
+// SetMarketPricesOverride is the sibling injection for best-ask price maps.
+// Same rationale as SetMarketBooksOverride — batch scans call Analyze once
+// per row and each call re-runs the price aggregation over cached ESI
+// data, so memoizing the aggregated map is a straight win.
+func (a *IndustryAnalyzer) SetMarketPricesOverride(fn func(IndustryParams) (map[int32]float64, error)) {
+	a.fetchMarketPricesFn = fn
+}
+
+// SetAdjustedPricesOverride is the sibling injection for adjusted prices.
+// The ESI cache already dedups the network round-trip; this lets a scan
+// skip even the sync.Map lookup + map materialization on every row.
+func (a *IndustryAnalyzer) SetAdjustedPricesOverride(fn func(*esi.IndustryCache) (map[int32]float64, error)) {
+	a.getAllAdjustedPrices = fn
+}
+
+// LoadMarketBooksForParams exposes the internal market-book loader so the
+// scanner's memoization closure can invoke the real (non-overridden) fetch
+// path via a temporary analyzer copy. Not intended for general use — the
+// standard entry point is Analyze().
+func (a *IndustryAnalyzer) LoadMarketBooksForParams(p IndustryParams) (map[int32][]esi.MarketOrder, map[int32][]esi.MarketOrder, error) {
+	return a.loadMarketBooks(p)
+}
+
+// LoadMarketPricesForParams — sibling to LoadMarketBooksForParams for the
+// best-ask price map.
+func (a *IndustryAnalyzer) LoadMarketPricesForParams(p IndustryParams) (map[int32]float64, error) {
+	return a.loadMarketPrices(p)
+}
+
+// LoadAdjustedPrices — sibling to LoadMarketBooksForParams for adjusted prices.
+func (a *IndustryAnalyzer) LoadAdjustedPrices() (map[int32]float64, error) {
+	return a.loadAdjustedPrices()
 }
 
 func (a *IndustryAnalyzer) ensureIndustryCache() {
@@ -288,6 +380,11 @@ func (a *IndustryAnalyzer) Analyze(params IndustryParams, progress func(string))
 		a.marketBuyOrders = marketBuyOrders
 	}
 
+	// Reset per-call accumulators so a reused analyzer instance doesn't
+	// mix breakdown terms across calls. (calculateCosts walks the tree and
+	// adds to jobCostBreakdown; must start from zero every Analyze.)
+	a.jobCostBreakdown = JobCostBreakdown{}
+
 	// Get system cost index
 	var costIndex float64
 	a.systemCostIndices = nil
@@ -389,31 +486,48 @@ func (a *IndustryAnalyzer) Analyze(params IndustryParams, progress func(string))
 		profitPercent = profit / optimalCost * 100
 	}
 
-	// Manufacturing time for ISK/hour
-	var mfgTime int32
+	// Root activity time (blueprint base × TE modifiers already baked into
+	// the tree's node.Blueprint.Time is CCP's static base; the per-run ME/TE
+	// reduction is stored on the tree via node materials, not here — root
+	// time is just the blueprint's own activity time for the queued runs).
+	// This matches what the EVE Industry window shows for the top-level job.
+	var rootTime int32
 	if tree.Blueprint != nil {
-		mfgTime = tree.Blueprint.Time
-	}
-	iskPerHour := 0.0
-	if mfgTime > 0 {
-		iskPerHour = profit / (float64(mfgTime) / 3600.0)
+		rootTime = tree.Blueprint.Time
 	}
 
-	totalJobCost := a.sumJobCosts(tree)
+	// TotalJobCost is the install cost the player directly pays to produce
+	// the target: root activity's install + invention step install (if any).
+	// Sub-material install costs live inside their own build costs, which
+	// are already inside tree.BuildCost via the recursive material tree —
+	// summing every buildable node's JobCost here would double-count them
+	// against tree.BuildCost and inflate the "Materials = build - job"
+	// derivation on the frontend tooltip. Matches CCP's in-game Industry
+	// window which shows exactly the one install cost for the queued job.
+	totalJobCost := tree.JobCost
+	// totalMaterialCost is what the user actually buys off the market —
+	// mfg-tree materials plus, for invention rows, the datacores/decryptor
+	// (invention step's total minus its install fees). Reconciles cleanly:
+	// totalMaterialCost + totalJobCost + bpCost = optimalBuildCost.
+	totalMaterialCost := tree.MaterialCost
 	if hasInvention {
 		totalJobCost += inventionJobCost
+		totalMaterialCost += inventionCost - inventionJobCost
 	}
 	activityPlan := a.buildActivityPlan(tree)
 	if hasInvention {
 		activityPlan = append([]IndustryActivityStep{inventionStep}, activityPlan...)
 	}
-	manufacturingCost, reactionCost := sumActivityPlanCosts(activityPlan)
+	// TotalActivityTime is the sum across the plan (serial worst-case).
+	// Root time drives ISK/h since it's the throughput of the queued job:
+	// sub-material builds run in separate slots and don't gate this job.
 	totalActivityTime := sumActivityPlanTime(activityPlan)
 	if totalActivityTime == 0 {
-		totalActivityTime = mfgTime
+		totalActivityTime = rootTime
 	}
-	if totalActivityTime > 0 {
-		iskPerHour = profit / (float64(totalActivityTime) / 3600.0)
+	iskPerHour := 0.0
+	if rootTime > 0 {
+		iskPerHour = profit / (float64(rootTime) / 3600.0)
 	}
 
 	regionID, regionName := a.resolveMarketRegion(params)
@@ -437,11 +551,10 @@ func (a *IndustryAnalyzer) Analyze(params IndustryParams, progress func(string))
 		InstantSellProfit:     instantSellRevenue - optimalCost,
 		InstantSellAvailable:  instantSellAvailable,
 		ISKPerHour:            iskPerHour,
-		ManufacturingTime:     totalActivityTime,
+		ManufacturingTime:     rootTime,
 		TotalActivityTime:     totalActivityTime,
 		TotalJobCost:          totalJobCost,
-		ManufacturingCost:     manufacturingCost,
-		ReactionCost:          reactionCost,
+		TotalMaterialCost:     totalMaterialCost,
 		InventionCost:         inventionCost,
 		InventionJobCost:      inventionJobCost,
 		InventionAttempts:     inventionAttempts,
@@ -454,6 +567,7 @@ func (a *IndustryAnalyzer) Analyze(params IndustryParams, progress func(string))
 		RegionID:              regionID,
 		RegionName:            regionName,
 		BlueprintCostIncluded: bpCostIncluded,
+		JobCostBreakdown:      a.jobCostBreakdown,
 	}, nil
 }
 
@@ -500,20 +614,23 @@ func (a *IndustryAnalyzer) buildMaterialTree(typeID int32, quantity int32, param
 	node.Activity = activity
 	node.Runs = runsNeeded
 
+	// Rig contribution for this specific product + activity. Cheap when
+	// there are no rigs (early-returns zeros). Computed once per node.
+	sec := a.resolveSystemSecurity(params.StructureRigs, params.SystemID)
+	rigME, rigTE, _ := a.rigContribution(params.StructureRigs, activity, typeID, sec)
+
 	node.Blueprint = &BlueprintInfo{
 		BlueprintTypeID: bp.BlueprintTypeID,
 		ProductQuantity: productQuantity,
 		ME:              params.MaterialEfficiency,
 		TE:              params.TimeEfficiency,
-		Time:            calculateActivityTime(bp, activity, runsNeeded, params.TimeEfficiency),
+		Time:            calculateActivityTime(bp, activity, runsNeeded, params.TimeEfficiency, rigTE),
 		Activity:        activity,
 		Probability:     probability,
 	}
 
-	// FIX #5: Apply ME and structure bonus in a single step before ceiling
-	// to avoid rounding errors from intermediate truncation.
-	// EVE formula: max(runs, ceil(base × runs × (1-ME/100) × (1-structureBonus/100)))
-	materials := calculateActivityMaterials(bp, activity, runsNeeded, params.MaterialEfficiency, params.StructureBonus)
+	// EVE formula: max(runs, ceil(base × runs × (1-ME/100) × (1-structureBonus/100) × (1-rigMEReduction/100)))
+	materials := calculateActivityMaterials(bp, activity, runsNeeded, params.MaterialEfficiency, params.StructureBonus, rigME)
 
 	// Build children recursively
 	for _, mat := range materials {
@@ -549,10 +666,59 @@ func (a *IndustryAnalyzer) calculateCosts(node *MaterialNode, costIndex float64,
 	}
 	node.MaterialCost = materialCost
 
-	// Calculate job installation cost
-	// Formula: EIV * cost_index * (1 + facility_tax)
+	// Calculate job installation cost — matches CCP's real EVE formula.
+	// Corrected on 2026-07-22 after cross-checking against the in-game
+	// Industry window: BOTH FacilityTax and SCCSurcharge are % of EIV
+	// (not % of Gross Install). Prior code multiplied FacilityTax against
+	// Gross, which under-charged by ~30x for a typical 4% SCI hisec setup.
+	//
+	//   SystemCost     = EIV × SCI
+	//   StructureBonus = SystemCost × structureJobCostReduction%   (reduction)
+	//   RigBonus       = SystemCost × rigCost%                     (reduction)
+	//   GrossInstall   = SystemCost − StructureBonus − RigBonus
+	//   FacilityTax    = EIV × facilityTax%                         (of EIV, not Gross)
+	//   SCCSurcharge   = EIV × 4%                                   (CCP flat fee)
+	//   NetInstall     = GrossInstall + FacilityTax + SCCSurcharge
 	eiv := a.calculateEIV(node)
-	node.JobCost = eiv * a.costIndexForActivity(node.Activity, costIndex) * (1 + params.FacilityTax/100)
+	sci := a.costIndexForActivity(node.Activity, costIndex)
+	sec := a.resolveSystemSecurity(params.StructureRigs, params.SystemID)
+	_, _, rigCost := a.rigContribution(params.StructureRigs, node.Activity, node.TypeID, sec)
+
+	systemCost := eiv * sci
+	structureBonus := systemCost * (params.StructureJobCostReduction / 100.0)
+	if structureBonus < 0 {
+		structureBonus = 0
+	}
+	rigBonus := systemCost * (rigCost / 100.0)
+	if rigBonus < 0 {
+		rigBonus = 0
+	}
+	grossInstall := systemCost - structureBonus - rigBonus
+	if grossInstall < 0 {
+		grossInstall = 0
+	}
+	facilityTax := eiv * (params.FacilityTax / 100.0)
+	sccSurcharge := eiv * jobCostSCCSurchargePercent / 100.0
+	node.JobCost = grossInstall + facilityTax + sccSurcharge
+
+	// Breakdown is populated ONLY for the root node — the specific job the
+	// user is running. In-game EVE Industry window shows just that job's
+	// install cost, not the aggregate of every built sub-material. Summing
+	// every buildable child into one figure would double- or triple-count
+	// jobs the user isn't actually about to install. Sub-material job
+	// costs still add into total_build_cost via node.JobCost above.
+	if node.TypeID == params.TypeID {
+		a.jobCostBreakdown = JobCostBreakdown{
+			EIV:            eiv,
+			SystemCost:     systemCost,
+			StructureBonus: structureBonus,
+			RigBonus:       rigBonus,
+			GrossInstall:   grossInstall,
+			FacilityTax:    facilityTax,
+			SCCSurcharge:   sccSurcharge,
+			NetInstall:     node.JobCost,
+		}
+	}
 
 	node.BuildCost = materialCost + node.JobCost
 
@@ -718,14 +884,24 @@ func activityMaterials(bp *sde.Blueprint, activity string) []sde.BlueprintMateri
 	return bp.Materials
 }
 
-func calculateActivityMaterials(bp *sde.Blueprint, activity string, runs, me int32, structureBonus float64) []sde.BlueprintMaterial {
+// calculateActivityMaterials returns the raw material list for `runs` of the
+// given activity, applying blueprint ME, structure-inherent ME, and rig-derived
+// ME reductions. rigMEReduction is a positive number in percent-form (e.g. 4.4
+// for a 4.4% reduction). Applied multiplicatively so real EVE-style combined
+// bonuses fall out naturally.
+//
+// Reactions apply structureBonus + rigMEReduction the same way manufacturing
+// does (blueprint ME is always 0 for reactions). Historically reactions
+// received no structure/rig ME; the fix in this pass makes reaction rigs
+// actually reduce moon-composite material use.
+func calculateActivityMaterials(bp *sde.Blueprint, activity string, runs, me int32, structureBonus, rigMEReduction float64) []sde.BlueprintMaterial {
 	materials := activityMaterials(bp, activity)
 	if len(materials) == 0 || runs <= 0 {
 		return nil
 	}
 	result := make([]sde.BlueprintMaterial, 0, len(materials))
 	switch activity {
-	case "manufacturing":
+	case "manufacturing", "reaction":
 		if me < 0 {
 			me = 0
 		}
@@ -735,10 +911,18 @@ func calculateActivityMaterials(bp *sde.Blueprint, activity string, runs, me int
 		if structureBonus < 0 {
 			structureBonus = 0
 		}
+		if rigMEReduction < 0 {
+			rigMEReduction = 0
+		}
 		meMultiplier := 1.0 - float64(me)/100.0
 		structureMultiplier := 1.0 - structureBonus/100.0
+		rigMultiplier := 1.0 - rigMEReduction/100.0
+		if activity == "reaction" {
+			// Reactions have no blueprint ME; only structure + rig apply.
+			meMultiplier = 1.0
+		}
 		for _, mat := range materials {
-			qty := int32(math.Ceil(float64(mat.Quantity) * float64(runs) * meMultiplier * structureMultiplier))
+			qty := int32(math.Ceil(float64(mat.Quantity) * float64(runs) * meMultiplier * structureMultiplier * rigMultiplier))
 			if qty < runs {
 				qty = runs
 			}
@@ -752,7 +936,11 @@ func calculateActivityMaterials(bp *sde.Blueprint, activity string, runs, me int
 	return result
 }
 
-func calculateActivityTime(bp *sde.Blueprint, activity string, runs, te int32) int32 {
+// calculateActivityTime returns total activity time in seconds. Applies
+// blueprint TE (manufacturing only) and rig TE reduction (manufacturing,
+// reaction, and invention). rigTEReduction is percent-form, positive
+// (e.g. 20.0 for a 20% time reduction).
+func calculateActivityTime(bp *sde.Blueprint, activity string, runs, te int32, rigTEReduction float64) int32 {
 	if bp == nil || runs <= 0 {
 		return 0
 	}
@@ -760,6 +948,10 @@ func calculateActivityTime(bp *sde.Blueprint, activity string, runs, te int32) i
 	if act := bp.Activities[activity]; act != nil && act.Time > 0 {
 		baseTime = act.Time
 	}
+	if rigTEReduction < 0 {
+		rigTEReduction = 0
+	}
+	rigMultiplier := 1.0 - rigTEReduction/100.0
 	if activity == "manufacturing" {
 		if te < 0 {
 			te = 0
@@ -767,9 +959,95 @@ func calculateActivityTime(bp *sde.Blueprint, activity string, runs, te int32) i
 		if te > 20 {
 			te = 20
 		}
-		return int32(float64(baseTime) * float64(runs) * (1.0 - float64(te)/100.0))
+		return int32(float64(baseTime) * float64(runs) * (1.0 - float64(te)/100.0) * rigMultiplier)
 	}
-	return baseTime * runs
+	// Reactions + invention: no blueprint TE, but rig TE still applies.
+	return int32(float64(baseTime) * float64(runs) * rigMultiplier)
+}
+
+// resolveSystemSecurity returns the security status used for rig sec-scaling
+// this analyze call. Prefers the explicit override in the config, else looks
+// up SDE.Systems[SystemID].Security. Returns 0 (nullsec-equivalent) when
+// neither is available.
+func (a *IndustryAnalyzer) resolveSystemSecurity(cfg StructureRigConfig, systemID int32) float64 {
+	if cfg.SystemSecurity > 0 {
+		return cfg.SystemSecurity
+	}
+	if a == nil || a.SDE == nil || systemID == 0 {
+		return 0
+	}
+	if sys, ok := a.SDE.Systems[systemID]; ok && sys != nil {
+		return sys.Security
+	}
+	return 0
+}
+
+// rigContribution walks the fitted rigs, filters to those whose affinity
+// matches (activity, product category/group/metaGroup), applies the sec-
+// status multiplier, and returns aggregated ME/TE/cost reductions in
+// percent-form (positive numbers). Additive across up to 3 rigs — EVE's
+// structure rigs don't stacking-penalize.
+//
+// productTypeID is the item being produced by this activity. For invention
+// rows, that's the T2/T3 module (not the source BPC). For manufacturing/
+// reaction, it's the direct output.
+//
+// Returns zeros when rig math isn't applicable (empty loadout, no SDE,
+// unknown structure).
+func (a *IndustryAnalyzer) rigContribution(cfg StructureRigConfig, activity string, productTypeID int32, systemSec float64) (meReduction, teReduction, costReduction float64) {
+	if a == nil || a.SDE == nil || len(cfg.RigTypeIDs) == 0 {
+		return 0, 0, 0
+	}
+	if a.SDE.Rigs == nil || a.SDE.RigAffinities == nil {
+		return 0, 0, 0
+	}
+	product := a.SDE.Types[productTypeID]
+	for _, rigID := range cfg.RigTypeIDs {
+		if rigID <= 0 {
+			continue
+		}
+		rig := a.SDE.Rigs[rigID]
+		if rig == nil {
+			continue
+		}
+		aff, hasAff := a.SDE.RigAffinities[rig.GroupID]
+		if !hasAff {
+			continue
+		}
+		if !aff.Matches(activity, product) {
+			continue
+		}
+		// Fit check: if structure hull known, silently drop rigs that
+		// don't fit (guards stale UI state that survived a hull switch).
+		if cfg.StructureTypeID != 0 {
+			hullGroup := int32(0)
+			if t := a.SDE.Types[cfg.StructureTypeID]; t != nil {
+				hullGroup = t.GroupID
+			}
+			if hullGroup != 0 {
+				fits := false
+				for _, g := range rig.FitsStructureGroups {
+					if g == hullGroup {
+						fits = true
+						break
+					}
+				}
+				if !fits {
+					continue
+				}
+			}
+		}
+		mult := rig.SecMultiplier(systemSec)
+		if mult == 0 {
+			continue // rig can't operate at this sec (e.g. advanced rig in hisec)
+		}
+		// Bonus values in SDE are negative for reductions; flip sign so
+		// meReduction/teReduction/costReduction are positive percentages.
+		meReduction += -rig.MEBonus * mult
+		teReduction += -rig.TEBonus * mult
+		costReduction += -rig.CostBonus * mult
+	}
+	return meReduction, teReduction, costReduction
 }
 
 func normalizeProbability(probability float64) float64 {
@@ -840,14 +1118,47 @@ func (a *IndustryAnalyzer) calculateInventionStep(params IndustryParams, tree *M
 		successesNeeded = 1
 	}
 	expectedAttempts := successesNeeded / chance
-	attemptMaterials := calculateActivityMaterials(sourceBP, "invention", 1, 0, 0)
+	// Invention rigs apply here: TE reduces invention time, cost bonus
+	// reduces invention job cost. ME rigs don't affect invention (datacore
+	// materials aren't ME-reduced in EVE).
+	invSec := a.resolveSystemSecurity(params.StructureRigs, params.SystemID)
+	_, invRigTE, invRigCost := a.rigContribution(params.StructureRigs, "invention", product.TypeID, invSec)
+	attemptMaterials := calculateActivityMaterials(sourceBP, "invention", 1, 0, 0, 0)
 	materialCostPerAttempt := 0.0
 	eivPerAttempt := 0.0
 	for _, mat := range attemptMaterials {
 		materialCostPerAttempt += a.marketBuyCost(mat.TypeID, mat.Quantity)
 		eivPerAttempt += a.adjustedPrices[mat.TypeID] * float64(mat.Quantity)
 	}
-	jobCostPerAttempt := eivPerAttempt * a.costIndexForActivity("invention", fallbackCostIndex) * (1 + params.FacilityTax/100)
+	// Same CCP formula as the tree job cost: SystemCost − StructureBonus
+	// − RigBonus + FacilityTax + SCCSurcharge, all summed per attempt.
+	invSCI := a.costIndexForActivity("invention", fallbackCostIndex)
+	invSystemCost := eivPerAttempt * invSCI
+	invStructureBonus := invSystemCost * (params.StructureJobCostReduction / 100.0)
+	if invStructureBonus < 0 {
+		invStructureBonus = 0
+	}
+	invRigBonus := invSystemCost * (invRigCost / 100.0)
+	if invRigBonus < 0 {
+		invRigBonus = 0
+	}
+	invGrossInstall := invSystemCost - invStructureBonus - invRigBonus
+	if invGrossInstall < 0 {
+		invGrossInstall = 0
+	}
+	invFacilityTax := eivPerAttempt * (params.FacilityTax / 100.0)
+	invSCC := eivPerAttempt * jobCostSCCSurchargePercent / 100.0
+	jobCostPerAttempt := invGrossInstall + invFacilityTax + invSCC
+	// Accumulate the invention step's breakdown onto the analyzer's
+	// running totals, scaled by expected attempts.
+	a.jobCostBreakdown.EIV += eivPerAttempt * expectedAttempts
+	a.jobCostBreakdown.SystemCost += invSystemCost * expectedAttempts
+	a.jobCostBreakdown.StructureBonus += invStructureBonus * expectedAttempts
+	a.jobCostBreakdown.RigBonus += invRigBonus * expectedAttempts
+	a.jobCostBreakdown.GrossInstall += invGrossInstall * expectedAttempts
+	a.jobCostBreakdown.FacilityTax += invFacilityTax * expectedAttempts
+	a.jobCostBreakdown.SCCSurcharge += invSCC * expectedAttempts
+	a.jobCostBreakdown.NetInstall += jobCostPerAttempt * expectedAttempts
 	totalPerAttempt := materialCostPerAttempt + jobCostPerAttempt + params.DecryptorCost
 	// Both source BP and invention output (T2 BPC) are blueprint typeIDs — use
 	// the BP-aware name resolver so we don't emit "Type 41370" when the
@@ -866,7 +1177,7 @@ func (a *IndustryAnalyzer) calculateInventionStep(params IndustryParams, tree *M
 		MaterialCost:     materialCostPerAttempt * expectedAttempts,
 		JobCost:          jobCostPerAttempt * expectedAttempts,
 		TotalCost:        totalPerAttempt * expectedAttempts,
-		TimeSeconds:      int32(math.Ceil(float64(calculateActivityTime(sourceBP, "invention", 1, 0)) * expectedAttempts)),
+		TimeSeconds:      int32(math.Ceil(float64(calculateActivityTime(sourceBP, "invention", 1, 0, invRigTE)) * expectedAttempts)),
 		Probability:      chance,
 		ExpectedAttempts: expectedAttempts,
 		Reason:           "expected_bpc_cost",
@@ -927,18 +1238,6 @@ func (a *IndustryAnalyzer) buildActivityPlan(root *MaterialNode) []IndustryActiv
 	}
 	walk(root)
 	return out
-}
-
-func sumActivityPlanCosts(steps []IndustryActivityStep) (manufacturingCost, reactionCost float64) {
-	for _, step := range steps {
-		switch step.Activity {
-		case "reaction":
-			reactionCost += step.TotalCost
-		case "manufacturing":
-			manufacturingCost += step.TotalCost
-		}
-	}
-	return manufacturingCost, reactionCost
 }
 
 func sumActivityPlanTime(steps []IndustryActivityStep) int32 {
@@ -1010,18 +1309,6 @@ func (a *IndustryAnalyzer) collectBaseMaterials(node *MaterialNode, materials ma
 	for _, child := range node.Children {
 		a.collectBaseMaterials(child, materials)
 	}
-}
-
-// sumJobCosts calculates total job costs for all building steps.
-func (a *IndustryAnalyzer) sumJobCosts(node *MaterialNode) float64 {
-	total := 0.0
-	if node.ShouldBuild && !node.IsBase {
-		total += node.JobCost
-	}
-	for _, child := range node.Children {
-		total += a.sumJobCosts(child)
-	}
-	return total
 }
 
 // resolveMarketRegion chooses the market region for pricing.
@@ -1193,8 +1480,13 @@ type SearchResult struct {
 	// (its blueprintTypeID appears in some other blueprint's invention
 	// products). The Analyze tab uses this to default ME/TE to 2/4 for T2
 	// items instead of the T1 BPO-researched 10/20.
-	IsT2BP    bool `json:"is_t2_bp"`
-	relevance int  // 0 = exact, 1 = starts with, 2 = contains
+	IsT2BP bool `json:"is_t2_bp"`
+	// BaseInventionRuns is the base runs of one invented BPC that produces
+	// this product (before decryptor bonuses). Zero for non-invented items.
+	// The Analyze tab uses it to auto-scale the "runs" field to a full BPC
+	// so invention amortization spreads over the whole 10/100/1-run BPC.
+	BaseInventionRuns int32 `json:"base_invention_runs"`
+	relevance         int   // 0 = exact, 1 = starts with, 2 = contains
 }
 
 // SearchBuildableItems returns items matching the query.
@@ -1231,20 +1523,23 @@ func (a *IndustryAnalyzer) SearchBuildableItems(query string, limit int) []Searc
 		// Check if this item has a blueprint (safely)
 		hasBlueprint := false
 		isT2 := false
+		var baseInvRuns int32
 		if a.SDE.Industry != nil {
 			bpID, ok := a.SDE.Industry.ProductToBlueprint[typeID]
 			hasBlueprint = ok
 			if ok && a.SDE.Industry.InventionProducts[bpID] {
 				isT2 = true
+				baseInvRuns = a.SDE.Industry.InventionOutputRunsByBPC[bpID]
 			}
 		}
 
 		results = append(results, SearchResult{
-			TypeID:       typeID,
-			TypeName:     t.Name,
-			HasBlueprint: hasBlueprint,
-			IsT2BP:       isT2,
-			relevance:    relevance,
+			TypeID:            typeID,
+			TypeName:          t.Name,
+			HasBlueprint:      hasBlueprint,
+			IsT2BP:            isT2,
+			BaseInventionRuns: baseInvRuns,
+			relevance:         relevance,
 		})
 	}
 
