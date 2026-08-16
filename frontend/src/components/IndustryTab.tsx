@@ -93,6 +93,8 @@ const IndustryProfitableScannerPanel = lazy(async () => {
   return { default: mod.IndustryProfitableScannerPanel };
 });
 
+const IndustryStockpilePanel = lazy(() => import("./industry/IndustryStockpilePanel"));
+
 // Highlight matching text in search results
 function HighlightMatch({ text, query }: { text: string; query: string }) {
   if (!query.trim()) return <>{text}</>;
@@ -121,7 +123,7 @@ interface Props {
 // (home base with all your workflows), Discover (find what to build), Plan
 // (per-project build setup), Operations (execution tracking). The old
 // Analysis/Jobs top-level split + nested sub-tabs collapsed into one bar.
-type IndustryTab = "projects" | "discover" | "plan" | "operations";
+type IndustryTab = "projects" | "discover" | "plan" | "operations" | "stockpiles";
 type DiscoverSource = "search" | "scan";
 const INDUSTRY_TAB_LS_KEY = "eve-settings:industry-tab";
 const DISCOVER_SOURCE_LS_KEY = "eve-settings:industry-discover-source";
@@ -2674,11 +2676,12 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     updatingLedgerJobId,
   ]);
 
-  const industryTabDefs: Array<{ id: IndustryTab; labelKey: "industryTabProjects" | "industryTabDiscover" | "industryTabPlan" | "industryTabOperations" }> = [
+  const industryTabDefs: Array<{ id: IndustryTab; labelKey: "industryTabProjects" | "industryTabDiscover" | "industryTabPlan" | "industryTabOperations" | "industryTabStockpiles" }> = [
     { id: "projects", labelKey: "industryTabProjects" },
     { id: "discover", labelKey: "industryTabDiscover" },
     { id: "plan", labelKey: "industryTabPlan" },
     { id: "operations", labelKey: "industryTabOperations" },
+    { id: "stockpiles", labelKey: "industryTabStockpiles" },
   ];
 
   return (
@@ -2691,7 +2694,8 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
       industryTab === "plan" ||
       industryTab === "operations" ||
       industryTab === "projects" ||
-      industryTab === "discover"
+      industryTab === "discover" ||
+      industryTab === "stockpiles"
         ? "overflow-y-auto eve-scrollbar"
         : ""
     }`}>
@@ -3231,6 +3235,12 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
         </TabSettingsPanel>
       </div>
       </>
+      )}
+
+      {industryTab === "stockpiles" && (
+        <Suspense fallback={<div className="m-2 text-xs text-eve-dim">Loading stockpiles...</div>}>
+          <IndustryStockpilePanel isLoggedIn={isLoggedIn} />
+        </Suspense>
       )}
 
       {/* Projects / Plan / Operations all render through the shared ledger

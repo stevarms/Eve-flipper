@@ -658,7 +658,8 @@ func hostedQuotaFeatureForRequest(r *http.Request) (string, bool) {
 		path == "/api/auth/station/command",
 		path == "/api/auth/industry/coverage",
 		path == "/api/auth/industry/blueprints/profitable-scan",
-		isHostedQuotaIndustryProjectComputePath(path):
+		isHostedQuotaIndustryProjectComputePath(path),
+		isHostedQuotaStockpileScanPath(path):
 		return "scans", true
 	case path == "/api/auth/station/ai/chat",
 		path == "/api/auth/station/ai/chat/stream":
@@ -676,6 +677,27 @@ func isHostedQuotaIndustryProjectComputePath(path string) bool {
 		strings.HasSuffix(path, "/plan") ||
 		strings.HasSuffix(path, "/materials/rebalance") ||
 		strings.HasSuffix(path, "/blueprints/sync")
+}
+
+// isHostedQuotaStockpileScanPath matches /api/auth/stockpiles/{numericID}/scan.
+// The numeric ID gate excludes /api/auth/stockpiles/resolve/scan or any other
+// unintended prefix collisions.
+func isHostedQuotaStockpileScanPath(path string) bool {
+	const prefix = "/api/auth/stockpiles/"
+	const suffix = "/scan"
+	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) {
+		return false
+	}
+	middle := path[len(prefix) : len(path)-len(suffix)]
+	if middle == "" {
+		return false
+	}
+	for _, r := range middle {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func defaultHostedAccess() hostedAccessResponse {

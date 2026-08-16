@@ -74,6 +74,11 @@ import type {
   SystemDanger,
   KillSummary,
   RouteSafetySummary,
+  Stockpile,
+  StockpileItem,
+  StockpileResolveInput,
+  StockpileResolveResult,
+  StockpileScanResult,
 } from "./types";
 import type { CockpitLoadout, CockpitPreferences } from "./cockpit";
 
@@ -2557,4 +2562,89 @@ export async function getGankCheckBatch(
   );
   if (!res.ok) return [];
   return res.json();
+}
+
+// --- Stockpile / Warehouse Manager ---
+
+export async function listStockpiles(): Promise<Stockpile[]> {
+  const res = await apiFetch(`${BASE}/api/auth/stockpiles`);
+  const data = await handleResponse<{ stockpiles?: Stockpile[] }>(res);
+  return data.stockpiles ?? [];
+}
+
+export async function getStockpile(id: number): Promise<Stockpile> {
+  const res = await apiFetch(`${BASE}/api/auth/stockpiles/${id}`);
+  return handleResponse<Stockpile>(res);
+}
+
+export async function createStockpile(payload: {
+  name: string;
+  source: "character" | "corporation";
+  source_character_id?: number;
+  source_corporation_id?: number;
+  station_id: number;
+}): Promise<Stockpile> {
+  const res = await apiFetch(`${BASE}/api/auth/stockpiles`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return handleResponse<Stockpile>(res);
+}
+
+export async function updateStockpile(
+  id: number,
+  patch: Partial<Pick<Stockpile, "name" | "source" | "source_character_id" | "source_corporation_id" | "station_id">>,
+): Promise<Stockpile> {
+  const res = await apiFetch(`${BASE}/api/auth/stockpiles/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  return handleResponse<Stockpile>(res);
+}
+
+export async function deleteStockpile(id: number): Promise<void> {
+  const res = await apiFetch(`${BASE}/api/auth/stockpiles/${id}`, { method: "DELETE" });
+  await handleResponse<{ ok: boolean }>(res);
+}
+
+export async function upsertStockpileItems(id: number, items: StockpileItem[]): Promise<Stockpile> {
+  const res = await apiFetch(`${BASE}/api/auth/stockpiles/${id}/items`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ items }),
+  });
+  return handleResponse<Stockpile>(res);
+}
+
+export async function replaceStockpileItems(id: number, items: StockpileItem[]): Promise<Stockpile> {
+  const res = await apiFetch(`${BASE}/api/auth/stockpiles/${id}/items`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ items }),
+  });
+  return handleResponse<Stockpile>(res);
+}
+
+export async function deleteStockpileItem(id: number, typeId: number): Promise<void> {
+  const res = await apiFetch(`${BASE}/api/auth/stockpiles/${id}/items/${typeId}`, { method: "DELETE" });
+  await handleResponse<{ ok: boolean }>(res);
+}
+
+export async function resolveStockpileNames(items: StockpileResolveInput[]): Promise<StockpileResolveResult> {
+  const res = await apiFetch(`${BASE}/api/auth/stockpiles/resolve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ items }),
+  });
+  return handleResponse<StockpileResolveResult>(res);
+}
+
+export async function scanStockpile(id: number): Promise<StockpileScanResult> {
+  const res = await apiFetch(`${BASE}/api/auth/stockpiles/${id}/scan`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+  return handleResponse<StockpileScanResult>(res);
 }

@@ -100,3 +100,100 @@ func (c *Client) GetCorporationBlueprints(corporationID int32, accessToken strin
 	}
 	return all, nil
 }
+
+// CorporationAsset mirrors the character asset shape — ESI returns the same
+// fields for /characters/{id}/assets/ and /corporations/{id}/assets/.
+type CorporationAsset struct {
+	ItemID          int64  `json:"item_id"`
+	TypeID          int32  `json:"type_id"`
+	LocationID      int64  `json:"location_id"`
+	LocationType    string `json:"location_type"`
+	LocationFlag    string `json:"location_flag"`
+	Quantity        int64  `json:"quantity"`
+	IsSingleton     bool   `json:"is_singleton"`
+	IsBlueprintCopy bool   `json:"is_blueprint_copy"`
+	TypeName        string `json:"type_name,omitempty"`
+	LocationName    string `json:"location_name,omitempty"`
+}
+
+// GetCorporationAssets fetches all pages of corporation assets. The token's
+// character must hold Director, Accountant, Junior_Accountant, Trader, or
+// Auditor role (ESI-side check) — a 403 surfaces here as an error the caller
+// can pattern-match on the string "403".
+//
+// Requires scope: esi-assets.read_corporation_assets.v1
+func (c *Client) GetCorporationAssets(corporationID int32, accessToken string) ([]CorporationAsset, error) {
+	assetsURL := fmt.Sprintf("%s/corporations/%d/assets/?datasource=tranquility", baseURL, corporationID)
+
+	c.sem <- struct{}{}
+
+	req, err := http.NewRequest("GET", assetsURL+"&page=1", nil)
+	if err != nil {
+		<-c.sem
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "eve-flipper/1.0 (github.com)")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		<-c.sem
+		return nil, fmt.Errorf("corp assets page 1: %w", err)
+	}
+
+	totalPages := 1
+	if p := resp.Header.Get("X-Pages"); p != "" {
+		if tp, parseErr := strconv.Atoi(p); parseErr == nil && tp > 1 {
+			totalPages = tp
+		}
+	}
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		<-c.sem
+		return nil, fmt.Errorf("corp assets: ESI %d: %s", resp.StatusCode, string(body))
+	}
+
+	var page1 []CorporationAsset
+	decErr := json.NewDecoder(resp.Body).Decode(&page1)
+	resp.Body.Close()
+	<-c.sem
+	if decErr != nil {
+		return nil, fmt.Errorf("corp assets decode: %w", decErr)
+	}
+
+	if totalPages <= 1 {
+		return page1, nil
+	}
+
+	type pageResult struct {
+		data []CorporationAsset
+		err  error
+	}
+	results := make(chan pageResult, totalPages-1)
+
+	for p := 2; p <= totalPages; p++ {
+		go func(pageNum int) {
+			pageURL := fmt.Sprintf("%s&page=%d", assetsURL, pageNum)
+			var data []CorporationAsset
+			if fetchErr := c.AuthGetJSON(pageURL, accessToken, &data); fetchErr != nil {
+				results <- pageResult{err: fetchErr}
+				return
+			}
+			results <- pageResult{data: data}
+		}(p)
+	}
+
+	all := make([]CorporationAsset, 0, len(page1)*totalPages)
+	all = append(all, page1...)
+	for i := 0; i < totalPages-1; i++ {
+		r := <-results
+		if r.err != nil {
+			continue
+		}
+		all = append(all, r.data...)
+	}
+	return all, nil
+}

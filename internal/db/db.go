@@ -1649,6 +1649,41 @@ func (d *DB) migrate() error {
 		logger.Info("DB", "Applied migration v39 (private wallet balance and SP metrics)")
 	}
 
+	if version < 40 {
+		_, err := d.sql.Exec(`
+			CREATE TABLE IF NOT EXISTS stockpiles (
+				id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+				user_id               TEXT NOT NULL,
+				name                  TEXT NOT NULL,
+				source                TEXT NOT NULL CHECK(source IN ('character','corporation')),
+				source_character_id   INTEGER,
+				source_corporation_id INTEGER,
+				station_id            INTEGER NOT NULL,
+				created_at            TEXT NOT NULL,
+				updated_at            TEXT NOT NULL,
+				UNIQUE(user_id, name)
+			);
+			CREATE INDEX IF NOT EXISTS idx_stockpiles_user ON stockpiles(user_id);
+
+			CREATE TABLE IF NOT EXISTS stockpile_items (
+				id            INTEGER PRIMARY KEY AUTOINCREMENT,
+				stockpile_id  INTEGER NOT NULL REFERENCES stockpiles(id) ON DELETE CASCADE,
+				type_id       INTEGER NOT NULL,
+				type_name     TEXT NOT NULL,
+				threshold_qty INTEGER NOT NULL CHECK(threshold_qty >= 0),
+				created_at    TEXT NOT NULL,
+				UNIQUE(stockpile_id, type_id)
+			);
+			CREATE INDEX IF NOT EXISTS idx_stockpile_items_stockpile ON stockpile_items(stockpile_id);
+
+			INSERT OR IGNORE INTO schema_version (version) VALUES (40);
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v40: %w", err)
+		}
+		logger.Info("DB", "Applied migration v40 (stockpile manager)")
+	}
+
 	return nil
 }
 

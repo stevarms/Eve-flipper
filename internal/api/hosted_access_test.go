@@ -581,6 +581,7 @@ func TestHostedQuotaFeatureMappingCoversHeavyHostedPosts(t *testing.T) {
 		{http.MethodPost, "/api/auth/industry/projects/42/plan", "scans"},
 		{http.MethodPost, "/api/auth/industry/projects/42/materials/rebalance", "scans"},
 		{http.MethodPost, "/api/auth/industry/projects/42/blueprints/sync", "scans"},
+		{http.MethodPost, "/api/auth/stockpiles/42/scan", "scans"},
 		{http.MethodPost, "/api/auth/station/ai/chat", "station_ai"},
 		{http.MethodPost, "/api/auth/station/ai/chat/stream", "station_ai"},
 	}
@@ -633,6 +634,9 @@ func TestHostedQuotaFeatureMappingClassifiesAllPostAPIRoutes(t *testing.T) {
 		"/api/auth/paper-trades/reconcile":           "paper-trade CRUD",
 		"/api/auth/achievements/seen":                "achievement state",
 		"/api/auth/industry/projects":                "industry project CRUD",
+		"/api/auth/stockpiles":                       "stockpile CRUD",
+		"/api/auth/stockpiles/resolve":               "stockpile name resolution (SDE lookup, no ESI)",
+		"/api/auth/stockpiles/{id}/items":            "stockpile item upsert",
 		"/api/ui/open-market":                        "ESI UI action",
 		"/api/ui/set-waypoint":                       "ESI UI action",
 		"/api/ui/open-contract":                      "ESI UI action",
@@ -642,6 +646,8 @@ func TestHostedQuotaFeatureMappingClassifiesAllPostAPIRoutes(t *testing.T) {
 		path := match[1]
 		samplePath := strings.ReplaceAll(path, "{projectID}", "42")
 		samplePath = strings.ReplaceAll(samplePath, "{loadoutID}", "default")
+		samplePath = strings.ReplaceAll(samplePath, "{id}", "42")
+		samplePath = strings.ReplaceAll(samplePath, "{typeID}", "34")
 		req := httptest.NewRequest(http.MethodPost, samplePath, nil)
 		if _, ok := hostedQuotaFeatureForRequest(req); ok {
 			continue

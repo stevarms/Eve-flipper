@@ -1,5 +1,34 @@
 package config
 
+// StockpileSource identifies where a stockpile pulls its inventory from.
+const (
+	StockpileSourceCharacter   = "character"
+	StockpileSourceCorporation = "corporation"
+)
+
+// Stockpile is a named per-user manufacturing stockpile at a single station or
+// structure. Items live in StockpileItem records referenced by ID.
+type Stockpile struct {
+	ID                  int64           `json:"id"`
+	Name                string          `json:"name"`
+	Source              string          `json:"source"`
+	SourceCharacterID   int64           `json:"source_character_id,omitempty"`
+	SourceCorporationID int64           `json:"source_corporation_id,omitempty"`
+	StationID           int64           `json:"station_id"`
+	StationName         string          `json:"station_name,omitempty"`
+	CreatedAt           string          `json:"created_at"`
+	UpdatedAt           string          `json:"updated_at"`
+	Items               []StockpileItem `json:"items,omitempty"`
+}
+
+// StockpileItem is a single (type_id, threshold) row inside a Stockpile.
+type StockpileItem struct {
+	TypeID       int32  `json:"type_id"`
+	TypeName     string `json:"type_name"`
+	ThresholdQty int64  `json:"threshold_qty"`
+	CreatedAt    string `json:"created_at,omitempty"`
+}
+
 // WatchlistItem represents an item being tracked in the watchlist.
 type WatchlistItem struct {
 	TypeID         int32   `json:"type_id"`

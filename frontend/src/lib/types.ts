@@ -771,6 +771,64 @@ export interface WatchlistItem {
   alert_threshold?: number;
 }
 
+// --- Stockpile / Warehouse Manager ---
+
+export type StockpileSource = "character" | "corporation";
+
+export interface StockpileItem {
+  type_id: number;
+  type_name: string;
+  threshold_qty: number;
+  created_at?: string;
+}
+
+export interface Stockpile {
+  id: number;
+  name: string;
+  source: StockpileSource;
+  source_character_id?: number;
+  source_corporation_id?: number;
+  station_id: number;
+  station_name?: string;
+  created_at: string;
+  updated_at: string;
+  items?: StockpileItem[];
+}
+
+export interface StockpileScanRow {
+  type_id: number;
+  type_name: string;
+  threshold_qty: number;
+  current_qty: number;
+  shortfall: number;
+}
+
+export interface StockpileScanResult {
+  stockpile_id: number;
+  station_id: number;
+  station_name?: string;
+  items: StockpileScanRow[];
+  warnings?: string[];
+}
+
+export interface StockpileResolveInput {
+  name: string;
+  qty: number;
+}
+
+export interface StockpileResolveResultItem {
+  name: string;
+  type_id?: number;
+  type_name?: string;
+  qty: number;
+  unresolved?: boolean;
+}
+
+export interface StockpileResolveResult {
+  items: StockpileResolveResultItem[];
+  warnings?: string[];
+}
+
 export interface AlertHistoryEntry {
   id: number;
   watchlist_type_id: number;
