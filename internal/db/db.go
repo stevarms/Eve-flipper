@@ -1684,6 +1684,115 @@ func (d *DB) migrate() error {
 		logger.Info("DB", "Applied migration v40 (stockpile manager)")
 	}
 
+	if version < 41 {
+		// Trade Journal — corp wallet archive + industry job archive.
+		// Corp tables mirror the character wallet archive shape but are
+		// keyed on (corporation_id, division) so we can UNION them into
+		// the same FIFO pool at compute time.
+		// Industry jobs archive persists completed jobs (ESI only serves
+		// them for ~60d) so manufacturing P&L stays intact long-term.
+		_, err := d.sql.Exec(`
+			CREATE TABLE IF NOT EXISTS corp_wallet_transactions_archive (
+				user_id         TEXT NOT NULL,
+				corporation_id  INTEGER NOT NULL,
+				division        INTEGER NOT NULL,
+				transaction_id  INTEGER NOT NULL,
+				date            TEXT NOT NULL,
+				type_id         INTEGER NOT NULL DEFAULT 0,
+				location_id     INTEGER NOT NULL DEFAULT 0,
+				unit_price      REAL NOT NULL DEFAULT 0,
+				quantity        INTEGER NOT NULL DEFAULT 0,
+				is_buy          INTEGER NOT NULL DEFAULT 0,
+				type_name       TEXT NOT NULL DEFAULT '',
+				location_name   TEXT NOT NULL DEFAULT '',
+				first_seen_at   TEXT NOT NULL,
+				last_seen_at    TEXT NOT NULL,
+				PRIMARY KEY (user_id, corporation_id, division, transaction_id)
+			);
+			CREATE INDEX IF NOT EXISTS idx_corp_wallet_tx_archive_user_date
+				ON corp_wallet_transactions_archive(user_id, date DESC);
+			CREATE INDEX IF NOT EXISTS idx_corp_wallet_tx_archive_type
+				ON corp_wallet_transactions_archive(user_id, type_id, date DESC);
+
+			CREATE TABLE IF NOT EXISTS corp_wallet_journal_archive (
+				user_id          TEXT NOT NULL,
+				corporation_id   INTEGER NOT NULL,
+				division         INTEGER NOT NULL,
+				entry_id         INTEGER NOT NULL,
+				date             TEXT NOT NULL,
+				ref_type         TEXT NOT NULL DEFAULT '',
+				first_party_id   INTEGER NOT NULL DEFAULT 0,
+				second_party_id  INTEGER NOT NULL DEFAULT 0,
+				amount           REAL NOT NULL DEFAULT 0,
+				balance          REAL NOT NULL DEFAULT 0,
+				reason           TEXT NOT NULL DEFAULT '',
+				description      TEXT NOT NULL DEFAULT '',
+				tax              REAL NOT NULL DEFAULT 0,
+				tax_receiver_id  INTEGER NOT NULL DEFAULT 0,
+				context_id       INTEGER NOT NULL DEFAULT 0,
+				context_id_type  TEXT NOT NULL DEFAULT '',
+				first_seen_at    TEXT NOT NULL,
+				last_seen_at     TEXT NOT NULL,
+				PRIMARY KEY (user_id, corporation_id, division, entry_id)
+			);
+			CREATE INDEX IF NOT EXISTS idx_corp_wallet_journal_archive_user_date
+				ON corp_wallet_journal_archive(user_id, date DESC);
+			CREATE INDEX IF NOT EXISTS idx_corp_wallet_journal_archive_ref
+				ON corp_wallet_journal_archive(user_id, ref_type, date DESC);
+
+			CREATE TABLE IF NOT EXISTS corp_wallet_archive_sync (
+				user_id                TEXT NOT NULL,
+				corporation_id         INTEGER NOT NULL,
+				division               INTEGER NOT NULL,
+				transaction_synced_at  TEXT NOT NULL DEFAULT '',
+				journal_synced_at      TEXT NOT NULL DEFAULT '',
+				transaction_live_count INTEGER NOT NULL DEFAULT 0,
+				journal_live_count     INTEGER NOT NULL DEFAULT 0,
+				transaction_limit_hit  INTEGER NOT NULL DEFAULT 0,
+				journal_limit_hit      INTEGER NOT NULL DEFAULT 0,
+				updated_at             TEXT NOT NULL,
+				PRIMARY KEY (user_id, corporation_id, division)
+			);
+
+			CREATE TABLE IF NOT EXISTS industry_jobs_archive (
+				user_id             TEXT NOT NULL,
+				character_id        INTEGER NOT NULL,
+				job_id              INTEGER NOT NULL,
+				activity_id         INTEGER NOT NULL DEFAULT 0,
+				blueprint_type_id   INTEGER NOT NULL DEFAULT 0,
+				product_type_id     INTEGER NOT NULL DEFAULT 0,
+				runs                INTEGER NOT NULL DEFAULT 0,
+				install_cost        REAL NOT NULL DEFAULT 0,
+				status              TEXT NOT NULL DEFAULT '',
+				start_date          TEXT NOT NULL DEFAULT '',
+				end_date            TEXT NOT NULL DEFAULT '',
+				completed_date      TEXT NOT NULL DEFAULT '',
+				successful_runs     INTEGER NOT NULL DEFAULT 0,
+				product_type_name   TEXT NOT NULL DEFAULT '',
+				external_job_id     INTEGER NOT NULL DEFAULT 0,
+				first_seen_at       TEXT NOT NULL,
+				last_seen_at        TEXT NOT NULL,
+				PRIMARY KEY (user_id, character_id, job_id)
+			);
+			CREATE INDEX IF NOT EXISTS idx_industry_jobs_archive_product
+				ON industry_jobs_archive(user_id, product_type_id, completed_date DESC);
+			CREATE INDEX IF NOT EXISTS idx_industry_jobs_archive_activity
+				ON industry_jobs_archive(user_id, activity_id, completed_date DESC);
+
+			INSERT OR IGNORE INTO schema_version (version) VALUES (41);
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v41: %w", err)
+		}
+		if err := d.ensureTableColumn("wallet_archive_sync", "industry_synced_at", "TEXT NOT NULL DEFAULT ''"); err != nil {
+			return fmt.Errorf("migration v41 add wallet_archive_sync.industry_synced_at: %w", err)
+		}
+		if err := d.ensureTableColumn("wallet_archive_sync", "industry_live_count", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return fmt.Errorf("migration v41 add wallet_archive_sync.industry_live_count: %w", err)
+		}
+		logger.Info("DB", "Applied migration v41 (trade journal: corp wallet + industry job archive)")
+	}
+
 	return nil
 }
 
