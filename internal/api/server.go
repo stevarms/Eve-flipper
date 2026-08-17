@@ -765,6 +765,90 @@ func (s *Server) SetSDE(data *sde.Data) {
 	s.ganker = gankcheck.NewChecker(zkillboard.NewClient(), s.esi, data, data.Universe)
 
 	s.ready = true
+
+	// Kick off a background Trade Journal sync for any authorized wallet
+	// whose archive is stale. Best-effort — errors are logged, never
+	// fatal. Runs off the main goroutine so SetSDE doesn't block.
+	go s.backgroundJournalSync()
+}
+
+// backgroundJournalSync iterates authorized characters and syncs any
+// whose wallet archive was last touched more than 24h ago. Serial with a
+// 500ms pause between characters to be polite to ESI. Also syncs any
+// corp divisions the first available character has role for.
+func (s *Server) backgroundJournalSync() {
+	if s.sessions == nil || s.db == nil || s.esi == nil {
+		return
+	}
+	// Give the server a moment to fully warm up (SSO config, caches).
+	time.Sleep(2 * time.Second)
+	sessions := s.sessions.List()
+	if len(sessions) == 0 {
+		return
+	}
+	const userID = "" // ListForUser normalizes empty to defaultUserID
+	staleAt := 24 * time.Hour
+	now := time.Now().UTC()
+
+	// Build stale set from wallet_archive_sync metadata.
+	meta, err := s.db.ListWalletArchiveMetaForUser(userID, db.WalletScopeFilter{IncludeAll: true})
+	if err != nil {
+		log.Printf("[TradeJournal] auto-sync: skip (meta read: %v)", err)
+		return
+	}
+	staleWallets := map[string]bool{}
+	for _, m := range meta {
+		if m.LastSyncAt == "" {
+			staleWallets[m.WalletKey] = true
+			continue
+		}
+		if t, err := time.Parse(time.RFC3339, m.LastSyncAt); err == nil {
+			if now.Sub(t) > staleAt {
+				staleWallets[m.WalletKey] = true
+			}
+		}
+	}
+
+	synced := 0
+	for _, sess := range sessions {
+		key := fmt.Sprintf("char:%d", sess.CharacterID)
+		// Sync if never seen (not in meta) OR marked stale.
+		if _, inMeta := findMeta(meta, key); !inMeta || staleWallets[key] {
+			stat := s.syncOneCharacter(userID, sess)
+			if stat.Error != "" {
+				log.Printf("[TradeJournal] auto-sync %s: %s", sess.CharacterName, stat.Error)
+			} else {
+				synced++
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+	// Corp wallet auto-sync — only if any corp divisions are stale, and
+	// we have at least one session to fetch through.
+	if len(sessions) > 0 {
+		corpStats := s.syncCorpWallets(userID, sessions, &db.WalletScopeFilter{IncludeAll: true})
+		if len(corpStats) > 0 {
+			synced += len(corpStats)
+		}
+	}
+	// Reconcile industry job links after any sync.
+	if synced > 0 {
+		linked, ambig := s.reconcileIndustryJobLinks(userID)
+		if linked > 0 || ambig > 0 {
+			log.Printf("[TradeJournal] auto-sync reconcile: linked=%d ambiguous=%d", linked, ambig)
+		}
+		journalRuntime.invalidateUser(userID)
+	}
+	log.Printf("[TradeJournal] auto-sync complete: %d wallets refreshed", synced)
+}
+
+func findMeta(meta []db.WalletArchiveMeta, key string) (db.WalletArchiveMeta, bool) {
+	for _, m := range meta {
+		if m.WalletKey == key {
+			return m, true
+		}
+	}
+	return db.WalletArchiveMeta{}, false
 }
 
 func (s *Server) isReady() bool {
