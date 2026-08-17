@@ -879,6 +879,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/auth/stockpiles/{id}/items", s.handleReplaceStockpileItems)
 	mux.HandleFunc("DELETE /api/auth/stockpiles/{id}/items/{typeID}", s.handleDeleteStockpileItem)
 	mux.HandleFunc("POST /api/auth/stockpiles/{id}/scan", s.handleScanStockpile)
+	// Trade Journal — realized P&L across trading + manufacturing.
+	mux.HandleFunc("POST /api/auth/journal/sync", s.handleTradeJournalSync)
+	mux.HandleFunc("GET /api/auth/journal/summary", s.handleTradeJournalSummary)
+	mux.HandleFunc("GET /api/auth/journal/by-type", s.handleTradeJournalByType)
+	mux.HandleFunc("GET /api/auth/journal/lots", s.handleTradeJournalLots)
+	mux.HandleFunc("POST /api/auth/journal/link-job", s.handleTradeJournalLinkJob)
+	mux.HandleFunc("GET /api/auth/journal/link-candidates", s.handleTradeJournalLinkCandidates)
 	mux.HandleFunc("GET /api/auth/character/market-fees", s.handleAuthCharacterMarketFees)
 	mux.HandleFunc("PATCH /api/auth/industry/tasks/status", s.handleAuthUpdateIndustryTaskStatus)
 	mux.HandleFunc("PATCH /api/auth/industry/tasks/status/bulk", s.handleAuthBulkUpdateIndustryTaskStatus)

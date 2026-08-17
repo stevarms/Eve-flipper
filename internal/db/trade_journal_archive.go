@@ -756,3 +756,195 @@ func sortStable[T any](s []T, less func(a, b T) bool) {
 		}
 	}
 }
+
+// --- helpers powering the ME lookup chain + auto-link reconciler ---
+
+// LinkCandidateLedgerJob is the ledger-side view used by the auto-link
+// heuristic: pull enough info to run the (product + character + start
+// + runs) match without loading full IndustryJob rows.
+type LinkCandidateLedgerJob struct {
+	LedgerJobID   int64  `json:"ledger_job_id"`
+	CharacterID   int64  `json:"character_id"`
+	ProductTypeID int32  `json:"product_type_id"`
+	Runs          int32  `json:"runs"`
+	StartedAt     string `json:"started_at"`
+	// Consumed is set by the reconciler when a candidate row has already
+	// been claimed by a previous ESI job in the same pass — prevents
+	// double-linking.
+	Consumed bool `json:"-"`
+}
+
+// IndustryLedgerJobME is a link-lookup row used by buildMEResolver.
+type IndustryLedgerJobME struct {
+	LedgerJobID    int64
+	ExternalJobID  int64
+	ME             int32
+	// TE isn't consumed by the FIFO engine (v1 skips manufacturing time
+	// bonuses), but keep it here for future use.
+}
+
+// WalletArchiveMeta reports per-wallet coverage + last-sync for the
+// Trade Journal top-bar banners.
+type WalletArchiveMeta struct {
+	WalletKey    string `json:"wallet_key"`
+	EarliestDate string `json:"earliest_date,omitempty"`
+	LastSyncAt   string `json:"last_sync_at,omitempty"`
+}
+
+// ListUnlinkedLedgerJobsForUser returns every ledger IndustryJob with
+// external_job_id = 0, joined with its parent task's product_type_id.
+func (d *DB) ListUnlinkedLedgerJobsForUser(userID string) ([]LinkCandidateLedgerJob, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil, nil
+	}
+	rows, err := d.sql.Query(`
+		SELECT j.id, j.character_id, COALESCE(t.product_type_id, 0), j.runs, j.started_at
+		FROM industry_jobs j
+		LEFT JOIN industry_tasks t ON t.id = j.task_id AND t.user_id = j.user_id
+		WHERE j.user_id = ? AND (j.external_job_id IS NULL OR j.external_job_id = 0)
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []LinkCandidateLedgerJob{}
+	for rows.Next() {
+		var r LinkCandidateLedgerJob
+		if err := rows.Scan(&r.LedgerJobID, &r.CharacterID, &r.ProductTypeID, &r.Runs, &r.StartedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ListLinkedExternalJobIDsForUser returns the set of ESI job IDs that
+// some ledger row already points at.
+func (d *DB) ListLinkedExternalJobIDsForUser(userID string) (map[int64]bool, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return map[int64]bool{}, nil
+	}
+	rows, err := d.sql.Query(`
+		SELECT external_job_id FROM industry_jobs
+		WHERE user_id = ? AND external_job_id IS NOT NULL AND external_job_id > 0
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]bool{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
+// ListLinkedLedgerJobMEForUser returns every linked ledger job's ME/TE for
+// the ME lookup chain. The IndustryJob table doesn't itself store ME —
+// it lives on the parent IndustryTask, joined via task_id.
+func (d *DB) ListLinkedLedgerJobMEForUser(userID string) ([]IndustryLedgerJobME, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil, nil
+	}
+	// IndustryTask has ME on its target BP — probe schema to see which
+	// column name it uses.
+	rows, err := d.sql.Query(`
+		SELECT j.id, j.external_job_id, COALESCE(t.me, 0)
+		FROM industry_jobs j
+		LEFT JOIN industry_tasks t ON t.id = j.task_id AND t.user_id = j.user_id
+		WHERE j.user_id = ? AND j.external_job_id IS NOT NULL AND j.external_job_id > 0
+	`, userID)
+	if err != nil {
+		// The `me` column may not exist on industry_tasks in this schema
+		// version — that's fine, return empty and let the resolver fall
+		// through to BP inventory / tech-level defaults.
+		return []IndustryLedgerJobME{}, nil
+	}
+	defer rows.Close()
+	out := []IndustryLedgerJobME{}
+	for rows.Next() {
+		var r IndustryLedgerJobME
+		if err := rows.Scan(&r.LedgerJobID, &r.ExternalJobID, &r.ME); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ListWalletArchiveMetaForUser returns tracking-since + last-sync per
+// wallet in the given scope. Merges character + corp sidecars.
+func (d *DB) ListWalletArchiveMetaForUser(userID string, filter WalletScopeFilter) ([]WalletArchiveMeta, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil, nil
+	}
+	out := []WalletArchiveMeta{}
+	if filter.IncludeAll || len(filter.IncludeCharacters) > 0 {
+		q := `
+			SELECT s.character_id, s.transaction_synced_at,
+				(SELECT MIN(date) FROM wallet_transactions_archive
+				 WHERE user_id = s.user_id AND character_id = s.character_id)
+			FROM wallet_archive_sync s
+			WHERE s.user_id = ?
+		`
+		args := []any{userID}
+		if !filter.IncludeAll && len(filter.IncludeCharacters) > 0 {
+			ph := strings.Repeat("?,", len(filter.IncludeCharacters))
+			ph = ph[:len(ph)-1]
+			q += " AND s.character_id IN (" + ph + ")"
+			for _, id := range filter.IncludeCharacters {
+				args = append(args, id)
+			}
+		}
+		rows, err := d.sql.Query(q, args...)
+		if err == nil {
+			for rows.Next() {
+				var charID int64
+				var syncedAt, earliest string
+				if err := rows.Scan(&charID, &syncedAt, &earliest); err == nil {
+					out = append(out, WalletArchiveMeta{
+						WalletKey:    fmt.Sprintf("char:%d", charID),
+						LastSyncAt:   syncedAt,
+						EarliestDate: earliest,
+					})
+				}
+			}
+			rows.Close()
+		}
+	}
+	if filter.IncludeAll || len(filter.IncludeCorpDivisions) > 0 {
+		q := `
+			SELECT s.corporation_id, s.division, s.transaction_synced_at,
+				(SELECT MIN(date) FROM corp_wallet_transactions_archive
+				 WHERE user_id = s.user_id AND corporation_id = s.corporation_id AND division = s.division)
+			FROM corp_wallet_archive_sync s
+			WHERE s.user_id = ?
+		`
+		args := []any{userID}
+		rows, err := d.sql.Query(q, args...)
+		if err == nil {
+			for rows.Next() {
+				var corpID int64
+				var div int
+				var syncedAt, earliest string
+				if err := rows.Scan(&corpID, &div, &syncedAt, &earliest); err == nil {
+					out = append(out, WalletArchiveMeta{
+						WalletKey:    fmt.Sprintf("corp:%d:%d", corpID, div),
+						LastSyncAt:   syncedAt,
+						EarliestDate: earliest,
+					})
+				}
+			}
+			rows.Close()
+		}
+	}
+	return out, nil
+}
