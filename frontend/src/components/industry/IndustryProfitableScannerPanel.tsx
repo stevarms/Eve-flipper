@@ -1876,16 +1876,36 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
           // hook so the value is always in sync.
           buildMode: sharedPrefs.buildMode,
         }}
-        onSuccess={(projectID, count, summary) => {
+        onSuccess={(projectID, count, summary, dedupedCount, coverageWarnings) => {
           setAddToProjectOpen(false);
           const detail = summary
             ? ` (tasks:${summary.tasks_inserted} jobs:${summary.jobs_inserted} bp:${summary.blueprints_upserted})`
             : "";
+          // A dedupe means the selection contained multiple scanner rows
+          // pointing to the same output product (typically BPO + BPCs of
+          // the same source BP). We collapse them to avoid doubling every
+          // material — surface a note so the user isn't surprised the row
+          // count in the summary is lower than what they selected.
+          const dedupeNote = dedupedCount && dedupedCount > 0
+            ? ` · merged ${dedupedCount} duplicate row${dedupedCount === 1 ? "" : "s"}`
+            : "";
           addToast(
-            t("industryScannerAddToProjectSuccess").replace("{count}", String(count)) + detail,
+            t("industryScannerAddToProjectSuccess").replace("{count}", String(count)) + detail + dedupeNote,
             "success",
             3600,
           );
+          // Surface any partial-coverage warnings as a SEPARATE warning
+          // toast per-message. Silent warnings (missing corp asset scope,
+          // failed role check, per-character asset fetch errors) otherwise
+          // just leave the user staring at "have: 0" with no explanation,
+          // which is exactly the class of confusion that just cost us a
+          // debug loop. Longer timeout because these are actionable
+          // ("re-authenticate to grant…") and easy to miss.
+          if (coverageWarnings && coverageWarnings.length > 0) {
+            for (const w of coverageWarnings) {
+              addToast(w, "warning", 10000);
+            }
+          }
           setSelectedIDs(new Set());
           // Rows just got committed to a project — flush their overrides so
           // if the user re-selects them they start from defaults again.

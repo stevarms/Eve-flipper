@@ -45,7 +45,7 @@ import type {
   IndustryBlueprintPoolInput,
 } from "@/lib/types";
 import { formatISK } from "@/lib/format";
-import { buildIndustryPlanPatch } from "@/lib/industryPlanPatch";
+import { applyCoverageToIndustryPlanPatch, buildIndustryPlanPatch } from "@/lib/industryPlanPatch";
 import { useIndustrySharedPrefs } from "@/lib/useIndustrySharedPrefs";
 import { DECRYPTORS, DECRYPTOR_ORDER, T2_BPC_BASE_ME, T2_BPC_BASE_TE, effectiveInventionParams, type DecryptorKey } from "@/lib/industryDecryptors";
 import {
@@ -1135,9 +1135,8 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     if (!result || !selectedItem) {
       return null;
     }
-    return buildIndustryPlanPatch({
+    const patch = buildIndustryPlanPatch({
       result,
-      coverage: industryCoverage,
       productTypeID: selectedItem.type_id,
       productName: selectedItem.type_name,
       runs,
@@ -1148,6 +1147,7 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
       ownBlueprint,
       replace: replaceLedgerPlanOnApply,
     });
+    return applyCoverageToIndustryPlanPatch(patch, industryCoverage);
   }, [
     result,
     selectedItem,

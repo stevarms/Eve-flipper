@@ -6166,6 +6166,14 @@ func (s *Server) handleAuthIndustryCoverage(w http.ResponseWriter, r *http.Reque
 		Materials             []engine.IndustryCoverageMaterialNeed  `json:"materials"`
 		Blueprints            []engine.IndustryCoverageBlueprintNeed `json:"blueprints"`
 		IncludeCorpBlueprints bool                                   `json:"include_corp_blueprints"`
+		// IncludeCorpAssets, when true, augments the personal-asset scan
+		// with GetCorporationAssets for each corp any authenticated
+		// character in-scope holds Director / Accountant / Junior_Accountant
+		// / Trader / Auditor role in. Same corp is fetched once even if
+		// multiple characters could reach it. Silently degrades to
+		// personal-only when the scope is missing or the role check fails
+		// — those cases append a warning instead of erroring.
+		IncludeCorpAssets bool `json:"include_corp_assets"`
 	}
 	if r.Body != nil {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
@@ -6441,6 +6449,90 @@ func (s *Server) handleAuthIndustryCoverage(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Corp-hangar assets. Same pattern as corp blueprints below — walk the
+	// authenticated sessions, gate by an asset-reading corp role
+	// (Director / Accountant / Junior_Accountant / Trader / Auditor), fetch
+	// once per unique corp, aggregate into assetsByType alongside personal
+	// assets. Silently no-ops when the caller didn't opt in; degrades to a
+	// warning (rather than erroring) when the corp scope or role is missing
+	// so a single corp misconfiguration doesn't blank out personal coverage.
+	corpAssetsScanned := 0
+	corpsScannedAssets := 0
+	if req.IncludeCorpAssets && len(neededMaterials) > 0 {
+		seenCorps := make(map[int32]struct{})
+		var corpForbiddenWarnAdded, corpRoleWarnAdded bool
+		for _, sess := range selectedSessions {
+			token, tokenErr := s.sessions.EnsureValidTokenForUserCharacter(s.sso, userID, sess.CharacterID)
+			if tokenErr != nil {
+				continue
+			}
+			corpID, corpErr := s.esi.GetCharacterCorporationID(sess.CharacterID)
+			if corpErr != nil || corpID <= 0 {
+				continue
+			}
+			if _, done := seenCorps[corpID]; done {
+				continue
+			}
+			roles, rolesErr := s.esi.GetCharacterRoles(sess.CharacterID, token)
+			if rolesErr != nil {
+				continue
+			}
+			if roles == nil || !hasStockpileCorpAssetRole(roles.Roles) {
+				if !corpRoleWarnAdded {
+					appendWarningOnce("corp assets skipped: no authenticated character in this corp holds Director / Accountant / Junior_Accountant / Trader / Auditor")
+					corpRoleWarnAdded = true
+				}
+				continue
+			}
+			corpAssets, assetsErr := s.esi.GetCorporationAssets(corpID, token)
+			if assetsErr != nil {
+				msg := strings.ToLower(assetsErr.Error())
+				if strings.Contains(msg, "403") || strings.Contains(msg, "scope") {
+					if !corpForbiddenWarnAdded {
+						appendWarningOnce("corp assets skipped: missing esi-assets.read_corporation_assets.v1 (re-authenticate)")
+						corpForbiddenWarnAdded = true
+					}
+					continue
+				}
+				log.Printf("[AUTH] Industry coverage corp assets error (corp %d via %s): %v", corpID, sess.CharacterName, assetsErr)
+				continue
+			}
+			seenCorps[corpID] = struct{}{}
+			corpsScannedAssets++
+			corpAssetsScanned += len(corpAssets)
+			for _, asset := range corpAssets {
+				if asset.TypeID <= 0 {
+					continue
+				}
+				if _, needed := neededMaterials[asset.TypeID]; !needed {
+					continue
+				}
+				if asset.IsBlueprintCopy || asset.Quantity <= -2 {
+					continue
+				}
+				// Corp assets don't share an item-map with the personal
+				// pass — resolveAssetRootLocationID would only find
+				// containers we already saw in this character's personal
+				// assets. For most stock (station hangar), LocationID is
+				// already the station itself, so gating on the raw
+				// LocationID works. Location filter is empty in the
+				// scanner flow anyway.
+				if !locationAllowed(asset.LocationID) {
+					continue
+				}
+				qty := asset.Quantity
+				if qty <= 0 {
+					if asset.IsSingleton {
+						qty = 1
+					} else {
+						continue
+					}
+				}
+				assetsByType[asset.TypeID] += qty
+			}
+		}
+	}
+
 	corpsScanned := 0
 	corpBPRows := 0
 	if req.IncludeCorpBlueprints && len(neededBlueprints) > 0 {
@@ -6542,6 +6634,8 @@ func (s *Server) handleAuthIndustryCoverage(w http.ResponseWriter, r *http.Reque
 			"location_filter_count":          len(locationFilter),
 			"corporations_scanned":           corpsScanned,
 			"corp_blueprint_rows":            corpBPRows,
+			"corp_assets_scanned":            corpAssetsScanned,
+			"corps_scanned_for_assets":       corpsScannedAssets,
 			"warnings":                       coverage.Warnings,
 		},
 	})

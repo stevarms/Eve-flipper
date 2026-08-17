@@ -18,6 +18,7 @@ import type {
   ProfitableScanRow,
 } from "@/lib/types";
 import {
+  applyCoverageToIndustryPlanPatch,
   buildIndustryPlanPatch,
   mergeIndustryPlanPatches,
 } from "@/lib/industryPlanPatch";
@@ -57,7 +58,7 @@ interface Props {
   rows: ProfitableScanRow[];
   runsPerJob: number;
   analysisContext: ScannerAnalysisContext;
-  onSuccess: (projectID: number, count: number, summary: PlanApplySummaryLike | null) => void;
+  onSuccess: (projectID: number, count: number, summary: PlanApplySummaryLike | null, dedupedCount?: number, coverageWarnings?: string[]) => void;
   /** Optional: parent-persisted manual runs overrides. Keyed by rowKeyFor(row).
    *  When present the modal seeds from these on open so cancel+reopen keeps
    *  the user's edits, and reports every edit back via onManualRunsChange
@@ -178,7 +179,10 @@ export function AddBlueprintsToProjectModal({ open, onClose, rows, runsPerJob, a
   useEffect(() => {
     if (!open) return;
     setError(null);
-    setName(`Scanner ${new Date().toISOString().slice(0, 10)}`);
+    // Timestamp to the second — date-only was colliding when a user ran
+    // multiple scanner adds in a single sitting, because the modal would
+    // happily create a second project with the identical name.
+    setName(`Scanner ${new Date().toISOString().slice(0, 19).replace("T", " ")}`);
     setMode("new");
     setProgressMsg("");
     setRowStatuses(rows.map((row, index) => ({ index, row, state: "pending" })));
@@ -267,35 +271,86 @@ export function AddBlueprintsToProjectModal({ open, onClose, rows, runsPerJob, a
     const controller = new AbortController();
     abortRef.current = controller;
 
-    // Phase 1: analyze each row sequentially. Emit progress. Track per-row
-    // status so the user sees which rows failed.
+    // Dedupe by (scan_mode, product_type_id) before we analyze anything.
+    // The scanner emits one row per source blueprint group, so a user who
+    // owns BOTH a BPO and a BPC of the source BP gets two scanner rows for
+    // the same output product (the invention path is source-agnostic —
+    // inventing 350 Acolyte II is the same job regardless of which of your
+    // Acolyte I BPs seeded it). If the user selects both without realizing
+    // they represent the same output, we'd build two independent patches
+    // for the same product and merge would double every material. Prefer
+    // the BPO row (unlimited runs → no attempts-cap surprise); fall back
+    // to the row with the most available_runs; tiebreak by earliest index
+    // so the runsByIdx / status mapping stays consistent with the visible
+    // row list. Track the dropped rows so the user knows what happened.
+    const uniqueRows: ProfitableScanRow[] = [];
+    const uniqueIndices: number[] = [];
+    const droppedNames: string[] = [];
+    {
+      const bestByKey = new Map<string, { row: ProfitableScanRow; index: number }>();
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i];
+        const key = `${r.scan_mode ?? "t1_mfg"}:${r.product_type_id}`;
+        const existing = bestByKey.get(key);
+        if (!existing) {
+          bestByKey.set(key, { row: r, index: i });
+          continue;
+        }
+        const rIsBpo = Boolean(r.is_bpo);
+        const eIsBpo = Boolean(existing.row.is_bpo);
+        const rRuns = r.available_runs ?? 0;
+        const eRuns = existing.row.available_runs ?? 0;
+        const rWins = rIsBpo && !eIsBpo
+          ? true
+          : !rIsBpo && eIsBpo
+            ? false
+            : rRuns > eRuns; // both BPO or both BPC → higher runs wins
+        if (rWins) {
+          droppedNames.push(existing.row.product_name || `Type ${existing.row.product_type_id}`);
+          bestByKey.set(key, { row: r, index: i });
+        } else {
+          droppedNames.push(r.product_name || `Type ${r.product_type_id}`);
+        }
+      }
+      const ordered = Array.from(bestByKey.values()).sort((a, b) => a.index - b.index);
+      for (const entry of ordered) {
+        uniqueRows.push(entry.row);
+        uniqueIndices.push(entry.index);
+      }
+    }
+
+    // Phase 1: analyze each unique row sequentially. Emit progress. Track
+    // per-row status so the user sees which rows failed. runsByIdx is keyed
+    // by the ORIGINAL row index (that's what the input onChange writes),
+    // so uniqueIndices bridges back to it.
     const statuses: RowStatus[] = rows.map((row, index) => ({ index, row, state: "pending" }));
     setRowStatuses(statuses);
     const analyses: { row: ProfitableScanRow; analysis: IndustryAnalysis; runs: number }[] = [];
 
-    for (let i = 0; i < rows.length; i++) {
+    for (let u = 0; u < uniqueRows.length; u++) {
       if (controller.signal.aborted) break;
-      const row = rows[i];
-      statuses[i] = { ...statuses[i], state: "analyzing" };
+      const row = uniqueRows[u];
+      const originalIdx = uniqueIndices[u];
+      statuses[originalIdx] = { ...statuses[originalIdx], state: "analyzing" };
       setRowStatuses([...statuses]);
       setProgressMsg(
         t("industryScannerAnalyzingRow")
-          .replace("{i}", String(i + 1))
-          .replace("{n}", String(rows.length))
+          .replace("{i}", String(u + 1))
+          .replace("{n}", String(uniqueRows.length))
           .replace("{name}", row.product_name || `Type ${row.product_type_id}`),
       );
       try {
         // Use the per-row runs override the user configured; fall back to
         // the modal-wide runsPerJob prop if the map somehow lacks an entry.
-        const perRow = runsByIdx[i] ?? runsPerJob;
+        const perRow = runsByIdx[originalIdx] ?? runsPerJob;
         const params = buildParamsForRow(row, analysisContext, perRow);
         const analysis = await analyzeIndustry(params, () => {}, controller.signal);
         analyses.push({ row, analysis, runs: perRow });
-        statuses[i] = { ...statuses[i], state: "done", analysis };
+        statuses[originalIdx] = { ...statuses[originalIdx], state: "done", analysis };
       } catch (e: unknown) {
         if (controller.signal.aborted) break;
         const msg = e instanceof Error ? e.message : "analyze failed";
-        statuses[i] = { ...statuses[i], state: "error", errorMsg: msg };
+        statuses[originalIdx] = { ...statuses[originalIdx], state: "error", errorMsg: msg };
       }
       setRowStatuses([...statuses]);
     }
@@ -355,6 +410,14 @@ export function AddBlueprintsToProjectModal({ open, onClose, rows, runsPerJob, a
         scope: "all",
         materials: Array.from(materialsForCoverage.values()),
         blueprints: Array.from(bpsForCoverage.values()),
+        // Batch adds run against the user's whole account, so opt in to
+        // corp assets + blueprints by default — the personal-only view
+        // undercounts anyone who stores their industry stock in a corp
+        // hangar. Coverage silently degrades to personal-only (with a
+        // warning) when the corp scope or role check fails, so this is
+        // safe to enable unconditionally.
+        include_corp_assets: true,
+        include_corp_blueprints: true,
       });
       coverage = coverageResp.coverage;
     } catch {
@@ -363,14 +426,18 @@ export function AddBlueprintsToProjectModal({ open, onClose, rows, runsPerJob, a
       coverage = null;
     }
 
-    // Phase 3: per-row patch build, then merge.
+    // Phase 3: per-row patch build, then merge. Each patch carries only
+    // its own row's material + blueprint needs (no coverage baked in); the
+    // shared coverage snapshot is overlaid once on the merged result below.
+    // This is what makes multi-row batches quantity-correct — the previous
+    // build-with-coverage-then-merge path multiplied every material by the
+    // batch size.
     setProgressMsg(t("industryScannerMergingPlans"));
     const patches: IndustryPlanPatch[] = analyses.map(({ row, analysis, runs }) => {
       const isT2 = row.scan_mode === "t2_invention";
       const inv = effectiveInventionParams(analysisContext.decryptorKey);
       return buildIndustryPlanPatch({
         result: analysis,
-        coverage,
         productTypeID: row.product_type_id,
         productName: row.product_name,
         runs,
@@ -382,7 +449,7 @@ export function AddBlueprintsToProjectModal({ open, onClose, rows, runsPerJob, a
         replace: false,
       });
     });
-    const merged = mergeIndustryPlanPatches(patches);
+    const merged = applyCoverageToIndustryPlanPatch(mergeIndustryPlanPatches(patches), coverage);
 
     // Phase 4: create project (if new) and submit merged patch.
     setProgressMsg(t("industryScannerCommittingPlan"));
@@ -416,7 +483,7 @@ export function AddBlueprintsToProjectModal({ open, onClose, rows, runsPerJob, a
             blueprints_upserted: resp.summary.blueprints_upserted ?? 0,
           }
         : null;
-      onSuccess(projectID, analyses.length, summary);
+      onSuccess(projectID, analyses.length, summary, droppedNames.length, coverage?.warnings ?? []);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Add to project failed");
     } finally {

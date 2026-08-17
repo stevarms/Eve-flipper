@@ -1279,6 +1279,12 @@ export interface AuthIndustryCoveragePayload {
    *  whose logged-in member has the Director role, merging them into the
    *  blueprint stock. Requires esi-corporations.read_blueprints.v1. */
   include_corp_blueprints?: boolean;
+  /** When true, the backend also pulls corporation assets for any corp
+   *  whose logged-in member has an asset-reading role (Director /
+   *  Accountant / Junior_Accountant / Trader / Auditor), aggregating them
+   *  into the material availability numbers. Requires
+   *  esi-assets.read_corporation_assets.v1. */
+  include_corp_assets?: boolean;
 }
 
 export interface AuthIndustryCoverageResponse {

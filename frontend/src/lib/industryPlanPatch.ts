@@ -22,7 +22,6 @@ import type {
 
 export interface BuildIndustryPlanPatchInput {
   result: IndustryAnalysis;
-  coverage: IndustryCoverageResult | null;
   productTypeID: number;
   productName: string;
   runs: number;
@@ -50,7 +49,6 @@ function stepLabel(step: IndustryActivityStep): string {
 export function buildIndustryPlanPatch(input: BuildIndustryPlanPatchInput): IndustryPlanPatch {
   const {
     result,
-    coverage,
     productTypeID,
     productName,
     runs,
@@ -136,89 +134,68 @@ export function buildIndustryPlanPatch(input: BuildIndustryPlanPatchInput): Indu
     });
   }
 
-  const flatByType = new Map((result.flat_materials ?? []).map((m) => [m.type_id, m]));
-  const materialSourceRows = coverage?.materials?.length
-    ? coverage.materials
-    : (result.flat_materials ?? []).map((m) => ({
-        type_id: m.type_id,
-        type_name: m.type_name,
-        required_qty: m.quantity,
-        available_qty: 0,
-        missing_qty: m.quantity,
-        coverage_pct: 0,
-        status: "missing" as const,
-      }));
-  const materials: IndustryMaterialPlanInput[] = materialSourceRows.map((m) => {
-    const flat = flatByType.get(m.type_id);
-    const requiredQty = Math.max(0, Math.ceil(m.required_qty ?? 0));
-    const availableQty = Math.max(0, Math.min(requiredQty, Math.ceil(m.available_qty ?? 0)));
-    const buyQty = Math.max(0, Math.ceil(m.missing_qty ?? Math.max(0, requiredQty - availableQty)));
-    return {
-      type_id: m.type_id,
-      type_name: m.type_name || flat?.type_name || "",
-      required_qty: requiredQty,
-      available_qty: availableQty,
-      buy_qty: buyQty,
-      build_qty: 0,
-      unit_cost_isk: flat?.unit_price ?? 0,
-      source: buyQty > 0 ? ("market" as const) : ("stock" as const),
-    };
-  });
-
-  const blueprintsFromCoverage: IndustryBlueprintPoolInput[] = (coverage?.blueprints ?? [])
-    .filter((bp) => (bp.owned_qty ?? 0) > 0 && ((bp.bpo_qty ?? 0) > 0 || (bp.available_runs ?? 0) > 0))
-    .map((bp) => {
-      const isBPO = (bp.bpo_qty ?? 0) > 0;
+  // Materials: strictly this row's own needs. Coverage-derived data
+  // (available_qty, buy_qty) is filled in later via
+  // applyCoverageToIndustryPlanPatch — either post-merge (Scanner batch
+  // flow) or immediately after build (Analyze tab flow). Emitting only
+  // per-row needs is what makes multi-row merging correct: the merged
+  // required_qty is the true cross-row total instead of N copies of the
+  // shared coverage snapshot.
+  const materials: IndustryMaterialPlanInput[] = (result.flat_materials ?? [])
+    .filter((m) => m.type_id > 0)
+    .map((m) => {
+      const requiredQty = Math.max(0, Math.ceil(m.quantity ?? 0));
       return {
-        blueprint_type_id: bp.blueprint_type_id,
-        blueprint_name: bp.blueprint_name || "",
-        location_id: stationID || 0,
-        quantity: isBPO ? Math.max(1, bp.bpo_qty || 1) : Math.max(1, bp.bpc_qty || 1),
-        me: bp.best_me || me,
-        te: bp.best_te || te,
-        is_bpo: isBPO,
-        available_runs: isBPO ? 0 : Math.max(0, bp.available_runs || 0),
+        type_id: m.type_id,
+        type_name: m.type_name || "",
+        required_qty: requiredQty,
+        available_qty: 0,
+        buy_qty: requiredQty,
+        build_qty: 0,
+        unit_cost_isk: m.unit_price ?? 0,
+        source: "market" as const,
       };
     });
 
-  const fallbackBlueprintMap = new Map<number, IndustryBlueprintPoolInput>();
-  if (blueprintsFromCoverage.length === 0) {
-    for (const step of activitySteps) {
-      if (!step.blueprint_type_id || step.blueprint_type_id <= 0) continue;
-      const requiredRuns = stepRuns(step);
-      const existing = fallbackBlueprintMap.get(step.blueprint_type_id);
-      // T2 BPCs (produced via invention) are always copies; T1 BPs default
-      // to ownBlueprint (BPO). Without this, every sub-BP in a T2 chain
-      // shows as BPO which is wrong for every T2 component.
-      const isBpc = Boolean(step.blueprint_is_bpc);
-      const isBpo = isBpc ? false : ownBlueprint;
-      fallbackBlueprintMap.set(step.blueprint_type_id, {
-        blueprint_type_id: step.blueprint_type_id,
-        blueprint_name: step.blueprint_name || existing?.blueprint_name || "",
-        location_id: stationID || 0,
-        quantity: 1,
-        me,
-        te,
-        is_bpo: isBpo,
-        available_runs: isBpo ? 0 : (existing?.available_runs ?? 0) + requiredRuns,
-      });
-    }
-    if (fallbackBlueprintMap.size === 0 && topBlueprintTypeID > 0) {
-      fallbackBlueprintMap.set(topBlueprintTypeID, {
-        blueprint_type_id: topBlueprintTypeID,
-        blueprint_name: `${productName} Blueprint`,
-        location_id: stationID || 0,
-        quantity: 1,
-        me,
-        te,
-        is_bpo: ownBlueprint,
-        available_runs: ownBlueprint ? 0 : runs,
-      });
-    }
+  // Blueprints: only the ones this row's activity plan actually needs,
+  // with per-row required_runs. Merge accumulates required_runs across
+  // patches; owned-inventory fields (quantity, is_bpo, available_runs)
+  // are overlaid post-merge by applyCoverageToIndustryPlanPatch so they
+  // never inflate.
+  const blueprintMap = new Map<number, IndustryBlueprintPoolInput>();
+  for (const step of activitySteps) {
+    if (!step.blueprint_type_id || step.blueprint_type_id <= 0) continue;
+    const requiredRuns = stepRuns(step);
+    const existing = blueprintMap.get(step.blueprint_type_id);
+    // T2 BPCs (produced via invention) are always copies; T1 BPs default
+    // to ownBlueprint (BPO). Without this, every sub-BP in a T2 chain
+    // shows as BPO which is wrong for every T2 component.
+    const isBpc = Boolean(step.blueprint_is_bpc);
+    const isBpo = isBpc ? false : ownBlueprint;
+    blueprintMap.set(step.blueprint_type_id, {
+      blueprint_type_id: step.blueprint_type_id,
+      blueprint_name: step.blueprint_name || existing?.blueprint_name || "",
+      location_id: stationID || 0,
+      quantity: 1,
+      me,
+      te,
+      is_bpo: isBpo,
+      available_runs: isBpo ? 0 : (existing?.available_runs ?? 0) + requiredRuns,
+    });
   }
-  const blueprints = blueprintsFromCoverage.length > 0
-    ? blueprintsFromCoverage
-    : Array.from(fallbackBlueprintMap.values());
+  if (blueprintMap.size === 0 && topBlueprintTypeID > 0) {
+    blueprintMap.set(topBlueprintTypeID, {
+      blueprint_type_id: topBlueprintTypeID,
+      blueprint_name: `${productName} Blueprint`,
+      location_id: stationID || 0,
+      quantity: 1,
+      me,
+      te,
+      is_bpo: ownBlueprint,
+      available_runs: ownBlueprint ? 0 : runs,
+    });
+  }
+  const blueprints = Array.from(blueprintMap.values());
 
   return {
     replace,
@@ -332,5 +309,80 @@ export function mergeIndustryPlanPatches(patches: IndustryPlanPatch[]): Industry
     materials: Array.from(materialByType.values()),
     blueprints: Array.from(blueprintByKey.values()),
     ...(scheduler ? { scheduler } : {}),
+  };
+}
+
+// applyCoverageToIndustryPlanPatch overlays inventory data from a coverage
+// snapshot onto a patch's materials and blueprints. Split from
+// buildIndustryPlanPatch so multi-row batches (Scanner → merge → apply)
+// don't double-count coverage into each source patch — which would inflate
+// merged quantities N-fold, one per row in the batch.
+//
+// Runs post-merge for batch flows, post-build for single-item flows.
+// Idempotent: applying twice with the same coverage produces the same
+// result. Passing a null coverage is a no-op (returns the patch unchanged).
+export function applyCoverageToIndustryPlanPatch(
+  patch: IndustryPlanPatch,
+  coverage: IndustryCoverageResult | null,
+): IndustryPlanPatch {
+  if (!coverage) return patch;
+
+  const availByType = new Map<number, number>(
+    (coverage.materials ?? []).map((m) => [m.type_id, Math.max(0, Math.ceil(m.available_qty ?? 0))]),
+  );
+  const bpByType = new Map<number, (typeof coverage.blueprints)[number]>(
+    (coverage.blueprints ?? []).map((bp) => [bp.blueprint_type_id, bp]),
+  );
+
+  const nextMaterials: IndustryMaterialPlanInput[] = (patch.materials ?? []).map((m) => {
+    const required = Math.max(0, Math.ceil(m.required_qty ?? 0));
+    const rawAvailable = availByType.get(m.type_id) ?? 0;
+    const available = Math.min(required, rawAvailable);
+    const buy = Math.max(0, required - available);
+    return {
+      ...m,
+      required_qty: required,
+      available_qty: available,
+      buy_qty: buy,
+      source: buy > 0 ? ("market" as const) : ("stock" as const),
+    };
+  });
+
+  const nextBlueprints: IndustryBlueprintPoolInput[] = (patch.blueprints ?? []).map((bp) => {
+    const cov = bpByType.get(bp.blueprint_type_id);
+    if (!cov || (cov.owned_qty ?? 0) <= 0) {
+      return bp;
+    }
+    const hasBpo = (cov.bpo_qty ?? 0) > 0;
+    if (hasBpo) {
+      return {
+        ...bp,
+        blueprint_name: bp.blueprint_name || cov.blueprint_name || "",
+        quantity: Math.max(1, cov.bpo_qty || 1),
+        me: cov.best_me || bp.me,
+        te: cov.best_te || bp.te,
+        is_bpo: true,
+        available_runs: 0,
+      };
+    }
+    const hasBpc = (cov.bpc_qty ?? 0) > 0 && (cov.available_runs ?? 0) > 0;
+    if (hasBpc) {
+      return {
+        ...bp,
+        blueprint_name: bp.blueprint_name || cov.blueprint_name || "",
+        quantity: Math.max(1, cov.bpc_qty || 1),
+        me: cov.best_me || bp.me,
+        te: cov.best_te || bp.te,
+        is_bpo: false,
+        available_runs: Math.max(0, cov.available_runs || 0),
+      };
+    }
+    return bp;
+  });
+
+  return {
+    ...patch,
+    materials: nextMaterials,
+    blueprints: nextBlueprints,
   };
 }
