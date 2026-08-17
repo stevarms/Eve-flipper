@@ -866,6 +866,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auth/industry/projects/{projectID}/plan/preview", s.handleAuthPreviewIndustryProjectPlan)
 	mux.HandleFunc("POST /api/auth/industry/projects/{projectID}/plan", s.handleAuthPlanIndustryProject)
 	mux.HandleFunc("POST /api/auth/industry/projects/{projectID}/materials/rebalance", s.handleAuthRebalanceIndustryProjectMaterials)
+	mux.HandleFunc("POST /api/auth/industry/projects/{projectID}/materials/recalc-remaining", s.handleAuthRecalcRemainingIndustryProjectMaterials)
 	mux.HandleFunc("POST /api/auth/industry/projects/{projectID}/blueprints/sync", s.handleAuthSyncIndustryProjectBlueprintPool)
 	mux.HandleFunc("POST /api/auth/industry/blueprints/profitable-scan", s.handleAuthIndustryProfitableScan)
 	mux.HandleFunc("GET /api/auth/stockpiles", s.handleListStockpiles)
@@ -6146,6 +6147,441 @@ func (s *Server) handleAuthRebalanceIndustryProjectMaterials(w http.ResponseWrit
 			"location_filter_count": len(locationFilter),
 		},
 	})
+}
+
+// recalcRemainingCompute is the raw result of the recalc's material walk.
+// Kept as a plain struct rather than a map return so tests can assert on
+// counters without threading four returns through every call site.
+type recalcRemainingCompute struct {
+	requiredByType map[int32]int64
+	typeNames      map[int32]string
+	unfinishedJobs int
+	skippedJobs    int
+}
+
+// computeRecalcRemainingRequirements walks unfinished jobs in a project
+// snapshot and returns the aggregated required-material totals plus job
+// counters. Pure — no HTTP, no DB, no ESI — so the extraction lets tests
+// exercise the interesting logic (job-status filter, BP resolution, ME
+// application, aggregation across jobs) without the asset-fetch and
+// authentication scaffolding around it.
+//
+// includedStatuses is applied case-insensitively after TrimSpace on the
+// job's Status field, matching normalizeIndustryJobStatus semantics.
+// Jobs whose linked task is missing, whose runs are non-positive with no
+// task target_runs fallback, or whose product has no resolvable blueprint
+// count against skippedJobs and don't contribute materials — intentional,
+// so a partial snapshot returns partial answers rather than 500ing.
+func computeRecalcRemainingRequirements(
+	snapshot db.IndustryProjectSnapshot,
+	sdeData *sde.Data,
+	includedStatuses []string,
+) recalcRemainingCompute {
+	out := recalcRemainingCompute{
+		requiredByType: make(map[int32]int64),
+		typeNames:      make(map[int32]string),
+	}
+	if sdeData == nil || sdeData.Industry == nil {
+		return out
+	}
+
+	tasksByID := make(map[int64]*db.IndustryTask, len(snapshot.Tasks))
+	for i := range snapshot.Tasks {
+		t := &snapshot.Tasks[i]
+		tasksByID[t.ID] = t
+	}
+
+	statusIncluded := make(map[string]struct{}, len(includedStatuses))
+	for _, s := range includedStatuses {
+		statusIncluded[strings.ToLower(strings.TrimSpace(s))] = struct{}{}
+	}
+
+	for i := range snapshot.Jobs {
+		job := &snapshot.Jobs[i]
+		if _, ok := statusIncluded[strings.ToLower(strings.TrimSpace(job.Status))]; !ok {
+			continue
+		}
+		task, taskOK := tasksByID[job.TaskID]
+		if !taskOK || task == nil {
+			out.skippedJobs++
+			continue
+		}
+
+		// Runs preference: job.Runs (post-install actuals) → task.TargetRuns
+		// (planning intent). Clamp to at least 1 so a mis-recorded 0-run job
+		// still contributes its blueprint's per-run material floor rather
+		// than silently disappearing from the recalc.
+		runs := job.Runs
+		if runs <= 0 {
+			runs = task.TargetRuns
+		}
+		if runs <= 0 {
+			out.skippedJobs++
+			continue
+		}
+
+		activity := strings.TrimSpace(job.Activity)
+		if activity == "" {
+			activity = strings.TrimSpace(task.Activity)
+		}
+		if activity == "" {
+			out.skippedJobs++
+			continue
+		}
+
+		// Parse constraints for ME and preferred blueprint_type_id.
+		// The plan patch stores blueprint_type_id on the task's constraints,
+		// so it's the reliable way to disambiguate an invention task's T1
+		// source BP from the manufacturing task's T2 BP (both would map to
+		// the same product otherwise).
+		var (
+			constraintME       int32
+			constraintBpTypeID int32
+		)
+		if len(task.Constraints) > 0 {
+			var raw map[string]interface{}
+			if jsonErr := json.Unmarshal(task.Constraints, &raw); jsonErr == nil {
+				if v, ok := raw["me"]; ok {
+					if f, ok := v.(float64); ok {
+						constraintME = int32(f)
+					}
+				}
+				if v, ok := raw["blueprint_type_id"]; ok {
+					if f, ok := v.(float64); ok {
+						constraintBpTypeID = int32(f)
+					}
+				}
+			}
+		}
+
+		// Locate the blueprint. Prefer the constraints-recorded ID so the
+		// activity + BP pair is exactly what the plan intends. Fall back
+		// to product-→-BP lookup (which resolves to the manufacturing
+		// producer) for older plans without the constraint.
+		var bp *sde.Blueprint
+		if constraintBpTypeID > 0 {
+			if b, ok := sdeData.Industry.Blueprints[constraintBpTypeID]; ok {
+				bp = b
+			}
+		}
+		if bp == nil {
+			if b, ok := sdeData.Industry.GetBlueprintForProduct(task.ProductTypeID); ok {
+				bp = b
+			}
+		}
+		if bp == nil {
+			out.skippedJobs++
+			continue
+		}
+
+		// v1 doesn't persist per-task structure/rig context, so
+		// structureBonus=0 and rigMEReduction=0. Under-counts material
+		// reduction slightly for Raitaru/Azbel/Sotiyo builders; the
+		// missing_qty is a "safe upper bound on what to still procure",
+		// which is the direction we'd rather err in.
+		mats := engine.CalculateActivityMaterialsExported(bp, activity, runs, constraintME, 0, 0)
+		out.unfinishedJobs++
+		for _, mat := range mats {
+			if mat.TypeID <= 0 || mat.Quantity <= 0 {
+				continue
+			}
+			out.requiredByType[mat.TypeID] += int64(mat.Quantity)
+			if _, seen := out.typeNames[mat.TypeID]; !seen {
+				if t, ok := sdeData.Types[mat.TypeID]; ok {
+					out.typeNames[mat.TypeID] = strings.TrimSpace(t.Name)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// handleAuthRecalcRemainingIndustryProjectMaterials recomputes material
+// needs from scratch across a project's UNFINISHED jobs and compares against
+// live asset counts. Non-destructive — the persisted plan is unchanged; this
+// is a spot-check for "what do I still need to buy for the jobs I have left
+// to run?" that avoids the mid-project drift the stored required_qty misses
+// (side jobs, moves, contracts silently draining shared materials).
+//
+// Job-status filter: planned + queued always contribute. active + paused
+// only when include_active_jobs is on — for active jobs the materials are
+// already committed inside EVE, so the default excludes them to keep the
+// number a "still to procure" total.
+//
+// The asset-fetching block mirrors handleAuthIndustryCoverage (personal
+// GetCharacterAssets plus optional GetCorporationAssets gated on the role
+// check). We intentionally inline the pattern instead of extracting a
+// helper — with two callers, duplication is cheaper than a leaky abstraction
+// across the two similarly-but-not-identically-shaped call sites.
+// Consolidate when a third caller lands.
+func (s *Server) handleAuthRecalcRemainingIndustryProjectMaterials(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.requireIndustryAuthUser(w, r)
+	if !ok {
+		return
+	}
+	if s.db == nil {
+		writeError(w, 503, "database unavailable")
+		return
+	}
+	if s.esi == nil || s.sessions == nil || s.sso == nil {
+		writeError(w, 503, "character ESI unavailable")
+		return
+	}
+
+	projectIDStr := strings.TrimSpace(r.PathValue("projectID"))
+	projectID, err := strconv.ParseInt(projectIDStr, 10, 64)
+	if err != nil || projectID <= 0 {
+		writeError(w, 400, "invalid project id")
+		return
+	}
+
+	var req struct {
+		IncludeCorpAssets bool `json:"include_corp_assets"`
+		IncludeActiveJobs bool `json:"include_active_jobs"`
+	}
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, 400, "invalid json")
+			return
+		}
+	}
+
+	snapshot, err := s.db.GetIndustryProjectSnapshotForUser(userID, projectID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, 404, "project not found")
+			return
+		}
+		writeError(w, 500, err.Error())
+		return
+	}
+
+	s.mu.RLock()
+	sdeData := s.sdeData
+	s.mu.RUnlock()
+	if sdeData == nil || sdeData.Industry == nil {
+		writeError(w, 503, "SDE not loaded yet")
+		return
+	}
+
+	// Status inclusion set.
+	includedStatuses := []string{db.IndustryJobStatusPlanned, db.IndustryJobStatusQueued}
+	if req.IncludeActiveJobs {
+		includedStatuses = append(includedStatuses, db.IndustryJobStatusActive, db.IndustryJobStatusPaused)
+	}
+
+	compute := computeRecalcRemainingRequirements(snapshot, sdeData, includedStatuses)
+	requiredByType := compute.requiredByType
+	typeNames := compute.typeNames
+	unfinishedJobs := compute.unfinishedJobs
+	skippedJobs := compute.skippedJobs
+
+	// Nothing to recalc → return an empty view rather than 400. The UI
+	// shows "no unfinished jobs — nothing to procure" for this case.
+	if len(requiredByType) == 0 {
+		writeJSON(w, map[string]interface{}{
+			"ok":        true,
+			"materials": []db.IndustryMaterialDiff{},
+			"summary": map[string]interface{}{
+				"unfinished_jobs":     unfinishedJobs,
+				"skipped_jobs":        skippedJobs,
+				"included_statuses":   includedStatuses,
+				"assets_scanned":      0,
+				"corp_assets_scanned": 0,
+			},
+		})
+		return
+	}
+
+	neededTypes := make(map[int32]struct{}, len(requiredByType))
+	for t := range requiredByType {
+		neededTypes[t] = struct{}{}
+	}
+
+	// Asset scan — mirror handleAuthIndustryCoverage. See that handler for
+	// the annotated version of the personal/corp gate; keeping the two in
+	// sync when either changes is on the caller. See design comment above.
+	extraWarnings := make([]string, 0, 4)
+	appendWarningOnce := func(msg string) {
+		msg = strings.TrimSpace(msg)
+		if msg == "" {
+			return
+		}
+		for _, existing := range extraWarnings {
+			if existing == msg {
+				return
+			}
+		}
+		extraWarnings = append(extraWarnings, msg)
+	}
+
+	selectedSessions, err := s.authSessionsForScope(userID, 0, true, true)
+	if err != nil {
+		if strings.Contains(err.Error(), "not logged in") {
+			writeError(w, 401, err.Error())
+		} else {
+			writeError(w, 400, err.Error())
+		}
+		return
+	}
+
+	assetsByType := make(map[int32]int64, len(neededTypes))
+	assetsScanned := 0
+	for _, sess := range selectedSessions {
+		token, tokenErr := s.sessions.EnsureValidTokenForUserCharacter(s.sso, userID, sess.CharacterID)
+		if tokenErr != nil {
+			continue
+		}
+		assets, assetErr := s.esi.GetCharacterAssets(sess.CharacterID, token)
+		if assetErr != nil {
+			log.Printf("[AUTH] Industry recalc assets error (%s): %v", sess.CharacterName, assetErr)
+			appendWarningOnce("assets unavailable for some characters; recalc coverage may be incomplete")
+			continue
+		}
+		assetByItemID := make(map[int64]esi.CharacterAsset, len(assets))
+		for _, asset := range assets {
+			if asset.ItemID > 0 {
+				assetByItemID[asset.ItemID] = asset
+			}
+		}
+		assetsScanned += len(assets)
+		for _, asset := range assets {
+			if asset.TypeID <= 0 {
+				continue
+			}
+			if _, needed := neededTypes[asset.TypeID]; !needed {
+				continue
+			}
+			if asset.IsBlueprintCopy || asset.Quantity <= -2 {
+				continue
+			}
+			// Personal asset scan doesn't apply a location filter — the
+			// recalc is at project level and materials could sit at any
+			// station on the way to the build system.
+			_ = resolveAssetRootLocationID(asset.LocationID, assetByItemID)
+			qty := asset.Quantity
+			if qty <= 0 {
+				if asset.IsSingleton {
+					qty = 1
+				} else {
+					continue
+				}
+			}
+			assetsByType[asset.TypeID] += qty
+		}
+	}
+
+	corpAssetsScanned := 0
+	if req.IncludeCorpAssets {
+		seenCorps := make(map[int32]struct{})
+		var corpForbiddenWarnAdded, corpRoleWarnAdded bool
+		for _, sess := range selectedSessions {
+			token, tokenErr := s.sessions.EnsureValidTokenForUserCharacter(s.sso, userID, sess.CharacterID)
+			if tokenErr != nil {
+				continue
+			}
+			corpID, corpErr := s.esi.GetCharacterCorporationID(sess.CharacterID)
+			if corpErr != nil || corpID <= 0 {
+				continue
+			}
+			if _, done := seenCorps[corpID]; done {
+				continue
+			}
+			roles, rolesErr := s.esi.GetCharacterRoles(sess.CharacterID, token)
+			if rolesErr != nil {
+				continue
+			}
+			if roles == nil || !hasStockpileCorpAssetRole(roles.Roles) {
+				if !corpRoleWarnAdded {
+					appendWarningOnce("corp assets skipped: no authenticated character in this corp holds Director / Accountant / Junior_Accountant / Trader / Auditor")
+					corpRoleWarnAdded = true
+				}
+				continue
+			}
+			corpAssets, assetsErr := s.esi.GetCorporationAssets(corpID, token)
+			if assetsErr != nil {
+				msg := strings.ToLower(assetsErr.Error())
+				if strings.Contains(msg, "403") || strings.Contains(msg, "scope") {
+					if !corpForbiddenWarnAdded {
+						appendWarningOnce("corp assets skipped: missing esi-assets.read_corporation_assets.v1 (re-authenticate)")
+						corpForbiddenWarnAdded = true
+					}
+					continue
+				}
+				log.Printf("[AUTH] Industry recalc corp assets error (corp %d via %s): %v", corpID, sess.CharacterName, assetsErr)
+				continue
+			}
+			seenCorps[corpID] = struct{}{}
+			corpAssetsScanned += len(corpAssets)
+			for _, asset := range corpAssets {
+				if asset.TypeID <= 0 {
+					continue
+				}
+				if _, needed := neededTypes[asset.TypeID]; !needed {
+					continue
+				}
+				if asset.IsBlueprintCopy || asset.Quantity <= -2 {
+					continue
+				}
+				qty := asset.Quantity
+				if qty <= 0 {
+					if asset.IsSingleton {
+						qty = 1
+					} else {
+						continue
+					}
+				}
+				assetsByType[asset.TypeID] += qty
+			}
+		}
+	}
+
+	// Assemble diff rows.
+	diffs := make([]db.IndustryMaterialDiff, 0, len(requiredByType))
+	for typeID, required := range requiredByType {
+		available := assetsByType[typeID]
+		if available > required {
+			available = required
+		}
+		missing := required - available
+		if missing < 0 {
+			missing = 0
+		}
+		diffs = append(diffs, db.IndustryMaterialDiff{
+			TypeID:       typeID,
+			TypeName:     typeNames[typeID],
+			RequiredQty:  required,
+			AvailableQty: available,
+			BuyQty:       missing,
+			BuildQty:     0,
+			MissingQty:   missing,
+		})
+	}
+	sort.SliceStable(diffs, func(i, j int) bool {
+		if diffs[i].MissingQty != diffs[j].MissingQty {
+			return diffs[i].MissingQty > diffs[j].MissingQty
+		}
+		if diffs[i].RequiredQty != diffs[j].RequiredQty {
+			return diffs[i].RequiredQty > diffs[j].RequiredQty
+		}
+		return diffs[i].TypeID < diffs[j].TypeID
+	})
+
+	resp := map[string]interface{}{
+		"ok":        true,
+		"materials": diffs,
+		"summary": map[string]interface{}{
+			"unfinished_jobs":     unfinishedJobs,
+			"skipped_jobs":        skippedJobs,
+			"included_statuses":   includedStatuses,
+			"assets_scanned":      assetsScanned,
+			"corp_assets_scanned": corpAssetsScanned,
+		},
+	}
+	if len(extraWarnings) > 0 {
+		resp["warnings"] = extraWarnings
+	}
+	writeJSON(w, resp)
 }
 
 func (s *Server) handleAuthIndustryCoverage(w http.ResponseWriter, r *http.Request) {

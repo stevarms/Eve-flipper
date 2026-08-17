@@ -580,6 +580,7 @@ func TestHostedQuotaFeatureMappingCoversHeavyHostedPosts(t *testing.T) {
 		{http.MethodPost, "/api/auth/industry/projects/42/plan/preview", "scans"},
 		{http.MethodPost, "/api/auth/industry/projects/42/plan", "scans"},
 		{http.MethodPost, "/api/auth/industry/projects/42/materials/rebalance", "scans"},
+		{http.MethodPost, "/api/auth/industry/projects/42/materials/recalc-remaining", "scans"},
 		{http.MethodPost, "/api/auth/industry/projects/42/blueprints/sync", "scans"},
 		{http.MethodPost, "/api/auth/stockpiles/42/scan", "scans"},
 		{http.MethodPost, "/api/auth/station/ai/chat", "station_ai"},

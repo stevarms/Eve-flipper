@@ -27,6 +27,7 @@ import type {
   IndustryJob,
   IndustryJobStatus,
   IndustryLedger,
+  IndustryMaterialDiff,
   IndustryMaterialPlanRecord,
   IndustryPlanPatch,
   IndustryPlanPreview,
@@ -1227,6 +1228,49 @@ export async function rebalanceAuthIndustryProjectMaterials(
   return {
     ...data,
     materials: Array.isArray(data.materials) ? data.materials : [],
+  };
+}
+
+export interface IndustryProjectRecalcRemainingPayload {
+  /** Include corp-hangar assets in availability (adds one corp-scoped
+   *  GetCorporationAssets fetch per unique corp represented by an
+   *  authenticated character with the right role). Frontend usually
+   *  passes true; backend defaults to false when omitted. */
+  include_corp_assets?: boolean;
+  /** By default `active` and `paused` jobs are excluded — for `active`
+   *  materials are already committed inside EVE, and `paused` is rare
+   *  enough that it's easier to opt in explicitly. When true, both
+   *  statuses contribute their materials to the recalc totals. */
+  include_active_jobs?: boolean;
+}
+
+export interface IndustryProjectRecalcRemainingResponse {
+  ok: boolean;
+  materials: IndustryMaterialDiff[];
+  summary: {
+    unfinished_jobs: number;
+    skipped_jobs: number;
+    included_statuses: string[];
+    assets_scanned: number;
+    corp_assets_scanned: number;
+  };
+  warnings?: string[];
+}
+
+export async function recalcRemainingAuthIndustryProjectMaterials(
+  projectID: number,
+  payload?: IndustryProjectRecalcRemainingPayload,
+): Promise<IndustryProjectRecalcRemainingResponse> {
+  const res = await apiFetch(`${BASE}/api/auth/industry/projects/${projectID}/materials/recalc-remaining`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload ?? {}),
+  });
+  const data = await handleResponse<IndustryProjectRecalcRemainingResponse>(res);
+  return {
+    ...data,
+    materials: Array.isArray(data.materials) ? data.materials : [],
+    warnings: Array.isArray(data.warnings) ? data.warnings : undefined,
   };
 }
 

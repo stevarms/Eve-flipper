@@ -926,6 +926,18 @@ func activityMaterials(bp *sde.Blueprint, activity string) []sde.BlueprintMateri
 // does (blueprint ME is always 0 for reactions). Historically reactions
 // received no structure/rig ME; the fix in this pass makes reaction rigs
 // actually reduce moon-composite material use.
+// CalculateActivityMaterialsExported is a thin exported wrapper around the
+// package-private calculateActivityMaterials so callers outside the engine
+// package (currently the /materials/recalc-remaining handler) can compute
+// per-BP material needs without wiring up a full IndustryAnalyzer, market
+// fetch, or price cache. Named with the "Exported" suffix intentionally to
+// signal that the canonical, richer entry point remains
+// IndustryAnalyzer.Analyze — this is a narrow "just multiply BP mats by
+// runs, apply ME" surface for callers that don't need the tree.
+func CalculateActivityMaterialsExported(bp *sde.Blueprint, activity string, runs, me int32, structureBonus, rigMEReduction float64) []sde.BlueprintMaterial {
+	return calculateActivityMaterials(bp, activity, runs, me, structureBonus, rigMEReduction)
+}
+
 func calculateActivityMaterials(bp *sde.Blueprint, activity string, runs, me int32, structureBonus, rigMEReduction float64) []sde.BlueprintMaterial {
 	materials := activityMaterials(bp, activity)
 	if len(materials) == 0 || runs <= 0 {

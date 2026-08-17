@@ -676,6 +676,7 @@ func isHostedQuotaIndustryProjectComputePath(path string) bool {
 	return strings.HasSuffix(path, "/plan/preview") ||
 		strings.HasSuffix(path, "/plan") ||
 		strings.HasSuffix(path, "/materials/rebalance") ||
+		strings.HasSuffix(path, "/materials/recalc-remaining") ||
 		strings.HasSuffix(path, "/blueprints/sync")
 }
 

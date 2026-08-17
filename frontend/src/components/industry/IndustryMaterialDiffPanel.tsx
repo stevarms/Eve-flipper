@@ -22,6 +22,10 @@ interface IndustryMaterialDiffPanelProps {
   setRebalanceUseSelectedStation: Dispatch<SetStateAction<boolean>>;
   handleRebalanceLedgerMaterialsFromInventory: () => Promise<void>;
   rebalancingLedgerMaterials: boolean;
+  /** Opens the Recalc Remaining modal. Optional so the panel keeps
+   *  working in contexts that haven't wired up the modal yet — the
+   *  button just hides if omitted. */
+  onOpenRecalcRemaining?: () => void;
 }
 
 export function IndustryMaterialDiffPanel({
@@ -43,6 +47,7 @@ export function IndustryMaterialDiffPanel({
   setRebalanceUseSelectedStation,
   handleRebalanceLedgerMaterialsFromInventory,
   rebalancingLedgerMaterials,
+  onOpenRecalcRemaining,
 }: IndustryMaterialDiffPanelProps) {
   const { t } = useI18n();
   const [materialFilterMode, setMaterialFilterMode] = useState<"all" | "stock" | "buy" | "build" | "missing">("all");
@@ -296,6 +301,16 @@ export function IndustryMaterialDiffPanel({
           >
             {rebalancingLedgerMaterials ? t("industryLedgerMaterialRebalancing") : t("industryLedgerMaterialRebalanceFromInventory")}
           </button>
+          {onOpenRecalcRemaining && (
+            <button
+              type="button"
+              onClick={onOpenRecalcRemaining}
+              className="px-1.5 py-0.5 border border-fuchsia-500/40 text-fuchsia-300 rounded-sm hover:bg-fuchsia-500/10"
+              title={t("industryLedgerRecalcRemainingButtonHint")}
+            >
+              {t("industryLedgerRecalcRemainingButton")}
+            </button>
+          )}
         </div>
       </div>
       {blueprintSyncHint && (

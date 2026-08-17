@@ -2494,6 +2494,8 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     ctx: {
       jobsWorkspaceTab,
       ledgerSnapshot,
+      selectedLedgerProjectId,
+      addToast,
       rebalanceInventoryScope,
       setRebalanceInventoryScope,
       rebalanceLookbackDays,
@@ -2531,6 +2533,8 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
   }), [
     jobsWorkspaceTab,
     ledgerSnapshot,
+    selectedLedgerProjectId,
+    addToast,
     rebalanceInventoryScope,
     rebalanceLookbackDays,
     rebalanceStrategy,

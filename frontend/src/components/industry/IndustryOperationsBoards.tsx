@@ -1,4 +1,4 @@
-import type { Dispatch, SetStateAction } from "react";
+import { useState, type Dispatch, type SetStateAction } from "react";
 import type {
   IndustryProjectSnapshot,
   IndustryTaskStatus,
@@ -6,11 +6,19 @@ import type {
 import type { IndustryTaskDependencyBoard } from "./industryHelpers";
 import type { IndustryJobsWorkspaceTab } from "./IndustryJobsWorkspaceNav";
 import { IndustryMaterialDiffPanel } from "./IndustryMaterialDiffPanel";
+import { IndustryRecalcRemainingModal } from "./IndustryRecalcRemainingModal";
 import { IndustryTaskBoardPanel } from "./IndustryTaskBoardPanel";
 
 interface IndustryOperationsBoardsContext {
   jobsWorkspaceTab: IndustryJobsWorkspaceTab;
   ledgerSnapshot: IndustryProjectSnapshot | null;
+  /** Project the Recalc Remaining modal targets. When 0/unset, the recalc
+   *  button in the material diff panel stays hidden. */
+  selectedLedgerProjectId: number;
+  /** Optional toast surface for coverage warnings from the recalc call
+   *  (e.g. missing corp asset scope) — same pattern the scanner batch
+   *  add-to-project flow uses. */
+  addToast?: (msg: string, tone: "info" | "success" | "warning" | "error", ttlMs?: number) => void;
   rebalanceInventoryScope: "single" | "all";
   setRebalanceInventoryScope: Dispatch<SetStateAction<"single" | "all">>;
   rebalanceLookbackDays: number;
@@ -54,6 +62,8 @@ export function IndustryOperationsBoards({ ctx }: IndustryOperationsBoardsProps)
   const {
     jobsWorkspaceTab,
     ledgerSnapshot,
+    selectedLedgerProjectId,
+    addToast,
     rebalanceInventoryScope,
     setRebalanceInventoryScope,
     rebalanceLookbackDays,
@@ -89,11 +99,14 @@ export function IndustryOperationsBoards({ ctx }: IndustryOperationsBoardsProps)
     taskDependencyBoard,
   } = ctx;
 
+  const [recalcOpen, setRecalcOpen] = useState(false);
+
   return (
     <>
 <IndustryMaterialDiffPanel
   jobsWorkspaceTab={jobsWorkspaceTab}
   materialRows={ledgerSnapshot?.material_diff ?? []}
+  onOpenRecalcRemaining={selectedLedgerProjectId > 0 ? () => setRecalcOpen(true) : undefined}
   rebalanceInventoryScope={rebalanceInventoryScope}
   setRebalanceInventoryScope={setRebalanceInventoryScope}
   rebalanceLookbackDays={rebalanceLookbackDays}
@@ -132,6 +145,12 @@ export function IndustryOperationsBoards({ ctx }: IndustryOperationsBoardsProps)
   handleSetLedgerTaskStatus={handleSetLedgerTaskStatus}
   taskDependencyBoard={taskDependencyBoard}
 />
+      <IndustryRecalcRemainingModal
+        open={recalcOpen}
+        onClose={() => setRecalcOpen(false)}
+        projectID={selectedLedgerProjectId}
+        onWarnings={addToast ? (ws) => ws.forEach((w) => addToast(w, "warning", 10000)) : undefined}
+      />
     </>
   );
 }
