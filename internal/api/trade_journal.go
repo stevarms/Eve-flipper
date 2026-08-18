@@ -712,7 +712,7 @@ func (s *Server) loadTradeJournalResult(r *http.Request) (*engine.TradeJournalRe
 	}
 
 	// ME resolver — builds per-request from ledger + BP inventory.
-	meResolver := s.buildMEResolver(userID, sdeData)
+	meResolver := s.buildMEResolver(userID, sdeData, filter)
 
 	// User's flat sales-tax + broker-fee rates from config (fallback 8% / 1%).
 	salesTax, brokerFee := 8.0, 1.0
@@ -746,7 +746,7 @@ func (s *Server) loadTradeJournalResult(r *http.Request) (*engine.TradeJournalRe
 
 // buildMEResolver returns a closure implementing the plan's ME lookup chain:
 // planner-link → owned-BPO → tech-level default → 0 fallback.
-func (s *Server) buildMEResolver(userID string, sdeData *sde.Data) func(engine.JournalIndustryJob) engine.MEResolution {
+func (s *Server) buildMEResolver(userID string, sdeData *sde.Data, filter *db.WalletScopeFilter) func(engine.JournalIndustryJob) engine.MEResolution {
 	// Pre-load ledger job map: external_job_id → ledger row (for planner link).
 	ledgerByExt := map[int64]db.IndustryLedgerJobME{}
 	if s.db != nil {
@@ -756,19 +756,59 @@ func (s *Server) buildMEResolver(userID string, sdeData *sde.Data) func(engine.J
 			}
 		}
 	}
-	// Pre-load user's BP inventory: BlueprintTypeID → max ME across owned BPs.
-	// TODO(v1.5): actually call esi.GetCharacterBlueprints per session. For
-	// now this map is empty; the resolver falls through to tech-level defaults.
-	meByBP := map[int32]int32{}
+	// Fetch each authorized character's blueprint inventory and build a
+	// max-ME-per-BlueprintTypeID map, tagging whether the winner is a BPO
+	// (Runs == -1 in ESI's shape) or a BPC (positive Runs). Consumed at
+	// step 2 of the ME lookup chain. Fan-out is bounded by the number of
+	// authorized characters (typically 2-5) and ESI's blueprint endpoint
+	// caches upstream, so we tolerate the per-compute latency.
+	type bpEntry struct {
+		ME    int32
+		IsBPO bool
+	}
+	bpMap := map[int32]bpEntry{}
+	if s.sessions != nil && s.esi != nil && s.sso != nil {
+		sessions := s.sessions.ListForUser(userID)
+		for _, sess := range sessions {
+			if filter != nil && !filterAllowsCharacter(filter, sess.CharacterID) {
+				continue
+			}
+			token, err := s.sessions.EnsureValidTokenForUserCharacter(s.sso, userID, sess.CharacterID)
+			if err != nil {
+				continue
+			}
+			bps, err := s.esi.GetCharacterBlueprints(sess.CharacterID, token)
+			if err != nil {
+				continue
+			}
+			for _, bp := range bps {
+				isBPO := bp.Runs == -1
+				cur, ok := bpMap[bp.TypeID]
+				if !ok {
+					bpMap[bp.TypeID] = bpEntry{ME: bp.MaterialEfficiency, IsBPO: isBPO}
+					continue
+				}
+				// Prefer higher ME; on tie, prefer BPO (more usable — a BPC
+				// has finite runs and might be gone by the next job).
+				if bp.MaterialEfficiency > cur.ME || (bp.MaterialEfficiency == cur.ME && isBPO && !cur.IsBPO) {
+					bpMap[bp.TypeID] = bpEntry{ME: bp.MaterialEfficiency, IsBPO: isBPO}
+				}
+			}
+		}
+	}
 
 	return func(job engine.JournalIndustryJob) engine.MEResolution {
 		// 1. Ledger link.
 		if r, ok := ledgerByExt[job.JobID]; ok {
 			return engine.MEResolution{ME: r.ME, Source: "planner"}
 		}
-		// 2. Owned BP inventory.
-		if me, ok := meByBP[job.BlueprintTypeID]; ok {
-			return engine.MEResolution{ME: me, Source: "bpo"}
+		// 2. Owned BP inventory (BPO preferred over BPC on ties).
+		if e, ok := bpMap[job.BlueprintTypeID]; ok {
+			src := "bpc"
+			if e.IsBPO {
+				src = "bpo"
+			}
+			return engine.MEResolution{ME: e.ME, Source: src}
 		}
 		// 3. Tech-level default via SDE metaGroupID.
 		if sdeData != nil {

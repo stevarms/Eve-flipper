@@ -1572,7 +1572,7 @@ export const en = {
     journalMaterialSourceFifo: "FIFO",
     journalMaterialSourceAvg: "Avg",
     journalMEAssumedHint:
-      "Material Efficiency (ME) used for this job's cost calculation. `planner` = from your Industry planner ledger. `bpo` = highest ME across your owned BPOs of this type. `t1_default` / `t2_default` = tech-level default when no BP was found. Click Link to planner job to attach exact ME.",
+      "Material Efficiency (ME) used for this job's cost calculation. `planner` = from your Industry planner ledger. `bpo` / `bpc` = highest ME across your owned blueprints of this type (BPO preferred over BPC on ties). `t1_default` / `t2_default` = tech-level default when no BP was found in your inventory. Click Link to planner job to attach exact ME.",
     journalLinkToPlanner: "Link to planner job",
     journalLinkConfirm: "Link",
     journalNoLinkCandidates: "No unlinked planner jobs match this ESI job.",

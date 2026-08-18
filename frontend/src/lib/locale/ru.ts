@@ -1572,7 +1572,7 @@ export const ru = {
     journalMaterialSourceFifo: "FIFO",
     journalMaterialSourceAvg: "Avg",
     journalMEAssumedHint:
-      "Material Efficiency (ME) для расчёта. `planner` = из вашего Industry planner. `bpo` = max ME из ваших BPO. `t1_default`/`t2_default` = дефолт по тех-уровню. Link to planner job для точного ME.",
+      "Material Efficiency (ME) для расчёта. `planner` = из вашего Industry planner. `bpo`/`bpc` = max ME из ваших blueprints (BPO предпочтительнее на ties). `t1_default`/`t2_default` = дефолт по тех-уровню. Link to planner job для точного ME.",
     journalLinkToPlanner: "Link to planner",
     journalLinkConfirm: "Link",
     journalNoLinkCandidates: "Нет unlinked planner jobs, подходящих к этой ESI job.",
