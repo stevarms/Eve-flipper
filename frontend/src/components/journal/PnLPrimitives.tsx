@@ -6,6 +6,19 @@ import type {
   StationPnL,
 } from "../../lib/types";
 
+// PnLChart's data shape — just the fields the CSS bar chart uses. Kept
+// permissive here (rather than PortfolioPnL["daily_pnl"]) so callers with
+// their own daily-entry shape (Trade Journal) can pass compatible rows
+// without a cast. Legacy character-popup PnLTab still passes
+// PortfolioPnL["daily_pnl"] directly — that shape is a superset.
+export interface PnLChartEntry {
+  date: string;
+  net_pnl: number;
+  cumulative_pnl: number;
+  drawdown_pct?: number;
+  transactions?: number;
+}
+
 // Shared P&L primitives — used by the character-popup Ledger tab and the
 // main Trade Journal tab. Extracted from PnLTab.tsx so both surfaces render
 // identical widgets without code duplication.
@@ -17,7 +30,7 @@ export function PnLChart({
   mode,
   formatIsk,
 }: {
-  data: PortfolioPnL["daily_pnl"];
+  data: PnLChartEntry[];
   mode: "daily" | "cumulative" | "drawdown";
   formatIsk: (v: number) => string;
 }) {
