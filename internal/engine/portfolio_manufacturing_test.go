@@ -307,6 +307,32 @@ func TestComputeTradeJournal_CombinedTotalsInvariant(t *testing.T) {
 	}
 }
 
+func TestComputeTradeJournal_ReactionsCountAsManufacturing(t *testing.T) {
+	// Reactions (activity_id = 11) produce composites/hybrids at cost =
+	// install + materials, same as manufacturing. Verify a reaction job
+	// generates a mfg lot and its sale counts toward ManufacturingPnL.
+	txns := []JournalTxn{
+		mkTxn(1, "char:1", "2026-01-01", 34, 100, 10, true), // buy input mats
+		mkTxn(2, "char:1", "2026-01-10", 588, 1, 5_000_000, false), // sell reaction output
+	}
+	// Reaction job: activity_id=11 (not 1).
+	job := mkJob(100, 1, 587, 588, 1, 1_000_000, "2026-01-02", "2026-01-05")
+	job.ActivityID = 11
+	res := ComputeTradeJournal(txns, []JournalIndustryJob{job}, TradeJournalOptions{
+		FIFOMode:  FIFOModeStrictDate,
+		Materials: map[int32][]sde.BlueprintMaterial{587: {{TypeID: 34, Quantity: 100}}},
+		Products:  map[int32]sde.BlueprintProduct{587: {TypeID: 588, Quantity: 1}},
+		MEByJob:   meZero,
+	})
+	// Cost = 1M install + 100*10 = 1_001_000; sell 5M → mfg profit = 3_999_000.
+	if got := res.Totals.ManufacturingPnL; got != 3_999_000 {
+		t.Errorf("ManufacturingPnL = %f, want 3999000", got)
+	}
+	if len(res.ManufacturingLots) != 1 {
+		t.Errorf("expected reaction to produce 1 mfg lot, got %d", len(res.ManufacturingLots))
+	}
+}
+
 func TestComputeTradeJournal_SinceDateExcludesEarlierPnL(t *testing.T) {
 	// A sell before the cutoff should still pop the buy lot (so open state is
 	// correct) but its P&L shouldn't count toward Totals.

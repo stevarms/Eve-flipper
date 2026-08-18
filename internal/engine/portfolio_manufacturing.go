@@ -288,15 +288,18 @@ func ComputeTradeJournal(
 		}
 		events = append(events, journalEvent{when: t, kind: kind, id: txns[i].TransactionID, txn: &txns[i]})
 	}
-	// Only include manufacturing jobs (activity_id = 1) and only successful
-	// ones (successful_runs > 0). Failed jobs still consumed materials but
-	// produced nothing — we handle those as material-consumption events
-	// with no offsetting product lot so their cost lands on trading P&L
-	// as an inventory disappearance. For MVP simplicity we skip them.
-	// TODO(v1.5): track failed-job material loss as a manufacturing expense.
+	// Include activity_id=1 (Manufacturing) and 11 (Reactions). Both
+	// produce sellable items with the same cost-basis semantics: install
+	// cost + material cost divided by produced qty. Reactions read their
+	// materials from bp.Activities["reaction"] on the SDE side; the api
+	// layer is responsible for populating opts.Materials with the right
+	// activity's rows per job.
+	// Only successful, delivered jobs count. Failed jobs consumed
+	// materials but produced nothing — v1.5 will surface that loss as a
+	// manufacturing expense.
 	for i := range jobs {
 		j := &jobs[i]
-		if j.ActivityID != 1 {
+		if j.ActivityID != 1 && j.ActivityID != 11 {
 			continue
 		}
 		if j.Status != "delivered" || j.SuccessfulRuns <= 0 {

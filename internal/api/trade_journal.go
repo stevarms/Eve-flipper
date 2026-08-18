@@ -668,14 +668,21 @@ func (s *Server) loadTradeJournalResult(r *http.Request) (*engine.TradeJournalRe
 			if bp == nil {
 				continue
 			}
-			// Prefer Activities["manufacturing"] if present; else use the
-			// legacy Materials/Products fields.
-			if act := bp.Activities["manufacturing"]; act != nil {
+			// Activity name lookup: 1 = manufacturing, 11 = reaction. Both
+			// share the same cost-basis semantics; the SDE keys them by
+			// name under Activities.
+			activityName := "manufacturing"
+			if j.ActivityID == 11 {
+				activityName = "reaction"
+			}
+			if act := bp.Activities[activityName]; act != nil {
 				materials[j.BlueprintTypeID] = act.Materials
 				if len(act.Products) > 0 {
 					products[j.BlueprintTypeID] = act.Products[0]
 				}
-			} else {
+			} else if j.ActivityID == 1 {
+				// Legacy fallback for older SDE dumps where manufacturing
+				// activity isn't in the Activities map.
 				materials[j.BlueprintTypeID] = bp.Materials
 				products[j.BlueprintTypeID] = sde.BlueprintProduct{TypeID: bp.ProductTypeID, Quantity: bp.ProductQuantity}
 			}
