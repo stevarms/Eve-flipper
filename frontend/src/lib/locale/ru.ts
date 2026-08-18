@@ -1498,6 +1498,9 @@ export const ru = {
     piFactoryNothingToCopy: "Нечего копировать",
     piFactoryCopyFailed: "Не удалось скопировать",
 
+    // Trade Journal tab
+    tabTradeJournal: "Trade Journal",
+
     // Price Audit tab
     tabPriceAudit: "Прайс-аудит",
     colQty: "Кол-во",

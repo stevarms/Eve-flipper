@@ -1498,6 +1498,9 @@ export const en = {
     piFactoryNothingToCopy: "Nothing to copy",
     piFactoryCopyFailed: "Failed to copy",
 
+    // Trade Journal tab
+    tabTradeJournal: "Trade Journal",
+
     // Price Audit tab
     tabPriceAudit: "Price Audit",
     colQty: "Qty",

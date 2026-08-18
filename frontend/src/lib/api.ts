@@ -2087,6 +2087,220 @@ export async function getPortfolioOptimization(days: number = 90, characterId?: 
   }
 }
 
+// --- Trade Journal ---
+
+export type WalletScope =
+  | { include_all: true }
+  | {
+      include_all?: false;
+      include_characters?: number[];
+      include_corp_divisions?: { corporation_id: number; division: number }[];
+    };
+
+export type JournalFIFOMode = "strict_date" | "trade_first" | "manufacture_first";
+
+export type JournalLotSource = "trade" | "manufacture" | "orphan";
+
+export interface JournalSyncWalletStat {
+  wallet_kind: "character" | "corporation";
+  character_id?: number;
+  corporation_id?: number;
+  division?: number;
+  synced_at: string;
+  live_txn_rows: number;
+  live_journal_rows: number;
+  live_industry_rows?: number;
+  limit_hit: boolean;
+  error?: string;
+}
+
+export interface JournalSyncResponse {
+  wallets: JournalSyncWalletStat[];
+  industry_jobs_auto_linked: number;
+  industry_jobs_still_unlinked_ambiguous: number;
+}
+
+export interface JournalTotals {
+  trading_pnl: number;
+  manufacturing_pnl: number;
+  combined_pnl: number;
+  buy_isk: number;
+  sell_isk: number;
+  fees_isk: number;
+  unattributed_isk: number;
+  est_material_cost_isk: number;
+}
+
+export interface JournalDailyBreakdown {
+  date: string;
+  trading_pnl: number;
+  manufacturing_pnl: number;
+  combined_pnl: number;
+  buy_isk: number;
+  sell_isk: number;
+  fees_isk: number;
+  transactions: number;
+}
+
+export interface JournalStaleSync {
+  wallet_key: string;
+  last_sync_at: string;
+  days_ago: number;
+}
+
+export interface JournalSummaryResponse {
+  totals: JournalTotals;
+  daily_pnl: JournalDailyBreakdown[];
+  tracking_since: Record<string, string>;
+  stale_syncs: JournalStaleSync[];
+  fifo_mode: JournalFIFOMode;
+  since: string;
+}
+
+export interface JournalByTypeRow {
+  type_id: number;
+  type_name?: string;
+  buys_qty: number;
+  sells_qty: number;
+  avg_buy_price: number;
+  avg_sell_price: number;
+  trading_profit: number;
+  manufacturing_profit: number;
+  combined_profit: number;
+  held_qty_trade: number;
+  held_qty_manufacture: number;
+  unattributed_sells_qty: number;
+}
+
+export interface JournalLot {
+  source: JournalLotSource;
+  sell_date: string;
+  sell_txn_id: number;
+  sell_wallet_key: string;
+  type_id: number;
+  type_name?: string;
+  matched_qty: number;
+  sell_unit_price: number;
+  sell_gross: number;
+  sell_fees: number;
+  net_profit: number;
+  // Trade-side
+  buy_date?: string;
+  buy_txn_id?: number;
+  buy_wallet_key?: string;
+  buy_unit_price?: number;
+  buy_fees?: number;
+  // Manufacture-side
+  manufacture_job_id?: number;
+  manufacture_me?: number;
+  manufacture_me_tag?: string;
+  materials_estimated?: boolean;
+}
+
+export interface JournalManufacturingLotMaterial {
+  type_id: number;
+  type_name?: string;
+  qty: number;
+  unit_cost: number;
+  total_cost: number;
+  source: "fifo" | "avg";
+}
+
+export interface JournalManufacturingLot {
+  job_id: number;
+  character_id: number;
+  product_type_id: number;
+  product_name?: string;
+  completed_date: string;
+  produced_qty: number;
+  install_cost: number;
+  material_cost: number;
+  unit_cost: number;
+  me: number;
+  me_tag: string;
+  materials_estimated: boolean;
+  materials?: JournalManufacturingLotMaterial[];
+}
+
+export interface JournalLinkCandidate {
+  ledger_job_id: number;
+  character_id: number;
+  product_type_id: number;
+  runs: number;
+  started_at: string;
+}
+
+// serializeWalletScope turns the wire type into a "char:1,corp:2:3" query
+// param — the backend accepts either the JSON body form (sync) or this
+// compact form (GET query params).
+export function serializeWalletScope(scope: WalletScope | null | undefined): string {
+  if (!scope || scope.include_all) return "all";
+  const parts: string[] = [];
+  for (const id of scope.include_characters ?? []) parts.push(`char:${id}`);
+  for (const d of scope.include_corp_divisions ?? [])
+    parts.push(`corp:${d.corporation_id}:${d.division}`);
+  return parts.join(",") || "all";
+}
+
+export async function syncTradeJournal(scope?: WalletScope | null): Promise<JournalSyncResponse> {
+  const body = scope ? { wallets: scope } : {};
+  const res = await apiFetch(`${BASE}/api/auth/journal/sync`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return handleResponse<JournalSyncResponse>(res);
+}
+
+export interface JournalReadParams {
+  scope?: WalletScope | null;
+  days?: number | "all";
+  fifoMode?: JournalFIFOMode;
+}
+
+function journalReadQuery(params?: JournalReadParams): URLSearchParams {
+  const qp = new URLSearchParams();
+  qp.set("scope", serializeWalletScope(params?.scope ?? null));
+  qp.set("days", params?.days === "all" ? "all" : String(params?.days ?? 30));
+  if (params?.fifoMode) qp.set("fifo_mode", params.fifoMode);
+  return qp;
+}
+
+export async function getJournalSummary(params?: JournalReadParams): Promise<JournalSummaryResponse> {
+  const res = await apiFetch(`${BASE}/api/auth/journal/summary?${journalReadQuery(params).toString()}`);
+  return handleResponse<JournalSummaryResponse>(res);
+}
+
+export async function getJournalByType(params?: JournalReadParams): Promise<{ rows: JournalByTypeRow[] }> {
+  const res = await apiFetch(`${BASE}/api/auth/journal/by-type?${journalReadQuery(params).toString()}`);
+  return handleResponse<{ rows: JournalByTypeRow[] }>(res);
+}
+
+export async function getJournalLots(typeID: number, params?: JournalReadParams): Promise<{
+  lots: JournalLot[];
+  manufacturing_lots: JournalManufacturingLot[];
+}> {
+  const qp = journalReadQuery(params);
+  qp.set("type_id", String(typeID));
+  const res = await apiFetch(`${BASE}/api/auth/journal/lots?${qp.toString()}`);
+  return handleResponse<{ lots: JournalLot[]; manufacturing_lots: JournalManufacturingLot[] }>(res);
+}
+
+export async function linkJournalJob(esiJobID: number, ledgerJobID: number): Promise<void> {
+  const res = await apiFetch(`${BASE}/api/auth/journal/link-job`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ esi_job_id: esiJobID, ledger_job_id: ledgerJobID }),
+  });
+  await handleResponse<{ ok: boolean }>(res);
+}
+
+export async function getJournalLinkCandidates(esiJobID: number): Promise<JournalLinkCandidate[]> {
+  const res = await apiFetch(`${BASE}/api/auth/journal/link-candidates?esi_job_id=${esiJobID}`);
+  const data = await handleResponse<{ candidates: JournalLinkCandidate[] }>(res);
+  return data.candidates ?? [];
+}
+
 // --- Industry ---
 
 import type {
