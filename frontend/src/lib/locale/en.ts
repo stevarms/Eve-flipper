@@ -1518,6 +1518,8 @@ export const en = {
     journalFifoModeMfgFirst: "Manufacture first",
     journalSyncBtn: "Sync",
     journalSyncing: "Syncing...",
+    journalExportCsv: "Export CSV",
+    journalExportCsvHint: "Download the currently visible per-item rows (with the active sort applied) as a CSV file for offline analysis or spreadsheet pivots.",
     journalTrackingSince: "Tracking since {date}",
     journalTrackingSinceHint:
       "Oldest date represented in your local Trade Journal archive across every selected wallet. ESI only serves ~30d of history; archive grows forward from the first sync onward.",

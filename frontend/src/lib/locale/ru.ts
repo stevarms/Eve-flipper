@@ -1518,6 +1518,8 @@ export const ru = {
     journalFifoModeMfgFirst: "Производство сначала",
     journalSyncBtn: "Sync",
     journalSyncing: "Синхронизация...",
+    journalExportCsv: "Export CSV",
+    journalExportCsvHint: "Скачать текущие видимые строки как CSV.",
     journalTrackingSince: "Tracking since {date}",
     journalTrackingSinceHint:
       "Самая ранняя дата в вашем локальном архиве Trade Journal. ESI хранит ~30 дней; архив растёт вперёд с первого sync.",

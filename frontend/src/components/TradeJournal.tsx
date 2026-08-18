@@ -233,6 +233,49 @@ export function TradeJournal({ isLoggedIn, visitToken }: Props) {
     }
   };
 
+  // exportCSV dumps the currently visible per-item table (with the active
+  // sort applied) as a CSV file so users can pivot the numbers in a
+  // spreadsheet without another API call.
+  const exportCSV = () => {
+    const esc = (v: string) => (/[",\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+    const header = [
+      t("colItem"),
+      t("journalTableColBuysQty"),
+      t("journalTableColSellsQty"),
+      t("journalTableColAvgBuy"),
+      t("journalTableColAvgSell"),
+      t("journalTableColTradingPL"),
+      t("journalTableColMfgPL"),
+      t("journalTableColCombinedPL"),
+      t("journalTableColHeld"),
+    ]
+      .map(esc)
+      .join(",");
+    const rows = sortedRows.map((r) =>
+      [
+        esc(r.type_name || `Type #${r.type_id}`),
+        String(r.buys_qty),
+        String(r.sells_qty),
+        String(r.avg_buy_price ?? 0),
+        String(r.avg_sell_price ?? 0),
+        String(r.trading_profit),
+        String(r.manufacturing_profit),
+        String(r.combined_profit),
+        `${r.held_qty_trade}/${r.held_qty_manufacture}`,
+      ].join(","),
+    );
+    const blob = new Blob(["﻿", header, "\n", rows.join("\n")], {
+      type: "text/csv;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    const periodTag = period === "all" ? "all" : `${period}d`;
+    link.download = `eve-trade-journal-${periodTag}-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
   // Chart series overlay: PnLChart expects the DailyPnLEntry shape from
   // PortfolioPnL. Adapt each source (trading / mfg / combined) into that
   // shape with net_pnl set from the corresponding series.
@@ -344,6 +387,15 @@ export function TradeJournal({ isLoggedIn, visitToken }: Props) {
               {t("journalTrackingSince", { date: earliestTrackingSince.slice(0, 10) })}
             </span>
           )}
+          <button
+            type="button"
+            onClick={exportCSV}
+            disabled={sortedRows.length === 0}
+            className="px-2 py-1 text-xs rounded-sm border border-eve-border bg-eve-panel text-eve-dim hover:text-eve-text hover:border-eve-accent/50 disabled:opacity-40"
+            title={t("journalExportCsvHint")}
+          >
+            {t("journalExportCsv")}
+          </button>
           <button
             onClick={() => void doSync(false)}
             disabled={syncing}
