@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  getAuthStatus,
   getJournalByType,
   getJournalLinkCandidates,
   getJournalLots,
@@ -15,6 +16,7 @@ import {
   type JournalSyncResponse,
   type WalletScope,
 } from "../lib/api";
+import type { AuthCharacter } from "../lib/types";
 import { useI18n, type TranslationKey } from "../lib/i18n";
 import { PnLChart } from "./journal/PnLPrimitives";
 
@@ -91,12 +93,53 @@ export function TradeJournal({ isLoggedIn, visitToken }: Props) {
     if (typeof window !== "undefined") window.localStorage.setItem(FIFO_STORAGE_KEY, m);
   };
 
-  // v1: pool everything. The scope-picker UI is a v1.5 (per the plan the
-  // grouped chip UI is stubbed for now — pass include_all: true and let
-  // the user filter via a future dropdown).
-  const scope = useMemo<WalletScope>(() => ({ include_all: true }), []);
+  // Wallet scope — start "all", let the user narrow via the picker.
+  // Explicit include_characters + include_corp_divisions arrays are only
+  // populated when the user unticks at least one chip; otherwise the
+  // scope stays {include_all: true} so newly-authorized wallets are
+  // pooled automatically.
+  const [excludedCharacters, setExcludedCharacters] = useState<Set<number>>(new Set());
+  const [excludedCorpDivs, setExcludedCorpDivs] = useState<Set<string>>(new Set());
+  const [authCharacters, setAuthCharacters] = useState<AuthCharacter[]>([]);
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    void getAuthStatus()
+      .then((s) => setAuthCharacters(s.characters ?? []))
+      .catch(() => setAuthCharacters([]));
+  }, [isLoggedIn]);
 
   const [summary, setSummary] = useState<JournalSummaryResponse | null>(null);
+  // The summary response's tracking_since keys enumerate every wallet with
+  // archive rows. Corp divisions surface as "corp:{id}:{div}"; we parse
+  // them out to build the corp side of the chip picker.
+  const knownCorpDivs = useMemo(() => {
+    const out: { key: string; corpID: number; div: number }[] = [];
+    if (!summary) return out;
+    for (const key of Object.keys(summary.tracking_since ?? {})) {
+      if (!key.startsWith("corp:")) continue;
+      const parts = key.split(":");
+      if (parts.length !== 3) continue;
+      const corpID = Number(parts[1]);
+      const div = Number(parts[2]);
+      if (Number.isFinite(corpID) && Number.isFinite(div)) {
+        out.push({ key, corpID, div });
+      }
+    }
+    return out;
+  }, [summary]);
+  const scope = useMemo<WalletScope>(() => {
+    if (excludedCharacters.size === 0 && excludedCorpDivs.size === 0) {
+      return { include_all: true };
+    }
+    const include_characters = authCharacters
+      .filter((c) => !excludedCharacters.has(c.character_id))
+      .map((c) => c.character_id);
+    const include_corp_divisions = knownCorpDivs
+      .filter((d) => !excludedCorpDivs.has(d.key))
+      .map((d) => ({ corporation_id: d.corpID, division: d.div }));
+    return { include_all: false, include_characters, include_corp_divisions };
+  }, [excludedCharacters, excludedCorpDivs, authCharacters, knownCorpDivs]);
+
   const [byType, setByType] = useState<JournalByTypeRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -349,7 +392,33 @@ export function TradeJournal({ isLoggedIn, visitToken }: Props) {
 
   return (
     <div className="flex flex-col h-full space-y-3 p-3">
-      {/* Header: period + fifo + sync */}
+      {/* Header: period + fifo + sync + wallet scope */}
+      <WalletScopePicker
+        authCharacters={authCharacters}
+        knownCorpDivs={knownCorpDivs}
+        excludedCharacters={excludedCharacters}
+        excludedCorpDivs={excludedCorpDivs}
+        onToggleCharacter={(id) => {
+          setExcludedCharacters((prev) => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id);
+            else next.add(id);
+            return next;
+          });
+        }}
+        onToggleCorpDiv={(key) => {
+          setExcludedCorpDivs((prev) => {
+            const next = new Set(prev);
+            if (next.has(key)) next.delete(key);
+            else next.add(key);
+            return next;
+          });
+        }}
+        onSelectAll={() => {
+          setExcludedCharacters(new Set());
+          setExcludedCorpDivs(new Set());
+        }}
+      />
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-xs text-eve-dim uppercase tracking-wider">
@@ -633,6 +702,125 @@ export function TradeJournal({ isLoggedIn, visitToken }: Props) {
 }
 
 // --- helpers ---
+
+// WalletScopePicker — collapsible grouped chip picker. Character chips come
+// from AuthStatus; corp-division chips come from the summary response's
+// tracking_since keys (any wallet with archive rows). Clicking a chip
+// toggles its inclusion; the parent computes the resulting WalletScope
+// and refetches. Empty exclusion sets → include_all so newly-authorized
+// wallets are pooled automatically.
+function WalletScopePicker({
+  authCharacters,
+  knownCorpDivs,
+  excludedCharacters,
+  excludedCorpDivs,
+  onToggleCharacter,
+  onToggleCorpDiv,
+  onSelectAll,
+}: {
+  authCharacters: AuthCharacter[];
+  knownCorpDivs: { key: string; corpID: number; div: number }[];
+  excludedCharacters: Set<number>;
+  excludedCorpDivs: Set<string>;
+  onToggleCharacter: (id: number) => void;
+  onToggleCorpDiv: (key: string) => void;
+  onSelectAll: () => void;
+}) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const totalExcluded = excludedCharacters.size + excludedCorpDivs.size;
+  const summary =
+    totalExcluded === 0
+      ? t("journalScopeAll")
+      : t("journalScopeExcluding", { count: totalExcluded });
+
+  if (authCharacters.length === 0 && knownCorpDivs.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="bg-eve-panel border border-eve-border rounded-sm px-3 py-1.5">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-2 text-xs w-full text-left"
+      >
+        <span className="text-eve-dim uppercase tracking-wider">
+          {t("journalScopeLabel")}
+        </span>
+        <span className="text-eve-text">{summary}</span>
+        <span className="ml-auto text-eve-dim">{open ? "▾" : "▸"}</span>
+      </button>
+      {open && (
+        <div className="mt-2 pt-2 border-t border-eve-border/40 space-y-2">
+          {totalExcluded > 0 && (
+            <button
+              type="button"
+              onClick={onSelectAll}
+              className="text-[10px] text-eve-accent hover:underline"
+            >
+              {t("journalScopeSelectAll")}
+            </button>
+          )}
+          {authCharacters.length > 0 && (
+            <div>
+              <div className="text-[10px] text-eve-dim uppercase tracking-wider mb-1">
+                {t("journalScopeCharacters")}
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {authCharacters.map((c) => {
+                  const excluded = excludedCharacters.has(c.character_id);
+                  return (
+                    <button
+                      key={c.character_id}
+                      type="button"
+                      onClick={() => onToggleCharacter(c.character_id)}
+                      className={`inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-sm border transition-colors ${
+                        excluded
+                          ? "border-eve-border/40 bg-eve-dark text-eve-dim opacity-60"
+                          : "border-eve-accent/50 bg-eve-accent/10 text-eve-accent"
+                      }`}
+                      title={excluded ? t("journalScopeInclude") : t("journalScopeExclude")}
+                    >
+                      <span>{c.character_name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          {knownCorpDivs.length > 0 && (
+            <div>
+              <div className="text-[10px] text-eve-dim uppercase tracking-wider mb-1">
+                {t("journalScopeCorpDivisions")}
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {knownCorpDivs.map((d) => {
+                  const excluded = excludedCorpDivs.has(d.key);
+                  return (
+                    <button
+                      key={d.key}
+                      type="button"
+                      onClick={() => onToggleCorpDiv(d.key)}
+                      className={`inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-sm border transition-colors ${
+                        excluded
+                          ? "border-eve-border/40 bg-eve-dark text-eve-dim opacity-60"
+                          : "border-eve-accent/50 bg-eve-accent/10 text-eve-accent"
+                      }`}
+                      title={excluded ? t("journalScopeInclude") : t("journalScopeExclude")}
+                    >
+                      <span>{t("journalScopeCorpDivLabel", { corp: d.corpID, div: d.div })}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function KPITile({ label, value, emphasis }: { label: string; value: number; emphasis: boolean }) {
   const tone = value >= 0 ? "text-eve-profit" : "text-eve-error";
