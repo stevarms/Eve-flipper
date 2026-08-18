@@ -12,6 +12,7 @@ import { StationTrading } from "./components/StationTrading";
 import { PriceAudit } from "./components/PriceAudit";
 import { PIFactory } from "./components/PIFactory";
 import { TradeJournal } from "./components/TradeJournal";
+import { ProfitPill } from "./components/ProfitPill";
 import { IndustryTab } from "./components/IndustryTab";
 import { WarTracker } from "./components/WarTracker";
 import { ItemIntelligenceModal } from "./components/ItemIntelligenceModal";
@@ -2245,6 +2246,7 @@ function App() {
           >
             {t("discordCta")}
           </a>
+          <ProfitPill isLoggedIn={authStatus.logged_in} onOpen={() => setTab("trade_journal")} />
           <StatusBar />
         </div>
       )}

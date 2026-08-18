@@ -1500,6 +1500,10 @@ export const en = {
 
     // Trade Journal tab
     tabTradeJournal: "Trade Journal",
+    profitPill30d: "30d",
+    profitPillLoading: "Loading Trade Journal totals…",
+    profitPillTooltip: "30-day P&L: Trading {trading} · Manufacturing {mfg}. Click to open Trade Journal.",
+    profitPillAria: "Open Trade Journal",
     journalNotLoggedIn: "Log in with an EVE character to see your Trade Journal.",
     journalLoading: "Loading trade journal...",
     journalNoData: "No trade activity in this window. Try a longer period or click Sync.",
