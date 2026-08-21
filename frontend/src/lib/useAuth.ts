@@ -98,6 +98,12 @@ export function useAuth(): UseAuthReturn {
   // Open EVE SSO login in system browser (Wails) or same window (web)
   const handleLogin = useCallback(async () => {
     trackClientTelemetry({ event_type: "auth_clicked", module: "auth", properties: { source: "login_button" } });
+    // Instant visual feedback — the polling spinner should be visible from
+    // the moment the button is clicked, not two round-trips later. Users
+    // reported the "login with EVE" button feeling unresponsive; most of
+    // that perceived delay was the async URL fetch blocking the button's
+    // "waiting" state from ever rendering.
+    setLoginPolling(true);
     const baseline = normalizeAuthStatus(authStatus);
     const baselineFingerprint = authFingerprint(baseline);
     const wasLoggedIn = baseline.logged_in;
@@ -107,17 +113,28 @@ export function useAuth(): UseAuthReturn {
     };
     const isWails = typeof runtime.runtime?.BrowserOpenURL === "function";
     if (isWails) {
-      // Request auth URL from the in-app webview first so state is bound to
-      // the same user scope as polling /api/auth/status.
+      // Prefer the state-bound URL from /api/auth/login?mode=json when it
+      // returns quickly — that path pre-binds the SSO state to this app's
+      // user scope so the polling below will actually detect completion.
+      // But cap the wait: if the round-trip is slow (SQLite cold page-in,
+      // Windows loopback stall, telemetry ordering), fall back to opening
+      // the raw /api/auth/login?desktop=1 URL. The server still binds
+      // state on that path via the browser hop; the risk is that the
+      // browser's user-scope may differ from the app's, but for
+      // personal-use desktop that's normally the same identity anyway.
+      const fetchUrl = getDesktopLoginUrl().catch(() => `${baseUrl}?desktop=1`);
+      const timeoutUrl = new Promise<string>((resolve) => {
+        window.setTimeout(() => resolve(`${baseUrl}?desktop=1`), 350);
+      });
       let url = "";
       try {
-        url = await getDesktopLoginUrl();
+        url = await Promise.race([fetchUrl, timeoutUrl]);
+      } catch {
+        url = `${baseUrl}?desktop=1`;
+      }
+      try {
         runtime.runtime?.BrowserOpenURL?.(url);
       } catch {
-        if (!url) {
-          // Legacy fallback path (may not sync user scope in desktop mode).
-          url = `${baseUrl}?desktop=1`;
-        }
         // Fallback if opener bridge fails
         window.open(url, "_blank", "noopener,noreferrer");
       }

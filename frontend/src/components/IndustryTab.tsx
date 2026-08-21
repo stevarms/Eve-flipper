@@ -2417,8 +2417,10 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
 
     // Derive invention params from the shared decryptor picker. Backend
     // applies the chance multiplier against each product's SDE base — the
-    // frontend doesn't need to know per-product probability.
-    const inv = effectiveInventionParams(sharedPrefs.decryptor);
+    // frontend doesn't need to know per-product probability. Pass the
+    // per-target base BPC runs (1 for T2 ships, 10 for modules) so decryptor
+    // bonuses stack on the correct base.
+    const inv = effectiveInventionParams(sharedPrefs.decryptor, selectedItem.base_invention_runs);
     const params: IndustryParams = {
       type_id: selectedItem.type_id,
       runs,

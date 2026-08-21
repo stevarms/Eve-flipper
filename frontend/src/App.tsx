@@ -1991,6 +1991,12 @@ function App() {
                 </button>
               )}
             </div>
+            {/* 30d P&L pill was regressing off the desktop header — it
+             *  lived only in the mobile-menu dropdown, so anyone on a
+             *  wider viewport lost the always-visible profit summary the
+             *  top bar is supposed to carry. Rendered inline with the
+             *  StatusBar for parity with the mobile menu's ordering. */}
+            <ProfitPill isLoggedIn={authStatus.logged_in} onOpen={() => setTab("trade_journal")} />
             {!cockpitPreferences.hiddenPanels.statusBar && <StatusBar />}
           </div>
           <ThemeSwitcher

@@ -81,6 +81,30 @@ type IndustryParams struct {
 	// modelling patient procurement. Empty string keeps the default so
 	// older callers see no change.
 	CostModel string
+	// OwnedBlueprints, when non-nil, gives the analyzer per-product ME/TE
+	// for sub-node builds. Keys are PRODUCT typeIDs so the recursion
+	// (which walks products, not blueprints) can look up each sub-node's
+	// own blueprint ME instead of cascading params.MaterialEfficiency /
+	// params.TimeEfficiency to every level of the tree. When set:
+	//   - Sub-node with an entry: use that entry's ME/TE.
+	//   - Sub-node without an entry AND the node is otherwise buildable:
+	//     marked as base (buy-only). The user can't build a T2 component
+	//     they don't own a blueprint for, so the analyzer shouldn't ever
+	//     recommend it — that's the "buy plasma thrusters because BuildCost
+	//     was computed against ME=0 cascade" bug this field prevents.
+	// The ROOT node always uses params.MaterialEfficiency / TimeEfficiency:
+	// the user is running THAT job at the ME/TE they picked in the UI.
+	// When nil (or empty), the analyzer falls back to the legacy cascade
+	// so pre-owned-BP callers see identical output.
+	OwnedBlueprints map[int32]OwnedBlueprint
+}
+
+// OwnedBlueprint captures a user-owned blueprint's ME/TE for use as a
+// per-product override during tree recursion. Held by IndustryParams;
+// keyed by the PRODUCT typeID the blueprint manufactures.
+type OwnedBlueprint struct {
+	ME int32 `json:"me"`
+	TE int32 `json:"te"`
 }
 
 // StructureRigConfig describes the rig loadout for the analyzer's build
@@ -209,6 +233,22 @@ type FlatMaterial struct {
 // surcharge, added to every job's install cost as a fixed % of EIV
 // regardless of structure or location. Currently 4% (post-Uprising).
 const jobCostSCCSurchargePercent = 4.0
+
+// batchUtilizationThreshold is the minimum fraction of one blueprint run's
+// product output the parent must actually consume before the analyzer will
+// recurse into building that sub-node. Motivated by reactions (10,000
+// Fernite Carbide per run) and ammo BPs (5,000 charges per run): when a
+// Plasma Thruster only needs 12 Fernite Carbide, firing a full 10,000-unit
+// reaction would charge the entire reaction cost (~200k ISK) against a
+// 12-unit demand. The buy-vs-build compare recovers correctly IF the
+// sub-node has a positive BuyPrice — but a market-cache miss anywhere
+// deep in the tree flips ShouldBuild=true and cascades the full batch
+// cost up the ancestry, ~doubling top-level BuildCost.
+//
+// 0.5 = must be able to consume at least half a batch to consider build.
+// Root nodes are exempt (user asked to analyze THAT specific quantity)
+// and BuildMode "build_all" bypasses this guard (explicit user override).
+const batchUtilizationThreshold = 0.5
 
 // JobCostBreakdown is the aggregate job-install-cost math for a single
 // Analyze() call. Mirrors CCP's canonical line items so the UI can render
@@ -638,6 +678,24 @@ func (a *IndustryAnalyzer) buildMaterialTree(typeID int32, quantity int32, param
 		productQuantity = 1
 	}
 
+	// Batch-output overshoot guard. Reactions and ammo BPs emit hundreds
+	// to tens of thousands of units per run; when the parent needs a
+	// small fraction of one batch, firing the full run charges the entire
+	// batch cost against a much smaller demand. Root is exempt (the user
+	// explicitly asked to build THAT quantity of THIS item); BuildMode
+	// "build_all" is also exempt (explicit user override). Otherwise, if
+	// we'd consume less than batchUtilizationThreshold of one full run's
+	// output, mark the node base so the parent uses its market BuyPrice
+	// for the small quantity actually needed. See const definition for
+	// full rationale.
+	isRoot := depth == 0
+	if !isRoot && params.BuildMode != "build_all" && productQuantity > 0 {
+		if float64(quantity) < float64(productQuantity)*batchUtilizationThreshold {
+			node.IsBase = true
+			return node
+		}
+	}
+
 	// Calculate how many runs we need
 	runsNeeded := quantity / productQuantity
 	if quantity%productQuantity != 0 {
@@ -651,18 +709,41 @@ func (a *IndustryAnalyzer) buildMaterialTree(typeID int32, quantity int32, param
 	sec := a.resolveSystemSecurity(params.StructureRigs, params.SystemID)
 	rigME, rigTE, _ := a.rigContribution(params.StructureRigs, activity, typeID, sec)
 
+	// Per-node ME/TE selection. Root uses the user-supplied top-level ME/TE
+	// (the BP they picked for this specific job). Sub-nodes prefer their
+	// own blueprint's ME/TE from OwnedBlueprints; falling back to the
+	// legacy cascade only when OwnedBlueprints is nil (older callers that
+	// haven't opted into per-BP awareness). When OwnedBlueprints IS set
+	// but a sub-node's product is missing, we mark it base so the analyzer
+	// stops recommending "build" for T2 components the user can't build.
+	me := params.MaterialEfficiency
+	te := params.TimeEfficiency
+	if !isRoot && params.OwnedBlueprints != nil {
+		if owned, has := params.OwnedBlueprints[typeID]; has {
+			me = owned.ME
+			te = owned.TE
+		} else {
+			// User opted into owned-BP mode but doesn't own a blueprint
+			// that produces this sub-material. Refuse to recommend
+			// building it — mark base so calculateCosts sets BuildCost
+			// = BuyPrice and ShouldBuild = false.
+			node.IsBase = true
+			return node
+		}
+	}
+
 	node.Blueprint = &BlueprintInfo{
 		BlueprintTypeID: bp.BlueprintTypeID,
 		ProductQuantity: productQuantity,
-		ME:              params.MaterialEfficiency,
-		TE:              params.TimeEfficiency,
-		Time:            calculateActivityTime(bp, activity, runsNeeded, params.TimeEfficiency, rigTE),
+		ME:              me,
+		TE:              te,
+		Time:            calculateActivityTime(bp, activity, runsNeeded, te, rigTE),
 		Activity:        activity,
 		Probability:     probability,
 	}
 
 	// EVE formula: max(runs, ceil(base × runs × (1-ME/100) × (1-structureBonus/100) × (1-rigMEReduction/100)))
-	materials := calculateActivityMaterials(bp, activity, runsNeeded, params.MaterialEfficiency, params.StructureBonus, rigME)
+	materials := calculateActivityMaterials(bp, activity, runsNeeded, me, params.StructureBonus, rigME)
 
 	// Build children recursively
 	for _, mat := range materials {

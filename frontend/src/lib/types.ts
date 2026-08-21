@@ -781,6 +781,11 @@ export interface StockpileItem {
   type_name: string;
   threshold_qty: number;
   created_at?: string;
+  // Optional SDE enrichment attached by the backend on GET/POST/PUT responses.
+  group_id?: number;
+  group_name?: string;
+  category_id?: number;
+  category_name?: string;
 }
 
 export interface Stockpile {
@@ -802,6 +807,25 @@ export interface StockpileScanRow {
   threshold_qty: number;
   current_qty: number;
   shortfall: number;
+  group_id?: number;
+  group_name?: string;
+  category_id?: number;
+  category_name?: string;
+  unit_price?: number;
+  on_hand_value?: number;
+  refill_cost?: number;
+}
+
+export interface StockpileScanSummary {
+  total_inventory_value: number;
+  total_refill_cost: number;
+  total_threshold_value: number;
+  rows_short: number;
+  row_count: number;
+  refill_by_group?: Record<string, number>;
+  inventory_by_group?: Record<string, number>;
+  price_source_label?: string;
+  pricing_failed?: boolean;
 }
 
 export interface StockpileScanResult {
@@ -809,6 +833,7 @@ export interface StockpileScanResult {
   station_id: number;
   station_name?: string;
   items: StockpileScanRow[];
+  summary: StockpileScanSummary;
   warnings?: string[];
 }
 
@@ -2303,6 +2328,12 @@ export interface ProfitableScanRow {
    *  ISK/h decryptor per row (or "none" if no decryptor is best). Empty on
    *  T1 rows. Frontend maps this back through DECRYPTORS[key] for display. */
   best_decryptor_key?: string;
+  /** Base BPC runs from ONE invention success for this specific target,
+   *  from the SDE invention activity. 1 for T2 ships, 10 for T2 modules /
+   *  ammo / drones, 3 for T3 subsystems, 0 for T1 rows. Decryptor bonuses
+   *  stack on top; passed to effectiveInventionParams so ship rows aren't
+   *  scored as if invention minted 10-run BPCs (which inflated profit ~10x). */
+  output_bpc_runs?: number;
 
   /** Average units traded per day over `period_days` in the pricing region. */
   product_daily_volume?: number;

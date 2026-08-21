@@ -146,8 +146,19 @@ function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
 }
 
-/** Effective invention parameters after applying a decryptor to the T2 base. */
-export function effectiveInventionParams(key: DecryptorKey): {
+/**
+ * Effective invention parameters after applying a decryptor to the T2 base.
+ *
+ * `baseRuns` is the SDE-provided per-target BPC runs (1 for T2 ships, 10 for
+ * T2 modules/ammo/drones, 3 for T3 subsystems). Callers that know the target
+ * (Analyze tab, Add-to-Project modal) MUST pass it — falling back to the
+ * module-tier constant treats every T2 ship as if invention yielded a 10-run
+ * BPC and inflates modeled ship-invention profit by ~10x.
+ */
+export function effectiveInventionParams(
+  key: DecryptorKey,
+  baseRuns: number = T2_BPC_BASE_RUNS,
+): {
   meBase: number;
   teBase: number;
   outputRuns: number;
@@ -155,10 +166,11 @@ export function effectiveInventionParams(key: DecryptorKey): {
   decryptorTypeID: number;
 } {
   const d = DECRYPTORS[key] ?? DECRYPTORS.none;
+  const base = baseRuns > 0 ? baseRuns : T2_BPC_BASE_RUNS;
   return {
     meBase: clamp(T2_BPC_BASE_ME + d.meDelta, 0, 10),
     teBase: clamp(T2_BPC_BASE_TE + d.teDelta, 0, 20),
-    outputRuns: Math.max(1, T2_BPC_BASE_RUNS + d.outputRunsBonus),
+    outputRuns: Math.max(1, base + d.outputRunsBonus),
     chanceMult: d.probMult,
     decryptorTypeID: d.typeID,
   };

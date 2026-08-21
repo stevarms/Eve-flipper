@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"eve-flipper/internal/auth"
 	"eve-flipper/internal/corp"
 	"eve-flipper/internal/db"
@@ -49,6 +51,14 @@ type tradeJournalCacheEntry struct {
 type tradeJournalRuntime struct {
 	mu    sync.Mutex
 	cache map[string]tradeJournalCacheEntry
+	// singleflight collapses concurrent duplicate compute requests. The
+	// Trade Journal tab fires two GETs (/journal/summary + /journal/by-type)
+	// in parallel from Promise.all, and each was running the full compute
+	// pipeline (SQLite reads → market prices → per-character blueprint fan
+	// out → engine.ComputeTradeJournal) on a cold cache — 2× the work for
+	// every fresh tab-open. With singleflight, the second caller waits on
+	// the first and receives the same *TradeJournalResult.
+	group singleflight.Group
 }
 
 var journalRuntime = &tradeJournalRuntime{cache: make(map[string]tradeJournalCacheEntry)}
@@ -614,14 +624,40 @@ func (s *Server) loadTradeJournalResult(r *http.Request) (*engine.TradeJournalRe
 		return cached, filter, sinceDate, fifoMode, nil
 	}
 
-	// Load archive, compute, cache.
-	txns, _, err := s.db.ListArchivedWalletActivityForUser(userID, *filter, sinceDate)
+	// Coalesce concurrent duplicate compute requests. The Trade Journal
+	// tab's Promise.all fires /journal/summary and /journal/by-type at
+	// the same moment; without singleflight both miss the cache
+	// simultaneously and each does the full compute independently
+	// (SQLite reads → market prices → per-character blueprint fetch →
+	// engine.ComputeTradeJournal). The second caller now just waits.
+	shared, err, _ := journalRuntime.group.Do(key, func() (interface{}, error) {
+		if cached := journalRuntime.get(key); cached != nil {
+			return cached, nil
+		}
+		return s.computeTradeJournalResult(userID, filter, sinceDate, fifoMode, key)
+	})
 	if err != nil {
 		return nil, filter, sinceDate, fifoMode, err
 	}
+	result, ok := shared.(*engine.TradeJournalResult)
+	if !ok || result == nil {
+		return nil, filter, sinceDate, fifoMode, fmt.Errorf("trade journal compute returned no result")
+	}
+	return result, filter, sinceDate, fifoMode, nil
+}
+
+// computeTradeJournalResult is the raw compute path — extracted from
+// loadTradeJournalResult so the singleflight closure can call it without
+// re-parsing HTTP request state. Populates the cache on success.
+func (s *Server) computeTradeJournalResult(userID string, filter *db.WalletScopeFilter, sinceDate time.Time, fifoMode engine.FIFOMode, key string) (*engine.TradeJournalResult, error) {
+	// Load archive, compute, cache.
+	txns, _, err := s.db.ListArchivedWalletActivityForUser(userID, *filter, sinceDate)
+	if err != nil {
+		return nil, err
+	}
 	jobs, err := s.db.ListArchivedIndustryJobsForUser(userID, filter.IncludeCharacters, time.Time{})
 	if err != nil {
-		return nil, filter, sinceDate, fifoMode, err
+		return nil, err
 	}
 
 	// Convert db → engine types.
@@ -741,7 +777,7 @@ func (s *Server) loadTradeJournalResult(r *http.Request) (*engine.TradeJournalRe
 	}
 	result := engine.ComputeTradeJournal(engineTxns, engineJobs, opts)
 	journalRuntime.put(key, result)
-	return result, filter, sinceDate, fifoMode, nil
+	return result, nil
 }
 
 // buildMEResolver returns a closure implementing the plan's ME lookup chain:
@@ -759,9 +795,11 @@ func (s *Server) buildMEResolver(userID string, sdeData *sde.Data, filter *db.Wa
 	// Fetch each authorized character's blueprint inventory and build a
 	// max-ME-per-BlueprintTypeID map, tagging whether the winner is a BPO
 	// (Runs == -1 in ESI's shape) or a BPC (positive Runs). Consumed at
-	// step 2 of the ME lookup chain. Fan-out is bounded by the number of
-	// authorized characters (typically 2-5) and ESI's blueprint endpoint
-	// caches upstream, so we tolerate the per-compute latency.
+	// step 2 of the ME lookup chain. Fan-out concurrently across sessions
+	// — the ESI blueprint endpoint is per-character, so N characters used
+	// to serialize into N round trips (2-3 s each on a cold call). With
+	// a goroutine per session the same fetch cost is amortized in
+	// parallel, cutting cold-cache compute latency roughly N×.
 	type bpEntry struct {
 		ME    int32
 		IsBPO bool
@@ -769,6 +807,14 @@ func (s *Server) buildMEResolver(userID string, sdeData *sde.Data, filter *db.Wa
 	bpMap := map[int32]bpEntry{}
 	if s.sessions != nil && s.esi != nil && s.sso != nil {
 		sessions := s.sessions.ListForUser(userID)
+		type fetchResult struct {
+			bps []esi.CharacterBlueprint
+			err error
+		}
+		type sessionFetch struct {
+			ch chan fetchResult
+		}
+		fetches := make([]sessionFetch, 0, len(sessions))
 		for _, sess := range sessions {
 			if filter != nil && !filterAllowsCharacter(filter, sess.CharacterID) {
 				continue
@@ -777,11 +823,21 @@ func (s *Server) buildMEResolver(userID string, sdeData *sde.Data, filter *db.Wa
 			if err != nil {
 				continue
 			}
-			bps, err := s.esi.GetCharacterBlueprints(sess.CharacterID, token)
-			if err != nil {
+			ch := make(chan fetchResult, 1)
+			fetches = append(fetches, sessionFetch{ch: ch})
+			go func(charID int64, tok string, ch chan<- fetchResult) {
+				bps, err := s.esi.GetCharacterBlueprints(charID, tok)
+				ch <- fetchResult{bps: bps, err: err}
+			}(sess.CharacterID, token, ch)
+		}
+		// Drain in order — merge is deterministic per session which keeps
+		// the max-ME/BPO-tiebreak stable across runs.
+		for _, f := range fetches {
+			r := <-f.ch
+			if r.err != nil {
 				continue
 			}
-			for _, bp := range bps {
+			for _, bp := range r.bps {
 				isBPO := bp.Runs == -1
 				cur, ok := bpMap[bp.TypeID]
 				if !ok {

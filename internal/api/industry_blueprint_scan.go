@@ -656,6 +656,11 @@ type profitableScanRow struct {
 	// Lets the frontend convert "units of market demand" → "BP runs" in
 	// its per-row runs suggestion.
 	OutputQtyPerRun int32 `json:"output_qty_per_run"`
+	// OutputBPCRuns is the SDE base runs of ONE invented BPC for this row's
+	// target (1 for T2 ships, 10 for T2 modules/ammo/drones, 3 for T3
+	// subsystems). Decryptor bonuses stack on top. Zero for non-invention
+	// rows; the frontend falls back to T2_BPC_BASE_RUNS in that case.
+	OutputBPCRuns int32 `json:"output_bpc_runs"`
 
 	// Cost breakdown (all ISK, sourced from IndustryAnalysis). Lets the
 	// frontend render a full profit-math tooltip without extra API calls.
@@ -699,6 +704,70 @@ type blueprintGroup struct {
 	// (aggregated from ESI). False when synthesized to represent an unowned
 	// SDE blueprint the user might consider buying.
 	Owned bool
+}
+
+// buildOwnedBlueprintIndex turns the aggregated blueprint groups into a
+// PRODUCT-typeID → best-copy ME/TE lookup for the analyzer's tree recursion.
+//
+// The engine walks products (not blueprints), so it needs to answer "what
+// ME/TE does the user's own blueprint for THIS product have?" for every
+// sub-material it recurses into. Without this map, params.MaterialEfficiency
+// from the top-level BP cascaded to every level of the tree — an Ishtar-ME=2
+// analysis computed Plasma Thruster BuildCost as if the user's Plasma
+// Thruster BPO were ME=2, inflating that BuildCost and tipping the decision
+// to "buy" even when building would have been cheaper.
+//
+// Synthesized (unowned) groups are excluded — those exist for hypothetical
+// scoring of BPs the user doesn't own, and their presence in the sub-material
+// map would defeat the "if no owned BP, mark base/buy" safety rule the
+// analyzer relies on. Multiple copies of the same BP resolve to the highest
+// ME/TE, matching what a user would actually queue from.
+func buildOwnedBlueprintIndex(groups []blueprintGroup, sdeData *sde.Data) map[int32]engine.OwnedBlueprint {
+	if sdeData == nil || sdeData.Industry == nil {
+		return nil
+	}
+	out := make(map[int32]engine.OwnedBlueprint, len(groups))
+	for _, g := range groups {
+		if !g.Owned {
+			continue
+		}
+		bp, ok := sdeData.Industry.Blueprints[g.BlueprintTypeID]
+		if !ok || bp == nil {
+			continue
+		}
+		mfg := bp.Activities["manufacturing"]
+		if mfg == nil || len(mfg.Products) == 0 {
+			// Invention-only BPs (T1 sources that don't manufacture the T2
+			// output directly) shouldn't seed the per-product map — the
+			// analyzer's sub-node manufacturing recursion cares about
+			// products of manufacturing activities, not invention outputs.
+			continue
+		}
+		for _, product := range mfg.Products {
+			if product.TypeID <= 0 {
+				continue
+			}
+			entry := engine.OwnedBlueprint{ME: g.ME, TE: g.TE}
+			if existing, has := out[product.TypeID]; has {
+				// Keep the highest-researched copy the user owns. BPO ME=10
+				// beats invented BPC ME=2 every time when both are held.
+				if existing.ME >= entry.ME && existing.TE >= entry.TE {
+					continue
+				}
+				if entry.ME < existing.ME {
+					entry.ME = existing.ME
+				}
+				if entry.TE < existing.TE {
+					entry.TE = existing.TE
+				}
+			}
+			out[product.TypeID] = entry
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // groupBlueprintsByType collapses pool rows across locations into one entry
@@ -785,6 +854,12 @@ type scanAnalyzeWork struct {
 	// when auto-picking the winning decryptor per row.
 	baseProbability float64
 	attemptsCap     int64 // -1 = unlimited (BPO source)
+	// outputBPCRuns is the base runs of one invented BPC for THIS specific
+	// target from the SDE invention activity (1 for T2 ships, 10 for T2
+	// modules/ammo/drones, 3 for T3 subsystems, etc.). Decryptor bonuses
+	// stack on top of this — treating everything as 10 inflated T2 ship
+	// invention profit by ~10x before the fix.
+	outputBPCRuns int32
 }
 
 // buildScanWork turns blueprint groups into per-row analyzer work items.
@@ -939,6 +1014,11 @@ func buildScanWork(groups []blueprintGroup, sdeData *sde.Data, includeT2Inventio
 						outputBlueprintName: blueprintDisplayName(invProduct.TypeID, sdeData),
 						baseProbability:     baseChance,
 						attemptsCap:         cap,
+						// invProduct.Quantity is the per-target BPC runs base
+						// on the T1 BP's invention activity (1 for ships, 10
+						// for modules). Zero is a legitimate SDE data gap; the
+						// decryptor helper falls back to T2BPCBaseRuns then.
+						outputBPCRuns: invProduct.Quantity,
 					})
 					emitted = true
 				}
@@ -1340,6 +1420,17 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 	work, skippedNoActivity := buildScanWork(groups, sdeData, req.IncludeT2Invention, req.IncludeT3Invention, req.IncludeReactions)
 	stats.SkippedNoActivity += skippedNoActivity
 
+	// Build the owned-blueprint index the analyzer uses to look up per-product
+	// ME/TE during tree recursion. Without this, params.MaterialEfficiency
+	// (the TOP-LEVEL BP's ME) cascades to every sub-node, computing T2
+	// component BuildCost as if their BPCs had the ROOT's ME instead of the
+	// user's actual owned Plasma Thruster / Fusion Reactor / etc. BPOs. That
+	// inflated sub-node BuildCost and pushed the analyzer into "buy" for T2
+	// components the user could have built for ~10% less. Keyed by PRODUCT
+	// typeID because the recursion walks products; multiple BPOs of the same
+	// product keep the highest ME/TE copy.
+	ownedBlueprintIndex := buildOwnedBlueprintIndex(groups, sdeData)
+
 	// Type-category filter — drop work items whose product isn't in the
 	// caller's whitelist. Applied before the max-blueprints cap and before
 	// the analyzer runs so filtered-out categories don't count toward either.
@@ -1495,6 +1586,12 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 				},
 				RevenueModel: req.RevenueModel,
 				CostModel:    req.CostModel,
+				// Per-node ME/TE for sub-tree recursion. Root always uses the
+				// top-level MaterialEfficiency/TimeEfficiency set above; this
+				// map is only consulted for depth > 0. Nil = legacy cascade
+				// behavior, so a scan that finds no owned BPs behaves exactly
+				// as before.
+				OwnedBlueprints: ownedBlueprintIndex,
 			}
 
 			// IndustryAnalyzer stores per-call mutable state on the receiver
@@ -1527,7 +1624,9 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 			if item.scanMode == "t2_invention" || item.scanMode == "t3_invention" {
 				bestISKPerHour := -1.0e300
 				for _, dec := range engine.Decryptors {
-					meBase, teBase, outputRuns, chanceMult, cost := dec.EffectiveInventionParams()
+					// Pass the SDE per-target BPC base runs so T2 ships (base 1)
+					// aren't scored as if they produced 10-run BPCs like modules.
+					meBase, teBase, outputRuns, chanceMult, cost := dec.EffectiveInventionParamsForBase(item.outputBPCRuns)
 					params := baseParams
 					params.ActivityMode = "invention"
 					params.MaterialEfficiency = meBase
@@ -1563,6 +1662,20 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 						continue
 					}
 					if r.ISKPerHour > bestISKPerHour {
+						// Displace the previous winner: it's now a loser,
+						// drop its heavy tree references so GC can reclaim
+						// them before the next probe allocates its own.
+						// Without this the discarded MaterialTree +
+						// FlatMaterials for every non-winning decryptor
+						// probe (up to 9 per row × N workers) stay live
+						// on the receiver's stack until the goroutine
+						// returns — allocation-heavy shape that drives
+						// RSS through the roof on multi-thousand-row scans.
+						if result != nil {
+							result.MaterialTree = nil
+							result.FlatMaterials = nil
+							result.ActivityPlan = nil
+						}
 						bestISKPerHour = r.ISKPerHour
 						result = r
 						bestDecKey = dec.Key
@@ -1570,6 +1683,13 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 						outputTE = teBase
 						outputMESet = true
 						analyzeErr = nil
+					} else {
+						// Loser: reclaim immediately without waiting for
+						// the next winner displacement (or for the loop
+						// to finish, if this is the last probe).
+						r.MaterialTree = nil
+						r.FlatMaterials = nil
+						r.ActivityPlan = nil
 					}
 				}
 				// If every decryptor probe errored, analyzeErr remains set and
@@ -1664,6 +1784,7 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 				row.InventionOutputBPName = item.outputBlueprintName
 				row.InventionProbability = result.InventionProbability
 				row.ExpectedAttempts = result.InventionAttempts
+				row.OutputBPCRuns = item.outputBPCRuns
 				row.AttemptsCap = item.attemptsCap
 				row.BestDecryptorKey = bestDecKey
 				if item.attemptsCap >= 0 && result.InventionAttempts > float64(item.attemptsCap) {

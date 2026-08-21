@@ -680,6 +680,341 @@ func industryAlmostEqual(got, want float64) bool {
 	return math.Abs(got-want) < 0.000001
 }
 
+// The three tests below pin down the per-node ME/TE lookup added to
+// buildMaterialTree. Before this change, params.MaterialEfficiency for the
+// top-level BP cascaded to every sub-node — an analysis with top-level
+// ME=0 would compute the Build Component sub-node's material cost using
+// ME=0 even if the user actually owned an ME=10 Build Component BPO. That
+// inflated the sub-node's BuildCost and tipped the analyzer to "buy" for
+// T2 components (Plasma Thrusters in the original bug report). With
+// OwnedBlueprints populated, each sub-node uses ITS OWN blueprint's ME;
+// sub-nodes with no owned BP get marked base so the analyzer doesn't
+// recommend building something the user can't actually build.
+
+func TestBuildMaterialTree_OwnedBlueprintOverridesCascadedME(t *testing.T) {
+	sdeData := newTestIndustrySDE()
+	a := &IndustryAnalyzer{SDE: sdeData}
+
+	// Top-level ME=0 — with the OLD cascade this would demand
+	// ceil(3 × 10 × 1.0) = 30 tritanium for the 10 Build Components
+	// (10 runs of BP 2001, each needing 3 trit at ME=0). With the fix
+	// and OwnedBlueprints saying Build Component's BPO is ME=10, we
+	// should get ceil(3 × 10 × 0.90) = 27.
+	params := IndustryParams{
+		TypeID:             1000,
+		Runs:               1,
+		MaterialEfficiency: 0,
+		MaxDepth:           10,
+		OwnedBlueprints: map[int32]OwnedBlueprint{
+			// Root's own ME/TE still comes from params — this entry
+			// is deliberately not for typeID 1000. Sub-node 1001
+			// (Build Component) gets ME=10 from here.
+			1001: {ME: 10, TE: 20},
+		},
+	}
+	tree := a.buildMaterialTree(1000, 1, params, 0)
+	if tree.IsBase {
+		t.Fatal("root should not be marked base")
+	}
+	// Find the Build Component sub-node.
+	var comp *MaterialNode
+	for _, child := range tree.Children {
+		if child.TypeID == 1001 {
+			comp = child
+		}
+	}
+	if comp == nil {
+		t.Fatal("Build Component sub-node not found")
+	}
+	if comp.Blueprint == nil {
+		t.Fatal("Build Component should have Blueprint info (buildable)")
+	}
+	if comp.Blueprint.ME != 10 {
+		t.Fatalf("Build Component blueprint ME = %d, want 10 (from OwnedBlueprints, not the cascade of root's ME=0)", comp.Blueprint.ME)
+	}
+	// The material demand under Build Component should reflect ME=10.
+	var trit *MaterialNode
+	for _, child := range comp.Children {
+		if child.TypeID == 34 {
+			trit = child
+		}
+	}
+	if trit == nil {
+		t.Fatal("Tritanium leaf under Build Component not found")
+	}
+	// 10 runs × 3 base × (1 - 0.10) = 27.
+	if trit.Quantity != 27 {
+		t.Fatalf("Tritanium demand = %d, want 27 (ME=10 applied to Build Component's own blueprint)", trit.Quantity)
+	}
+}
+
+func TestBuildMaterialTree_SubNodeMissingFromOwnedBlueprintsIsBuyOnly(t *testing.T) {
+	sdeData := newTestIndustrySDE()
+	a := &IndustryAnalyzer{
+		SDE: sdeData,
+		// Give Build Component a market price so the "buy" fallback has
+		// a positive number to record — mirrors ordinary market state.
+		marketPrices: map[int32]float64{1001: 100.0},
+	}
+
+	// OwnedBlueprints is set (non-nil) but doesn't contain Build Component
+	// (typeID 1001). That models "user opted into owned-BP awareness but
+	// doesn't own a Plasma Thruster BPO." The analyzer must mark 1001 as
+	// base and refuse to recommend building it.
+	params := IndustryParams{
+		TypeID:             1000,
+		Runs:               1,
+		MaterialEfficiency: 10,
+		MaxDepth:           10,
+		OwnedBlueprints: map[int32]OwnedBlueprint{
+			1000: {ME: 10, TE: 20}, // root only
+		},
+	}
+	tree := a.buildMaterialTree(1000, 1, params, 0)
+
+	var comp *MaterialNode
+	for _, child := range tree.Children {
+		if child.TypeID == 1001 {
+			comp = child
+		}
+	}
+	if comp == nil {
+		t.Fatal("Build Component sub-node missing")
+	}
+	if !comp.IsBase {
+		t.Fatalf("Build Component should be marked base when user has no BP for it (OwnedBlueprints set, entry absent); IsBase=%v", comp.IsBase)
+	}
+	if len(comp.Children) != 0 {
+		t.Fatalf("base sub-node should not have recursed into children; got %d", len(comp.Children))
+	}
+	if comp.Blueprint != nil {
+		t.Fatalf("base sub-node should not carry Blueprint info; got %+v", comp.Blueprint)
+	}
+}
+
+// The next block of tests pins down the batch-overshoot guard added to
+// buildMaterialTree. Reactions like Ferrogel produce 400 units per run
+// and Fernite Carbide 10,000 per run — recursing to build 1 Ferrogel or
+// 12 Fernite Carbide against a full-batch cost was the doubling bug from
+// the Plasma Thruster incident. The guard forces base (buy-only) on
+// sub-nodes that would consume less than batchUtilizationThreshold of a
+// batch; root and BuildMode=build_all are exempt.
+
+func newBatchOvershootSDE(t *testing.T) *sde.Data {
+	t.Helper()
+	ind := sde.NewIndustryData()
+
+	// Root product 5000 built from 1 of typeID 5001 per run.
+	ind.Blueprints[6000] = &sde.Blueprint{
+		BlueprintTypeID: 6000,
+		ProductTypeID:   5000,
+		ProductQuantity: 1,
+		Time:            3600,
+		Materials: []sde.BlueprintMaterial{
+			{TypeID: 5001, Quantity: 1},
+		},
+	}
+	ind.Blueprints[6000].Activities = map[string]*sde.ActivityData{
+		"manufacturing": {
+			Materials: []sde.BlueprintMaterial{{TypeID: 5001, Quantity: 1}},
+			Products:  []sde.BlueprintProduct{{TypeID: 5000, Quantity: 1}},
+			Time:      3600,
+		},
+	}
+	ind.ProductToBlueprint[5000] = 6000
+
+	// Sub-component 5001 is a "reaction" that emits 400 units per run
+	// (mirrors Ferrogel — need 1, batch of 400). Base material 34 is
+	// the raw input; 5 per reaction run.
+	ind.Blueprints[6001] = &sde.Blueprint{
+		BlueprintTypeID: 6001,
+		ProductTypeID:   5001,
+		ProductQuantity: 400,
+		Time:            10800,
+	}
+	ind.Blueprints[6001].Activities = map[string]*sde.ActivityData{
+		"reaction": {
+			Materials: []sde.BlueprintMaterial{{TypeID: 34, Quantity: 5}},
+			Products:  []sde.BlueprintProduct{{TypeID: 5001, Quantity: 400}},
+			Time:      10800,
+		},
+	}
+	ind.ProductToBlueprint[5001] = 6001
+
+	return &sde.Data{
+		Types: map[int32]*sde.ItemType{
+			34:   {ID: 34, Name: "Tritanium", Volume: 0.01},
+			5000: {ID: 5000, Name: "Root Product", Volume: 5},
+			5001: {ID: 5001, Name: "Batch Reaction Product", Volume: 1},
+		},
+		Systems: map[int32]*sde.SolarSystem{
+			30000142: {ID: 30000142, Name: "Jita", RegionID: 10000002},
+		},
+		Regions: map[int32]*sde.Region{
+			10000002: {ID: 10000002, Name: "The Forge"},
+		},
+		Stations: map[int64]*sde.Station{},
+		Industry: ind,
+	}
+}
+
+func TestBuildMaterialTree_SubNodeBelowBatchThresholdIsBuyOnly(t *testing.T) {
+	// The parent needs 1 of typeID 5001, whose reaction batch produces 400.
+	// Utilization = 1/400 = 0.25% << 50% threshold → sub-node must be base.
+	// Without this guard the analyzer would try to model firing a full
+	// reaction (cost of 5 tritanium + job) against a 1-unit demand.
+	sdeData := newBatchOvershootSDE(t)
+	a := &IndustryAnalyzer{
+		SDE:          sdeData,
+		marketPrices: map[int32]float64{5001: 25.0, 34: 1.0},
+	}
+
+	tree := a.buildMaterialTree(5000, 1, IndustryParams{
+		TypeID:   5000,
+		Runs:     1,
+		MaxDepth: 10,
+	}, 0)
+
+	if len(tree.Children) != 1 || tree.Children[0].TypeID != 5001 {
+		t.Fatalf("expected one child typeID=5001, got %+v", tree.Children)
+	}
+	child := tree.Children[0]
+	if !child.IsBase {
+		t.Fatalf("sub-node should be marked base by batch guard (1 needed / 400 batch = 0.25%%); IsBase=%v", child.IsBase)
+	}
+	if len(child.Children) != 0 {
+		t.Fatalf("base sub-node must not recurse; got %d children", len(child.Children))
+	}
+	if child.Blueprint != nil {
+		t.Fatalf("base sub-node must not carry Blueprint info; got %+v", child.Blueprint)
+	}
+}
+
+func TestBuildMaterialTree_SubNodeAtOrAboveBatchThresholdRecurses(t *testing.T) {
+	// At exactly 50% utilization (200 needed / 400 batch), the guard must
+	// let the sub-node recurse — otherwise legitimate half-batch builds
+	// get force-bought too. Half a batch is the intentional lower edge.
+	sdeData := newBatchOvershootSDE(t)
+	a := &IndustryAnalyzer{
+		SDE:          sdeData,
+		marketPrices: map[int32]float64{5001: 25.0, 34: 1.0},
+	}
+
+	// To make the root need 200 sub-components we set the root recipe to
+	// require 200 of typeID 5001 per run. Mutating the fixture BP in-place
+	// keeps the sub-tree geometry identical elsewhere.
+	sdeData.Industry.Blueprints[6000].Materials[0].Quantity = 200
+	sdeData.Industry.Blueprints[6000].Activities["manufacturing"].Materials[0].Quantity = 200
+
+	tree := a.buildMaterialTree(5000, 1, IndustryParams{
+		TypeID:   5000,
+		Runs:     1,
+		MaxDepth: 10,
+	}, 0)
+
+	child := tree.Children[0]
+	if child.IsBase {
+		t.Fatalf("sub-node at 200/400 = 50%% utilization should recurse, not be forced base")
+	}
+	if child.Blueprint == nil {
+		t.Fatalf("sub-node should carry Blueprint info after recursion")
+	}
+	// The reaction leaf (tritanium) must appear underneath.
+	if len(child.Children) == 0 {
+		t.Fatalf("expected reaction inputs recursed under sub-node; got 0 grandchildren")
+	}
+}
+
+func TestBuildMaterialTree_RootExemptFromBatchThreshold(t *testing.T) {
+	// Root is always analyzed — the user explicitly asked to model THAT
+	// specific quantity of THIS specific item. Even if root's own recipe
+	// would batch-overshoot at this quantity, we still recurse the root's
+	// tree. The guard only fires at depth > 0.
+	sdeData := newBatchOvershootSDE(t)
+	a := &IndustryAnalyzer{
+		SDE:          sdeData,
+		marketPrices: map[int32]float64{5001: 25.0, 34: 1.0},
+	}
+
+	// Ask to analyze 1 unit of the reaction product directly at the root
+	// (1/400 = 0.25% utilization). If the guard incorrectly fires at root,
+	// there'd be no Blueprint info and no children.
+	tree := a.buildMaterialTree(5001, 1, IndustryParams{
+		TypeID:   5001,
+		Runs:     1,
+		MaxDepth: 10,
+	}, 0)
+
+	if tree.IsBase {
+		t.Fatal("root must never be marked base by the batch guard, regardless of quantity")
+	}
+	if tree.Blueprint == nil {
+		t.Fatal("root should carry Blueprint info even when batch-overshooting")
+	}
+}
+
+func TestBuildMaterialTree_BuildAllModeBypassesBatchGuard(t *testing.T) {
+	// BuildMode=build_all is the escape hatch for users who explicitly
+	// want to model firing full reactions even at low utilization (they
+	// plan to stockpile the excess, or they're pricing a long-horizon
+	// production run). The guard must respect that override.
+	sdeData := newBatchOvershootSDE(t)
+	a := &IndustryAnalyzer{
+		SDE:          sdeData,
+		marketPrices: map[int32]float64{5001: 25.0, 34: 1.0},
+	}
+
+	tree := a.buildMaterialTree(5000, 1, IndustryParams{
+		TypeID:    5000,
+		Runs:      1,
+		MaxDepth:  10,
+		BuildMode: "build_all",
+	}, 0)
+
+	child := tree.Children[0]
+	if child.IsBase {
+		t.Fatalf("build_all must bypass the batch guard; sub-node should recurse")
+	}
+	if child.Blueprint == nil {
+		t.Fatal("expected sub-node to carry Blueprint info under build_all")
+	}
+}
+
+func TestBuildMaterialTree_LegacyCascadeWhenOwnedBlueprintsNil(t *testing.T) {
+	// Backward-compat: when OwnedBlueprints is nil (analyzer callers that
+	// haven't opted in — direct Analyze tab, historical scan replays) the
+	// tree must behave exactly as before the fix: root ME cascades to every
+	// sub-node, no sub-node is arbitrarily marked base for lacking an entry
+	// in a map that isn't there.
+	sdeData := newTestIndustrySDE()
+	a := &IndustryAnalyzer{SDE: sdeData}
+
+	params := IndustryParams{
+		TypeID:             1000,
+		Runs:               1,
+		MaterialEfficiency: 10,
+		MaxDepth:           10,
+		// OwnedBlueprints deliberately nil.
+	}
+	tree := a.buildMaterialTree(1000, 1, params, 0)
+
+	var comp *MaterialNode
+	for _, child := range tree.Children {
+		if child.TypeID == 1001 {
+			comp = child
+		}
+	}
+	if comp == nil {
+		t.Fatal("Build Component sub-node missing")
+	}
+	if comp.IsBase {
+		t.Fatal("Build Component must NOT be marked base under legacy cascade — OwnedBlueprints is nil")
+	}
+	if comp.Blueprint == nil || comp.Blueprint.ME != 10 {
+		t.Fatalf("Build Component should inherit root ME=10 via legacy cascade; got %+v", comp.Blueprint)
+	}
+}
+
 func newTestIndustrySDE() *sde.Data {
 	ind := sde.NewIndustryData()
 

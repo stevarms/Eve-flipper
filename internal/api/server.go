@@ -17,6 +17,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	httppprof "net/http/pprof"
 	"net/url"
 	"os"
 	"regexp"
@@ -860,6 +861,15 @@ func (s *Server) isReady() bool {
 // Handler returns the HTTP handler with all API routes and CORS middleware.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+
+	// Debug endpoints: net/http/pprof heap / goroutine / block / mutex
+	// samplers, plus the default index. Gated to loopback so a hosted
+	// deployment or a user who accidentally binds :0 to a public interface
+	// doesn't leak heap contents. Enabled unconditionally on local builds
+	// because the whole point is being able to answer "why is my server
+	// using 32 GB of RAM?" without needing a rebuild first.
+	registerPprofRoutes(mux)
+
 	mux.HandleFunc("GET /api/status", s.handleStatus)
 	mux.HandleFunc("GET /api/update/check", s.handleUpdateCheck)
 	mux.HandleFunc("POST /api/update/skip", s.handleUpdateSkipForSession)
@@ -1229,6 +1239,40 @@ func normalizeHost(hostPort string) string {
 		return strings.ToLower(strings.Trim(hostPort, "[]"))
 	}
 	return strings.ToLower(u.Hostname())
+}
+
+// registerPprofRoutes wires net/http/pprof's samplers onto the given mux
+// with a loopback gate. The default net/http/pprof.Index handles subpath
+// routing internally, so we expose it under both /debug/pprof and
+// /debug/pprof/{name} — Go's 1.22 mux treats those as distinct patterns.
+// Named samplers (goroutine, heap, allocs, threadcreate, block, mutex)
+// are all reachable through the Index handler; the four fixed endpoints
+// (cmdline, profile, symbol, trace) need their own patterns because
+// they're not driven off the URL parameter that Index inspects.
+//
+// Loopback gate: an accidental public bind would otherwise let anyone
+// fetch a heap dump (leaks arbitrary memory contents). RemoteAddr is
+// checked directly; there's no X-Forwarded-For handling because these
+// endpoints are never meant to be reverse-proxied.
+func registerPprofRoutes(mux *http.ServeMux) {
+	gate := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			host, _, err := net.SplitHostPort(r.RemoteAddr)
+			if err != nil {
+				host = r.RemoteAddr
+			}
+			if !isLoopbackHost(host) {
+				http.Error(w, "pprof is loopback-only", http.StatusForbidden)
+				return
+			}
+			next(w, r)
+		}
+	}
+	mux.HandleFunc("GET /debug/pprof/", gate(httppprof.Index))
+	mux.HandleFunc("GET /debug/pprof/cmdline", gate(httppprof.Cmdline))
+	mux.HandleFunc("GET /debug/pprof/profile", gate(httppprof.Profile))
+	mux.HandleFunc("GET /debug/pprof/symbol", gate(httppprof.Symbol))
+	mux.HandleFunc("GET /debug/pprof/trace", gate(httppprof.Trace))
 }
 
 func isLoopbackHost(host string) bool {
@@ -4344,45 +4388,11 @@ func (s *Server) handleAuthStructures(w http.ResponseWriter, r *http.Request) {
 	}
 
 	structureByID := make(map[int64]stationInfo)
-	addStructure := func(id int64, accessToken string) {
-		if id <= 0 || !isPlayerStructure(id) {
-			return
-		}
-		name := s.esi.StructureName(id, accessToken)
-		structureSystemID, ok := s.esi.StructureSystemID(id)
-		typeID, _ := s.esi.StructureTypeID(id)
-		if !ok || typeID == 0 {
-			if resolvedName, resolvedSystemID, detailsErr := s.esi.StructureDetails(id, accessToken); detailsErr == nil {
-				if resolvedName != "" {
-					name = resolvedName
-				}
-				if resolvedSystemID > 0 {
-					structureSystemID = resolvedSystemID
-					ok = true
-				}
-				if t, has := s.esi.StructureTypeID(id); has {
-					typeID = t
-				}
-			}
-		}
-		if ok && structureSystemID > 0 && structureSystemID != systemID {
-			return
-		}
-		if !ok {
-			// Without a resolved system id we cannot safely attach the structure
-			// to this Industry system selector.
-			return
-		}
-		structureByID[id] = stationInfo{
-			ID:          id,
-			Name:        name,
-			SystemID:    structureSystemID,
-			RegionID:    regionID,
-			IsStructure: true,
-			TypeID:      typeID,
-		}
-	}
 
+	// Pull the region-scope structure list up front. Caches the region
+	// order book internally so this is the biggest ESI payload in the
+	// flow, but only issued once per request regardless of how many
+	// characters we have.
 	structures, err := s.esi.FetchSystemStructures(systemID, regionID, token)
 	if err != nil {
 		log.Printf("[API] FetchSystemStructures error: %v", err)
@@ -4409,36 +4419,178 @@ func (s *Server) handleAuthStructures(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Also discover accessible character structures that may not expose public
-	// market orders: asset locations, active order locations and industry jobs.
+	// Fan out the per-character discovery step across sessions. Prior
+	// version looped selectedSessions serially and, worse, called
+	// addStructure() per asset LocationID — which meant the structure
+	// name/type/system caches were probed once per asset instead of once
+	// per unique structure. A logged-in trader with ~800 assets across 3
+	// characters was doing tens of thousands of cache lookups + inline
+	// synchronous StructureDetails calls per request.
+	//
+	// New shape:
+	//   1. Fan out per-session discovery calls (orders / assets /
+	//      industry jobs) with a bounded worker pool. Each worker
+	//      contributes to a shared candidate-set of LocationIDs — no
+	//      structure resolution happens yet.
+	//   2. Dedupe the candidate set into unique player-structure IDs.
+	//   3. Resolve unknowns concurrently.
+	// The end result is O(unique structures) resolution work regardless
+	// of how many assets/orders/jobs reference each structure.
+	type discovered struct {
+		id    int64
+		token string // token from the session that discovered the ID — used for the inline resolve
+	}
+	// Pre-fetch tokens serially (cheap; hits the vault) so we can hand
+	// each worker a valid token without racing on EnsureValidToken.
+	type sessTok struct {
+		charID int64
+		token  string
+	}
+	sessionTokens := make([]sessTok, 0, len(selectedSessions))
 	for _, scopedSess := range selectedSessions {
-		scopedToken := token
-		if scopedSess.CharacterID != sess.CharacterID {
-			if refreshed, refreshErr := s.sessions.EnsureValidTokenForUserCharacter(s.sso, userID, scopedSess.CharacterID); refreshErr == nil {
-				scopedToken = refreshed
-			} else {
+		var scopedToken string
+		if scopedSess.CharacterID == sess.CharacterID {
+			scopedToken = token
+		} else {
+			refreshed, refreshErr := s.sessions.EnsureValidTokenForUserCharacter(s.sso, userID, scopedSess.CharacterID)
+			if refreshErr != nil {
 				continue
 			}
+			scopedToken = refreshed
 		}
-		if orders, orderErr := s.esi.GetCharacterOrders(scopedSess.CharacterID, scopedToken); orderErr == nil {
-			for _, o := range orders {
-				if o.RegionID != 0 && o.RegionID != regionID {
-					continue
+		sessionTokens = append(sessionTokens, sessTok{charID: scopedSess.CharacterID, token: scopedToken})
+	}
+
+	discCh := make(chan discovered, 4096)
+	var wg sync.WaitGroup
+	for _, st := range sessionTokens {
+		wg.Add(1)
+		go func(st sessTok) {
+			defer wg.Done()
+			// Three ESI calls per session — fan them out in nested
+			// goroutines so we don't wait orders → assets → jobs
+			// serially per character. Each contributes to discCh.
+			var inner sync.WaitGroup
+			inner.Add(3)
+			go func() {
+				defer inner.Done()
+				if orders, err := s.esi.GetCharacterOrders(st.charID, st.token); err == nil {
+					for _, o := range orders {
+						if o.RegionID != 0 && o.RegionID != regionID {
+							continue
+						}
+						discCh <- discovered{id: o.LocationID, token: st.token}
+					}
 				}
-				addStructure(o.LocationID, scopedToken)
-			}
+			}()
+			go func() {
+				defer inner.Done()
+				if assets, err := s.esi.GetCharacterAssets(st.charID, st.token); err == nil {
+					for _, a := range assets {
+						discCh <- discovered{id: a.LocationID, token: st.token}
+					}
+				}
+			}()
+			go func() {
+				defer inner.Done()
+				if jobs, err := s.esi.GetCharacterIndustryJobs(st.charID, st.token, false); err == nil {
+					for _, job := range jobs {
+						discCh <- discovered{id: job.FacilityID, token: st.token}
+						discCh <- discovered{id: job.StationID, token: st.token}
+						discCh <- discovered{id: job.BlueprintLocationID, token: st.token}
+						discCh <- discovered{id: job.OutputLocationID, token: st.token}
+					}
+				}
+			}()
+			inner.Wait()
+		}(st)
+	}
+	go func() {
+		wg.Wait()
+		close(discCh)
+	}()
+
+	// Dedupe on the way in — the same LocationID typically shows up
+	// hundreds of times (asset stacks in one hangar). Also drop non-
+	// player-structure IDs early so resolution work is bounded to the
+	// unique candidate set.
+	candidateTokens := make(map[int64]string)
+	for d := range discCh {
+		if d.id <= 0 || !isPlayerStructure(d.id) {
+			continue
 		}
-		if assets, assetsErr := s.esi.GetCharacterAssets(scopedSess.CharacterID, scopedToken); assetsErr == nil {
-			for _, a := range assets {
-				addStructure(a.LocationID, scopedToken)
-			}
+		if _, seen := candidateTokens[d.id]; !seen {
+			candidateTokens[d.id] = d.token
 		}
-		if jobs, jobsErr := s.esi.GetCharacterIndustryJobs(scopedSess.CharacterID, scopedToken, false); jobsErr == nil {
-			for _, job := range jobs {
-				addStructure(job.FacilityID, scopedToken)
-				addStructure(job.StationID, scopedToken)
-				addStructure(job.BlueprintLocationID, scopedToken)
-				addStructure(job.OutputLocationID, scopedToken)
+	}
+
+	// Resolve unknowns concurrently. For any structure the region-scope
+	// FetchSystemStructures step already resolved, this is a cache hit;
+	// the work here is just for structures the user has access to that
+	// the region market listing doesn't expose (e.g. private structures
+	// with no listings).
+	type resolvedStructure struct {
+		info stationInfo
+		keep bool
+	}
+	resolveCh := make(chan resolvedStructure, len(candidateTokens))
+	resolveSem := make(chan struct{}, 8) // bounded concurrency to keep ESI happy
+	var resolveWG sync.WaitGroup
+	for id, tok := range candidateTokens {
+		resolveWG.Add(1)
+		resolveSem <- struct{}{}
+		go func(id int64, tok string) {
+			defer resolveWG.Done()
+			defer func() { <-resolveSem }()
+			name := s.esi.StructureName(id, tok)
+			structureSystemID, ok := s.esi.StructureSystemID(id)
+			typeID, _ := s.esi.StructureTypeID(id)
+			if !ok || typeID == 0 {
+				if resolvedName, resolvedSystemID, detailsErr := s.esi.StructureDetails(id, tok); detailsErr == nil {
+					if resolvedName != "" {
+						name = resolvedName
+					}
+					if resolvedSystemID > 0 {
+						structureSystemID = resolvedSystemID
+						ok = true
+					}
+					if t, has := s.esi.StructureTypeID(id); has {
+						typeID = t
+					}
+				}
+			}
+			if !ok {
+				resolveCh <- resolvedStructure{keep: false}
+				return
+			}
+			if structureSystemID > 0 && structureSystemID != systemID {
+				resolveCh <- resolvedStructure{keep: false}
+				return
+			}
+			resolveCh <- resolvedStructure{
+				info: stationInfo{
+					ID:          id,
+					Name:        name,
+					SystemID:    structureSystemID,
+					RegionID:    regionID,
+					IsStructure: true,
+					TypeID:      typeID,
+				},
+				keep: true,
+			}
+		}(id, tok)
+	}
+	go func() {
+		resolveWG.Wait()
+		close(resolveCh)
+	}()
+	for rs := range resolveCh {
+		if rs.keep {
+			// Prefer entries already populated by FetchSystemStructures
+			// (they carry richer names from the public list) — only
+			// overwrite when not already present.
+			if _, seen := structureByID[rs.info.ID]; !seen {
+				structureByID[rs.info.ID] = rs.info
 			}
 		}
 	}

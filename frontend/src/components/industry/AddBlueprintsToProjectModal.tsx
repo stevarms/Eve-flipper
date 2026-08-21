@@ -123,7 +123,10 @@ function defaultRunsForRow(
 // the mapping the Scanner panel's "View in Analysis" handoff performs.
 function buildParamsForRow(row: ProfitableScanRow, ctx: ScannerAnalysisContext, runsPerJob: number): IndustryParams {
   const isT2 = row.scan_mode === "t2_invention";
-  const inv = effectiveInventionParams(ctx.decryptorKey);
+  // Pass per-target base BPC runs so T2 ships (base 1) aren't priced as if
+  // one invention success yielded a 10-run BPC. Falls back to the module
+  // constant when the row was scanned before the field existed.
+  const inv = effectiveInventionParams(ctx.decryptorKey, row.output_bpc_runs);
   return {
     type_id: row.product_type_id,
     runs: runsPerJob,
@@ -175,6 +178,12 @@ export function AddBlueprintsToProjectModal({ open, onClose, rows, runsPerJob, a
   // target-days / market-share recompute.
   const [runsByIdx, setRunsByIdx] = useState<Record<number, number>>({});
   const [dirtyRuns, setDirtyRuns] = useState<Set<number>>(new Set());
+  // Rows the user removed from the pre-submit list (e.g. added both a BPC
+  // and its invention row by mistake and only needs one). Local to the
+  // modal — cancelling and reopening restores the full list, matching how
+  // the runs-edit state works. Excluded indices skip analysis and don't
+  // count toward the "N blueprint(s) selected" header.
+  const [excludedIdx, setExcludedIdx] = useState<Set<number>>(new Set());
 
   useEffect(() => {
     if (!open) return;
@@ -204,6 +213,7 @@ export function AddBlueprintsToProjectModal({ open, onClose, rows, runsPerJob, a
     });
     setRunsByIdx(initialRuns);
     setDirtyRuns(initialDirty);
+    setExcludedIdx(new Set());
     setMarketSharePct(10);
   }, [open, rows, runsPerJob, rowKeyFor, manualRunsByRowKey, dirtyRunsByRowKey]);
 
@@ -264,6 +274,12 @@ export function AddBlueprintsToProjectModal({ open, onClose, rows, runsPerJob, a
 
   const handleSubmit = useCallback(async () => {
     if (rows.length === 0) return;
+    // Guard against clicking submit after excluding every row. The button
+    // is also disabled in that case, but a keyboard submit could sneak by.
+    if (excludedIdx.size >= rows.length) {
+      setError(t("industryScannerAddToProjectNothingLeft"));
+      return;
+    }
     setSubmitting(true);
     setError(null);
     setProgressMsg("");
@@ -289,6 +305,7 @@ export function AddBlueprintsToProjectModal({ open, onClose, rows, runsPerJob, a
     {
       const bestByKey = new Map<string, { row: ProfitableScanRow; index: number }>();
       for (let i = 0; i < rows.length; i++) {
+        if (excludedIdx.has(i)) continue;
         const r = rows[i];
         const key = `${r.scan_mode ?? "t1_mfg"}:${r.product_type_id}`;
         const existing = bestByKey.get(key);
@@ -435,7 +452,7 @@ export function AddBlueprintsToProjectModal({ open, onClose, rows, runsPerJob, a
     setProgressMsg(t("industryScannerMergingPlans"));
     const patches: IndustryPlanPatch[] = analyses.map(({ row, analysis, runs }) => {
       const isT2 = row.scan_mode === "t2_invention";
-      const inv = effectiveInventionParams(analysisContext.decryptorKey);
+      const inv = effectiveInventionParams(analysisContext.decryptorKey, row.output_bpc_runs);
       return buildIndustryPlanPatch({
         result: analysis,
         productTypeID: row.product_type_id,
@@ -490,7 +507,7 @@ export function AddBlueprintsToProjectModal({ open, onClose, rows, runsPerJob, a
       setSubmitting(false);
       abortRef.current = null;
     }
-  }, [rows, selectedProjectID, mode, name, strategy, runsPerJob, runsByIdx, analysisContext, onSuccess, t]);
+  }, [rows, selectedProjectID, mode, name, strategy, runsPerJob, runsByIdx, excludedIdx, analysisContext, onSuccess, t]);
 
   return (
     <Modal
@@ -500,8 +517,19 @@ export function AddBlueprintsToProjectModal({ open, onClose, rows, runsPerJob, a
       width="max-w-3xl"
     >
       <div className="p-4 space-y-4 text-sm">
-        <div className="text-xs text-eve-dim">
-          {rows.length} blueprint(s) selected
+        <div className="text-xs text-eve-dim flex items-center gap-2 flex-wrap">
+          <span>
+            {rows.length - excludedIdx.size} of {rows.length} blueprint(s) selected
+          </span>
+          {excludedIdx.size > 0 && !submitting && (
+            <button
+              type="button"
+              onClick={() => setExcludedIdx(new Set())}
+              className="text-[10px] uppercase tracking-wider text-eve-accent hover:underline"
+            >
+              {t("industryScannerAddToProjectRestoreAll")}
+            </button>
+          )}
           {decryptorLabel && (
             <span className="ml-2 text-violet-300">• decryptor: {decryptorLabel}</span>
           )}
@@ -654,6 +682,9 @@ export function AddBlueprintsToProjectModal({ open, onClose, rows, runsPerJob, a
                     <th className="px-2 py-1 text-right font-normal w-24">
                       {t("industryScannerRowUnits")}
                     </th>
+                    <th className="px-2 py-1 text-center font-normal w-8" aria-label={t("industryScannerAddToProjectRemoveHeader")}>
+                      {" "}
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -662,9 +693,13 @@ export function AddBlueprintsToProjectModal({ open, onClose, rows, runsPerJob, a
                     const daily = row.product_daily_volume ?? 0;
                     const perRun = row.output_qty_per_run && row.output_qty_per_run > 0 ? row.output_qty_per_run : 1;
                     const units = runs * perRun;
+                    const excluded = excludedIdx.has(idx);
                     return (
-                      <tr key={idx} className="border-t border-eve-border/30">
-                        <td className="px-2 py-1 truncate">
+                      <tr
+                        key={idx}
+                        className={`border-t border-eve-border/30 ${excluded ? "opacity-40" : ""}`}
+                      >
+                        <td className={`px-2 py-1 truncate ${excluded ? "line-through" : ""}`}>
                           {row.product_name || `Type ${row.product_type_id}`}
                           {row.scan_mode === "t3_invention" && (
                             <span className="ml-1 text-[9px] text-sky-300">T3 INV</span>
@@ -688,6 +723,7 @@ export function AddBlueprintsToProjectModal({ open, onClose, rows, runsPerJob, a
                             min={1}
                             max={100000}
                             value={runs}
+                            disabled={excluded}
                             onChange={(e) => {
                               const n = Math.max(1, Math.min(100000, parseInt(e.target.value, 10) || 1));
                               setRunsByIdx((prev) => ({ ...prev, [idx]: n }));
@@ -703,11 +739,43 @@ export function AddBlueprintsToProjectModal({ open, onClose, rows, runsPerJob, a
                               }
                             }}
                             className="w-20 px-1 py-0.5 bg-eve-input border border-eve-border rounded-sm text-right text-eve-text text-[11px] font-mono
-                                       focus:outline-none focus:border-eve-accent focus:ring-1 focus:ring-eve-accent/30"
+                                       focus:outline-none focus:border-eve-accent focus:ring-1 focus:ring-eve-accent/30
+                                       disabled:opacity-50 disabled:cursor-not-allowed"
                           />
                         </td>
                         <td className="px-2 py-1 text-right font-mono text-eve-text">
                           {units.toLocaleString()}
+                        </td>
+                        <td className="px-2 py-1 text-center">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setExcludedIdx((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(idx)) {
+                                  next.delete(idx);
+                                } else {
+                                  next.add(idx);
+                                }
+                                return next;
+                              })
+                            }
+                            title={
+                              excluded
+                                ? t("industryScannerAddToProjectRestoreRow")
+                                : t("industryScannerAddToProjectRemoveRow")
+                            }
+                            aria-label={
+                              excluded
+                                ? t("industryScannerAddToProjectRestoreRow")
+                                : t("industryScannerAddToProjectRemoveRow")
+                            }
+                            className="w-5 h-5 inline-flex items-center justify-center rounded-sm
+                                       text-eve-dim hover:text-red-300 hover:bg-red-900/20
+                                       focus:outline-none focus:ring-1 focus:ring-red-400/50 transition-colors"
+                          >
+                            {excluded ? "↺" : "×"}
+                          </button>
                         </td>
                       </tr>
                     );
@@ -758,7 +826,7 @@ export function AddBlueprintsToProjectModal({ open, onClose, rows, runsPerJob, a
           <button
             type="button"
             onClick={handleSubmit}
-            disabled={submitting || rows.length === 0}
+            disabled={submitting || rows.length === 0 || excludedIdx.size >= rows.length}
             className="px-3 py-1.5 text-xs font-semibold rounded-sm border border-eve-accent text-eve-accent
                        hover:bg-eve-accent/10 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >

@@ -44,8 +44,23 @@ var Decryptors = []Decryptor{
 }
 
 // EffectiveInventionParams returns the ME/TE/output-runs/probability-mult
-// values a given decryptor applies. Clamps ME/TE to their legal ranges.
+// values a given decryptor applies, using the module-tier default of
+// T2BPCBaseRuns (10) as the base BPC runs. Prefer
+// EffectiveInventionParamsForBase when the per-target SDE base is available:
+// T2 ships have a base of 1, T2 modules/ammo/drones a base of 10, and
+// treating everything as 10 inflates ship invention profit by ~10x.
 func (d Decryptor) EffectiveInventionParams() (meBase, teBase, outputRuns int32, chanceMult float64, cost float64) {
+	return d.EffectiveInventionParamsForBase(T2BPCBaseRuns)
+}
+
+// EffectiveInventionParamsForBase is like EffectiveInventionParams but takes
+// the SDE-provided base BPC runs for the specific target being invented.
+// baseRuns <= 0 falls back to T2BPCBaseRuns for callers that legitimately
+// don't know the target yet.
+func (d Decryptor) EffectiveInventionParamsForBase(baseRuns int32) (meBase, teBase, outputRuns int32, chanceMult float64, cost float64) {
+	if baseRuns <= 0 {
+		baseRuns = T2BPCBaseRuns
+	}
 	meBase = T2BPCBaseME + d.MEDelta
 	if meBase < 0 {
 		meBase = 0
@@ -60,7 +75,7 @@ func (d Decryptor) EffectiveInventionParams() (meBase, teBase, outputRuns int32,
 	if teBase > 20 {
 		teBase = 20
 	}
-	outputRuns = T2BPCBaseRuns + d.OutputRunsBonus
+	outputRuns = baseRuns + d.OutputRunsBonus
 	if outputRuns < 1 {
 		outputRuns = 1
 	}

@@ -45,6 +45,19 @@ type Client struct {
 	typeInfoCache sync.Map     // int32 -> UniverseTypeInfo (L1 in-memory)
 	orderCache    *OrderCache  // region order cache with ETag/Expires
 	orderRecorder MarketOrderRecorder
+	// Bounded slot pool for the fire-and-forget goroutines that persist
+	// order-book snapshots to SQLite. Each in-flight snapshot pins its
+	// full Orders slice (up to ~28 MB for a Forge-wide fetch) alive until
+	// the DB write completes, and the DB write itself is serialized on
+	// a single global mutex (see db/orderbook.RecordMarketOrderSnapshot).
+	// Without a cap, a scan that triggers many concurrent region-order
+	// or per-type fetches builds up a queue of snapshots × 28 MB each
+	// while the mutex-bound writer chews through them one at a time —
+	// which is exactly the shape of the 32 GB RSS spike users reported.
+	// If we can't grab a slot within a very short deadline the snapshot
+	// is dropped (with a log); losing an occasional history sample is a
+	// better tradeoff than OOMing the app under scan load.
+	orderRecorderSem chan struct{}
 
 	// EVERef structure name fallback (loaded at startup)
 	everefNames sync.Map // int64 -> string
@@ -100,6 +113,11 @@ func NewClient(store StationStore) *Client {
 		scanSem:      make(chan struct{}, 50), // for GetPaginatedDirect (market order pages)
 		stationStore: store,
 		orderCache:   NewOrderCache(),
+		// 4 concurrent recorders — the DB write is mutex-serialized so
+		// higher parallelism only builds a wait queue that pins order
+		// slices in memory. Sized conservatively; 4 in-flight × 28 MB
+		// worst-case ≈ 110 MB ceiling for the recorder path.
+		orderRecorderSem: make(chan struct{}, 4),
 	}
 	if recorder, ok := store.(MarketOrderRecorder); ok {
 		c.orderRecorder = recorder
@@ -167,6 +185,28 @@ func (c *Client) recordMarketOrderSnapshot(snapshot MarketOrderSnapshot) {
 	}
 	if snapshot.CapturedAt.IsZero() {
 		snapshot.CapturedAt = time.Now().UTC()
+	}
+	// Non-blocking slot grab: if all recorder slots are busy, drop this
+	// snapshot rather than piling up goroutines each retaining a 28 MB
+	// order slice. The history table takes a periodic hit; the process
+	// stays inside its memory envelope. If nil (older constructors), fall
+	// through to the unbounded behavior.
+	if c.orderRecorderSem != nil {
+		select {
+		case c.orderRecorderSem <- struct{}{}:
+		default:
+			log.Printf("[ESI] orderbook recorder saturated; dropping snapshot source=%s region=%d type=%s orders=%d",
+				snapshot.Source, snapshot.RegionID, snapshot.OrderType, len(snapshot.Orders))
+			return
+		}
+		go func() {
+			defer func() { <-c.orderRecorderSem }()
+			if err := recorder.RecordMarketOrderSnapshot(snapshot); err != nil {
+				log.Printf("[ESI] orderbook snapshot record failed source=%s region=%d type=%s orders=%d: %v",
+					snapshot.Source, snapshot.RegionID, snapshot.OrderType, len(snapshot.Orders), err)
+			}
+		}()
+		return
 	}
 	go func() {
 		if err := recorder.RecordMarketOrderSnapshot(snapshot); err != nil {

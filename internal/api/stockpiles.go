@@ -10,24 +10,109 @@ import (
 
 	"eve-flipper/internal/config"
 	"eve-flipper/internal/db"
+	"eve-flipper/internal/sde"
+)
+
+// Jita 4-4 Caldari Navy Assembly Plant, in The Forge region — the reference
+// hub for stockpile price estimates. Kept as constants so future work can
+// route prices to a different hub by passing a param.
+const (
+	stockpilePriceStationID int64 = 60003760
+	stockpilePriceRegionID  int32 = 10000002
 )
 
 // stockpileScanRow is one line in the scan response — user's threshold, what
-// they actually have, and the shortfall the multibuy pill uses.
+// they actually have, and the shortfall the multibuy pill uses. Also carries
+// the SDE grouping fields and Jita 4-4 price snapshot so the UI can group,
+// sort, and value rows without a second round-trip.
 type stockpileScanRow struct {
-	TypeID       int32  `json:"type_id"`
-	TypeName     string `json:"type_name"`
-	ThresholdQty int64  `json:"threshold_qty"`
-	CurrentQty   int64  `json:"current_qty"`
-	Shortfall    int64  `json:"shortfall"`
+	TypeID       int32   `json:"type_id"`
+	TypeName     string  `json:"type_name"`
+	ThresholdQty int64   `json:"threshold_qty"`
+	CurrentQty   int64   `json:"current_qty"`
+	Shortfall    int64   `json:"shortfall"`
+	GroupID      int32   `json:"group_id,omitempty"`
+	GroupName    string  `json:"group_name,omitempty"`
+	CategoryID   int32   `json:"category_id,omitempty"`
+	CategoryName string  `json:"category_name,omitempty"`
+	UnitPrice    float64 `json:"unit_price,omitempty"`
+	OnHandValue  float64 `json:"on_hand_value,omitempty"`
+	RefillCost   float64 `json:"refill_cost,omitempty"`
+}
+
+// stockpileScanSummary rolls up the row data for at-a-glance UI tiles and
+// the "refill cost by group" bar chart. Values are ISK.
+type stockpileScanSummary struct {
+	TotalInventoryValue float64            `json:"total_inventory_value"`
+	TotalRefillCost     float64            `json:"total_refill_cost"`
+	TotalThresholdValue float64            `json:"total_threshold_value"`
+	RowsShort           int                `json:"rows_short"`
+	RowCount            int                `json:"row_count"`
+	RefillByGroup       map[string]float64 `json:"refill_by_group,omitempty"`
+	InventoryByGroup    map[string]float64 `json:"inventory_by_group,omitempty"`
+	PriceSourceLabel    string             `json:"price_source_label,omitempty"`
+	PricingFailed       bool               `json:"pricing_failed,omitempty"`
 }
 
 type stockpileScanResponse struct {
-	StockpileID int64              `json:"stockpile_id"`
-	StationID   int64              `json:"station_id"`
-	StationName string             `json:"station_name,omitempty"`
-	Items       []stockpileScanRow `json:"items"`
-	Warnings    []string           `json:"warnings,omitempty"`
+	StockpileID int64                `json:"stockpile_id"`
+	StationID   int64                `json:"station_id"`
+	StationName string               `json:"station_name,omitempty"`
+	Items       []stockpileScanRow   `json:"items"`
+	Summary     stockpileScanSummary `json:"summary"`
+	Warnings    []string             `json:"warnings,omitempty"`
+}
+
+// enrichedStockpileItem is the "GET /stockpiles/{id}" row shape — the base
+// stored fields plus SDE grouping so the UI can bucket rows before a scan
+// ever runs.
+type enrichedStockpileItem struct {
+	config.StockpileItem
+	GroupID      int32  `json:"group_id,omitempty"`
+	GroupName    string `json:"group_name,omitempty"`
+	CategoryID   int32  `json:"category_id,omitempty"`
+	CategoryName string `json:"category_name,omitempty"`
+}
+
+// enrichedStockpile mirrors config.Stockpile but overrides Items with the
+// group/category-enriched version.
+type enrichedStockpile struct {
+	config.Stockpile
+	Items []enrichedStockpileItem `json:"items"`
+}
+
+// enrichStockpileItems resolves group/category names from the SDE for each
+// item. sdeData may be nil (still loading) — in that case items pass through
+// with only the stored fields populated.
+func enrichStockpileItems(sdeData *sde.Data, items []config.StockpileItem) []enrichedStockpileItem {
+	out := make([]enrichedStockpileItem, 0, len(items))
+	for _, it := range items {
+		e := enrichedStockpileItem{StockpileItem: it}
+		if sdeData != nil {
+			if t, ok := sdeData.Types[it.TypeID]; ok {
+				e.GroupID = t.GroupID
+				e.CategoryID = t.CategoryID
+				if g, ok := sdeData.Groups[t.GroupID]; ok {
+					e.GroupName = g.Name
+				}
+				if c, ok := sdeData.Categories[t.CategoryID]; ok {
+					e.CategoryName = c.Name
+				}
+			}
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// fallbackGroupName picks a bucket label when the SDE lookup didn't yield a
+// group name — keeps items visible in the UI grouping instead of dropping
+// them into a nameless "" bucket.
+func fallbackGroupName(name string) string {
+	if strings.TrimSpace(name) == "" {
+		return "Uncategorized"
+	}
+	return name
 }
 
 type resolveNameQty struct {
@@ -142,7 +227,8 @@ func (s *Server) handleCreateStockpile(w http.ResponseWriter, r *http.Request) {
 	writeJSONStatus(w, http.StatusCreated, created)
 }
 
-// handleGetStockpile returns one stockpile including its items.
+// handleGetStockpile returns one stockpile including its items, enriched
+// with SDE group/category names so the UI can bucket rows before a scan.
 // GET /api/auth/stockpiles/{id}
 func (s *Server) handleGetStockpile(w http.ResponseWriter, r *http.Request) {
 	userID, ok := s.requireIndustryAuthUser(w, r)
@@ -160,7 +246,11 @@ func (s *Server) handleGetStockpile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sp.StationName = s.resolveStationLabel(sp.StationID, "")
-	writeJSON(w, sp)
+	s.mu.RLock()
+	sdeData := s.sdeData
+	s.mu.RUnlock()
+	enriched := enrichedStockpile{Stockpile: *sp, Items: enrichStockpileItems(sdeData, sp.Items)}
+	writeJSON(w, enriched)
 }
 
 // handleUpdateStockpile patches header fields.
@@ -236,7 +326,7 @@ func (s *Server) handleUpsertStockpileItems(w http.ResponseWriter, r *http.Reque
 		writeStockpileError(w, err)
 		return
 	}
-	writeJSON(w, sp)
+	s.writeEnrichedStockpile(w, sp)
 }
 
 // handleReplaceStockpileItems wipes and replaces the stockpile's item list.
@@ -267,7 +357,18 @@ func (s *Server) handleReplaceStockpileItems(w http.ResponseWriter, r *http.Requ
 		writeStockpileError(w, err)
 		return
 	}
-	writeJSON(w, sp)
+	s.writeEnrichedStockpile(w, sp)
+}
+
+// writeEnrichedStockpile is the shared JSON writer for handlers that return
+// a stockpile with its items; keeps the enrichment in one place.
+func (s *Server) writeEnrichedStockpile(w http.ResponseWriter, sp *config.Stockpile) {
+	sp.StationName = s.resolveStationLabel(sp.StationID, "")
+	s.mu.RLock()
+	sdeData := s.sdeData
+	s.mu.RUnlock()
+	enriched := enrichedStockpile{Stockpile: *sp, Items: enrichStockpileItems(sdeData, sp.Items)}
+	writeJSON(w, enriched)
 }
 
 // handleDeleteStockpileItem removes one row from a stockpile.
@@ -381,13 +482,39 @@ func (s *Server) handleScanStockpile(w http.ResponseWriter, r *http.Request) {
 	sdeData := s.sdeData
 	s.mu.RUnlock()
 
+	// Jita 4-4 sell prices in a single pass. If the fetch fails (offline,
+	// ESI down) we still return rows with zero prices — the scan is still
+	// useful; we just flag pricing_failed for the UI.
+	prices, pricingFailed := s.fetchStockpileHubPrices(sp.Items)
+	if pricingFailed {
+		warnings = append(warnings, "could not fetch Jita 4-4 sell prices — price columns are estimates or zero")
+	}
+
 	items := make([]stockpileScanRow, 0, len(sp.Items))
+	summary := stockpileScanSummary{
+		RefillByGroup:    map[string]float64{},
+		InventoryByGroup: map[string]float64{},
+		PriceSourceLabel: "Jita 4-4 min sell",
+		PricingFailed:    pricingFailed,
+	}
 	for _, it := range sp.Items {
 		current := rollup[it.TypeID]
 		name := it.TypeName
+		var groupID, categoryID int32
+		var groupName, categoryName string
 		if sdeData != nil {
-			if t, ok := sdeData.Types[it.TypeID]; ok && t.Name != "" {
-				name = t.Name
+			if t, ok := sdeData.Types[it.TypeID]; ok {
+				if t.Name != "" {
+					name = t.Name
+				}
+				groupID = t.GroupID
+				categoryID = t.CategoryID
+				if g, ok := sdeData.Groups[t.GroupID]; ok {
+					groupName = g.Name
+				}
+				if c, ok := sdeData.Categories[t.CategoryID]; ok {
+					categoryName = c.Name
+				}
 			}
 		}
 		row := stockpileScanRow{
@@ -395,21 +522,73 @@ func (s *Server) handleScanStockpile(w http.ResponseWriter, r *http.Request) {
 			TypeName:     name,
 			ThresholdQty: it.ThresholdQty,
 			CurrentQty:   current,
+			GroupID:      groupID,
+			GroupName:    groupName,
+			CategoryID:   categoryID,
+			CategoryName: categoryName,
+			UnitPrice:    prices[it.TypeID],
 		}
 		if it.ThresholdQty > current {
 			row.Shortfall = it.ThresholdQty - current
 		}
+		row.OnHandValue = float64(row.CurrentQty) * row.UnitPrice
+		row.RefillCost = float64(row.Shortfall) * row.UnitPrice
+
+		summary.TotalInventoryValue += row.OnHandValue
+		summary.TotalRefillCost += row.RefillCost
+		summary.TotalThresholdValue += float64(row.ThresholdQty) * row.UnitPrice
+		if row.Shortfall > 0 {
+			summary.RowsShort++
+		}
+		bucket := fallbackGroupName(row.GroupName)
+		summary.RefillByGroup[bucket] += row.RefillCost
+		summary.InventoryByGroup[bucket] += row.OnHandValue
 		items = append(items, row)
 	}
+	summary.RowCount = len(items)
 
 	resp := stockpileScanResponse{
 		StockpileID: sp.ID,
 		StationID:   sp.StationID,
 		StationName: s.resolveStationLabel(sp.StationID, scanToken),
 		Items:       items,
+		Summary:     summary,
 		Warnings:    warnings,
 	}
 	writeJSON(w, resp)
+}
+
+// fetchStockpileHubPrices pulls all sell orders in The Forge in one call,
+// then computes the minimum sell price at Jita 4-4 for each stockpile type.
+// Returns (prices, pricingFailed). Missing types simply omit from the map.
+func (s *Server) fetchStockpileHubPrices(items []config.StockpileItem) (map[int32]float64, bool) {
+	if len(items) == 0 || s.esi == nil {
+		return map[int32]float64{}, false
+	}
+	orders, err := s.esi.FetchRegionOrders(stockpilePriceRegionID, "sell")
+	if err != nil {
+		log.Printf("[STOCKPILE] Jita price fetch: %v", err)
+		return map[int32]float64{}, true
+	}
+	wanted := make(map[int32]bool, len(items))
+	for _, it := range items {
+		if it.TypeID > 0 {
+			wanted[it.TypeID] = true
+		}
+	}
+	minSell := make(map[int32]float64, len(wanted))
+	for _, o := range orders {
+		if o.IsBuyOrder || o.LocationID != stockpilePriceStationID || o.Price <= 0 {
+			continue
+		}
+		if !wanted[o.TypeID] {
+			continue
+		}
+		if cur, ok := minSell[o.TypeID]; !ok || o.Price < cur {
+			minSell[o.TypeID] = o.Price
+		}
+	}
+	return minSell, false
 }
 
 // gatherStockpileRollup pulls the right asset endpoint for the stockpile,
