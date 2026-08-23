@@ -2151,6 +2151,11 @@ export interface IndustryAnalysis {
   instant_sell_revenue?: number;
   instant_sell_profit?: number;
   instant_sell_available?: boolean;
+  /** Raw per-unit best ask (before sales tax + broker fee) in the pricing
+   *  region — matches the number in the in-game market window. */
+  unit_ask_price?: number;
+  /** Raw per-unit best bid in the pricing region. */
+  unit_bid_price?: number;
   isk_per_hour: number;
   manufacturing_time: number;
   total_activity_time?: number;
@@ -2362,6 +2367,15 @@ export interface ProfitableScanRow {
   /** Per-unit sell price AFTER sales tax + broker fee. Equals
    *  sell_revenue / total_quantity server-side. */
   unit_sell_price?: number;
+  /** Per-unit best ask in the scanner's pricing region BEFORE tax/broker —
+   *  the number the user sees listed in the in-game market window. Lets
+   *  the scanner UI show "1 unit list price" alongside per-batch profit
+   *  so the user can spot a moon-price outlier at a glance. Zero when the
+   *  pricing region has no visible sell orders for the type. */
+  unit_ask_price?: number;
+  /** Per-unit best bid in the scanner's pricing region — sits next to
+   *  unit_ask_price in tooltips so the spread is obvious. */
+  unit_bid_price?: number;
 }
 
 export interface ProfitableScanStats {

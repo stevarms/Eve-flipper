@@ -672,6 +672,18 @@ type profitableScanRow struct {
 	// UnitSellPrice is the per-unit revenue AFTER sales tax + broker fee
 	// (i.e. sell_revenue / total_quantity). Used in the tooltip breakdown.
 	UnitSellPrice float64 `json:"unit_sell_price"`
+	// UnitAskPrice is the raw per-unit best ask in the scanner's pricing
+	// region (before sales tax + broker fee) — the number the user sees
+	// listed in the in-game market window. Surfaced so the scanner UI can
+	// show "what would 1 unit sell for right now?" alongside the
+	// per-batch profit, letting the user spot a moon-price outlier
+	// that inflates modeled profit without having to reverse-engineer it
+	// from SellRevenue.
+	UnitAskPrice float64 `json:"unit_ask_price"`
+	// UnitBidPrice is the per-unit best bid — the price a "sell to buy
+	// orders" flip would fetch per unit. Sits next to UnitAskPrice in
+	// the tooltip so a builder can see the ask/bid spread inline.
+	UnitBidPrice float64 `json:"unit_bid_price"`
 }
 
 type profitableScanStats struct {
@@ -1777,6 +1789,8 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 			if result.TotalQuantity > 0 {
 				row.UnitSellPrice = result.SellRevenue / float64(result.TotalQuantity)
 			}
+			row.UnitAskPrice = result.UnitAskPrice
+			row.UnitBidPrice = result.UnitBidPrice
 			if scanMode == "t2_invention" || scanMode == "t3_invention" {
 				row.InventionSourceBPID = item.sourceBlueprintID
 				row.InventionSourceBPName = item.sourceBlueprintName

@@ -49,7 +49,8 @@ type SortKey =
   | "period_profit"
   | "period_margin"
   | "optimal_build_cost"
-  | "manufacturing_time";
+  | "manufacturing_time"
+  | "unit_ask_price";
 
 type SortDir = "asc" | "desc";
 
@@ -178,6 +179,15 @@ export interface ScannerAnalysisHandoff {
   blueprintIsBPO: boolean;
   /** Auto-run handleAnalyze after the analysis state is set. */
   autoAnalyze: boolean;
+  /** Pricing region + station the scanner used to fetch prices for THIS row.
+   *  The Analysis tab has its own pricing prefs; without this the two panels
+   *  quote different sell prices for the same row (scanner defaults to Jita
+   *  4-4, Analyze tab defaults to the build system's region). Passing the
+   *  scanner's pricing config forward keeps the "View in Analysis" number
+   *  matching the row you clicked from. Empty string / 0 = no pricing
+   *  override, use whatever the analysis tab has stored. */
+  pricingSystem: string;
+  pricingStationID: number;
 }
 
 interface Props {
@@ -1554,6 +1564,15 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                     <SortableHeader sortKey="available_runs" align="right" label={t("industryScannerColRunsAvail")} active={sortKey} dir={sortDir} onClick={toggleSort} titleText={t("industryScannerColRunsAvailTooltip")} />
                     <SortableHeader sortKey="me" align="right" label={t("industryScannerColME")} active={sortKey} dir={sortDir} onClick={toggleSort} />
                     <SortableHeader sortKey="te" align="right" label={t("industryScannerColTE")} active={sortKey} dir={sortDir} onClick={toggleSort} />
+                    <SortableHeader
+                      sortKey="unit_ask_price"
+                      align="right"
+                      label={t("industryScannerColUnitAsk")}
+                      active={sortKey}
+                      dir={sortDir}
+                      onClick={toggleSort}
+                      titleText={t("industryScannerColUnitAskTooltip")}
+                    />
                     <SortableHeader sortKey="isk_per_hour" align="right" label={t("industryScannerColISKHour")} active={sortKey} dir={sortDir} onClick={toggleSort} />
                     <SortableHeader sortKey="profit" align="right" label={t("industryScannerColProfit")} active={sortKey} dir={sortDir} onClick={toggleSort} />
                     <SortableHeader sortKey="profit_percent" align="right" label={t("industryScannerColMargin")} active={sortKey} dir={sortDir} onClick={toggleSort} />
@@ -1591,10 +1610,28 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                     const jobCost = row.total_job_cost ?? 0;
                     const invCost = row.invention_cost ?? 0;
                     const unitPrice = row.unit_sell_price ?? (totalUnits > 0 ? row.sell_revenue / totalUnits : 0);
+                    const unitAsk = row.unit_ask_price ?? 0;
+                    const unitBid = row.unit_bid_price ?? 0;
                     const profitTooltipLines: string[] = [];
                     profitTooltipLines.push(`═ ${row.product_name || "Product"} ═`);
                     profitTooltipLines.push(`Runs: ${row.runs} × ${row.output_qty_per_run ?? 1} = ${totalUnits.toLocaleString()} units`);
                     profitTooltipLines.push("");
+                    // Raw sell / buy order price the analyzer saw in the
+                    // pricing region. Shown BEFORE the net-revenue math so a
+                    // moon-price sell order is obvious at a glance — if the
+                    // "sell price" number is wildly higher than the user's
+                    // expectation, the row's profit is being driven by an
+                    // outlier seller and not by the actual bulk market.
+                    if (unitAsk > 0) {
+                      profitTooltipLines.push(`Sell price:     ${formatISK(unitAsk)}/unit`);
+                    } else {
+                      profitTooltipLines.push(`Sell price:     — (no sell orders)`);
+                    }
+                    if (unitBid > 0) {
+                      profitTooltipLines.push(`Buy price:      ${formatISK(unitBid)}/unit`);
+                    } else {
+                      profitTooltipLines.push(`Buy price:      — (no buy orders)`);
+                    }
                     profitTooltipLines.push(`Sell revenue:   ${formatISK(row.sell_revenue)}`);
                     if (unitPrice > 0) {
                       profitTooltipLines.push(`  ${totalUnits.toLocaleString()} × ${formatISK(unitPrice)}/unit (after tax + broker fee)`);
@@ -1716,6 +1753,18 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                         <td className="px-2 py-1 text-right font-mono">{row.me}</td>
                         <td className="px-2 py-1 text-right font-mono">{row.te}</td>
                         <td
+                          className="px-2 py-1 text-right font-mono text-eve-dim cursor-help"
+                          title={
+                            unitAsk > 0
+                              ? t("industryScannerUnitAskCellTooltip")
+                                  .replace("{ask}", formatISK(unitAsk))
+                                  .replace("{bid}", unitBid > 0 ? formatISK(unitBid) : "—")
+                              : t("industryScannerUnitAskCellNoData")
+                          }
+                        >
+                          {unitAsk > 0 ? formatISK(unitAsk) : "—"}
+                        </td>
+                        <td
                           className={`px-2 py-1 text-right font-mono cursor-help ${
                             row.isk_per_hour >= 0 ? "text-emerald-300" : "text-red-300"
                           }`}
@@ -1814,6 +1863,15 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                                   ownBlueprint: true,
                                   blueprintIsBPO: row.is_bpo,
                                   autoAnalyze: true,
+                                  // Pass the scanner's pricing region + station
+                                  // so Analyze quotes sell prices from the same
+                                  // hub the scanner used. Otherwise scanner's
+                                  // Jita default vs Analyze's build-region
+                                  // default silently diverge and the two panels
+                                  // show wildly different profit for the same
+                                  // row.
+                                  pricingSystem: params.pricingSystem,
+                                  pricingStationID: params.pricingStationID,
                                 });
                               }}
                               title={t("industryScannerViewInAnalysis")}

@@ -194,6 +194,18 @@ type IndustryAnalysis struct {
 	InstantSellRevenue    float64                `json:"instant_sell_revenue"` // Selling into visible buy orders after sales tax
 	InstantSellProfit     float64                `json:"instant_sell_profit"`
 	InstantSellAvailable  bool                   `json:"instant_sell_available"`
+	// UnitAskPrice is the raw per-unit best ask (before sales tax + broker
+	// fee) in the pricing region the analyzer used for this run. This is
+	// the "list price" a user sees in the in-game market window when they
+	// open the item's sell orders — surfacing it lets a caller cross-check
+	// against reality without doing the tax/broker inverse math from
+	// SellRevenue. Zero when the pricing region has no visible sell orders
+	// for the type, which is often the root cause of a "why does this row
+	// think profit is huge/tiny?" investigation.
+	UnitAskPrice          float64                `json:"unit_ask_price"`
+	// UnitBidPrice is the raw per-unit best bid (before sales tax), for
+	// the same auditing purpose on the instant-sell path.
+	UnitBidPrice          float64                `json:"unit_bid_price"`
 	ISKPerHour            float64                `json:"isk_per_hour"`       // Profit / manufacturing hours (root activity time)
 	ManufacturingTime     int32                  `json:"manufacturing_time"` // Root activity's own time in seconds (matches in-game display)
 	TotalActivityTime     int32                  `json:"total_activity_time"` // Sum of every step's time across the plan (for planners that serialize all sub-builds)
@@ -524,7 +536,14 @@ func (a *IndustryAnalyzer) Analyze(params IndustryParams, progress func(string))
 
 	// FIX #6: Calculate profit if you sell the built product.
 	// Revenue = sell price × quantity × (1 - salesTax%) × (1 - brokerFee%)
-	makerSellRevenue := a.marketBestAsk(params.TypeID) * float64(totalQuantity) *
+	// Capture the raw per-unit ask/bid up front so we can surface them on
+	// the response — this is what the user sees in the in-game market
+	// window, and having the number visible on the scanner row is what
+	// lets them catch a moon-price outlier that inflates modeled profit
+	// without having to reverse-engineer it from SellRevenue.
+	unitAsk := a.marketBestAsk(params.TypeID)
+	unitBid := a.marketBestBid(params.TypeID)
+	makerSellRevenue := unitAsk * float64(totalQuantity) *
 		(1.0 - params.SalesTaxPercent/100) *
 		(1.0 - params.BrokerFee/100)
 	instantSellRevenue, instantSellAvailable := a.marketInstantSellRevenue(
@@ -622,6 +641,8 @@ func (a *IndustryAnalyzer) Analyze(params IndustryParams, progress func(string))
 		InstantSellRevenue:    instantSellRevenue,
 		InstantSellProfit:     instantSellRevenue - optimalCost,
 		InstantSellAvailable:  instantSellAvailable,
+		UnitAskPrice:          unitAsk,
+		UnitBidPrice:          unitBid,
 		ISKPerHour:            iskPerHour,
 		ManufacturingTime:     rootTime,
 		TotalActivityTime:     totalActivityTime,

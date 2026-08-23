@@ -2784,6 +2784,18 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
               setBlueprintCost(0);
               // Invention params come from shared prefs (same decryptor
               // picker Scanner uses), so no per-handoff wiring needed here.
+              // Pricing region + station DOES need explicit propagation —
+              // scanner defaults to Jita, Analyze tab defaults to the build
+              // system's region, and without this the two panels quote
+              // different sell prices for the same row and disagree on
+              // profit. Write the scanner's pricing choice into shared
+              // prefs so subsequent Analyze runs stay aligned.
+              if (handoff.pricingSystem || handoff.pricingStationID > 0) {
+                updateSharedPrefs({
+                  analyzePricingSystem: handoff.pricingSystem,
+                  analyzePricingStationID: handoff.pricingStationID,
+                });
+              }
               setResult(null);
               setIndustryCoverage(null);
               setIndustryCoverageMeta("");
