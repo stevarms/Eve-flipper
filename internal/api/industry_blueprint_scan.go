@@ -684,6 +684,31 @@ type profitableScanRow struct {
 	// orders" flip would fetch per unit. Sits next to UnitAskPrice in
 	// the tooltip so a builder can see the ask/bid spread inline.
 	UnitBidPrice float64 `json:"unit_bid_price"`
+	// AskDepthUnits / BidDepthUnits: total units visible on the sell /
+	// buy side of the pricing-region order book. When AskDepthUnits is
+	// small next to TotalQuantity, the row's Profit is unreliable —
+	// nobody will absorb the batch at the lone bait seller's price.
+	// Surfaced in the scanner UI so a "+1B on a T2 rig" row is
+	// immediately auditable: shallow book → suspicious profit.
+	AskDepthUnits int64 `json:"ask_depth_units"`
+	BidDepthUnits int64 `json:"bid_depth_units"`
+	// AskOrdersCount / BidOrdersCount: distinct-order counts alongside
+	// depth. 100 units in 1 order is a single seller who might pull;
+	// 100 units in 20 orders is a healthy market. The pair (depth,
+	// count) is what the tooltip surfaces so the user can tell them
+	// apart without opening the in-game market window.
+	AskOrdersCount int32 `json:"ask_orders_count"`
+	BidOrdersCount int32 `json:"bid_orders_count"`
+	// RegionalAvgPrice30d is the volume-weighted average per-unit price
+	// the product actually traded at in the pricing region over the last
+	// PeriodDays (30). This is the anti-moon-price signal: when the best
+	// ask is a lone outlier at 100M/unit but the item historically trades
+	// at 5M, RegionalAvgPrice30d is 5M and the frontend can flag the row.
+	// PeriodProfit now uses this price (not bestAsk) for revenue so 30d
+	// projections stay grounded in traded reality even when the visible
+	// order book is dominated by outliers. Zero when there's no trade
+	// history for the type in the pricing region.
+	RegionalAvgPrice30d float64 `json:"regional_avg_price_30d"`
 }
 
 type profitableScanStats struct {
@@ -1791,6 +1816,10 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 			}
 			row.UnitAskPrice = result.UnitAskPrice
 			row.UnitBidPrice = result.UnitBidPrice
+			row.AskDepthUnits = result.AskDepthUnits
+			row.BidDepthUnits = result.BidDepthUnits
+			row.AskOrdersCount = result.AskOrdersCount
+			row.BidOrdersCount = result.BidOrdersCount
 			if scanMode == "t2_invention" || scanMode == "t3_invention" {
 				row.InventionSourceBPID = item.sourceBlueprintID
 				row.InventionSourceBPName = item.sourceBlueprintName
@@ -1842,7 +1871,16 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 					// neutral default. This is what a builder actually cares
 					// about: how many buyers came and hit their sell orders,
 					// not total loot-liquidation churn.
+					//
+					// Also compute a volume-weighted average traded price over
+					// the same window. That's the anti-moon-price signal for
+					// PeriodProfit: even if the current bestAsk is a lone
+					// outlier at 100M/unit, the item historically trades at 5M
+					// and the 30d projection should be grounded there, not in
+					// the fantasy.
 					var volumeSum int64
+					var totalTradedVolume int64
+					var totalTradedValue float64
 					for _, e := range entries {
 						if e.Date < cutoff {
 							continue
@@ -1858,8 +1896,15 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 							}
 						}
 						volumeSum += int64(float64(e.Volume) * fraction)
+						if e.Volume > 0 && e.Average > 0 {
+							totalTradedVolume += e.Volume
+							totalTradedValue += e.Average * float64(e.Volume)
+						}
 					}
 					row.ProductDailyVolume = volumeSum / int64(profitableScanPeriodDays)
+					if totalTradedVolume > 0 {
+						row.RegionalAvgPrice30d = totalTradedValue / float64(totalTradedVolume)
+					}
 
 					totalQty := int32(1)
 					if result.TotalQuantity > 0 {
@@ -1878,9 +1923,28 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 					if producible < sellable {
 						sellable = producible
 					}
-					profitPerUnit := result.Profit / float64(totalQty)
 					costPerUnit := result.OptimalBuildCost / float64(totalQty)
-					row.PeriodProfit = profitPerUnit * float64(sellable)
+
+					// PeriodProfit: prefer the realistic traded-average price
+					// over the potentially-fantasy bestAsk-derived per-unit
+					// profit. That's what fixes rows like Small Hybrid Burst
+					// Aerator II — where bestAsk sits at moon-price and
+					// makes `result.Profit / totalQty` insane, but the item
+					// actually trades daily at ~5M. When there's no history
+					// (RegionalAvgPrice30d == 0) fall back to the old math.
+					var profitPerUnitRealistic float64
+					if row.RegionalAvgPrice30d > 0 {
+						// Apply the same tax + broker deductions the analyzer
+						// applies to bestAsk-based revenue, so the two live
+						// on the same scale.
+						netUnitRevenue := row.RegionalAvgPrice30d *
+							(1.0 - req.SalesTaxPercent/100.0) *
+							(1.0 - req.BrokerFee/100.0)
+						profitPerUnitRealistic = netUnitRevenue - costPerUnit
+					} else {
+						profitPerUnitRealistic = result.Profit / float64(totalQty)
+					}
+					row.PeriodProfit = profitPerUnitRealistic * float64(sellable)
 					if producible > 0 && costPerUnit > 0 {
 						totalCapital := costPerUnit * float64(producible)
 						row.PeriodMargin = row.PeriodProfit / totalCapital * 100

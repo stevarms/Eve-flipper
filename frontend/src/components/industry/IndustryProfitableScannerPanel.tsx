@@ -1612,6 +1612,24 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                     const unitPrice = row.unit_sell_price ?? (totalUnits > 0 ? row.sell_revenue / totalUnits : 0);
                     const unitAsk = row.unit_ask_price ?? 0;
                     const unitBid = row.unit_bid_price ?? 0;
+                    const askDepth = row.ask_depth_units ?? 0;
+                    const bidDepth = row.bid_depth_units ?? 0;
+                    const askOrders = row.ask_orders_count ?? 0;
+                    const bidOrders = row.bid_orders_count ?? 0;
+                    const regionalAvg30d = row.regional_avg_price_30d ?? 0;
+                    // Shallow-book flag: the naive revenue math
+                    // (best sell order × qty) silently over-quotes when the
+                    // sell side has less depth than the batch. One rogue
+                    // seller listing 1 unit at 100M shows up here as
+                    // sell-order depth = 1 while the batch is 10.
+                    const shallowBook = askDepth > 0 && totalUnits > 0 && askDepth < totalUnits;
+                    // Moon-price flag: current best sell order is > 2× the
+                    // 30-day traded average. That's how "Small Hybrid Burst
+                    // Aerator II" was quoting +1B — a lone bait listing sat
+                    // 20× above the item's real market. When the historical
+                    // average is present, use it as ground truth.
+                    const moonPrice =
+                      unitAsk > 0 && regionalAvg30d > 0 && unitAsk > regionalAvg30d * 2;
                     const profitTooltipLines: string[] = [];
                     profitTooltipLines.push(`═ ${row.product_name || "Product"} ═`);
                     profitTooltipLines.push(`Runs: ${row.runs} × ${row.output_qty_per_run ?? 1} = ${totalUnits.toLocaleString()} units`);
@@ -1622,15 +1640,42 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                     // "sell price" number is wildly higher than the user's
                     // expectation, the row's profit is being driven by an
                     // outlier seller and not by the actual bulk market.
+                    // Sell / buy order side — EVE-native wording. Include
+                    // depth AND order count so "20 units across 4 sell
+                    // orders" vs "20 units in 1 sell order" reads at a
+                    // glance without opening the in-game market window.
                     if (unitAsk > 0) {
                       profitTooltipLines.push(`Sell price:     ${formatISK(unitAsk)}/unit`);
+                      if (askDepth > 0) {
+                        const unitsLabel = askDepth === 1 ? "1 unit" : `${askDepth.toLocaleString()} units`;
+                        const ordersLabel = askOrders === 1 ? "1 sell order" : `${askOrders.toLocaleString()} sell orders`;
+                        profitTooltipLines.push(`  (${unitsLabel} across ${ordersLabel})`);
+                        if (shallowBook) {
+                          profitTooltipLines.push(`  ⚠ Sell orders don't cover the batch — bulk revenue at this price is unrealistic`);
+                        }
+                      }
                     } else {
                       profitTooltipLines.push(`Sell price:     — (no sell orders)`);
                     }
                     if (unitBid > 0) {
                       profitTooltipLines.push(`Buy price:      ${formatISK(unitBid)}/unit`);
+                      if (bidDepth > 0) {
+                        const unitsLabel = bidDepth === 1 ? "1 unit" : `${bidDepth.toLocaleString()} units`;
+                        const ordersLabel = bidOrders === 1 ? "1 buy order" : `${bidOrders.toLocaleString()} buy orders`;
+                        profitTooltipLines.push(`  (${unitsLabel} across ${ordersLabel})`);
+                      }
                     } else {
                       profitTooltipLines.push(`Buy price:      — (no buy orders)`);
+                    }
+                    // Region 30-day traded average — anti-moon-price ground
+                    // truth. Flag when the current sell price is >2× the
+                    // 30d avg (the "Small Hybrid Burst Aerator II" case).
+                    if (regionalAvg30d > 0) {
+                      profitTooltipLines.push(`Region 30d avg: ${formatISK(regionalAvg30d)}/unit`);
+                      if (moonPrice) {
+                        const ratio = unitAsk / regionalAvg30d;
+                        profitTooltipLines.push(`  ⚠ Current sell price is ${ratio.toFixed(1)}× the 30d traded average — likely a moon-price listing`);
+                      }
                     }
                     profitTooltipLines.push(`Sell revenue:   ${formatISK(row.sell_revenue)}`);
                     if (unitPrice > 0) {
@@ -1753,16 +1798,31 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                         <td className="px-2 py-1 text-right font-mono">{row.me}</td>
                         <td className="px-2 py-1 text-right font-mono">{row.te}</td>
                         <td
-                          className="px-2 py-1 text-right font-mono text-eve-dim cursor-help"
+                          className={`px-2 py-1 text-right font-mono cursor-help ${(shallowBook || moonPrice) ? "text-amber-300" : "text-eve-dim"}`}
                           title={
                             unitAsk > 0
                               ? t("industryScannerUnitAskCellTooltip")
                                   .replace("{ask}", formatISK(unitAsk))
                                   .replace("{bid}", unitBid > 0 ? formatISK(unitBid) : "—")
+                                  .replace("{askDepth}", askDepth.toLocaleString())
+                                  .replace("{bidDepth}", bidDepth.toLocaleString())
+                                  .replace("{askOrders}", askOrders.toLocaleString())
+                                  .replace("{bidOrders}", bidOrders.toLocaleString())
+                                  .replace("{avg30d}", regionalAvg30d > 0 ? formatISK(regionalAvg30d) : "—")
+                                  .replace("{batch}", totalUnits.toLocaleString())
+                                + (shallowBook ? "\n\n" + t("industryScannerUnitAskShallowBookWarning") : "")
+                                + (moonPrice ? "\n\n" + t("industryScannerUnitAskMoonPriceWarning").replace("{ratio}", (unitAsk / regionalAvg30d).toFixed(1)) : "")
                               : t("industryScannerUnitAskCellNoData")
                           }
                         >
-                          {unitAsk > 0 ? formatISK(unitAsk) : "—"}
+                          {unitAsk > 0 ? (
+                            <>
+                              {(shallowBook || moonPrice) && <span className="mr-1" aria-hidden>⚠</span>}
+                              {formatISK(unitAsk)}
+                            </>
+                          ) : (
+                            "—"
+                          )}
                         </td>
                         <td
                           className={`px-2 py-1 text-right font-mono cursor-help ${

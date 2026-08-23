@@ -988,6 +988,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/auth/industry/jobs/status", s.handleAuthUpdateIndustryJobStatus)
 	mux.HandleFunc("PATCH /api/auth/industry/jobs/status/bulk", s.handleAuthBulkUpdateIndustryJobStatus)
 	mux.HandleFunc("GET /api/auth/industry/ledger", s.handleAuthIndustryLedger)
+	mux.HandleFunc("GET /api/auth/industry/owned-blueprints", s.handleAuthIndustryOwnedBlueprints)
 	mux.HandleFunc("POST /api/auth/station/command", s.handleAuthStationCommand)
 	mux.HandleFunc("POST /api/auth/station/ai/chat", s.handleAuthStationAIChat)
 	mux.HandleFunc("POST /api/auth/station/ai/chat/stream", s.handleAuthStationAIChatStream)
@@ -7970,6 +7971,167 @@ func (s *Server) handleAuthBulkUpdateIndustryJobStatus(w http.ResponseWriter, r 
 	})
 }
 
+// handleAuthIndustryOwnedBlueprints returns the user's owned blueprints
+// collapsed to a product-typeID → best (ME, TE) lookup. This is what the
+// analyzer's IndustryParams.OwnedBlueprints wants: given a sub-material
+// during tree recursion, "what ME/TE does the user's own blueprint for
+// this product have?" Without this map the analyzer's sub-node recursion
+// cascades the top-level BP's ME/TE to every child, over-estimating the
+// build cost of T2 components the user actually has an ME10 BPO for and
+// (in the T2 rig / T2 component case that surfaced this) tipping the
+// build-vs-buy decision to buy when build would have won.
+//
+// The Profitable Blueprints scanner already fetches + threads this on
+// every scan (buildOwnedBlueprintIndex + baseParams.OwnedBlueprints in
+// industry_blueprint_scan.go). The direct Analyze tab previously had no
+// equivalent, so the two panels disagreed on sub-component builds even
+// after the v1.8.6 pricing-region alignment. This endpoint closes that
+// gap: the Analyze tab fetches it once per session and passes it into
+// every /api/industry/analyze call.
+//
+// Aggregates across every character in the user's session (multi-char
+// setups). When multiple copies of the same BP exist across characters
+// or locations, keeps the copy with the highest ME (tiebreak: highest
+// TE) — matches what a builder would actually queue from. Best-effort
+// per-character: a character whose ESI blueprints endpoint fails is
+// skipped with a warning, not a 500.
+func (s *Server) handleAuthIndustryOwnedBlueprints(w http.ResponseWriter, r *http.Request) {
+	userID, ok := s.requireIndustryAuthUser(w, r)
+	if !ok {
+		return
+	}
+	if s.esi == nil || s.sessions == nil || s.sso == nil {
+		writeError(w, 503, "character ESI unavailable")
+		return
+	}
+
+	selectedSessions, err := s.authSessionsForScope(userID, 0, true, true)
+	if err != nil {
+		if strings.Contains(err.Error(), "not logged in") {
+			writeError(w, 401, err.Error())
+		} else {
+			writeError(w, 400, err.Error())
+		}
+		return
+	}
+
+	s.mu.RLock()
+	sdeData := s.sdeData
+	s.mu.RUnlock()
+	if sdeData == nil || sdeData.Industry == nil {
+		writeError(w, 503, "SDE not loaded")
+		return
+	}
+
+	type ownedBP struct {
+		ProductTypeID int32  `json:"product_type_id"`
+		ProductName   string `json:"product_name,omitempty"`
+		ME            int32  `json:"me"`
+		TE            int32  `json:"te"`
+	}
+
+	// Keyed by product typeID so multiple BPs producing the same product
+	// (BPO + invented BPCs, same BPO across characters) collapse to the
+	// best-researched copy the user could actually queue a job with.
+	byProduct := make(map[int32]ownedBP, 512)
+	warnings := make([]string, 0, 4)
+	appendWarningOnce := func(msg string) {
+		msg = strings.TrimSpace(msg)
+		if msg == "" {
+			return
+		}
+		for _, existing := range warnings {
+			if existing == msg {
+				return
+			}
+		}
+		warnings = append(warnings, msg)
+	}
+
+	charactersUsed := 0
+	blueprintsScanned := 0
+	for _, sess := range selectedSessions {
+		token, tokenErr := s.sessions.EnsureValidTokenForUserCharacter(s.sso, userID, sess.CharacterID)
+		if tokenErr != nil {
+			log.Printf("[AUTH] OwnedBlueprints token error (%s): %v", sess.CharacterName, tokenErr)
+			appendWarningOnce("token unavailable for some characters; owned-blueprint list may be incomplete")
+			continue
+		}
+		bps, bpErr := s.esi.GetCharacterBlueprints(sess.CharacterID, token)
+		if bpErr != nil {
+			log.Printf("[AUTH] OwnedBlueprints fetch error (%s): %v", sess.CharacterName, bpErr)
+			appendWarningOnce("ESI blueprints endpoint unavailable for some characters")
+			continue
+		}
+		charactersUsed++
+		blueprintsScanned += len(bps)
+		for _, bp := range bps {
+			if bp.TypeID <= 0 {
+				continue
+			}
+			// Skip zero-run BPCs — the user physically can't queue a job.
+			// Runs < 0 marks a BPO (unlimited); Runs == 0 is a spent BPC.
+			if bp.Runs == 0 {
+				continue
+			}
+			sdeBP, ok := sdeData.Industry.Blueprints[bp.TypeID]
+			if !ok || sdeBP == nil {
+				continue
+			}
+			mfg := sdeBP.Activities["manufacturing"]
+			if mfg == nil || len(mfg.Products) == 0 {
+				// Invention-only BPs (T1 source BPs that don't themselves
+				// manufacture the T2 output) don't seed the per-product
+				// map — the analyzer's manufacturing recursion is what
+				// consumes it.
+				continue
+			}
+			for _, product := range mfg.Products {
+				if product.TypeID <= 0 {
+					continue
+				}
+				candidate := ownedBP{
+					ProductTypeID: product.TypeID,
+					ME:            bp.MaterialEfficiency,
+					TE:            bp.TimeEfficiency,
+				}
+				if existing, has := byProduct[product.TypeID]; has {
+					// Keep the higher ME; on ME tie, keep the higher TE.
+					if existing.ME > candidate.ME {
+						continue
+					}
+					if existing.ME == candidate.ME && existing.TE >= candidate.TE {
+						continue
+					}
+				}
+				byProduct[product.TypeID] = candidate
+			}
+		}
+	}
+
+	if len(selectedSessions) > 0 && charactersUsed == 0 {
+		writeError(w, 500, "failed to fetch blueprints for any character")
+		return
+	}
+
+	rows := make([]ownedBP, 0, len(byProduct))
+	for _, entry := range byProduct {
+		if t, ok := sdeData.Types[entry.ProductTypeID]; ok {
+			entry.ProductName = strings.TrimSpace(t.Name)
+		}
+		rows = append(rows, entry)
+	}
+	// Stable order for deterministic diffs / cache keys.
+	sort.Slice(rows, func(i, j int) bool { return rows[i].ProductTypeID < rows[j].ProductTypeID })
+
+	writeJSON(w, map[string]interface{}{
+		"blueprints":         rows,
+		"characters_used":    charactersUsed,
+		"blueprints_scanned": blueprintsScanned,
+		"warnings":           warnings,
+	})
+}
+
 func (s *Server) handleAuthIndustryLedger(w http.ResponseWriter, r *http.Request) {
 	userID, ok := s.requireIndustryAuthUser(w, r)
 	if !ok {
@@ -12043,6 +12205,19 @@ func (s *Server) handleIndustryAnalyze(w http.ResponseWriter, r *http.Request) {
 		StructureJobCostReduction float64 `json:"structure_job_cost_reduction"`
 		RevenueModel              string  `json:"revenue_model"`
 		CostModel                 string  `json:"cost_model"`
+		// OwnedBlueprints, when non-empty, opts into per-product ME/TE for
+		// sub-tree recursion — same mechanism the scanner uses. Keyed by
+		// product typeID (not blueprint typeID). Frontend fetches via
+		// GET /api/auth/industry/owned-blueprints and threads the map in.
+		// Without this the analyzer cascades the top-level ME to every
+		// sub-material, which over-estimated T2 component build costs
+		// enough to tip the build-vs-buy decision toward buy for items
+		// the user could actually have built cheaper from their own BPO.
+		OwnedBlueprints []struct {
+			ProductTypeID int32 `json:"product_type_id"`
+			ME            int32 `json:"me"`
+			TE            int32 `json:"te"`
+		} `json:"owned_blueprints"`
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, industryAnalyzeMaxBodyBytes)
@@ -12181,6 +12356,35 @@ func (s *Server) handleIndustryAnalyze(w http.ResponseWriter, r *http.Request) {
 		},
 		RevenueModel: req.RevenueModel,
 		CostModel:    req.CostModel,
+	}
+
+	// Materialize the owned-blueprint map. When non-empty, the analyzer's
+	// sub-tree recursion swaps in each product's own ME/TE instead of
+	// cascading the top-level; sub-products missing from the map are
+	// marked base (buy-only). See engine.IndustryParams.OwnedBlueprints
+	// for the full contract.
+	if len(req.OwnedBlueprints) > 0 {
+		bpMap := make(map[int32]engine.OwnedBlueprint, len(req.OwnedBlueprints))
+		for _, bp := range req.OwnedBlueprints {
+			if bp.ProductTypeID <= 0 {
+				continue
+			}
+			// Duplicates in the request collapse to the higher-ME copy —
+			// same "best copy the user could queue from" rule the scanner's
+			// buildOwnedBlueprintIndex applies server-side.
+			if existing, has := bpMap[bp.ProductTypeID]; has {
+				if existing.ME > bp.ME {
+					continue
+				}
+				if existing.ME == bp.ME && existing.TE >= bp.TE {
+					continue
+				}
+			}
+			bpMap[bp.ProductTypeID] = engine.OwnedBlueprint{ME: bp.ME, TE: bp.TE}
+		}
+		if len(bpMap) > 0 {
+			params.OwnedBlueprints = bpMap
+		}
 	}
 
 	// Use NDJSON streaming for progress

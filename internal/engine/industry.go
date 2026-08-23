@@ -206,6 +206,22 @@ type IndustryAnalysis struct {
 	// UnitBidPrice is the raw per-unit best bid (before sales tax), for
 	// the same auditing purpose on the instant-sell path.
 	UnitBidPrice          float64                `json:"unit_bid_price"`
+	// AskDepthUnits and BidDepthUnits are the total unit volume visible
+	// on the sell / buy side of the pricing-region order book. When
+	// AskDepthUnits is small (e.g. 1 unit) but the naive revenue math is
+	// `bestAsk × TotalQuantity`, the row's profit is fantasy — nobody will
+	// pay the lone bait seller's price for the batch. Surfacing depth is
+	// the practical fix for "why does this T2 rig row claim +1B?" — you
+	// see "only 3 units listed" in the tooltip and immediately know the
+	// listing price isn't a bulk-market signal. Bid depth serves the
+	// mirror-image question on the instant-sell path.
+	AskDepthUnits         int64                  `json:"ask_depth_units"`
+	BidDepthUnits         int64                  `json:"bid_depth_units"`
+	// AskOrdersCount / BidOrdersCount pair with the depth fields: 100
+	// units across 20 sellers = real market; 100 units in 1 order = one
+	// seller who could pull it any moment. Distinct signal from depth.
+	AskOrdersCount        int32                  `json:"ask_orders_count"`
+	BidOrdersCount        int32                  `json:"bid_orders_count"`
 	ISKPerHour            float64                `json:"isk_per_hour"`       // Profit / manufacturing hours (root activity time)
 	ManufacturingTime     int32                  `json:"manufacturing_time"` // Root activity's own time in seconds (matches in-game display)
 	TotalActivityTime     int32                  `json:"total_activity_time"` // Sum of every step's time across the plan (for planners that serialize all sub-builds)
@@ -543,6 +559,8 @@ func (a *IndustryAnalyzer) Analyze(params IndustryParams, progress func(string))
 	// without having to reverse-engineer it from SellRevenue.
 	unitAsk := a.marketBestAsk(params.TypeID)
 	unitBid := a.marketBestBid(params.TypeID)
+	askDepth, bidDepth := a.marketBookDepth(params.TypeID)
+	askOrders, bidOrders := a.marketBookOrderCounts(params.TypeID)
 	makerSellRevenue := unitAsk * float64(totalQuantity) *
 		(1.0 - params.SalesTaxPercent/100) *
 		(1.0 - params.BrokerFee/100)
@@ -643,6 +661,10 @@ func (a *IndustryAnalyzer) Analyze(params IndustryParams, progress func(string))
 		InstantSellAvailable:  instantSellAvailable,
 		UnitAskPrice:          unitAsk,
 		UnitBidPrice:          unitBid,
+		AskDepthUnits:         askDepth,
+		BidDepthUnits:         bidDepth,
+		AskOrdersCount:        askOrders,
+		BidOrdersCount:        bidOrders,
 		ISKPerHour:            iskPerHour,
 		ManufacturingTime:     rootTime,
 		TotalActivityTime:     totalActivityTime,
@@ -1552,6 +1574,49 @@ func (a *IndustryAnalyzer) marketBestAsk(typeID int32) float64 {
 		}
 	}
 	return best
+}
+
+// marketBookDepth returns total unit volume visible on the sell / buy side
+// of the pricing-region order book for the type. Used to flag rows whose
+// revenue calc is a fantasy because the ask side has ~1 unit and the batch
+// is 100. Zero when the order book isn't loaded (older code paths fall
+// back to `a.marketPrices` scalars which have no depth info attached).
+func (a *IndustryAnalyzer) marketBookDepth(typeID int32) (askUnits, bidUnits int64) {
+	for _, o := range a.marketSellOrders[typeID] {
+		if o.Price <= 0 || o.VolumeRemain <= 0 {
+			continue
+		}
+		askUnits += int64(o.VolumeRemain)
+	}
+	for _, o := range a.marketBuyOrders[typeID] {
+		if o.Price <= 0 || o.VolumeRemain <= 0 {
+			continue
+		}
+		bidUnits += int64(o.VolumeRemain)
+	}
+	return
+}
+
+// marketBookOrderCounts returns the number of distinct active sell / buy
+// orders in the pricing region. Complements marketBookDepth: 100 units in
+// 20 orders means real competition, 100 units in 1 order means a single
+// seller. The pair (depth, count) is what the scanner surfaces in the
+// per-row tooltip so the user can distinguish a busy market from one bait
+// listing that happens to have volume behind it.
+func (a *IndustryAnalyzer) marketBookOrderCounts(typeID int32) (askOrders, bidOrders int32) {
+	for _, o := range a.marketSellOrders[typeID] {
+		if o.Price <= 0 || o.VolumeRemain <= 0 {
+			continue
+		}
+		askOrders++
+	}
+	for _, o := range a.marketBuyOrders[typeID] {
+		if o.Price <= 0 || o.VolumeRemain <= 0 {
+			continue
+		}
+		bidOrders++
+	}
+	return
 }
 
 func (a *IndustryAnalyzer) marketBuyCost(typeID int32, quantity int32) float64 {

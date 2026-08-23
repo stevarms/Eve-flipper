@@ -14,6 +14,7 @@ import {
   syncAuthIndustryProjectBlueprintPool,
   getAuthIndustryCoverage,
   getAuthIndustryLedger,
+  getAuthIndustryOwnedBlueprints,
   updateAuthIndustryTaskStatus,
   updateAuthIndustryTaskStatusBulk,
   updateAuthIndustryTaskPriority,
@@ -772,6 +773,45 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     }
     persistIndustryLedgerProjectID(selectedLedgerProjectId);
   }, [isLoggedIn, selectedLedgerProjectId]);
+
+  // Owned-blueprint index — fetched once when the user is logged in and
+  // reused for every analyze call so the analyzer's sub-tree recursion
+  // uses each sub-material's OWN blueprint ME/TE. Without this the
+  // Analysis tab silently disagreed with the Profitable Blueprints
+  // scanner (which computes the same index server-side per scan) on any
+  // build whose sub-components the user owns well-researched BPOs for.
+  // Cached in state; a single failure is non-fatal (analysis falls back
+  // to the legacy cascade — same behavior as an anonymous caller).
+  const [ownedBlueprints, setOwnedBlueprints] = useState<Array<{ product_type_id: number; me: number; te: number }>>([]);
+  useEffect(() => {
+    if (!isLoggedIn) {
+      setOwnedBlueprints([]);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const resp = await getAuthIndustryOwnedBlueprints();
+        if (cancelled) return;
+        setOwnedBlueprints(
+          resp.blueprints.map((b) => ({
+            product_type_id: b.product_type_id,
+            me: b.me,
+            te: b.te,
+          })),
+        );
+      } catch (e) {
+        // Non-fatal: analyzer falls back to the legacy cascade if the
+        // list is empty. Log for diagnostics but don't surface a toast —
+        // this is a silent quality improvement, not a user action.
+        // eslint-disable-next-line no-console
+        console.warn("owned-blueprint index fetch failed", e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isLoggedIn]);
 
   useEffect(() => {
     setSelectedLedgerTaskIDs([]);
@@ -2453,6 +2493,10 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
       structure_job_cost_reduction: sharedPrefs.structureJobCostReduction,
       revenue_model: sharedPrefs.revenueModel,
       cost_model: sharedPrefs.costModel,
+      // Owned-BP index for per-product ME/TE during sub-tree recursion.
+      // Fetched once on login; empty when not logged in (analyzer falls
+      // back to legacy cascade — same behavior as before this wiring).
+      owned_blueprints: ownedBlueprints.length > 0 ? ownedBlueprints : undefined,
     };
 
     try {
@@ -2473,7 +2517,7 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     } finally {
       setAnalyzing(false);
     }
-  }, [analyzing, selectedItem, runs, activityMode, me, te, systemName, selectedStationId, facilityTax, structureBonus, brokerFee, salesTaxPercent, ownBlueprint, blueprintCost, blueprintIsBPO, sharedPrefs.decryptor, sharedPrefs.decryptorCost, sharedPrefs.skipReactions, buildMode, t, onError, trackAchievementEvent]);
+  }, [analyzing, selectedItem, runs, activityMode, me, te, systemName, selectedStationId, facilityTax, structureBonus, brokerFee, salesTaxPercent, ownBlueprint, blueprintCost, blueprintIsBPO, sharedPrefs.decryptor, sharedPrefs.decryptorCost, sharedPrefs.skipReactions, buildMode, ownedBlueprints, t, onError, trackAchievementEvent]);
 
   const clearPlanPreview = useCallback(() => {
     setLastLedgerPlanPreview(null);

@@ -1607,6 +1607,45 @@ export async function getAuthIndustryLedger(params?: {
   };
 }
 
+export interface OwnedBlueprintEntry {
+  product_type_id: number;
+  product_name?: string;
+  me: number;
+  te: number;
+}
+
+export interface OwnedBlueprintIndexResponse {
+  blueprints: OwnedBlueprintEntry[];
+  characters_used: number;
+  blueprints_scanned: number;
+  warnings: string[];
+}
+
+/**
+ * Fetches the user's owned blueprints collapsed to a product-typeID →
+ * best-(ME,TE) list. The Analysis tab threads these into every
+ * analyzeIndustry call so the analyzer's sub-tree recursion uses each
+ * sub-material's OWN blueprint ME/TE instead of cascading the top-level's.
+ * Without this the tab silently disagrees with the Profitable Blueprints
+ * scanner (which already uses the same server-side index via
+ * buildOwnedBlueprintIndex) on any build whose sub-components the user
+ * owns better-researched BPOs for.
+ *
+ * Cheap to call — one ESI blueprints fetch per authenticated character,
+ * then in-memory grouping. Suitable for one-shot-per-session fetch and
+ * cache; do NOT call per-analysis.
+ */
+export async function getAuthIndustryOwnedBlueprints(): Promise<OwnedBlueprintIndexResponse> {
+  const res = await apiFetch(`${BASE}/api/auth/industry/owned-blueprints`);
+  const data = await handleResponse<OwnedBlueprintIndexResponse>(res);
+  return {
+    blueprints: Array.isArray(data.blueprints) ? data.blueprints : [],
+    characters_used: data.characters_used ?? 0,
+    blueprints_scanned: data.blueprints_scanned ?? 0,
+    warnings: Array.isArray(data.warnings) ? data.warnings : [],
+  };
+}
+
 export async function stationAIChat(
   payload: StationAIChatRequest,
 ): Promise<StationAIChatResponse> {

@@ -2048,6 +2048,14 @@ export interface IndustryParams {
    *  walks the sell order book for immediate purchase; "buy_to_buy" uses the
    *  best-bid quote for a patient buy order. */
   cost_model?: "buy_to_sell" | "buy_to_buy";
+  /** Optional owned-blueprint index — { product_type_id, me, te } per entry.
+   *  Threaded into the analyzer so sub-tree recursion uses each product's
+   *  OWN blueprint ME/TE instead of cascading the top-level's. The Analysis
+   *  tab fetches this once per session via getAuthIndustryOwnedBlueprints
+   *  and passes it on every analyze call — matches the scanner's server-side
+   *  index (buildOwnedBlueprintIndex). Omit for anonymous / unauthenticated
+   *  callers; the analyzer falls back to legacy cascade in that case. */
+  owned_blueprints?: Array<{ product_type_id: number; me: number; te: number }>;
 }
 
 /** Wire shape of a Standup rig catalog entry, served by GET /api/industry/structure-rigs. */
@@ -2156,6 +2164,12 @@ export interface IndustryAnalysis {
   unit_ask_price?: number;
   /** Raw per-unit best bid in the pricing region. */
   unit_bid_price?: number;
+  /** Total units visible on the sell / buy side in the pricing region. */
+  ask_depth_units?: number;
+  bid_depth_units?: number;
+  /** Distinct active sell / buy order counts in the pricing region. */
+  ask_orders_count?: number;
+  bid_orders_count?: number;
   isk_per_hour: number;
   manufacturing_time: number;
   total_activity_time?: number;
@@ -2376,6 +2390,25 @@ export interface ProfitableScanRow {
   /** Per-unit best bid in the scanner's pricing region — sits next to
    *  unit_ask_price in tooltips so the spread is obvious. */
   unit_bid_price?: number;
+  /** Total units visible on the sell / buy side of the pricing-region
+   *  order book. When ask_depth_units is small next to total_quantity,
+   *  the row's Profit is unreliable — the lone bait seller can't absorb
+   *  a real batch. Surfaced in the scanner UI so a "+1B on a T2 rig" row
+   *  is immediately auditable. */
+  ask_depth_units?: number;
+  bid_depth_units?: number;
+  /** Number of distinct active sell / buy orders in the pricing region.
+   *  Complements depth — 100 units in 20 sellers is a healthy market,
+   *  100 units in 1 seller is a single listing that could pull anytime. */
+  ask_orders_count?: number;
+  bid_orders_count?: number;
+  /** Volume-weighted average per-unit price this product actually traded
+   *  at in the pricing region over the last 30 days. Anti-moon-price
+   *  signal: when the current best sell order sits at 100M/unit but the
+   *  item historically trades at 5M, this is 5M. period_profit now uses
+   *  this price (not the best sell order) as the revenue basis so the
+   *  30d projection stays grounded in what the market actually pays. */
+  regional_avg_price_30d?: number;
 }
 
 export interface ProfitableScanStats {
