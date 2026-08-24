@@ -2110,6 +2110,19 @@ export interface MaterialNode {
   children: MaterialNode[] | null;
   blueprint: BlueprintInfo | null;
   depth: number;
+  /** Set when the analyzer picks a mixed buy+build strategy for this
+   *  material — buy the cheap head of the sell-order book that beats
+   *  per-unit build cost, build the remainder. When true, buy_units +
+   *  build_units == quantity, and the total sourcing cost is
+   *  buy_portion_cost + build_portion_cost (not buy_price or build_cost).
+   *  should_build remains true (some units are being built). */
+  should_split?: boolean;
+  buy_units?: number;
+  build_units?: number;
+  /** Walked cost of the buy portion from sell orders. */
+  buy_portion_cost?: number;
+  /** Pro-rated build cost for the build portion — build_cost × build_units / quantity. */
+  build_portion_cost?: number;
 }
 
 export interface FlatMaterial {

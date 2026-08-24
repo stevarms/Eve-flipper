@@ -131,14 +131,29 @@ type MaterialNode struct {
 	Activity     string          `json:"activity"`      // manufacturing/reaction/base
 	Runs         int32           `json:"runs"`          // Blueprint runs needed for this node
 	IsBase       bool            `json:"is_base"`       // True if cannot be further produced
-	BuyPrice     float64         `json:"buy_price"`     // Market buy price (sell orders)
+	BuyPrice     float64         `json:"buy_price"`     // Market buy price (sell orders) — walked for full Quantity
 	MaterialCost float64         `json:"material_cost"` // Sum of chosen child material costs
-	BuildCost    float64         `json:"build_cost"`    // Total cost to build (materials + job cost)
-	ShouldBuild  bool            `json:"should_build"`  // True if building is cheaper than buying
+	BuildCost    float64         `json:"build_cost"`    // Total cost to build the full Quantity (materials + job cost)
+	ShouldBuild  bool            `json:"should_build"`  // True when at least some units are built (includes split nodes)
 	JobCost      float64         `json:"job_cost"`      // Manufacturing job installation cost
 	Children     []*MaterialNode `json:"children"`      // Required sub-materials
 	Blueprint    *BlueprintInfo  `json:"blueprint"`     // Blueprint info if buildable
 	Depth        int             `json:"depth"`         // Depth in tree
+	// Split-strategy fields. Populated when the analyzer picks a mixed
+	// buy+build strategy for THIS material — buy the cheap head of the
+	// sell-order book that beats per-unit build cost, build the rest.
+	// Example: need 100 units; 30 units on-market at 5M (below the 7M
+	// per-unit build cost) + 70 built at 490M = 640M vs. all-build 700M
+	// or all-buy 1,550M. ShouldSplit=false is the legacy binary path;
+	// BuyUnits == Quantity if !ShouldBuild, or BuildUnits == Quantity
+	// otherwise. Parent aggregation uses BuyPortionCost+BuildPortionCost
+	// when ShouldSplit is true, otherwise BuyPrice or BuildCost per the
+	// binary decision.
+	ShouldSplit      bool    `json:"should_split"`
+	BuyUnits         int32   `json:"buy_units"`
+	BuildUnits       int32   `json:"build_units"`
+	BuyPortionCost   float64 `json:"buy_portion_cost"`   // walked cost of BuyUnits from market
+	BuildPortionCost float64 `json:"build_portion_cost"` // pro-rated BuildCost for BuildUnits
 }
 
 // BlueprintInfo contains blueprint information for display.
@@ -811,12 +826,17 @@ func (a *IndustryAnalyzer) calculateCosts(node *MaterialNode, costIndex float64,
 		return
 	}
 
-	// Calculate material cost (sum of optimal costs for children)
+	// Calculate material cost (sum of optimal costs for children). Split
+	// children contribute BuyPortionCost + BuildPortionCost; binary
+	// children contribute the extreme they picked.
 	var materialCost float64
 	for _, child := range node.Children {
-		if child.ShouldBuild {
+		switch {
+		case child.ShouldSplit:
+			materialCost += child.BuyPortionCost + child.BuildPortionCost
+		case child.ShouldBuild:
 			materialCost += child.BuildCost
-		} else {
+		default:
 			materialCost += child.BuyPrice
 		}
 	}
@@ -888,10 +908,17 @@ func (a *IndustryAnalyzer) calculateCosts(node *MaterialNode, costIndex float64,
 		return
 	}
 
-	// Decide: buy or build. BuildMode overrides the cost-based choice:
+	// Decide: buy, build, or split. BuildMode overrides the cost-based
+	// choice:
 	//   "buy_all"   → prefer buy when a buy price exists.
 	//   "build_all" → prefer build when the node is buildable (has children).
-	//   "auto"/""   → pick the cheaper of the two.
+	//   "auto"/""   → pick the cheapest of buy / build / mixed split.
+	//
+	// The split path: for buildable nodes with sell-order depth, walk the
+	// book for orders whose per-unit price beats per-unit build cost and
+	// take those; build the rest. Mixed wins over both extremes when the
+	// book has a cheap head that then jumps. Auto-mode only — explicit
+	// buy_all / build_all overrides bypass the split.
 	switch params.BuildMode {
 	case "buy_all":
 		if node.BuyPrice > 0 {
@@ -907,6 +934,48 @@ func (a *IndustryAnalyzer) calculateCosts(node *MaterialNode, costIndex float64,
 			node.ShouldBuild = false
 		}
 	default:
+		if !buildable || node.Quantity <= 0 || node.BuildCost <= 0 {
+			// Not buildable, or degenerate quantity — fall through to
+			// legacy binary compare.
+			if node.BuyPrice > 0 && node.BuyPrice < node.BuildCost {
+				node.ShouldBuild = false
+			} else {
+				node.ShouldBuild = true
+			}
+			break
+		}
+		perUnitBuild := node.BuildCost / float64(node.Quantity)
+		buyUnits, buyCost := computeMixedMaterialCost(a.marketSellOrders[node.TypeID], node.Quantity, perUnitBuild)
+		if buyUnits > 0 && buyUnits < node.Quantity {
+			// Some cheap orders beat per-unit build cost, but not enough
+			// to cover the batch. Mixed strategy is a candidate; compute
+			// its total against the two extremes and pick the winner.
+			buildUnits := node.Quantity - buyUnits
+			buildPortion := node.BuildCost * float64(buildUnits) / float64(node.Quantity)
+			mixedTotal := buyCost + buildPortion
+			allBuy := node.BuyPrice
+			allBuild := node.BuildCost
+			if mixedTotal < allBuild && (allBuy <= 0 || mixedTotal < allBuy) {
+				// Mixed beats both extremes — commit to the split.
+				node.ShouldSplit = true
+				node.ShouldBuild = true // some units are built; parent aggregation reads ShouldSplit first
+				node.BuyUnits = buyUnits
+				node.BuildUnits = buildUnits
+				node.BuyPortionCost = buyCost
+				node.BuildPortionCost = buildPortion
+				break
+			}
+		} else if buyUnits >= node.Quantity {
+			// Entire batch fits under the per-unit build threshold — the
+			// mixed walker already found all-buy at the walked price is
+			// cheaper than build. This is exactly what the legacy compare
+			// would decide too (BuyPrice < BuildCost), but computeMixed's
+			// walk gives a tighter number when cheap-head + expensive-tail
+			// happens to also fit — the walked cost `buyCost` is what
+			// we'd actually pay for the cheap head, which never exceeds
+			// the full walked BuyPrice. Fall through to the legacy binary
+			// compare here so BuyPrice remains the canonical all-buy cost.
+		}
 		if node.BuyPrice > 0 && node.BuyPrice < node.BuildCost {
 			node.ShouldBuild = false
 		} else {
@@ -1434,7 +1503,7 @@ func (a *IndustryAnalyzer) typeName(typeID int32) string {
 // flattenMaterials creates a shopping list of base materials.
 func (a *IndustryAnalyzer) flattenMaterials(root *MaterialNode) []*FlatMaterial {
 	materialMap := make(map[int32]*FlatMaterial)
-	a.collectBaseMaterials(root, materialMap)
+	a.collectBaseMaterials(root, 1.0, materialMap)
 
 	// Convert to slice and sort by total price
 	result := make([]*FlatMaterial, 0, len(materialMap))
@@ -1449,33 +1518,88 @@ func (a *IndustryAnalyzer) flattenMaterials(root *MaterialNode) []*FlatMaterial 
 }
 
 // collectBaseMaterials recursively collects materials that should be bought.
-func (a *IndustryAnalyzer) collectBaseMaterials(node *MaterialNode, materials map[int32]*FlatMaterial) {
-	// If we should buy this node (not build), add it to the list (node.BuyPrice already includes broker)
-	if !node.ShouldBuild || node.IsBase {
-		if existing, ok := materials[node.TypeID]; ok {
-			existing.Quantity += node.Quantity
-			existing.TotalPrice += node.BuyPrice
-			existing.UnitPrice = existing.TotalPrice / float64(existing.Quantity)
-		} else {
-			volume := 0.0
-			if t, ok := a.SDE.Types[node.TypeID]; ok {
-				volume = t.Volume
+// The `scale` parameter propagates split-strategy fractions down the tree:
+// when an ancestor node is a mixed buy+build split, only the build portion's
+// share of its own quantity feeds down into descendant material requirements.
+// A leaf's actual shopping-list quantity is `node.Quantity * scale`.
+//
+// Split nodes contribute BOTH sides: the buy portion of the node is added
+// to the shopping list directly (scaled qty at market prices), and the
+// build portion recurses into children with a further-multiplied scale.
+// Without this, the shopping list would ask you to buy raw materials for
+// the full parent quantity even though only a fraction is being built.
+func (a *IndustryAnalyzer) collectBaseMaterials(node *MaterialNode, scale float64, materials map[int32]*FlatMaterial) {
+	if scale <= 0 {
+		return
+	}
+	// Split node: shopping list gets the buy portion at the split's walked
+	// cost; the build portion pushes down into children at a compounded
+	// scale so their raw materials reflect the fraction actually built.
+	if node.ShouldSplit && !node.IsBase {
+		if node.BuyUnits > 0 && node.Quantity > 0 {
+			buyQty := int32(math.Round(float64(node.BuyUnits) * scale))
+			if buyQty > 0 {
+				buyCost := node.BuyPortionCost * scale
+				a.addFlatMaterial(materials, node.TypeID, node.TypeName, buyQty, buyCost)
 			}
-			materials[node.TypeID] = &FlatMaterial{
-				TypeID:     node.TypeID,
-				TypeName:   node.TypeName,
-				Quantity:   node.Quantity,
-				UnitPrice:  node.BuyPrice / float64(node.Quantity),
-				TotalPrice: node.BuyPrice,
-				Volume:     volume * float64(node.Quantity),
+		}
+		if node.BuildUnits > 0 && node.Quantity > 0 {
+			childScale := scale * float64(node.BuildUnits) / float64(node.Quantity)
+			for _, child := range node.Children {
+				a.collectBaseMaterials(child, childScale, materials)
 			}
 		}
 		return
 	}
-
-	// Otherwise, recurse into children
+	// Binary buy: node is bought whole. node.BuyPrice already includes any
+	// broker fee the caller applied via CostModel.
+	if !node.ShouldBuild || node.IsBase {
+		qty := int32(math.Round(float64(node.Quantity) * scale))
+		if qty <= 0 {
+			return
+		}
+		cost := node.BuyPrice * scale
+		a.addFlatMaterial(materials, node.TypeID, node.TypeName, qty, cost)
+		return
+	}
+	// Binary build: recurse into children with the current scale.
 	for _, child := range node.Children {
-		a.collectBaseMaterials(child, materials)
+		a.collectBaseMaterials(child, scale, materials)
+	}
+}
+
+// addFlatMaterial merges (typeID, qty, cost) into the shopping-list map,
+// summing across duplicate contributions from different branches of the
+// tree (a split-buy'd component may also appear as a raw material for
+// another node's build portion). Volume is looked up from the SDE.
+func (a *IndustryAnalyzer) addFlatMaterial(materials map[int32]*FlatMaterial, typeID int32, typeName string, qty int32, totalCost float64) {
+	if qty <= 0 {
+		return
+	}
+	volume := 0.0
+	if t, ok := a.SDE.Types[typeID]; ok {
+		volume = t.Volume
+	}
+	if existing, ok := materials[typeID]; ok {
+		existing.Quantity += qty
+		existing.TotalPrice += totalCost
+		if existing.Quantity > 0 {
+			existing.UnitPrice = existing.TotalPrice / float64(existing.Quantity)
+		}
+		existing.Volume += volume * float64(qty)
+		return
+	}
+	unitPrice := 0.0
+	if qty > 0 {
+		unitPrice = totalCost / float64(qty)
+	}
+	materials[typeID] = &FlatMaterial{
+		TypeID:     typeID,
+		TypeName:   typeName,
+		Quantity:   qty,
+		UnitPrice:  unitPrice,
+		TotalPrice: totalCost,
+		Volume:     volume * float64(qty),
 	}
 }
 
@@ -1615,6 +1739,60 @@ func (a *IndustryAnalyzer) marketBookOrderCounts(typeID int32) (askOrders, bidOr
 			continue
 		}
 		bidOrders++
+	}
+	return
+}
+
+// computeMixedMaterialCost walks the sell-order book for a type and decides,
+// per unit, whether to buy at market or build. Returns the buy portion of
+// the split (units + cost). Callers combine it with a per-unit build cost
+// applied to the remainder.
+//
+// Motivation: the analyzer used to make a binary all-buy or all-build
+// decision per material. When the book has a cheap head then jumps
+// expensive, the optimal is a mixed strategy — buy the cheap head at
+// market prices, build the rest. Example: need 100 units, book is
+// [30 @ 5M, 70 @ 20M], build cost 700M. All-buy walks to 1550M,
+// all-build is 700M, mixed = 150M + 490M = 640M — beats both.
+//
+// Orders are sorted cheapest-first before walking so the caller doesn't
+// have to. Orders with zero/negative price or volume are filtered.
+// perUnitBuildCost is the linear per-unit build cost (BuildCost /
+// Quantity); the walk stops as soon as an order's price ≥ that cost.
+// Assumes per-unit build cost is linear across the split, which holds
+// past the batch-overshoot guard threshold — reactions/ammo BPs with
+// step-function costs are marked base below 50% batch utilization and
+// never reach this function.
+func computeMixedMaterialCost(orders []esi.MarketOrder, quantity int32, perUnitBuildCost float64) (buyUnits int32, buyCost float64) {
+	if quantity <= 0 || perUnitBuildCost <= 0 || len(orders) == 0 {
+		return 0, 0
+	}
+	sorted := make([]esi.MarketOrder, 0, len(orders))
+	for _, o := range orders {
+		if o.Price <= 0 || o.VolumeRemain <= 0 {
+			continue
+		}
+		sorted = append(sorted, o)
+	}
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Price < sorted[j].Price })
+
+	remaining := quantity
+	for _, o := range sorted {
+		if remaining <= 0 {
+			break
+		}
+		if o.Price >= perUnitBuildCost {
+			// From here on, every order costs at least as much per unit
+			// as building. Building the remainder wins.
+			break
+		}
+		take := int32(o.VolumeRemain)
+		if take > remaining {
+			take = remaining
+		}
+		buyCost += float64(take) * o.Price
+		buyUnits += take
+		remaining -= take
 	}
 	return
 }

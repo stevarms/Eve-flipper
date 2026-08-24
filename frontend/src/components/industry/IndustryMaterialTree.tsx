@@ -18,20 +18,26 @@ function IndustryTreeNode({ node, level = 0 }: { node: MaterialNode; level?: num
   const [expanded, setExpanded] = useState(level < 2);
   const hasChildren = node.children && node.children.length > 0;
   const indent = level * 20;
+  const isSplit = Boolean(node.should_split);
+  const buyUnits = node.buy_units ?? 0;
+  const buildUnits = node.build_units ?? 0;
+  const splitTotal = (node.buy_portion_cost ?? 0) + (node.build_portion_cost ?? 0);
   const decisionDelta = node.buy_price - node.build_cost;
   const decisionHint = !node.is_base
-    ? node.should_build
-      ? node.buy_price > 0
-        ? `Build wins by ${formatISK(Math.max(0, decisionDelta))} (job: ${formatISK(node.job_cost || 0)})`
-        : `Build selected (no market buy price, job: ${formatISK(node.job_cost || 0)})`
-      : `Buy wins by ${formatISK(Math.max(0, -decisionDelta))}`
+    ? isSplit
+      ? `Mixed strategy wins: buy ${buyUnits.toLocaleString()} at ${formatISK(node.buy_portion_cost ?? 0)} + build ${buildUnits.toLocaleString()} at ${formatISK(node.build_portion_cost ?? 0)} = ${formatISK(splitTotal)}. All-buy walked cost ${formatISK(node.buy_price)}, all-build ${formatISK(node.build_cost)}.`
+      : node.should_build
+        ? node.buy_price > 0
+          ? `Build wins by ${formatISK(Math.max(0, decisionDelta))} (job: ${formatISK(node.job_cost || 0)})`
+          : `Build selected (no market buy price, job: ${formatISK(node.job_cost || 0)})`
+        : `Buy wins by ${formatISK(Math.max(0, -decisionDelta))}`
     : "";
 
   return (
     <div>
       <div
         className={`flex items-center py-1 px-2 hover:bg-eve-accent/5 rounded-sm ${
-          node.should_build ? "" : "opacity-70"
+          node.should_build || isSplit ? "" : "opacity-70"
         }`}
         style={{ paddingLeft: Math.min(indent + 8, 120) }}
       >
@@ -60,7 +66,14 @@ function IndustryTreeNode({ node, level = 0 }: { node: MaterialNode; level?: num
           </span>
         )}
 
-        {!node.is_base && (
+        {isSplit ? (
+          <span
+            className="text-[10px] px-2 py-0.5 rounded-sm bg-amber-500/20 text-amber-300"
+            title={decisionHint}
+          >
+            SPLIT · buy {buyUnits.toLocaleString()} + build {buildUnits.toLocaleString()}
+          </span>
+        ) : !node.is_base ? (
           <span
             className={`text-[10px] px-2 py-0.5 rounded-sm ${
               node.should_build
@@ -71,8 +84,7 @@ function IndustryTreeNode({ node, level = 0 }: { node: MaterialNode; level?: num
           >
             {node.should_build ? "BUILD" : "BUY"}
           </span>
-        )}
-        {node.is_base && (
+        ) : (
           <span className="text-[10px] px-2 py-0.5 rounded-sm bg-eve-dim/20 text-eve-dim">
             BASE
           </span>
