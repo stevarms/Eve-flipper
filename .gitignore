@@ -89,3 +89,7 @@ discord-local/
 
 # Local security assessments can contain IPs, credentials, and attack paths
 security/
+
+# UI debug helpers (Playwright-over-CDP)
+.debug/
+.chrome-debug/

@@ -86,3 +86,32 @@ Both `main.go` and `main_wails.go` declare the SSO scope list. They must stay in
 - **Build tags matter for tests.** Wails-only files are guarded by `//go:build wails`; CI runs `go test ./...` without the tag, so Wails-specific tests need `go test -tags wails ./...`.
 - **`Replace: true` on `IndustryPlanPatch` wipes the entire project's tasks/jobs/materials** in one transaction before inserting. There is no per-row DELETE endpoint as of now — removal is via replace-mode apply, or by setting `status="cancelled"` (which keeps the row).
 - **NDJSON-streaming handlers must serialize writes to `http.ResponseWriter`.** Concurrent `flusher.Flush()` calls on a shared writer corrupt `bufio` state and panic. See the `writeMu` mutex pattern in `industry_blueprint_scan.go`.
+
+## UI debug helpers (Playwright over CDP)
+
+To visually inspect the running app, drive Playwright against a persistent Chrome the user launches once with the DevTools debug port open. Session/login state stays warm across script runs.
+
+**One-time bootstrap (user):**
+
+```powershell
+# Chrome must be running with the debug port BEFORE any helper is invoked.
+# `--user-data-dir` keeps a dedicated profile so the debug session doesn't collide with regular Chrome.
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" `
+  --remote-debugging-port=9222 `
+  --user-data-dir=.chrome-debug `
+  http://localhost:13370
+```
+
+**Helpers (run from repo root):**
+
+- `node scripts/debug/shot.mjs [route] [outFile]` — full-page screenshot → `.debug/shot.png`
+- `node scripts/debug/shot-el.mjs <selector> [route] [outFile]` — element screenshot (CSS or `text=`/`role=` locator)
+- `node scripts/debug/measure.mjs <selector> [route] [outFile]` — bounding rects + key computed styles as JSON. Use to *measure* alignment/spacing instead of eyeballing.
+- `node scripts/debug/matrix.mjs [route] [widths]` — full-page shots at multiple viewport widths (default 1920,1440,1280). Resizes the real Chrome window while running.
+- `node scripts/debug/hover.mjs <trigger> [route] [outFile]` — hover an element and screenshot the tooltip. Detects `[role="tooltip"]` and `aria-describedby` targets in the DOM and reports their text on stderr. Native `title=` tooltips are Chrome OS UI, not paint layer — they won't appear in the screenshot, but their text is reported on stderr so you can still read it.
+
+Outputs land in `.debug/` (gitignored). Env overrides: `EF_URL` (default `http://localhost:13370`), `EF_CDP` (default `http://localhost:9222`), `EF_DEBUG_DIR` (default `.debug`).
+
+Route navigation is **conservative** — `gotoRoute` skips `page.goto()` whenever the current URL is already under the requested route (SPA state stays put; no reload, no login-redirect re-fire, no tab reset). Passing `/` therefore means "screenshot the current tab, whatever it is"; pass a deeper route (`/industry`, etc.) only when you actually want to navigate. If the browser is on `about:blank` or a non-app URL, goto still fires.
+
+Helper deps live in `scripts/debug/package.json` (`playwright-core` only, no bundled browser download — we always reuse the user's Chrome via CDP). The whole `scripts/` tree is already gitignored.
