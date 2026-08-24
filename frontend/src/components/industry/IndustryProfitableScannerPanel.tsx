@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "@/lib/i18n";
 import { scanProfitableBlueprints, getStations, getStructures } from "@/lib/api";
 import { useEsiFeeImport } from "@/lib/useEsiFeeImport";
@@ -25,11 +25,6 @@ import { getStructureRigs } from "@/lib/api";
 import type { StructureRig } from "@/lib/types";
 
 const SCANNER_PERSIST_KEY = "industry-scanner";
-// Display fallback for the period-days label when the backend omits the
-// field (e.g. rows produced before the period-stats feature landed and
-// replayed from sessionStorage). Kept in sync with the backend constant
-// profitableScanPeriodDays.
-const profitableScanPeriodDaysFallback = 30;
 const PARAMS_LS_KEY = "eve-settings:industry-scanner";
 // Keep transient scan results (rows + selection + sort + search) in
 // sessionStorage so the user doesn't lose them when they switch jobs tabs.
@@ -50,7 +45,8 @@ type SortKey =
   | "period_margin"
   | "optimal_build_cost"
   | "manufacturing_time"
-  | "unit_ask_price";
+  | "unit_ask_price"
+  | "flag_score";
 
 type SortDir = "asc" | "desc";
 
@@ -114,6 +110,10 @@ interface PersistedParams {
   minISKPerHour: number | null;
   minProfit: number | null;
   minMarginPct: number | null;
+  /** Buildability-flag gate. "all" shows every row; "hide_risk" drops the red
+   *  pills; "ok_only" also drops yellow. Rows with unknown flag stay visible
+   *  in "all" and "hide_risk" (no signal ≠ risk) and are hidden in "ok_only". */
+  flagFilter: "all" | "hide_risk" | "ok_only";
 }
 
 const DEFAULT_PARAMS: PersistedParams = {
@@ -134,6 +134,7 @@ const DEFAULT_PARAMS: PersistedParams = {
   minISKPerHour: null,
   minProfit: null,
   minMarginPct: null,
+  flagFilter: "all",
 };
 
 function loadPersistedParams(): PersistedParams {
@@ -153,6 +154,125 @@ function savePersistedParams(p: PersistedParams) {
   } catch {
     /* ignore */
   }
+}
+
+// Buildability flag heuristic. Mirrors the calcConfidence pattern in
+// ScanResultsTable.tsx: start at 100, subtract for each risk signal, and
+// map the final score into High/Medium/Low with a hover-hint listing the
+// specific reasons. All inputs come off the row — the market-share cap
+// (0.10) matches internal/api/industry_blueprint_scan.go
+// profitableScanMarketShare, and fillTimeDays is derived the same way the
+// engine derives sellable from producible.
+const INDUSTRY_MARKET_SHARE_CAP = 0.1;
+export interface IndustryFlag {
+  score: number;
+  label: "high" | "medium" | "low" | "unknown";
+  color: string;
+  reasons: string[];
+  fillTimeDays: number | null;
+  sellable30d: number | null;
+}
+export function calcIndustryFlag(row: ProfitableScanRow): IndustryFlag {
+  const totalUnits = row.total_quantity ?? row.runs * (row.output_qty_per_run ?? 1);
+  const daily = row.product_daily_volume ?? 0;
+  const askDepth = row.ask_depth_units ?? 0;
+  const askOrders = row.ask_orders_count ?? 0;
+  const unitAsk = row.unit_ask_price ?? 0;
+  const avg30d = row.regional_avg_price_30d ?? 0;
+
+  const share = daily * 30 * INDUSTRY_MARKET_SHARE_CAP;
+  const sellable30d = share > 0 ? Math.min(totalUnits, share) : null;
+  // "Days to move THIS batch at your realistic share." A run of 128 units
+  // against 3/30d of share = ~1280 days. The single most useful reality
+  // check for a scanner row and the primary driver of the flag score.
+  const fillTimeDays = daily > 0 && totalUnits > 0
+    ? totalUnits / (daily * INDUSTRY_MARKET_SHARE_CAP)
+    : null;
+
+  let score = 100;
+  const reasons: string[] = [];
+
+  if (fillTimeDays === null) {
+    if (avg30d <= 0) {
+      score -= 20;
+      reasons.push("no 30d history — flying blind on demand");
+    } else {
+      score -= 10;
+      reasons.push("no volume signal");
+    }
+  } else if (fillTimeDays > 365) {
+    score -= 40;
+    reasons.push(`fill time ~${Math.round(fillTimeDays)}d — batch would sit unsold for over a year`);
+  } else if (fillTimeDays > 90) {
+    score -= 30;
+    reasons.push(`fill time ~${Math.round(fillTimeDays)}d — heavy inventory drag`);
+  } else if (fillTimeDays > 30) {
+    score -= 15;
+    reasons.push(`fill time ~${Math.round(fillTimeDays)}d — slow mover`);
+  } else if (fillTimeDays > 14) {
+    score -= 5;
+    reasons.push(`fill time ~${Math.round(fillTimeDays)}d — moderate`);
+  }
+
+  if (daily > 0 && daily < 1) {
+    score -= 10;
+    reasons.push(`sub-daily churn (${daily.toFixed(2)}/day)`);
+  }
+
+  if (totalUnits > 0 && askDepth >= totalUnits * 5) {
+    score -= 15;
+    reasons.push(`ask depth ${askDepth.toLocaleString()} units — ${(askDepth / Math.max(1, totalUnits)).toFixed(1)}× your run`);
+  }
+  if (askOrders >= 20) {
+    score -= 10;
+    reasons.push(`crowded book — ${askOrders} sellers ahead of you`);
+  }
+
+  if (unitAsk > 0 && avg30d > 0 && unitAsk >= avg30d * 1.2) {
+    const ratio = unitAsk / avg30d;
+    score -= 15;
+    reasons.push(`ask ${ratio.toFixed(1)}× the 30d average — price won't hold`);
+  }
+
+  // Profitability guardrails. The market-side penalties above answer "can I
+  // sell what I build?" — but a row can still be pathological (Zealot BPC:
+  // profits fine at velocity, loses money per unit). These stop the pill
+  // from showing OK on a build that would burn ISK regardless of market fit.
+  if (row.profit < 0) {
+    score -= 40;
+    reasons.push(`build unprofitable — loss ${row.profit.toLocaleString(undefined, { maximumFractionDigits: 0 })} ISK per full BP`);
+  } else if (row.profit_percent >= 0 && row.profit_percent < 2) {
+    // Positive but thin — sits inside the noise of fees, price drift, and
+    // taxes. Not fatal, but shouldn't get a green pill on its own.
+    score -= 15;
+    reasons.push(`margin ${row.profit_percent.toFixed(1)}% — inside the noise floor`);
+  }
+  if (row.period_margin !== undefined && row.period_margin < 0) {
+    // 30d ROI negative means even the market-share-capped realistic view
+    // loses money — orthogonal to per-run profit and worth calling out
+    // separately (an item can be per-run positive but 30d negative if
+    // idle-capital drag on unsellable inventory outweighs realized profit).
+    score -= 25;
+    reasons.push(`30d ROI ${row.period_margin.toFixed(1)}% — market saturation eats the run`);
+  }
+
+  score = Math.max(0, Math.min(100, score));
+  let label: IndustryFlag["label"];
+  let color: string;
+  if (fillTimeDays === null && avg30d <= 0) {
+    label = "unknown";
+    color = "text-slate-300 border-slate-500/60 bg-slate-800/40";
+  } else if (score >= 75) {
+    label = "high";
+    color = "text-green-300 border-green-500/60 bg-green-900/20";
+  } else if (score >= 45) {
+    label = "medium";
+    color = "text-yellow-300 border-yellow-500/60 bg-yellow-900/20";
+  } else {
+    label = "low";
+    color = "text-red-300 border-red-500/60 bg-red-900/20";
+  }
+  return { score, label, color, reasons, fillTimeDays, sellable30d };
 }
 
 export interface ScannerAnalysisHandoff {
@@ -254,6 +374,7 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
     "period_margin",
     "optimal_build_cost",
     "manufacturing_time",
+    "flag_score",
   ];
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -683,6 +804,11 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
       if (params.minISKPerHour != null && r.isk_per_hour < params.minISKPerHour) return false;
       if (params.minProfit != null && r.profit < params.minProfit) return false;
       if (params.minMarginPct != null && r.profit_percent < params.minMarginPct) return false;
+      if (params.flagFilter !== "all") {
+        const label = calcIndustryFlag(r).label;
+        if (params.flagFilter === "hide_risk" && label === "low") return false;
+        if (params.flagFilter === "ok_only" && label !== "high") return false;
+      }
       if (q) {
         // Match against every human-readable field the row carries:
         // blueprint + product names cover the direct lookup ("ishtar"),
@@ -718,6 +844,21 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
       });
       return rows;
     }
+    if (sortKey === "flag_score") {
+      // Flag score is derived per-row from market/velocity/competition
+      // signals; not a backend field. Compute once per row here so the sort
+      // is O(n log n) with an O(n) precompute rather than recomputing in
+      // every comparison.
+      const scores = new Map<string, number>();
+      for (const r of rows) scores.set(rowKey(r), calcIndustryFlag(r).score);
+      rows.sort((a, b) => {
+        const av = scores.get(rowKey(a)) ?? 0;
+        const bv = scores.get(rowKey(b)) ?? 0;
+        if (av !== bv) return mul * (av - bv);
+        return b.isk_per_hour - a.isk_per_hour;
+      });
+      return rows;
+    }
     rows.sort((a, b) => {
       const av = a[sortKey];
       const bv = b[sortKey];
@@ -735,7 +876,7 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
       return mul * (aNum - bNum);
     });
     return rows;
-  }, [response, sortKey, sortDir, selectedIDs, params.minISKPerHour, params.minProfit, params.minMarginPct, params.showT1Rows, params.showT2Rows, params.showT3Rows, params.showReactionRows, params.ownedFilter, searchQuery]);
+  }, [response, sortKey, sortDir, selectedIDs, params.minISKPerHour, params.minProfit, params.minMarginPct, params.flagFilter, params.showT1Rows, params.showT2Rows, params.showT3Rows, params.showReactionRows, params.ownedFilter, searchQuery]);
 
   const handleExportCsv = useCallback(() => {
     // Export the CURRENTLY VISIBLE rows (sortedRows applies search + filters
@@ -845,14 +986,61 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
     URL.revokeObjectURL(url);
   }, [sortedRows]);
 
-  const toggleSelect = (key: string) => {
+  // Stable callback so React.memo'd ScannerRow can skip re-renders on
+  // selection changes. Empty deps — functional setState reads prev, so this
+  // never needs to close over selectedIDs.
+  const toggleSelect = useCallback((key: string) => {
     setSelectedIDs((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
       else next.add(key);
       return next;
     });
-  };
+  }, []);
+
+  // View-in-Analysis handler pulled out of the row body and stabilized here
+  // so the row prop only invalidates when the underlying prefs/stations
+  // change (which is rare during a scan) rather than on every parent render.
+  const handleView = useCallback((row: ProfitableScanRow) => {
+    if (!onViewInAnalysis) return;
+    const picked = allStations.find(
+      (s) => Number(s.id) === sharedPrefs.buildStationID,
+    );
+    const isT2Handoff = row.scan_mode === "t2_invention";
+    const inv = effectiveInventionParams(sharedPrefs.decryptor);
+    onViewInAnalysis({
+      productTypeID: row.product_type_id,
+      productName: row.product_name,
+      me: isT2Handoff ? inv.meBase : row.me,
+      te: isT2Handoff ? inv.teBase : row.te,
+      runs: row.runs,
+      systemName: sharedPrefs.buildSystem,
+      stationID: sharedPrefs.buildStationID,
+      stationIsStructure: Boolean(picked?.is_structure),
+      facilityTax: sharedPrefs.facilityTax,
+      structureBonus: sharedPrefs.structureBonus,
+      brokerFee: sharedPrefs.brokerFee,
+      salesTaxPercent: sharedPrefs.salesTaxPercent,
+      activityMode: isT2Handoff ? "invention" : "manufacturing",
+      ownBlueprint: true,
+      blueprintIsBPO: row.is_bpo,
+      autoAnalyze: true,
+      pricingSystem: params.pricingSystem,
+      pricingStationID: params.pricingStationID,
+    });
+  }, [
+    onViewInAnalysis,
+    allStations,
+    sharedPrefs.buildStationID,
+    sharedPrefs.buildSystem,
+    sharedPrefs.decryptor,
+    sharedPrefs.facilityTax,
+    sharedPrefs.structureBonus,
+    sharedPrefs.brokerFee,
+    sharedPrefs.salesTaxPercent,
+    params.pricingSystem,
+    params.pricingStationID,
+  ]);
 
   const toggleSelectAll = () => {
     if (selectedIDs.size === sortedRows.length && sortedRows.length > 0) {
@@ -1313,7 +1501,7 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
         defaultExpanded={true}
         persistKey={SCANNER_PERSIST_KEY + ":filters"}
       >
-        <SettingsGrid cols={3}>
+        <SettingsGrid cols={4}>
           <SettingsField label={t("industryScannerMinISKPerHourLabel")}>
             <NullableNumberInput
               value={params.minISKPerHour}
@@ -1331,6 +1519,17 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
               value={params.minMarginPct}
               onChange={(v) => updateParam("minMarginPct", v)}
               step={0.1}
+            />
+          </SettingsField>
+          <SettingsField label={t("industryScannerFlagFilterLabel")}>
+            <SettingsSelect
+              value={params.flagFilter}
+              onChange={(v) => updateParam("flagFilter", v as "all" | "hide_risk" | "ok_only")}
+              options={[
+                { value: "all", label: t("industryScannerFlagFilterAll") },
+                { value: "hide_risk", label: t("industryScannerFlagFilterHideRisk") },
+                { value: "ok_only", label: t("industryScannerFlagFilterOKOnly") },
+              ]}
             />
           </SettingsField>
         </SettingsGrid>
@@ -1564,6 +1763,7 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                     <SortableHeader sortKey="available_runs" align="right" label={t("industryScannerColRunsAvail")} active={sortKey} dir={sortDir} onClick={toggleSort} titleText={t("industryScannerColRunsAvailTooltip")} />
                     <SortableHeader sortKey="me" align="right" label={t("industryScannerColME")} active={sortKey} dir={sortDir} onClick={toggleSort} />
                     <SortableHeader sortKey="te" align="right" label={t("industryScannerColTE")} active={sortKey} dir={sortDir} onClick={toggleSort} />
+                    <SortableHeader sortKey="flag_score" align="center" label={t("industryScannerColFlag")} active={sortKey} dir={sortDir} onClick={toggleSort} titleText={t("industryScannerColFlagTooltip")} />
                     <SortableHeader
                       sortKey="unit_ask_price"
                       align="right"
@@ -1576,7 +1776,6 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                     <SortableHeader sortKey="isk_per_hour" align="right" label={t("industryScannerColISKHour")} active={sortKey} dir={sortDir} onClick={toggleSort} />
                     <SortableHeader sortKey="profit" align="right" label={t("industryScannerColProfit")} active={sortKey} dir={sortDir} onClick={toggleSort} />
                     <SortableHeader sortKey="profit_percent" align="right" label={t("industryScannerColMargin")} active={sortKey} dir={sortDir} onClick={toggleSort} />
-                    <SortableHeader sortKey="period_profit" align="right" label={t("industryScannerColPeriodProfit")} active={sortKey} dir={sortDir} onClick={toggleSort} titleText={t("industryScannerColPeriodProfitTooltip")} />
                     <SortableHeader sortKey="period_margin" align="right" label={t("industryScannerColPeriodMargin")} active={sortKey} dir={sortDir} onClick={toggleSort} titleText={t("industryScannerColPeriodMarginTooltip")} />
                     <SortableHeader sortKey="optimal_build_cost" align="right" label={t("industryScannerColCapital")} active={sortKey} dir={sortDir} onClick={toggleSort} />
                     <SortableHeader sortKey="manufacturing_time" align="right" label={t("industryScannerColTime")} active={sortKey} dir={sortDir} onClick={toggleSort} />
@@ -1586,364 +1785,15 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                 <tbody>
                   {sortedRows.map((row) => {
                     const k = rowKey(row);
-                    const checked = selectedIDs.has(k);
-                    const hours = row.manufacturing_time / 3600;
-                    const isT2 = row.scan_mode === "t2_invention";
-                    const isT3 = row.scan_mode === "t3_invention";
-                    const isInvention = isT2 || isT3;
-                    const capUnlimited = (row.attempts_cap ?? -1) < 0;
-                    const capLabel = capUnlimited
-                      ? t("industryScannerAttemptsCapUnlimited")
-                      : String(row.attempts_cap ?? 0);
-                    const inventionTooltip = isInvention
-                      ? `Invention: ${((row.invention_probability ?? 0) * 100).toFixed(1)}% × ${(row.expected_attempts ?? 0).toFixed(1)} attempts (cap ${capLabel})`
-                      : undefined;
-                    const isUnowned = row.owned === false;
-
-                    // Per-row profit-math breakdown for the Profit/Margin/ISK-h
-                    // tooltips. Native title attribute handles multi-line via \n
-                    // — plaintext keeps it drama-free and works everywhere.
-                    // Falls back gracefully when the extra fields aren't set
-                    // (older cached scan results).
-                    const totalUnits = row.total_quantity ?? row.runs * (row.output_qty_per_run ?? 1);
-                    const matCost = row.total_material_cost ?? Math.max(0, row.optimal_build_cost - (row.total_job_cost ?? 0) - (row.invention_cost ?? 0));
-                    const jobCost = row.total_job_cost ?? 0;
-                    const invCost = row.invention_cost ?? 0;
-                    const unitPrice = row.unit_sell_price ?? (totalUnits > 0 ? row.sell_revenue / totalUnits : 0);
-                    const unitAsk = row.unit_ask_price ?? 0;
-                    const unitBid = row.unit_bid_price ?? 0;
-                    const askDepth = row.ask_depth_units ?? 0;
-                    const bidDepth = row.bid_depth_units ?? 0;
-                    const askOrders = row.ask_orders_count ?? 0;
-                    const bidOrders = row.bid_orders_count ?? 0;
-                    const regionalAvg30d = row.regional_avg_price_30d ?? 0;
-                    // Shallow-book flag: the naive revenue math
-                    // (best sell order × qty) silently over-quotes when the
-                    // sell side has less depth than the batch. One rogue
-                    // seller listing 1 unit at 100M shows up here as
-                    // sell-order depth = 1 while the batch is 10.
-                    const shallowBook = askDepth > 0 && totalUnits > 0 && askDepth < totalUnits;
-                    // Moon-price flag: current best sell order is > 2× the
-                    // 30-day traded average. That's how "Small Hybrid Burst
-                    // Aerator II" was quoting +1B — a lone bait listing sat
-                    // 20× above the item's real market. When the historical
-                    // average is present, use it as ground truth.
-                    const moonPrice =
-                      unitAsk > 0 && regionalAvg30d > 0 && unitAsk > regionalAvg30d * 2;
-                    const profitTooltipLines: string[] = [];
-                    profitTooltipLines.push(`═ ${row.product_name || "Product"} ═`);
-                    profitTooltipLines.push(`Runs: ${row.runs} × ${row.output_qty_per_run ?? 1} = ${totalUnits.toLocaleString()} units`);
-                    profitTooltipLines.push("");
-                    // Raw sell / buy order price the analyzer saw in the
-                    // pricing region. Shown BEFORE the net-revenue math so a
-                    // moon-price sell order is obvious at a glance — if the
-                    // "sell price" number is wildly higher than the user's
-                    // expectation, the row's profit is being driven by an
-                    // outlier seller and not by the actual bulk market.
-                    // Sell / buy order side — EVE-native wording. Include
-                    // depth AND order count so "20 units across 4 sell
-                    // orders" vs "20 units in 1 sell order" reads at a
-                    // glance without opening the in-game market window.
-                    if (unitAsk > 0) {
-                      profitTooltipLines.push(`Sell price:     ${formatISK(unitAsk)}/unit`);
-                      if (askDepth > 0) {
-                        const unitsLabel = askDepth === 1 ? "1 unit" : `${askDepth.toLocaleString()} units`;
-                        const ordersLabel = askOrders === 1 ? "1 sell order" : `${askOrders.toLocaleString()} sell orders`;
-                        profitTooltipLines.push(`  (${unitsLabel} across ${ordersLabel})`);
-                        if (shallowBook) {
-                          profitTooltipLines.push(`  ⚠ Sell orders don't cover the batch — bulk revenue at this price is unrealistic`);
-                        }
-                      }
-                    } else {
-                      profitTooltipLines.push(`Sell price:     — (no sell orders)`);
-                    }
-                    if (unitBid > 0) {
-                      profitTooltipLines.push(`Buy price:      ${formatISK(unitBid)}/unit`);
-                      if (bidDepth > 0) {
-                        const unitsLabel = bidDepth === 1 ? "1 unit" : `${bidDepth.toLocaleString()} units`;
-                        const ordersLabel = bidOrders === 1 ? "1 buy order" : `${bidOrders.toLocaleString()} buy orders`;
-                        profitTooltipLines.push(`  (${unitsLabel} across ${ordersLabel})`);
-                      }
-                    } else {
-                      profitTooltipLines.push(`Buy price:      — (no buy orders)`);
-                    }
-                    // Region 30-day traded average — anti-moon-price ground
-                    // truth. Flag when the current sell price is >2× the
-                    // 30d avg (the "Small Hybrid Burst Aerator II" case).
-                    if (regionalAvg30d > 0) {
-                      profitTooltipLines.push(`Region 30d avg: ${formatISK(regionalAvg30d)}/unit`);
-                      if (moonPrice) {
-                        const ratio = unitAsk / regionalAvg30d;
-                        profitTooltipLines.push(`  ⚠ Current sell price is ${ratio.toFixed(1)}× the 30d traded average — likely a moon-price listing`);
-                      }
-                    }
-                    profitTooltipLines.push(`Sell revenue:   ${formatISK(row.sell_revenue)}`);
-                    if (unitPrice > 0) {
-                      profitTooltipLines.push(`  ${totalUnits.toLocaleString()} × ${formatISK(unitPrice)}/unit (after tax + broker fee)`);
-                    }
-                    profitTooltipLines.push("");
-                    profitTooltipLines.push(`Build cost:     ${formatISK(row.optimal_build_cost)}`);
-                    if (matCost > 0) profitTooltipLines.push(`  Materials:    ${formatISK(matCost)}`);
-                    if (jobCost > 0) profitTooltipLines.push(`  Job cost:     ${formatISK(jobCost)}`);
-                    if (invCost > 0) profitTooltipLines.push(`  (of which invention: ${formatISK(invCost)})`);
-                    profitTooltipLines.push("");
-                    profitTooltipLines.push(`Profit:         ${formatISK(row.profit)}`);
-                    profitTooltipLines.push(`ROI:            ${row.profit_percent.toFixed(1)}%`);
-                    if (row.manufacturing_time > 0) {
-                      const hoursDisp = row.manufacturing_time / 3600;
-                      profitTooltipLines.push(`Time:           ${hoursDisp.toFixed(1)}h`);
-                      profitTooltipLines.push(`ISK/hour:       ${formatISK(row.isk_per_hour)}`);
-                    }
-                    if (isInvention) {
-                      profitTooltipLines.push("");
-                      profitTooltipLines.push(`Invention: ${((row.invention_probability ?? 0) * 100).toFixed(1)}% × ${(row.expected_attempts ?? 0).toFixed(1)} attempts (cap ${capLabel})`);
-                      if (row.best_decryptor_key) {
-                        profitTooltipLines.push(`Best decryptor: ${row.best_decryptor_key}`);
-                      }
-                    }
-                    const profitTooltip = profitTooltipLines.join("\n");
                     return (
-                      <tr
+                      <ScannerRow
                         key={k}
-                        className={`border-t border-eve-border/30 hover:bg-eve-accent/5 ${
-                          checked ? "bg-eve-accent/10" : ""
-                        } ${isUnowned ? "opacity-60" : ""}`}
-                      >
-                        <td className="px-2 py-1">
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={() => toggleSelect(k)}
-                          />
-                        </td>
-                        <td className="px-2 py-1 font-medium text-eve-text" title={inventionTooltip}>
-                          {isInvention ? (
-                            <span>
-                              <span className="text-eve-dim">
-                                {row.invention_source_bp_name || row.blueprint_name}
-                              </span>
-                              <span className="text-eve-dim/60"> → </span>
-                              <span className="text-eve-text">
-                                {row.invention_output_bp_name || `${row.product_name} Blueprint`}
-                              </span>
-                            </span>
-                          ) : (
-                            row.blueprint_name
-                          )}
-                          {row.is_bpo ? (
-                            <span className="ml-1 text-[10px] text-emerald-300">[BPO]</span>
-                          ) : (
-                            <span className="ml-1 text-[10px] text-amber-300">[BPC]</span>
-                          )}
-                          {isUnowned && (
-                            <span className="ml-1 text-[10px] text-slate-400">
-                              {t("industryScannerUnownedBadge")}
-                            </span>
-                          )}
-                          {row.scan_mode === "reaction" && (
-                            <span className="ml-1 text-[10px] text-amber-300">
-                              [REACT]
-                            </span>
-                          )}
-                          {isInvention && (
-                            <span
-                              className={`ml-1 text-[10px] ${
-                                row.attempts_cap_exceeded
-                                  ? "text-amber-400"
-                                  : isT3
-                                    ? "text-sky-300"
-                                    : "text-violet-300"
-                              }`}
-                              title={
-                                row.attempts_cap_exceeded
-                                  ? t("industryScannerAttemptsCapExceeded")
-                                  : undefined
-                              }
-                            >
-                              [{isT3 ? "T3" : "T2"} INV{row.attempts_cap_exceeded ? "!" : ""}]
-                            </span>
-                          )}
-                          {isInvention && row.best_decryptor_key && (() => {
-                            const dec = DECRYPTORS[row.best_decryptor_key as keyof typeof DECRYPTORS];
-                            const label = dec ? dec.name : row.best_decryptor_key;
-                            const isNone = row.best_decryptor_key === "none";
-                            return (
-                              <span
-                                className={`ml-1 text-[10px] ${
-                                  isNone ? "text-slate-400" : "text-sky-300"
-                                }`}
-                                title={t("industryScannerBestDecryptorTooltip").replace(
-                                  "{name}",
-                                  label,
-                                )}
-                              >
-                                [{isNone ? t("industryScannerBestDecryptorNone") : label}]
-                              </span>
-                            );
-                          })()}
-                        </td>
-                        <td className="px-2 py-1 text-eve-dim">{row.product_name}</td>
-                        <td className="px-2 py-1 text-right font-mono">{row.owned_quantity}</td>
-                        <td className="px-2 py-1 text-right font-mono text-eve-dim">
-                          {/* BPOs are unlimited by definition; invention and unowned
-                              rows have no "stock" concept — dash out those cells. */}
-                          {row.is_bpo
-                            ? "∞"
-                            : row.owned === false
-                              ? "—"
-                              : isInvention
-                                ? "—"
-                                : row.available_runs.toLocaleString()}
-                        </td>
-                        <td className="px-2 py-1 text-right font-mono">{row.me}</td>
-                        <td className="px-2 py-1 text-right font-mono">{row.te}</td>
-                        <td
-                          className={`px-2 py-1 text-right font-mono cursor-help ${(shallowBook || moonPrice) ? "text-amber-300" : "text-eve-dim"}`}
-                          title={
-                            unitAsk > 0
-                              ? t("industryScannerUnitAskCellTooltip")
-                                  .replace("{ask}", formatISK(unitAsk))
-                                  .replace("{bid}", unitBid > 0 ? formatISK(unitBid) : "—")
-                                  .replace("{askDepth}", askDepth.toLocaleString())
-                                  .replace("{bidDepth}", bidDepth.toLocaleString())
-                                  .replace("{askOrders}", askOrders.toLocaleString())
-                                  .replace("{bidOrders}", bidOrders.toLocaleString())
-                                  .replace("{avg30d}", regionalAvg30d > 0 ? formatISK(regionalAvg30d) : "—")
-                                  .replace("{batch}", totalUnits.toLocaleString())
-                                + (shallowBook ? "\n\n" + t("industryScannerUnitAskShallowBookWarning") : "")
-                                + (moonPrice ? "\n\n" + t("industryScannerUnitAskMoonPriceWarning").replace("{ratio}", (unitAsk / regionalAvg30d).toFixed(1)) : "")
-                              : t("industryScannerUnitAskCellNoData")
-                          }
-                        >
-                          {unitAsk > 0 ? (
-                            <>
-                              {(shallowBook || moonPrice) && <span className="mr-1" aria-hidden>⚠</span>}
-                              {formatISK(unitAsk)}
-                            </>
-                          ) : (
-                            "—"
-                          )}
-                        </td>
-                        <td
-                          className={`px-2 py-1 text-right font-mono cursor-help ${
-                            row.isk_per_hour >= 0 ? "text-emerald-300" : "text-red-300"
-                          }`}
-                          title={profitTooltip}
-                        >
-                          {formatISK(row.isk_per_hour)}
-                        </td>
-                        <td
-                          className={`px-2 py-1 text-right font-mono cursor-help ${
-                            row.profit >= 0 ? "text-emerald-300" : "text-red-300"
-                          }`}
-                          title={profitTooltip}
-                        >
-                          {formatISK(row.profit)}
-                        </td>
-                        <td
-                          className={`px-2 py-1 text-right font-mono cursor-help ${
-                            row.profit_percent >= 0 ? "text-eve-text" : "text-red-300"
-                          }`}
-                          title={profitTooltip}
-                        >
-                          {row.profit_percent.toFixed(1)}%
-                        </td>
-                        <td
-                          className={`px-2 py-1 text-right font-mono ${
-                            row.period_profit === undefined
-                              ? "text-eve-dim"
-                              : row.period_profit >= 0
-                                ? "text-emerald-300"
-                                : "text-red-300"
-                          }`}
-                          title={
-                            row.product_daily_volume !== undefined
-                              ? t("industryScannerPeriodProfitCellTooltip")
-                                  .replace("{days}", String(row.period_days ?? profitableScanPeriodDaysFallback))
-                                  .replace("{volume}", String(row.product_daily_volume))
-                              : undefined
-                          }
-                        >
-                          {row.period_profit === undefined ? "—" : formatISK(row.period_profit)}
-                        </td>
-                        <td
-                          className={`px-2 py-1 text-right font-mono ${
-                            row.period_margin === undefined
-                              ? "text-eve-dim"
-                              : row.period_margin >= 0
-                                ? "text-eve-text"
-                                : "text-red-300"
-                          }`}
-                        >
-                          {row.period_margin === undefined ? "—" : `${row.period_margin.toFixed(1)}%`}
-                        </td>
-                        <td className="px-2 py-1 text-right font-mono cursor-help" title={profitTooltip}>
-                          {formatISK(row.optimal_build_cost)}
-                        </td>
-                        <td className="px-2 py-1 text-right font-mono text-eve-dim">
-                          {hours >= 1 ? `${hours.toFixed(1)}h` : `${Math.round(row.manufacturing_time / 60)}m`}
-                        </td>
-                        <td className="px-1 py-1 text-right">
-                          {onViewInAnalysis && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                // The analysis tab uses one station ID for
-                                // both cost index AND pricing. Hand off the
-                                // BUILD station so structure ME bonus carries
-                                // through; user can switch pricing-side inside
-                                // the analysis tab if they want hub prices.
-                                const picked = allStations.find(
-                                  (s) => Number(s.id) === sharedPrefs.buildStationID,
-                                );
-                                const isT2Handoff = row.scan_mode === "t2_invention";
-                                const inv = effectiveInventionParams(sharedPrefs.decryptor);
-                                // Decryptor + fees are already in shared
-                                // prefs, so the handoff no longer needs to
-                                // thread invention-derived numbers through —
-                                // Analyze re-derives them from the same
-                                // shared decryptor selection.
-                                onViewInAnalysis({
-                                  productTypeID: row.product_type_id,
-                                  productName: row.product_name,
-                                  // For T2 rows the ME/TE that drive analysis
-                                  // are the *invented T2 BPC's*, not the T1
-                                  // source. Pass the decryptor-adjusted values.
-                                  me: isT2Handoff ? inv.meBase : row.me,
-                                  te: isT2Handoff ? inv.teBase : row.te,
-                                  runs: row.runs,
-                                  systemName: sharedPrefs.buildSystem,
-                                  stationID: sharedPrefs.buildStationID,
-                                  stationIsStructure: Boolean(picked?.is_structure),
-                                  facilityTax: sharedPrefs.facilityTax,
-                                  structureBonus: sharedPrefs.structureBonus,
-                                  brokerFee: sharedPrefs.brokerFee,
-                                  salesTaxPercent: sharedPrefs.salesTaxPercent,
-                                  activityMode: isT2Handoff ? "invention" : "manufacturing",
-                                  ownBlueprint: true,
-                                  blueprintIsBPO: row.is_bpo,
-                                  autoAnalyze: true,
-                                  // Pass the scanner's pricing region + station
-                                  // so Analyze quotes sell prices from the same
-                                  // hub the scanner used. Otherwise scanner's
-                                  // Jita default vs Analyze's build-region
-                                  // default silently diverge and the two panels
-                                  // show wildly different profit for the same
-                                  // row.
-                                  pricingSystem: params.pricingSystem,
-                                  pricingStationID: params.pricingStationID,
-                                });
-                              }}
-                              title={t("industryScannerViewInAnalysis")}
-                              aria-label={t("industryScannerViewInAnalysis")}
-                              className="px-1.5 py-0.5 text-[11px] rounded-sm border border-eve-border/60 text-eve-dim
-                                         hover:text-eve-accent hover:border-eve-accent transition-colors"
-                            >
-                              ↗
-                            </button>
-                          )}
-                        </td>
-                      </tr>
+                        row={row}
+                        k={k}
+                        checked={selectedIDs.has(k)}
+                        onToggle={toggleSelect}
+                        onView={onViewInAnalysis ? handleView : undefined}
+                      />
                     );
                   })}
                 </tbody>
@@ -2036,10 +1886,345 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
   );
 }
 
+/**
+ * Memoized row for the scanner table.
+ *
+ * Reason for extracting: selection state (`selectedIDs`) is stored on the
+ * parent, and toggling one row invalidates `sortedRows`, which used to force
+ * React to reconcile all ~1500 rows every click. Each row's `title` string
+ * is a ~30-line concat so the wasted work was very noticeable (0.5–0.75s
+ * of lag on select).
+ *
+ * With React.memo + stable callbacks (`onToggle`, `onView` from the parent),
+ * only the row whose `checked` prop actually flipped re-renders; the other
+ * 1499 return the previous element. Row derivation (profitTooltip, flag,
+ * unit prices, etc.) moves into the component body so it only runs on real
+ * row renders, not on every parent render.
+ */
+interface ScannerRowProps {
+  row: ProfitableScanRow;
+  /** Composite key (blueprint id + BPO/BPC + scan mode + product id). Passed
+   *  in from the parent so the toggle handler can be a single stable
+   *  useCallback rather than one closure per row. */
+  k: string;
+  checked: boolean;
+  onToggle: (k: string) => void;
+  /** Undefined when the parent doesn't expose analysis handoff — the action
+   *  button is then not rendered. When defined, the parent-side useCallback
+   *  captures allStations, sharedPrefs, and pricing params so this row only
+   *  needs to invoke it with the row itself. */
+  onView: ((row: ProfitableScanRow) => void) | undefined;
+}
+
+const ScannerRow = memo(function ScannerRow({ row, k, checked, onToggle, onView }: ScannerRowProps) {
+  const { t } = useI18n();
+
+  const hours = row.manufacturing_time / 3600;
+  const isT2 = row.scan_mode === "t2_invention";
+  const isT3 = row.scan_mode === "t3_invention";
+  const isInvention = isT2 || isT3;
+  const capUnlimited = (row.attempts_cap ?? -1) < 0;
+  const capLabel = capUnlimited
+    ? t("industryScannerAttemptsCapUnlimited")
+    : String(row.attempts_cap ?? 0);
+  const inventionTooltip = isInvention
+    ? `Invention: ${((row.invention_probability ?? 0) * 100).toFixed(1)}% × ${(row.expected_attempts ?? 0).toFixed(1)} attempts (cap ${capLabel})`
+    : undefined;
+  const isUnowned = row.owned === false;
+
+  const totalUnits = row.total_quantity ?? row.runs * (row.output_qty_per_run ?? 1);
+  const matCost = row.total_material_cost ?? Math.max(0, row.optimal_build_cost - (row.total_job_cost ?? 0) - (row.invention_cost ?? 0));
+  const jobCost = row.total_job_cost ?? 0;
+  const invCost = row.invention_cost ?? 0;
+  const unitPrice = row.unit_sell_price ?? (totalUnits > 0 ? row.sell_revenue / totalUnits : 0);
+  const unitAsk = row.unit_ask_price ?? 0;
+  const unitBid = row.unit_bid_price ?? 0;
+  const askDepth = row.ask_depth_units ?? 0;
+  const bidDepth = row.bid_depth_units ?? 0;
+  const askOrders = row.ask_orders_count ?? 0;
+  const bidOrders = row.bid_orders_count ?? 0;
+  const regionalAvg30d = row.regional_avg_price_30d ?? 0;
+  const shallowBook = askDepth > 0 && totalUnits > 0 && askDepth < totalUnits;
+  const moonPrice = unitAsk > 0 && regionalAvg30d > 0 && unitAsk > regionalAvg30d * 2;
+
+  const profitTooltipLines: string[] = [];
+  profitTooltipLines.push(`═ ${row.product_name || "Product"} ═`);
+  profitTooltipLines.push(`Runs: ${row.runs} × ${row.output_qty_per_run ?? 1} = ${totalUnits.toLocaleString()} units`);
+  profitTooltipLines.push("");
+  if (unitAsk > 0) {
+    profitTooltipLines.push(`Sell price:     ${formatISK(unitAsk)}/unit`);
+    if (askDepth > 0) {
+      const unitsLabel = askDepth === 1 ? "1 unit" : `${askDepth.toLocaleString()} units`;
+      const ordersLabel = askOrders === 1 ? "1 sell order" : `${askOrders.toLocaleString()} sell orders`;
+      profitTooltipLines.push(`  (${unitsLabel} across ${ordersLabel})`);
+      if (shallowBook) {
+        profitTooltipLines.push(`  ⚠ Sell orders don't cover the batch — bulk revenue at this price is unrealistic`);
+      }
+    }
+  } else {
+    profitTooltipLines.push(`Sell price:     — (no sell orders)`);
+  }
+  if (unitBid > 0) {
+    profitTooltipLines.push(`Buy price:      ${formatISK(unitBid)}/unit`);
+    if (bidDepth > 0) {
+      const unitsLabel = bidDepth === 1 ? "1 unit" : `${bidDepth.toLocaleString()} units`;
+      const ordersLabel = bidOrders === 1 ? "1 buy order" : `${bidOrders.toLocaleString()} buy orders`;
+      profitTooltipLines.push(`  (${unitsLabel} across ${ordersLabel})`);
+    }
+  } else {
+    profitTooltipLines.push(`Buy price:      — (no buy orders)`);
+  }
+  if (regionalAvg30d > 0) {
+    profitTooltipLines.push(`Region 30d avg: ${formatISK(regionalAvg30d)}/unit`);
+    if (moonPrice) {
+      const ratio = unitAsk / regionalAvg30d;
+      profitTooltipLines.push(`  ⚠ Current sell price is ${ratio.toFixed(1)}× the 30d traded average — likely a moon-price listing`);
+    }
+  }
+  profitTooltipLines.push(`Sell revenue:   ${formatISK(row.sell_revenue)}`);
+  if (unitPrice > 0) {
+    profitTooltipLines.push(`  ${totalUnits.toLocaleString()} × ${formatISK(unitPrice)}/unit (after tax + broker fee)`);
+  }
+  profitTooltipLines.push("");
+  profitTooltipLines.push(`Build cost:     ${formatISK(row.optimal_build_cost)}`);
+  if (matCost > 0) profitTooltipLines.push(`  Materials:    ${formatISK(matCost)}`);
+  if (jobCost > 0) profitTooltipLines.push(`  Job cost:     ${formatISK(jobCost)}`);
+  if (invCost > 0) profitTooltipLines.push(`  (of which invention: ${formatISK(invCost)})`);
+  profitTooltipLines.push("");
+  profitTooltipLines.push(`Profit:         ${formatISK(row.profit)}`);
+  profitTooltipLines.push(`ROI:            ${row.profit_percent.toFixed(1)}%`);
+  if (row.manufacturing_time > 0) {
+    const hoursDisp = row.manufacturing_time / 3600;
+    profitTooltipLines.push(`Time:           ${hoursDisp.toFixed(1)}h`);
+    profitTooltipLines.push(`ISK/hour:       ${formatISK(row.isk_per_hour)}`);
+  }
+  if (isInvention) {
+    profitTooltipLines.push("");
+    profitTooltipLines.push(`Invention: ${((row.invention_probability ?? 0) * 100).toFixed(1)}% × ${(row.expected_attempts ?? 0).toFixed(1)} attempts (cap ${capLabel})`);
+    if (row.best_decryptor_key) {
+      profitTooltipLines.push(`Best decryptor: ${row.best_decryptor_key}`);
+    }
+  }
+  const flag = calcIndustryFlag(row);
+  if (row.period_profit !== undefined) {
+    profitTooltipLines.push("");
+    const sellablePart = flag.sellable30d != null
+      ? `${Math.floor(flag.sellable30d).toLocaleString()} / ${totalUnits.toLocaleString()} units at your 10% market share`
+      : "no 30d volume signal";
+    profitTooltipLines.push(`Realistic 30d:  ${formatISK(row.period_profit)}  (${sellablePart})`);
+    if (flag.fillTimeDays != null && Number.isFinite(flag.fillTimeDays)) {
+      profitTooltipLines.push(`  ~${Math.round(flag.fillTimeDays)} days to sell this batch`);
+    }
+  }
+  const profitTooltip = profitTooltipLines.join("\n");
+
+  const flagLabelText =
+    flag.label === "high" ? "OK" :
+    flag.label === "medium" ? "Watch" :
+    flag.label === "low" ? "Risk" : "—";
+  const flagHint = flag.reasons.length > 0
+    ? `${flagLabelText} · Score ${flag.score}/100\n\n${flag.reasons.map((r) => `• ${r}`).join("\n")}`
+    : `${flagLabelText} · Score ${flag.score}/100\n\nNo risk factors detected.`;
+
+  return (
+    <tr
+      className={`border-t border-eve-border/30 hover:bg-eve-accent/5 ${checked ? "bg-eve-accent/10" : ""} ${isUnowned ? "opacity-60" : ""}`}
+    >
+      <td className="px-2 py-1">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={() => onToggle(k)}
+        />
+      </td>
+      <td className="px-2 py-1 font-medium text-eve-text" title={inventionTooltip}>
+        {isInvention ? (
+          <span>
+            <span className="text-eve-dim">
+              {row.invention_source_bp_name || row.blueprint_name}
+            </span>
+            <span className="text-eve-dim/60"> → </span>
+            <span className="text-eve-text">
+              {row.invention_output_bp_name || `${row.product_name} Blueprint`}
+            </span>
+          </span>
+        ) : (
+          row.blueprint_name
+        )}
+        {row.is_bpo ? (
+          <span className="ml-1 text-[10px] text-emerald-300">[BPO]</span>
+        ) : (
+          <span className="ml-1 text-[10px] text-amber-300">[BPC]</span>
+        )}
+        {isUnowned && (
+          <span className="ml-1 text-[10px] text-slate-400">
+            {t("industryScannerUnownedBadge")}
+          </span>
+        )}
+        {row.scan_mode === "reaction" && (
+          <span className="ml-1 text-[10px] text-amber-300">
+            [REACT]
+          </span>
+        )}
+        {isInvention && (
+          <span
+            className={`ml-1 text-[10px] ${
+              row.attempts_cap_exceeded
+                ? "text-amber-400"
+                : isT3
+                  ? "text-sky-300"
+                  : "text-violet-300"
+            }`}
+            title={row.attempts_cap_exceeded ? t("industryScannerAttemptsCapExceeded") : undefined}
+          >
+            [{isT3 ? "T3" : "T2"} INV{row.attempts_cap_exceeded ? "!" : ""}]
+          </span>
+        )}
+        {isInvention && row.best_decryptor_key && (() => {
+          const dec = DECRYPTORS[row.best_decryptor_key as keyof typeof DECRYPTORS];
+          const label = dec ? dec.name : row.best_decryptor_key;
+          const isNone = row.best_decryptor_key === "none";
+          const fmtSigned = (n: number) => (n > 0 ? `+${n}` : String(n));
+          const decryptorTip = isNone
+            ? t("industryScannerDecryptorTooltipNone")
+            : dec
+              ? t("industryScannerDecryptorTooltipStats")
+                  .replace("{name}", dec.name)
+                  .replace("{prob}", `${dec.probMult.toFixed(2)}×`)
+                  .replace("{me}", fmtSigned(dec.meDelta))
+                  .replace("{te}", fmtSigned(dec.teDelta))
+                  .replace("{runs}", fmtSigned(dec.outputRunsBonus))
+              : t("industryScannerBestDecryptorTooltip").replace("{name}", label);
+          return (
+            <span
+              className={`ml-1 text-[10px] cursor-help ${isNone ? "text-slate-400" : "text-sky-300"}`}
+              title={decryptorTip}
+            >
+              [{isNone ? t("industryScannerBestDecryptorNone") : label}]
+            </span>
+          );
+        })()}
+      </td>
+      <td className="px-2 py-1 text-eve-dim">{row.product_name}</td>
+      <td className="px-2 py-1 text-right font-mono">{row.owned_quantity}</td>
+      <td className="px-2 py-1 text-right font-mono text-eve-dim">
+        {row.is_bpo
+          ? "∞"
+          : row.owned === false
+            ? "—"
+            : isInvention
+              ? "—"
+              : row.available_runs.toLocaleString()}
+      </td>
+      <td className="px-2 py-1 text-right font-mono">{row.me}</td>
+      <td className="px-2 py-1 text-right font-mono">{row.te}</td>
+      <td className="px-2 py-1 text-center">
+        <span
+          className={`px-1.5 py-0.5 rounded-sm border text-[10px] font-bold cursor-help ${flag.color}`}
+          title={flagHint}
+        >
+          {flagLabelText}
+        </span>
+      </td>
+      <td
+        className={`px-2 py-1 text-right font-mono cursor-help ${(shallowBook || moonPrice) ? "text-amber-300" : "text-eve-dim"}`}
+        title={
+          unitAsk > 0
+            ? t("industryScannerUnitAskCellTooltip")
+                .replace("{ask}", formatISK(unitAsk))
+                .replace("{bid}", unitBid > 0 ? formatISK(unitBid) : "—")
+                .replace("{askDepth}", askDepth.toLocaleString())
+                .replace("{bidDepth}", bidDepth.toLocaleString())
+                .replace("{askOrders}", askOrders.toLocaleString())
+                .replace("{bidOrders}", bidOrders.toLocaleString())
+                .replace("{avg30d}", regionalAvg30d > 0 ? formatISK(regionalAvg30d) : "—")
+                .replace("{batch}", totalUnits.toLocaleString())
+                .replace("{daily}", (row.product_daily_volume ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 }))
+                .replace("{vol30d}", ((row.product_daily_volume ?? 0) * 30).toLocaleString(undefined, { maximumFractionDigits: 0 }))
+                .replace("{share}", flag.sellable30d != null ? Math.floor(flag.sellable30d).toLocaleString() : "—")
+                .replace("{fillDays}", flag.fillTimeDays != null && Number.isFinite(flag.fillTimeDays) ? String(Math.round(flag.fillTimeDays)) : "—")
+              + (shallowBook ? "\n\n" + t("industryScannerUnitAskShallowBookWarning") : "")
+              + (moonPrice ? "\n\n" + t("industryScannerUnitAskMoonPriceWarning").replace("{ratio}", (unitAsk / regionalAvg30d).toFixed(1)) : "")
+            : t("industryScannerUnitAskCellNoData")
+        }
+      >
+        {unitAsk > 0 ? (
+          <>
+            {(shallowBook || moonPrice) && <span className="mr-1" aria-hidden>⚠</span>}
+            {formatISK(unitAsk)}
+          </>
+        ) : (
+          "—"
+        )}
+      </td>
+      <td
+        className={`px-2 py-1 text-right font-mono cursor-help ${row.isk_per_hour >= 0 ? "text-emerald-300" : "text-red-300"}`}
+        title={profitTooltip}
+      >
+        {formatISK(row.isk_per_hour)}
+      </td>
+      <td
+        className={`px-2 py-1 text-right font-mono cursor-help ${row.profit >= 0 ? "text-emerald-300" : "text-red-300"}`}
+        title={profitTooltip}
+      >
+        {formatISK(row.profit)}
+      </td>
+      <td
+        className={`px-2 py-1 text-right font-mono cursor-help ${row.profit_percent >= 0 ? "text-eve-text" : "text-red-300"}`}
+        title={profitTooltip}
+      >
+        {row.profit_percent.toFixed(1)}%
+      </td>
+      <td
+        className={`px-2 py-1 text-right font-mono ${
+          row.period_margin === undefined
+            ? "text-eve-dim"
+            : row.period_margin >= 0
+              ? "text-eve-text cursor-help"
+              : "text-red-300 cursor-help"
+        }`}
+        title={
+          row.period_margin === undefined || row.product_daily_volume === undefined
+            ? undefined
+            : t("industryScannerPeriodMarginCellTooltip")
+                .replace("{roi}", row.period_margin.toFixed(1))
+                .replace("{sellable}", flag.sellable30d != null ? Math.floor(flag.sellable30d).toLocaleString() : "—")
+                .replace("{share}", String(Math.round(INDUSTRY_MARKET_SHARE_CAP * 100)))
+                .replace("{vol30d}", ((row.product_daily_volume ?? 0) * 30).toLocaleString())
+                .replace("{producible}", totalUnits.toLocaleString())
+                .replace("{fillDays}", flag.fillTimeDays != null && Number.isFinite(flag.fillTimeDays) ? String(Math.round(flag.fillTimeDays)) : "—")
+        }
+      >
+        {row.period_margin === undefined ? "—" : `${row.period_margin.toFixed(1)}%`}
+      </td>
+      <td className="px-2 py-1 text-right font-mono cursor-help" title={profitTooltip}>
+        {formatISK(row.optimal_build_cost)}
+      </td>
+      <td className="px-2 py-1 text-right font-mono text-eve-dim">
+        {hours >= 1 ? `${hours.toFixed(1)}h` : `${Math.round(row.manufacturing_time / 60)}m`}
+      </td>
+      <td className="px-1 py-1 text-right">
+        {onView && (
+          <button
+            type="button"
+            onClick={() => onView(row)}
+            title={t("industryScannerViewInAnalysis")}
+            aria-label={t("industryScannerViewInAnalysis")}
+            className="px-1.5 py-0.5 text-[11px] rounded-sm border border-eve-border/60 text-eve-dim
+                       hover:text-eve-accent hover:border-eve-accent transition-colors"
+          >
+            ↗
+          </button>
+        )}
+      </td>
+    </tr>
+  );
+});
+
 interface SortableHeaderProps {
   sortKey: SortKey;
   label: string;
-  align: "left" | "right";
+  align: "left" | "right" | "center";
   active: SortKey;
   dir: SortDir;
   onClick: (key: SortKey) => void;
@@ -2164,14 +2349,15 @@ function ToggleChip({ active, onClick, label, title }: ToggleChipProps) {
 function SortableHeader({ sortKey, label, align, active, dir, onClick, titleText }: SortableHeaderProps) {
   const isActive = active === sortKey;
   const arrow = isActive ? (dir === "desc" ? " ▼" : " ▲") : "";
+  const thAlign = align === "right" ? "text-right" : align === "center" ? "text-center" : "text-left";
+  const buttonAlign =
+    align === "right" ? "justify-end w-full" : align === "center" ? "justify-center w-full" : "";
   return (
-    <th className={`px-2 py-1.5 ${align === "right" ? "text-right" : "text-left"}`}>
+    <th className={`px-2 py-1.5 ${thAlign}`}>
       <button
         type="button"
         onClick={() => onClick(sortKey)}
-        className={`inline-flex items-center gap-1 ${
-          align === "right" ? "justify-end w-full" : ""
-        } hover:text-eve-text transition-colors ${isActive ? "text-eve-accent" : ""}`}
+        className={`inline-flex items-center gap-1 ${buttonAlign} hover:text-eve-text transition-colors ${isActive ? "text-eve-accent" : ""}`}
         title={titleText ?? "Click to sort"}
       >
         {label}
