@@ -114,7 +114,7 @@ export function ArbitrageModal({ arb, onClose }: { arb: ArbitragePath; onClose: 
                 {arb.type === "spread" ? (
                   <>
                     <div className="flex justify-between">
-                      <span className="text-eve-dim">Buy order + broker</span>
+                      <span className="text-eve-dim">{t("plexArbBuyOrderBroker")}</span>
                       <span className="font-mono text-eve-text">{formatISK(arb.cost_isk)}</span>
                     </div>
                   </>
@@ -144,7 +144,7 @@ export function ArbitrageModal({ arb, onClose }: { arb: ArbitragePath; onClose: 
               <div className="text-[10px] text-eve-success uppercase tracking-wider font-medium mb-2">{t("plexRevenue")}</div>
               <div className="space-y-1.5 text-xs">
                 <div className="flex justify-between">
-                  <span className="text-eve-dim">Sell price (Jita)</span>
+                  <span className="text-eve-dim">{t("plexArbSellPriceJita")}</span>
                   <span className="font-mono text-eve-text">{formatISK(arb.revenue_gross)}</span>
                 </div>
                 <div className="flex justify-between">

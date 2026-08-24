@@ -7,6 +7,7 @@ import type {
 } from "@/lib/types";
 import { Modal } from "./Modal";
 import { useGlobalToast } from "./Toast";
+import { useI18n } from "@/lib/i18n";
 
 interface ExecutionRevalidationReportModalProps {
   open: boolean;
@@ -66,6 +67,7 @@ export function ExecutionRevalidationReportModal({
   report,
   onClose,
 }: ExecutionRevalidationReportModalProps) {
+  const { t } = useI18n();
   const { addToast } = useGlobalToast();
 
   const copyReport = useCallback(async () => {
@@ -191,8 +193,8 @@ export function ExecutionRevalidationReportModal({
                 <th className="text-left px-2 py-2">Action</th>
                 <th className="text-left px-2 py-2">Item</th>
                 <th className="text-right px-2 py-2">Qty</th>
-                <th className="text-right px-2 py-2">Buy scan -&gt; quote</th>
-                <th className="text-right px-2 py-2">Sell scan -&gt; quote</th>
+                <th className="text-right px-2 py-2">{t("execRevalidationBuyScanQuote")}</th>
+                <th className="text-right px-2 py-2">{t("execRevalidationSellScanQuote")}</th>
                 <th className="text-right px-2 py-2">Old profit</th>
                 <th className="text-right px-2 py-2">Now profit</th>
                 <th className="text-right px-2 py-2">Delta</th>

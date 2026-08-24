@@ -160,7 +160,7 @@ export function TaxProfileEditor({
           title={isLoggedIn ? "Auto-fill from Accounting and Broker Relations skill levels" : "Login via ESI to use skill sync"}
           className="px-2.5 py-1 rounded-sm border border-eve-accent/40 bg-eve-accent/10 text-[11px] font-semibold uppercase tracking-wider text-eve-accent hover:bg-eve-accent/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
-          {loading ? "Syncing..." : "Sync ESI skills"}
+          {loading ? "Syncing…" : "Sync ESI skills"}
         </button>
       </div>
 
@@ -185,7 +185,7 @@ export function TaxProfileEditor({
 
         {!tax.split_trade_fees ? (
           <>
-            <TaxProfileField label={compact ? "Broker %" : t("brokerFee")} compact={compact}>
+            <TaxProfileField label={compact ? "Broker fee %" : t("brokerFee")} compact={compact}>
               <SettingsNumberInput
                 value={tax.broker_fee_percent}
                 onChange={(v) => update({ broker_fee_percent: clampPercent(v, 10) })}

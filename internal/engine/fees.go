@@ -1,5 +1,29 @@
 package engine
 
+// MinBrokerFeeISK is the per-order minimum broker fee CCP enforces on both
+// sides of the market. Applied independent of skill, standings, or
+// structure: even a 0.01% effective broker rate on a 100 ISK order still
+// costs 100 ISK to list. Matters most for PI raw materials (P0/P1), ammo,
+// mining crystals, and any low-value flip. Bulk trades > ~1M ISK/order
+// clear the floor easily and are unaffected. Audit P2.6.
+const MinBrokerFeeISK = 100.0
+
+// BrokerFeeForOrder returns the broker fee CCP charges for a single order
+// at the given notional value and effective broker rate. Applies the
+// 100 ISK minimum floor. Returns 0 when orderValue is 0 or brokerPct is 0
+// (a rate of exactly 0% skips the floor — matches instant-buy market
+// takers who pay no broker fee at all).
+func BrokerFeeForOrder(orderValue, brokerPct float64) float64 {
+	if orderValue <= 0 || brokerPct <= 0 {
+		return 0
+	}
+	raw := orderValue * brokerPct / 100.0
+	if raw < MinBrokerFeeISK {
+		return MinBrokerFeeISK
+	}
+	return raw
+}
+
 // tradeFeeInputs carries legacy + split fee fields for profitability calculations.
 // Legacy mode (SplitTradeFees=false):
 // - Buy side: broker only

@@ -474,6 +474,14 @@ type profitableScanRequest struct {
 	StructureBonus   float64 `json:"structure_bonus"`
 	BrokerFee        float64 `json:"broker_fee"`
 	SalesTaxPercent  float64 `json:"sales_tax_percent"`
+	// Split-fee overlay — same shape as backtest / analyze. When
+	// SplitTradeFees is true the four side-specific rates below are
+	// used; when false, BrokerFee is copied to both sides.
+	SplitTradeFees       bool    `json:"split_trade_fees"`
+	BuyBrokerFeePercent  float64 `json:"buy_broker_fee_percent"`
+	SellBrokerFeePercent float64 `json:"sell_broker_fee_percent"`
+	BuySalesTaxPercent   float64 `json:"buy_sales_tax_percent"`
+	SellSalesTaxPercent  float64 `json:"sell_sales_tax_percent"`
 	RunsPerJob       int32   `json:"runs_per_job"`
 	MaxDepth         int     `json:"max_depth"`
 
@@ -560,6 +568,13 @@ type profitableScanRequest struct {
 	InventionChanceMult float64 `json:"invention_chance_mult"`
 	InventionOutputRuns int32   `json:"invention_output_runs"`
 	DecryptorCost       float64 `json:"decryptor_cost"`
+	// Invention skill levels (0-5). Scanner pre-multiplies these into
+	// each row's absolute InventionChance so profitability rankings
+	// reflect the character's actual invention skill (max-L5 ≈ 1.5×
+	// base). All zero preserves pre-skill-aware behavior. Audit P1.2.
+	InventionEncryptionLevel int32 `json:"invention_encryption_level"`
+	InventionDatacoreLevel1  int32 `json:"invention_datacore_level_1"`
+	InventionDatacoreLevel2  int32 `json:"invention_datacore_level_2"`
 
 	// When SkipBlueprintFetch is true, the backend skips the ESI blueprint /
 	// asset fetch and uses ReuseGroups verbatim as the scan input. This is how
@@ -1280,6 +1295,10 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 	req.StructureJobCostReduction = clampFloat64(req.StructureJobCostReduction, 0, 100)
 	req.BrokerFee = clampFloat64(req.BrokerFee, 0, 100)
 	req.SalesTaxPercent = clampFloat64(req.SalesTaxPercent, 0, 100)
+	req.BuyBrokerFeePercent = clampFloat64(req.BuyBrokerFeePercent, 0, 100)
+	req.SellBrokerFeePercent = clampFloat64(req.SellBrokerFeePercent, 0, 100)
+	req.BuySalesTaxPercent = clampFloat64(req.BuySalesTaxPercent, 0, 100)
+	req.SellSalesTaxPercent = clampFloat64(req.SellSalesTaxPercent, 0, 100)
 	if req.PricingStationID < 0 {
 		req.PricingStationID = 0
 	}
@@ -1613,6 +1632,11 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 				StructureBonus:     req.StructureBonus,
 				BrokerFee:          req.BrokerFee,
 				SalesTaxPercent:    req.SalesTaxPercent,
+				SplitTradeFees:       req.SplitTradeFees,
+				BuyBrokerFeePercent:  req.BuyBrokerFeePercent,
+				SellBrokerFeePercent: req.SellBrokerFeePercent,
+				BuySalesTaxPercent:   req.BuySalesTaxPercent,
+				SellSalesTaxPercent:  req.SellSalesTaxPercent,
 				MaxDepth:           req.MaxDepth,
 				OwnBlueprint:       true,
 				SkipReactions:      req.SkipReactions,
@@ -1670,7 +1694,15 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 					params.TimeEfficiency = teBase
 					// Engine expects InventionChance as a percent (0-100);
 					// baseProbability is a 0..1 fraction. Clamp to 100.
-					chance := item.baseProbability * chanceMult * 100
+					// Fold in the character's invention skill multiplier so
+					// ranked profitability matches the reality of a skilled
+					// inventor (all-L5 ≈ 1.5× base). Audit P1.2.
+					skillMult := engine.InventionSkillMultiplier(
+						req.InventionEncryptionLevel,
+						req.InventionDatacoreLevel1,
+						req.InventionDatacoreLevel2,
+					)
+					chance := item.baseProbability * skillMult * chanceMult * 100
 					if chance > 100 {
 						chance = 100
 					}
@@ -1935,11 +1967,10 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 					var profitPerUnitRealistic float64
 					if row.RegionalAvgPrice30d > 0 {
 						// Apply the same tax + broker deductions the analyzer
-						// applies to bestAsk-based revenue, so the two live
-						// on the same scale.
-						netUnitRevenue := row.RegionalAvgPrice30d *
-							(1.0 - req.SalesTaxPercent/100.0) *
-							(1.0 - req.BrokerFee/100.0)
+						// applies to bestAsk-based revenue, via the canonical
+						// additive fees.go formula (audit P1.3) so this and
+						// result.Profit live on identical scale.
+						netUnitRevenue := row.RegionalAvgPrice30d * baseParams.SellRevenueMultiplier()
 						profitPerUnitRealistic = netUnitRevenue - costPerUnit
 					} else {
 						profitPerUnitRealistic = result.Profit / float64(totalQty)

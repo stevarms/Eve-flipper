@@ -119,7 +119,7 @@ function exportCSV(hubs: RegionalDayTradeHub[]) {
     "Buy Units", "Source Units", "Demand/Day", "Supply Units", "DOS",
     "Source Price", "Target Now Price", "Target Period Price",
     "Now Profit", "Period Profit", "ROI Now %", "ROI Period %",
-    "Item ROI Now %", "Item ROI Period %", "Capital", "Shipping", "Jumps", "Vol m3",
+    "Item ROI Now %", "Item ROI Period %", "Capital", "Shipping", "Jumps", "Vol m³",
   ];
   const rows: string[][] = [header];
   for (const hub of hubs) {

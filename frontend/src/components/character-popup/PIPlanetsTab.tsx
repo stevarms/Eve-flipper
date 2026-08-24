@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { getPIPlanets, type CharacterScope } from "../../lib/api";
 import type { PIPlanetRow } from "../../lib/types";
+import { useI18n } from "../../lib/i18n";
+import { EmptyState } from "../EmptyState";
 
 interface PIPlanetsTabProps {
   characterScope: CharacterScope;
@@ -41,6 +43,7 @@ function formatPlanetType(value: string): string {
 }
 
 export function PIPlanetsTab({ characterScope, formatIsk }: PIPlanetsTabProps) {
+  const { t } = useI18n();
   const [planets, setPlanets] = useState<PIPlanetRow[]>([]);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
@@ -198,9 +201,7 @@ export function PIPlanetsTab({ characterScope, formatIsk }: PIPlanetsTabProps) {
       )}
 
       {!loading && !error && planets.length === 0 && (
-        <div className="flex h-52 items-center justify-center border border-eve-border bg-eve-panel/35 text-sm text-eve-dim">
-          No PI planets visible for this scope.
-        </div>
+        <EmptyState reason="no_data" titleOverride={t("piPlanetsEmpty")} />
       )}
 
       {planets.length > 0 && (
@@ -208,16 +209,16 @@ export function PIPlanetsTab({ characterScope, formatIsk }: PIPlanetsTabProps) {
           <table className="w-full text-xs">
             <thead className="sticky top-0 bg-eve-panel text-[10px] uppercase tracking-[0.12em] text-eve-dim">
               <tr>
-                <th className="px-3 py-2 text-left font-medium">Planet</th>
-                <th className="px-3 py-2 text-left font-medium">Character</th>
-                <th className="px-3 py-2 text-right font-medium">Pins</th>
-                <th className="px-3 py-2 text-right font-medium">Stored</th>
-                <th className="px-3 py-2 text-right font-medium">Net/day</th>
-                <th className="px-3 py-2 text-right font-medium">Gross/day</th>
-                <th className="px-3 py-2 text-left font-medium">Products</th>
-                <th className="px-3 py-2 text-right font-medium">Routes</th>
-                <th className="px-3 py-2 text-left font-medium">Status</th>
-                <th className="px-3 py-2 text-left font-medium">Next expiry</th>
+                <th className="px-3 py-2 text-left font-medium">{t("piPlanetsColPlanet")}</th>
+                <th className="px-3 py-2 text-left font-medium">{t("piPlanetsColCharacter")}</th>
+                <th className="px-3 py-2 text-right font-medium">{t("piPlanetsColPins")}</th>
+                <th className="px-3 py-2 text-right font-medium">{t("piPlanetsColStored")}</th>
+                <th className="px-3 py-2 text-right font-medium">{t("piPlanetsColNetDay")}</th>
+                <th className="px-3 py-2 text-right font-medium">{t("piPlanetsColGrossDay")}</th>
+                <th className="px-3 py-2 text-left font-medium">{t("piPlanetsColProducts")}</th>
+                <th className="px-3 py-2 text-right font-medium">{t("piPlanetsColRoutes")}</th>
+                <th className="px-3 py-2 text-left font-medium">{t("piPlanetsColStatus")}</th>
+                <th className="px-3 py-2 text-left font-medium">{t("piPlanetsColNextExpiry")}</th>
               </tr>
             </thead>
             <tbody>

@@ -7,6 +7,63 @@ import (
 	"eve-flipper/internal/esi"
 )
 
+// TestAnalyzeUndercutsWithRelistFee verifies the reprice recommendation
+// weighs the CCP modify-order fee against the theoretical price
+// improvement. Audit P2.7.
+func TestAnalyzeUndercutsWithRelistFee(t *testing.T) {
+	// Player sell 100 ISK × 1000; best competitor at 90; suggested 89.99.
+	// delta = 10.01, orderValue = 10,010. At 3% broker: fee = 300.3.
+	player := []esi.CharacterOrder{
+		{OrderID: 100, TypeID: 200, LocationID: 5000, RegionID: 10, Price: 100.0, VolumeRemain: 1000, IsBuyOrder: false},
+	}
+	regional := []esi.MarketOrder{
+		{OrderID: 100, TypeID: 200, LocationID: 5000, Price: 100.0, VolumeRemain: 1000, IsBuyOrder: false},
+		{OrderID: 200, TypeID: 200, LocationID: 5000, Price: 90.0, VolumeRemain: 500, IsBuyOrder: false},
+	}
+	// brokerFeePct=0 → fee fields stay zero (backward-compat).
+	base := AnalyzeUndercutsWithRelistFee(player, regional, 0)
+	if len(base) != 1 || base[0].ModifyOrderFee != 0 || base[0].NetRelistGainISK != 0 {
+		t.Errorf("brokerFeePct=0 must leave fee fields at zero: %+v", base[0])
+	}
+	withFee := AnalyzeUndercutsWithRelistFee(player, regional, 3.0)
+	us := withFee[0]
+	wantDelta := 10.01 * 1000
+	if math.Abs(us.GrossRelistGainISK-wantDelta) > 1e-6 {
+		t.Errorf("GrossRelistGainISK = %v, want %v", us.GrossRelistGainISK, wantDelta)
+	}
+	wantFee := wantDelta * 0.03
+	if math.Abs(us.ModifyOrderFee-wantFee) > 1e-6 {
+		t.Errorf("ModifyOrderFee = %v, want %v", us.ModifyOrderFee, wantFee)
+	}
+	wantNet := wantDelta - wantFee
+	if math.Abs(us.NetRelistGainISK-wantNet) > 1e-6 {
+		t.Errorf("NetRelistGainISK = %v, want %v", us.NetRelistGainISK, wantNet)
+	}
+}
+
+// TestAnalyzeUndercutsWithRelistFee_ThinBookHits100ISKFloor is the exact
+// scenario the audit called out: 0.01 ISK undercut on a thin book where
+// the fee floor eats the gain.
+func TestAnalyzeUndercutsWithRelistFee_ThinBookHits100ISKFloor(t *testing.T) {
+	// Sell order 100.00 × 10, competitor 99.99. Suggested 99.98. delta 0.02.
+	// orderValue = 0.20. Raw broker 0.003 → floor to 100. Net = 0.20 - 100 < 0.
+	player := []esi.CharacterOrder{
+		{OrderID: 1, TypeID: 300, LocationID: 5000, RegionID: 10, Price: 100.0, VolumeRemain: 10, IsBuyOrder: false},
+	}
+	regional := []esi.MarketOrder{
+		{OrderID: 1, TypeID: 300, LocationID: 5000, Price: 100.0, VolumeRemain: 10, IsBuyOrder: false},
+		{OrderID: 2, TypeID: 300, LocationID: 5000, Price: 99.99, VolumeRemain: 5, IsBuyOrder: false},
+	}
+	res := AnalyzeUndercutsWithRelistFee(player, regional, 1.5)
+	us := res[0]
+	if us.ModifyOrderFee != MinBrokerFeeISK {
+		t.Errorf("ModifyOrderFee = %v, want %v (100 ISK floor)", us.ModifyOrderFee, MinBrokerFeeISK)
+	}
+	if us.NetRelistGainISK >= 0 {
+		t.Errorf("NetRelistGainISK = %v, want negative (relist would lose money)", us.NetRelistGainISK)
+	}
+}
+
 func TestAnalyzeUndercuts_EmptyOrders(t *testing.T) {
 	result := AnalyzeUndercuts(nil, nil)
 	if len(result) != 0 {

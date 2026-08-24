@@ -353,7 +353,7 @@ export function IndustryPlannerBuilderPanel({ ctx }: IndustryPlannerBuilderPanel
                     </RowIconButton>
                     <RowIconButton
                       onClick={() => removeVisualTaskRow(rowIndex)}
-                      title={t("industryPlannerDeleteRow")}
+                      title={t("industryPlannerRemoveRow")}
                       tone="danger"
                     >
                       ×
@@ -580,7 +580,7 @@ export function IndustryPlannerBuilderPanel({ ctx }: IndustryPlannerBuilderPanel
               <div className="col-span-1 flex items-center justify-end">
                 <RowIconButton
                   onClick={() => removeVisualJobRow(rowIndex)}
-                  title={t("industryPlannerDeleteRow")}
+                  title={t("industryPlannerRemoveRow")}
                   tone="danger"
                 >
                   ×
@@ -709,7 +709,7 @@ export function IndustryPlannerBuilderPanel({ ctx }: IndustryPlannerBuilderPanel
               <div className="col-span-1 flex items-center justify-end">
                 <RowIconButton
                   onClick={() => removeVisualMaterialRow(rowIndex)}
-                  title={t("industryPlannerDeleteRow")}
+                  title={t("industryPlannerRemoveRow")}
                   tone="danger"
                 >
                   ×
@@ -834,7 +834,7 @@ export function IndustryPlannerBuilderPanel({ ctx }: IndustryPlannerBuilderPanel
               <div className="col-span-1 flex items-center justify-end">
                 <RowIconButton
                   onClick={() => removeVisualBlueprintRow(rowIndex)}
-                  title={t("industryPlannerDeleteRow")}
+                  title={t("industryPlannerRemoveRow")}
                   tone="danger"
                 >
                   ×

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { getPortfolioOptimization, type CharacterScope, type OptimizerResult } from "../../lib/api";
-import { type TranslationKey } from "../../lib/i18n";
+import { type TranslationKey, useI18n } from "../../lib/i18n";
 import type { AllocationSuggestion, AssetStats, OptimizerDiagnostic, PortfolioCapital, PortfolioPositionRisk } from "../../lib/types";
 import { StatCard } from "./shared";
 type OptPeriod = 30 | 90 | 180;
@@ -316,6 +316,7 @@ function OptimizerDiagnosticNotice({ diagnostic }: { diagnostic: OptimizerDiagno
 }
 
 function PositionRiskTable({ risks, formatIsk }: { risks: PortfolioPositionRisk[]; formatIsk: (v: number) => string }) {
+  const { t } = useI18n();
   const rows = [...risks].sort((a, b) => b.risk_score - a.risk_score).slice(0, 20);
 
   return (
@@ -331,16 +332,16 @@ function PositionRiskTable({ risks, formatIsk }: { risks: PortfolioPositionRisk[
         <table className="w-full text-xs min-w-[980px]">
           <thead className="bg-eve-panel">
             <tr className="text-eve-dim">
-              <th className="px-3 py-2 text-left">Action</th>
-              <th className="px-3 py-2 text-left">Item</th>
-              <th className="px-3 py-2 text-right">Exposure</th>
-              <th className="px-3 py-2 text-right">Target</th>
-              <th className="px-3 py-2 text-right">Risk</th>
+              <th className="px-3 py-2 text-left">{t("optimizerColAction")}</th>
+              <th className="px-3 py-2 text-left">{t("optimizerColItem")}</th>
+              <th className="px-3 py-2 text-right">{t("optimizerColExposure")}</th>
+              <th className="px-3 py-2 text-right">{t("optimizerColTarget")}</th>
+              <th className="px-3 py-2 text-right">{t("optimizerColRisk")}</th>
               <th className="px-3 py-2 text-right">DTL</th>
-              <th className="px-3 py-2 text-right">Buy ord</th>
-              <th className="px-3 py-2 text-right">Sell ord</th>
-              <th className="px-3 py-2 text-right">Unrealized</th>
-              <th className="px-3 py-2 text-right">Suggested</th>
+              <th className="px-3 py-2 text-right">{t("optimizerColBuyOrd")}</th>
+              <th className="px-3 py-2 text-right">{t("optimizerColSellOrd")}</th>
+              <th className="px-3 py-2 text-right">{t("optimizerColUnrealized")}</th>
+              <th className="px-3 py-2 text-right">{t("optimizerColSuggested")}</th>
             </tr>
           </thead>
           <tbody>
@@ -512,6 +513,7 @@ function EfficientFrontierChart({
   assets: AssetStats[];
   formatIsk: (v: number) => string;
 }) {
+  const { t } = useI18n();
   const chartW = 600;
   const chartH = 140;
 
@@ -566,7 +568,7 @@ function EfficientFrontierChart({
 
         {/* Current portfolio */}
         <circle cx={scaleX(portRisk(currentWeights))} cy={scaleY(portRet(currentWeights))} r={6} fill="#f0883e" stroke="#f0883e" strokeWidth={2}>
-          <title>Current Portfolio</title>
+          <title>{t("optimizerCurrentPortfolio")}</title>
         </circle>
 
         {/* Optimal portfolio */}
@@ -576,7 +578,7 @@ function EfficientFrontierChart({
 
         {/* Min-var portfolio */}
         <circle cx={scaleX(portRisk(minVarWeights))} cy={scaleY(portRet(minVarWeights))} r={5} fill="#3fb950" stroke="#3fb950" strokeWidth={2}>
-          <title>Minimum Variance</title>
+          <title>{t("optimizerMinimumVariance")}</title>
         </circle>
       </svg>
 
@@ -584,19 +586,19 @@ function EfficientFrontierChart({
       <div className="flex gap-4 justify-center mt-1 text-[9px]">
         <div className="flex items-center gap-1">
           <div className="w-2 h-2 rounded-full bg-[#f0883e]" />
-          <span className="text-eve-dim">Current</span>
+          <span className="text-eve-dim">{t("optimizerLegendCurrent")}</span>
         </div>
         <div className="flex items-center gap-1">
           <div className="w-2 h-2 rounded-full bg-[#58a6ff]" />
-          <span className="text-eve-dim">Optimal</span>
+          <span className="text-eve-dim">{t("optimizerLegendOptimal")}</span>
         </div>
         <div className="flex items-center gap-1">
           <div className="w-2 h-2 rounded-full bg-[#3fb950]" />
-          <span className="text-eve-dim">Min Var</span>
+          <span className="text-eve-dim">{t("optimizerLegendMinVar")}</span>
         </div>
         <div className="flex items-center gap-1">
           <div className="w-2 h-2 rounded-full bg-[#8b949e] opacity-50" />
-          <span className="text-eve-dim">Assets</span>
+          <span className="text-eve-dim">{t("optimizerLegendAssets")}</span>
         </div>
       </div>
     </div>

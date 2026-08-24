@@ -40,11 +40,11 @@ export const cockpitInterfacePages: { id: InterfacePage; label: string }[] = [
   { id: "startup", label: "Startup / Actions" },
   { id: "scanner", label: "Scanner / Flipper" },
   { id: "regional", label: "Regional Trade" },
-  { id: "station", label: "Station Trading" },
+  { id: "station", label: "Station Trade" },
   { id: "route", label: "Route Builder" },
   { id: "industry", label: "Industry" },
   { id: "ledger", label: "Ledger" },
   { id: "mission", label: "Mission Control" },
-  { id: "plex", label: "PLEX+" },
+  { id: "plex", label: "PLEX" },
   { id: "share", label: "Import / Export" },
 ];

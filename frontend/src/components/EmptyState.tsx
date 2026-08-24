@@ -7,7 +7,11 @@ export type EmptyReason =
   | "filters_too_strict"
   | "no_stations"
   | "no_item_selected"
-  | "loading";
+  | "loading"
+  | "no_wallet_data"
+  | "no_orders"
+  | "no_history"
+  | "no_data";
 
 interface EmptyStateProps {
   reason: EmptyReason;
@@ -15,6 +19,10 @@ interface EmptyStateProps {
   hints?: string[];
   /** Optional wiki page path (e.g. "Station-Trading") */
   wikiSlug?: string;
+  /** Optional override for the default title */
+  titleOverride?: string;
+  /** Optional override for the default description */
+  descriptionOverride?: string;
 }
 
 const WIKI_BASE = "https://github.com/ilyaux/Eve-flipper/wiki";
@@ -27,6 +35,10 @@ const TITLE_KEYS: Record<EmptyReason, string> = {
   no_stations: "emptyTitle_no_stations",
   no_item_selected: "emptyTitle_no_item_selected",
   loading: "emptyTitle_loading",
+  no_wallet_data: "emptyTitle_no_wallet_data",
+  no_orders: "emptyTitle_no_orders",
+  no_history: "emptyTitle_no_history",
+  no_data: "emptyTitle_no_data",
 };
 
 const DESC_KEYS: Record<EmptyReason, string> = {
@@ -37,12 +49,16 @@ const DESC_KEYS: Record<EmptyReason, string> = {
   no_stations: "emptyDesc_no_stations",
   no_item_selected: "emptyDesc_no_item_selected",
   loading: "emptyDesc_loading",
+  no_wallet_data: "emptyDesc_no_wallet_data",
+  no_orders: "emptyDesc_no_orders",
+  no_history: "emptyDesc_no_history",
+  no_data: "emptyDesc_no_data",
 };
 
-export function EmptyState({ reason, hints = [], wikiSlug }: EmptyStateProps) {
+export function EmptyState({ reason, hints = [], wikiSlug, titleOverride, descriptionOverride }: EmptyStateProps) {
   const { t } = useI18n();
-  const title = t(TITLE_KEYS[reason] as "emptyTitle_no_scan_yet");
-  const desc = t(DESC_KEYS[reason] as "emptyDesc_no_scan_yet");
+  const title = titleOverride ?? t(TITLE_KEYS[reason] as "emptyTitle_no_scan_yet");
+  const desc = descriptionOverride ?? t(DESC_KEYS[reason] as "emptyDesc_no_scan_yet");
 
   const wikiUrl = wikiSlug ? `${WIKI_BASE}/${wikiSlug}` : `${WIKI_BASE}`;
 

@@ -672,7 +672,7 @@ function OrderbookMaintenancePanel({
           disabled={statsLoading}
           className="px-2 py-1 rounded-sm border border-eve-border bg-eve-panel text-eve-text font-semibold uppercase tracking-wide disabled:opacity-50"
         >
-          {statsLoading ? "Refreshing..." : "Refresh stats"}
+          {statsLoading ? "Refreshing…" : "Refresh stats"}
         </button>
       </div>
 

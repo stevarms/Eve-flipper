@@ -47,11 +47,11 @@ export function KeyboardShortcutsHelp({ open, onClose }: Props) {
     {
       title: t("shortcutsGroupNav"),
       rows: [
-        { keys: ["Alt", "1"], label: t("shortcutTabRadius") },
-        { keys: ["Alt", "2"], label: t("shortcutTabRegion") },
-        { keys: ["Alt", "3"], label: t("shortcutTabContracts") },
-        { keys: ["Alt", "4"], label: t("shortcutTabStation") },
-        { keys: ["Alt", "5"], label: t("shortcutTabRoute") },
+        { keys: ["Alt", "1"], label: t("cmdSwitchToRadius") },
+        { keys: ["Alt", "2"], label: t("cmdSwitchToRegion") },
+        { keys: ["Alt", "3"], label: t("cmdSwitchToContracts") },
+        { keys: ["Alt", "4"], label: t("cmdSwitchToStation") },
+        { keys: ["Alt", "5"], label: t("cmdSwitchToRoute") },
         { keys: ["Alt", "W"], label: t("shortcutOpenWatchlist") },
         { keys: ["Alt", "H"], label: t("shortcutOpenHistory") },
       ],

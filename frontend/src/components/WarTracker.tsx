@@ -1,7 +1,9 @@
 import { useEffect, useState, useCallback } from "react";
 import { getHotZones, refreshDemandData, getRegionOpportunities } from "../lib/api";
 import { useI18n, type TranslationKey } from "../lib/i18n";
+import { formatISK as formatIskLib } from "../lib/format";
 import type { DemandRegion, RegionOpportunities, TradeOpportunity } from "../lib/types";
+import { EmptyState } from "./EmptyState";
 
 interface WarTrackerProps {
   onError?: (msg: string) => void;
@@ -51,14 +53,11 @@ export function WarTracker({ onError, onOpenRegionArbitrage }: WarTrackerProps) 
     }
   };
 
-  const formatISK = (value: number) => {
-    if (value >= 1e15) return `${(value / 1e15).toFixed(1)}Q`;
-    if (value >= 1e12) return `${(value / 1e12).toFixed(1)}T`;
-    if (value >= 1e9) return `${(value / 1e9).toFixed(1)}B`;
-    if (value >= 1e6) return `${(value / 1e6).toFixed(1)}M`;
-    if (value >= 1e3) return `${(value / 1e3).toFixed(1)}K`;
-    return value.toFixed(0);
-  };
+  // Compact ISK — kill totals in busy regions can reach 1e15 during major
+  // wars, so this callsite keeps its Q tier. Defers to lib/format.ts, which
+  // is also negative-safe (the previous inline copy compared on the signed
+  // value and would have shown raw digits for a negative input).
+  const formatISK = (value: number) => formatIskLib(value);
 
   const warZones = hotZones.filter(z => z.status === "war");
   const conflictZones = hotZones.filter(z => z.status === "conflict");
@@ -93,7 +92,7 @@ export function WarTracker({ onError, onOpenRegionArbitrage }: WarTrackerProps) 
             disabled={refreshing || loading}
             className="px-3 py-1.5 text-xs bg-eve-accent text-eve-dark rounded-sm hover:bg-eve-accent-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
-            {refreshing ? t("refreshing") || "Refreshing..." : t("refresh") || "Refresh Data"}
+            {refreshing ? t("refreshing") || "Refreshing…" : t("scan") || "Scan"}
           </button>
           <button
             onClick={loadData}
@@ -219,11 +218,10 @@ export function WarTracker({ onError, onOpenRegionArbitrage }: WarTrackerProps) 
       {/* Empty state — hidden while refreshing */}
       {!loading && !refreshing && hotZones.length === 0 && !error && (
         <div className="flex-1 flex flex-col items-center justify-center text-eve-dim">
-          <div className="text-4xl mb-4">🌌</div>
-          <div className="text-sm">{t("noDataYet") || "No data yet"}</div>
+          <EmptyState reason="no_data" titleOverride={t("noDataYet") || "No data yet"} />
           <button
             onClick={handleRefresh}
-            className="mt-4 px-4 py-2 text-sm bg-eve-accent text-eve-dark rounded-sm hover:bg-eve-accent-hover transition-colors"
+            className="mt-2 px-4 py-2 text-sm bg-eve-accent text-eve-dark rounded-sm hover:bg-eve-accent-hover transition-colors"
           >
             {t("loadRegionData") || "Load Region Data"}
           </button>
@@ -235,7 +233,7 @@ export function WarTracker({ onError, onOpenRegionArbitrage }: WarTrackerProps) 
         <div className="flex-1 flex flex-col items-center justify-center text-eve-dim">
           <div className="text-4xl mb-4 animate-pulse">🛰️</div>
           <div className="text-sm animate-pulse">
-            {refreshProgress || t("refreshing") || "Refreshing..."}
+            {refreshProgress || t("refreshing") || "Refreshing…"}
           </div>
         </div>
       )}

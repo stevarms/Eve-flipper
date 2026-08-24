@@ -576,18 +576,18 @@ export function StationTrading({
   const lastSyncedTaxProfileRef = useRef(taxProfileKey(params));
   const taxSyncInProgressRef = useRef<string | null>(null);
   const [ctsProfile, setCTSProfile] = useState<CTSProfile>("balanced");
-  const [discountBidTarget, setDiscountBidTargetState] = useState<number>(() => {
+  const [discountBuyTarget, setDiscountBuyTargetState] = useState<number>(() => {
     if (typeof window === "undefined") return DEFAULT_DISCOUNT_TARGET;
     const raw = window.localStorage.getItem(STATION_DISCOUNT_TARGET_KEY);
     const n = raw == null ? NaN : Number(raw);
     if (!Number.isFinite(n) || n <= 0 || n >= 1) return DEFAULT_DISCOUNT_TARGET;
     return n;
   });
-  const setDiscountBidTarget = (n: number) => {
+  const setDiscountBuyTarget = (n: number) => {
     // Clamp to (0, 1) — a 100% bid is just the region avg (nonsensical for
     // this workflow) and 0% would suggest bidding 0 ISK.
     const clamped = Math.min(0.99, Math.max(0.01, n));
-    setDiscountBidTargetState(clamped);
+    setDiscountBuyTargetState(clamped);
     if (typeof window !== "undefined") {
       window.localStorage.setItem(STATION_DISCOUNT_TARGET_KEY, String(clamped));
     }
@@ -1824,10 +1824,10 @@ export function StationTrading({
         ...r,
         SuggestedBid:
           r.RegionAvg && r.RegionAvg > 0
-            ? r.RegionAvg * discountBidTarget
+            ? r.RegionAvg * discountBuyTarget
             : undefined,
       })),
-    [results, discountBidTarget],
+    [results, discountBuyTarget],
   );
 
   const sorted = useMemo(() => {
@@ -2902,10 +2902,10 @@ export function StationTrading({
                         ]}
                       />
                     </SettingsField>
-                    <SettingsField label={t("discountBidTarget")}>
+                    <SettingsField label={t("discountBuyTarget")}>
                       <SettingsNumberInput
-                        value={Math.round(discountBidTarget * 100)}
-                        onChange={(v) => setDiscountBidTarget(v / 100)}
+                        value={Math.round(discountBuyTarget * 100)}
+                        onChange={(v) => setDiscountBuyTarget(v / 100)}
                         min={1}
                         max={99}
                         step={5}

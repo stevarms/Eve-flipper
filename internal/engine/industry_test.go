@@ -193,18 +193,23 @@ func TestAnalyze_EndToEndInjectedPricing(t *testing.T) {
 	if !industryAlmostEqual(result.TotalJobCost, 9.8) {
 		t.Fatalf("TotalJobCost = %v, want 9.8", result.TotalJobCost)
 	}
-	if !industryAlmostEqual(result.SellRevenue, 513.0) {
-		t.Fatalf("SellRevenue = %v, want 513", result.SellRevenue)
+	// SellRevenue = unitAsk × qty × (1 − sellBroker − sellTax)/100
+	//             = 300 × 2 × (1 − 0.05 − 0.10) = 600 × 0.85 = 510
+	// Pre-2026 code multiplied `(1−tax) × (1−broker)` = 0.855 = 513, which
+	// drifted from every other engine surface. This pins the canonical
+	// additive form from fees.go (audit P1.3).
+	if !industryAlmostEqual(result.SellRevenue, 510.0) {
+		t.Fatalf("SellRevenue = %v, want 510", result.SellRevenue)
 	}
-	if !industryAlmostEqual(result.Profit, 284.8) {
-		t.Fatalf("Profit = %v, want 284.8", result.Profit)
+	if !industryAlmostEqual(result.Profit, 281.8) {
+		t.Fatalf("Profit = %v, want 281.8", result.Profit)
 	}
 	// ISK/h uses ROOT activity time only (matches CCP's "this job's slot
 	// throughput" semantic; sub-material builds run in independent slots and
 	// don't gate the queued job). Root blueprint time = 7200s = 2h, so
-	// ISK/h = 284.8 / 2 = 142.4.
-	if !industryAlmostEqual(result.ISKPerHour, 142.4) {
-		t.Fatalf("ISKPerHour = %v, want 142.4", result.ISKPerHour)
+	// ISK/h = 281.8 / 2 = 140.9.
+	if !industryAlmostEqual(result.ISKPerHour, 140.9) {
+		t.Fatalf("ISKPerHour = %v, want 140.9", result.ISKPerHour)
 	}
 	if result.MaterialTree == nil {
 		t.Fatalf("MaterialTree is nil")
@@ -317,8 +322,10 @@ func TestAnalyze_UsesDepthAwareBuyCostAndInstantSellProfit(t *testing.T) {
 	if !industryAlmostEqual(result.InstantSellRevenue, 450.0) {
 		t.Fatalf("InstantSellRevenue = %v, want 450", result.InstantSellRevenue)
 	}
-	if !industryAlmostEqual(result.MakerSellRevenue, 513.0) {
-		t.Fatalf("MakerSellRevenue = %v, want 513", result.MakerSellRevenue)
+	// Canonical additive fee formula (audit P1.3): 300 × 2 × 0.85 = 510.
+	// Pre-2026 multiplicative form gave 513.
+	if !industryAlmostEqual(result.MakerSellRevenue, 510.0) {
+		t.Fatalf("MakerSellRevenue = %v, want 510", result.MakerSellRevenue)
 	}
 	if !industryAlmostEqual(result.SellRevenue, result.InstantSellRevenue) {
 		t.Fatalf("SellRevenue = %v, want conservative instant revenue %v", result.SellRevenue, result.InstantSellRevenue)

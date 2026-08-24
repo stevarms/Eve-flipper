@@ -431,7 +431,7 @@ export function CharacterPopup({
                   : `${t("achievementsTitle")} (${achievementUnlockedCount})`
               }
             />
-            <TabBtn active={tab === "plex"} onClick={() => setTrackedTab("plex")} label="PLEX+" />
+            <TabBtn active={tab === "plex"} onClick={() => setTrackedTab("plex")} label="PLEX" />
             {hostedBillingEnabled && <TabBtn active={tab === "access"} onClick={() => setTrackedTab("access")} label="Access" />}
           </div>
           {/* Refresh button */}

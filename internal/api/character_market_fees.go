@@ -10,9 +10,9 @@ const (
 	skillTypeIDBrokerRelations  = 3446  // Broker Relations
 )
 
-// Project-wide convention (matches engine.PLEXDashboard at L5):
+// EVE canonical (post-March-2020 rebalance, unchanged through 2025):
 //   sales tax  = 8.0% × (1 - 0.11 × accountingLevel)   → 3.6% at L5
-//   broker fee = 3.0% - 0.4% × brokerRelationsLevel    → 1.0% at L5
+//   broker fee = 3.0% - 0.3% × brokerRelationsLevel    → 1.5% at L5
 // (No standings adjustment in this estimate; user can tweak after.)
 func suggestedSalesTax(accountingLevel int) float64 {
 	if accountingLevel < 0 {
@@ -31,7 +31,7 @@ func suggestedBrokerFee(brokerRelationsLevel int) float64 {
 	if brokerRelationsLevel > 5 {
 		brokerRelationsLevel = 5
 	}
-	return 3.0 - 0.4*float64(brokerRelationsLevel)
+	return 3.0 - 0.3*float64(brokerRelationsLevel)
 }
 
 type characterMarketFeesResponse struct {

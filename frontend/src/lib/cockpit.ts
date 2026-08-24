@@ -259,7 +259,7 @@ export const MAIN_TAB_META: Record<MainTabId, { labelKey: TranslationKey; fallba
   region: { labelKey: "tabRegion", fallback: "Regional Trade", group: "scan" },
   contracts: { labelKey: "tabContracts", fallback: "Contracts", group: "scan" },
   route: { labelKey: "tabRoute", fallback: "Route", group: "scan" },
-  station: { labelKey: "tabStation", fallback: "Station Trading", group: "tools" },
+  station: { labelKey: "tabStation", fallback: "Station Trade", group: "tools" },
   price_audit: { labelKey: "tabPriceAudit", fallback: "Price Audit", group: "tools" },
   pi_factory: { labelKey: "tabPIFactory", fallback: "PI Factory", group: "tools" },
   industry: { labelKey: "tabIndustry", fallback: "Industry", group: "tools" },

@@ -2865,18 +2865,11 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	scanTelemetry := scanRequestTelemetryProps(req)
 	s.trackScanStarted(r, "radius", scanTelemetry)
 
-	w.Header().Set("Content-Type", "application/x-ndjson")
-	w.Header().Set("Cache-Control", "no-cache")
-	flusher, ok := w.(http.Flusher)
+	em, ok := beginNdjson(w, r)
 	if !ok {
-		writeError(w, 500, "streaming not supported")
 		return
 	}
-	sendProgress := func(msg string) {
-		line, _ := json.Marshal(map[string]string{"type": "progress", "message": msg})
-		fmt.Fprintf(w, "%s\n", line)
-		flusher.Flush()
-	}
+	sendProgress := em.Progress
 
 	s.mu.RLock()
 	scanner := s.scanner
@@ -2891,9 +2884,7 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("[API] Scan error: %v", err)
 		s.trackScanFailed(r, "radius", err, scanTelemetry)
-		line, _ := json.Marshal(map[string]string{"type": "error", "message": err.Error()})
-		fmt.Fprintf(w, "%s\n", line)
-		flusher.Flush()
+		em.Error(err.Error())
 		return
 	}
 
@@ -2942,22 +2933,13 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	}
 	go s.processWatchlistAlerts(userID, userCfg, results, scanIDPtr)
 
-	line, marshalErr := json.Marshal(map[string]interface{}{
+	em.Emit(map[string]interface{}{
 		"type":       "result",
 		"data":       results,
 		"count":      len(results),
 		"scan_id":    scanID,
 		"cache_meta": cacheMeta,
 	})
-	if marshalErr != nil {
-		log.Printf("[API] Scan JSON marshal error: %v", marshalErr)
-		errLine, _ := json.Marshal(map[string]string{"type": "error", "message": "JSON: " + marshalErr.Error()})
-		fmt.Fprintf(w, "%s\n", errLine)
-		flusher.Flush()
-		return
-	}
-	fmt.Fprintf(w, "%s\n", line)
-	flusher.Flush()
 }
 
 func (s *Server) handleScanMultiRegion(w http.ResponseWriter, r *http.Request) {
@@ -5958,7 +5940,15 @@ func (s *Server) handleAuthUndercuts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	undercuts := engine.AnalyzeUndercuts(orders, allRegional)
+	// Optional broker fee query param enables the relist-cost fields on
+	// each UndercutStatus. Default 0 = no fee analysis (pre-P2.7 shape).
+	brokerFeePct := 0.0
+	if v := strings.TrimSpace(r.URL.Query().Get("broker_fee_percent")); v != "" {
+		if parsed, parseErr := strconv.ParseFloat(v, 64); parseErr == nil {
+			brokerFeePct = clampFloat64(parsed, 0, 100)
+		}
+	}
+	undercuts := engine.AnalyzeUndercutsWithRelistFee(orders, allRegional, brokerFeePct)
 	writeJSON(w, undercuts)
 }
 
@@ -12190,12 +12180,35 @@ func (s *Server) handleIndustryAnalyze(w http.ResponseWriter, r *http.Request) {
 		StructureBonus      float64 `json:"structure_bonus"`
 		BrokerFee           float64 `json:"broker_fee"`
 		SalesTaxPercent     float64 `json:"sales_tax_percent"`
+		// Split-fee overlay — matches backtest / station_trading. Audit P1.3.
+		SplitTradeFees       bool    `json:"split_trade_fees"`
+		BuyBrokerFeePercent  float64 `json:"buy_broker_fee_percent"`
+		SellBrokerFeePercent float64 `json:"sell_broker_fee_percent"`
+		BuySalesTaxPercent   float64 `json:"buy_sales_tax_percent"`
+		SellSalesTaxPercent  float64 `json:"sell_sales_tax_percent"`
+		// Reprocessing sourcing — audit P2.5. IncludeReprocessing=true
+		// makes the analyzer consider ore→reprocess as an alternative to
+		// direct-buy leaf materials.
+		IncludeReprocessing              bool    `json:"include_reprocessing"`
+		ReprocessingYield                float64 `json:"reprocessing_yield"`
+		ReprocessingBaseStationYield     float64 `json:"reprocessing_base_station_yield"`
+		ReprocessingSkillLevel           int32   `json:"reprocessing_skill_level"`
+		ReprocessingEfficiencySkillLevel int32   `json:"reprocessing_efficiency_skill_level"`
+		SpecificProcessingSkillLevel     int32   `json:"specific_processing_skill_level"`
+		ReprocessingImplantYieldBonus    float64 `json:"reprocessing_implant_yield_bonus"`
+		ReprocessingStationTaxPercent    float64 `json:"reprocessing_station_tax_percent"`
+		// Per-call SCC Surcharge override (percent of EIV). Audit P5.26.
+		SCCSurchargePercent float64 `json:"scc_surcharge_percent"`
 		MaxDepth            int     `json:"max_depth"`
 		OwnBlueprint        *bool   `json:"own_blueprint"` // nil → true (default)
 		BlueprintCost       float64 `json:"blueprint_cost"`
 		BlueprintIsBPO      bool    `json:"blueprint_is_bpo"`
 		InventionChance     float64 `json:"invention_chance"`
 		InventionChanceMult float64 `json:"invention_chance_mult"`
+		// Character invention skill levels (0-5). Audit P1.2.
+		InventionEncryptionLevel int32 `json:"invention_encryption_level"`
+		InventionDatacoreLevel1  int32 `json:"invention_datacore_level_1"`
+		InventionDatacoreLevel2  int32 `json:"invention_datacore_level_2"`
 		DecryptorCost       float64 `json:"decryptor_cost"`
 		InventionOutputRuns int32   `json:"invention_output_runs"`
 		BuildMode                 string  `json:"build_mode"`
@@ -12249,6 +12262,10 @@ func (s *Server) handleIndustryAnalyze(w http.ResponseWriter, r *http.Request) {
 	req.StructureBonus = clampFloat64(req.StructureBonus, -100, 100)
 	req.BrokerFee = clampFloat64(req.BrokerFee, 0, 100)
 	req.SalesTaxPercent = clampFloat64(req.SalesTaxPercent, 0, 100)
+	req.BuyBrokerFeePercent = clampFloat64(req.BuyBrokerFeePercent, 0, 100)
+	req.SellBrokerFeePercent = clampFloat64(req.SellBrokerFeePercent, 0, 100)
+	req.BuySalesTaxPercent = clampFloat64(req.BuySalesTaxPercent, 0, 100)
+	req.SellSalesTaxPercent = clampFloat64(req.SellSalesTaxPercent, 0, 100)
 	if req.StationID < 0 {
 		req.StationID = 0
 	}
@@ -12263,6 +12280,9 @@ func (s *Server) handleIndustryAnalyze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.InventionChance = clampFloat64(req.InventionChance, 0, 100)
+	req.InventionEncryptionLevel = clampInt32(req.InventionEncryptionLevel, 0, 5)
+	req.InventionDatacoreLevel1 = clampInt32(req.InventionDatacoreLevel1, 0, 5)
+	req.InventionDatacoreLevel2 = clampInt32(req.InventionDatacoreLevel2, 0, 5)
 	if req.DecryptorCost < 0 {
 		req.DecryptorCost = 0
 	}
@@ -12339,14 +12359,31 @@ func (s *Server) handleIndustryAnalyze(w http.ResponseWriter, r *http.Request) {
 		StructureBonus:      req.StructureBonus,
 		BrokerFee:           req.BrokerFee,
 		SalesTaxPercent:     req.SalesTaxPercent,
+		SplitTradeFees:       req.SplitTradeFees,
+		BuyBrokerFeePercent:  req.BuyBrokerFeePercent,
+		SellBrokerFeePercent: req.SellBrokerFeePercent,
+		BuySalesTaxPercent:   req.BuySalesTaxPercent,
+		SellSalesTaxPercent:  req.SellSalesTaxPercent,
+		IncludeReprocessing:              req.IncludeReprocessing,
+		ReprocessingYield:                req.ReprocessingYield,
+		ReprocessingBaseStationYield:     req.ReprocessingBaseStationYield,
+		ReprocessingSkillLevel:           req.ReprocessingSkillLevel,
+		ReprocessingEfficiencySkillLevel: req.ReprocessingEfficiencySkillLevel,
+		SpecificProcessingSkillLevel:     req.SpecificProcessingSkillLevel,
+		ReprocessingImplantYieldBonus:    req.ReprocessingImplantYieldBonus,
+		ReprocessingStationTaxPercent:    req.ReprocessingStationTaxPercent,
+		SCCSurchargePercent:              req.SCCSurchargePercent,
 		MaxDepth:            req.MaxDepth,
 		OwnBlueprint:        req.OwnBlueprint == nil || *req.OwnBlueprint,
 		BlueprintCost:       req.BlueprintCost,
 		BlueprintIsBPO:      req.BlueprintIsBPO,
-		InventionChance:     req.InventionChance,
-		InventionChanceMult: req.InventionChanceMult,
-		DecryptorCost:       req.DecryptorCost,
-		InventionOutputRuns: req.InventionOutputRuns,
+		InventionChance:          req.InventionChance,
+		InventionChanceMult:      req.InventionChanceMult,
+		InventionEncryptionLevel: req.InventionEncryptionLevel,
+		InventionDatacoreLevel1:  req.InventionDatacoreLevel1,
+		InventionDatacoreLevel2:  req.InventionDatacoreLevel2,
+		DecryptorCost:            req.DecryptorCost,
+		InventionOutputRuns:      req.InventionOutputRuns,
 		BuildMode:           req.BuildMode,
 		SkipReactions:       req.SkipReactions,
 		StructureJobCostReduction: req.StructureJobCostReduction,

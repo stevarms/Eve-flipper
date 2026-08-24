@@ -1675,7 +1675,7 @@ export function CockpitInterfaceTab({
         )}
 
         {activePage === "station" && (
-          <Panel title="Station Trading Cockpit">
+          <Panel title="Station Trade Cockpit">
             <FieldGrid>
               <NumberField label="Minimum margin %" value={scanParams.min_margin} min={0} max={1000} step={0.1} onChange={(value) => setScanParam("min_margin", value)} />
               <NumberField label="Minimum daily volume" value={scanParams.min_daily_volume} min={0} onChange={(value) => setScanParam("min_daily_volume", value)} />
@@ -1808,8 +1808,8 @@ export function CockpitInterfaceTab({
         )}
 
         {activePage === "plex" && (
-          <Panel title="PLEX+ Informer">
-            <div className="text-sm text-eve-text">PLEX+ is now a profile-side informer, not a main workspace tab.</div>
+          <Panel title="PLEX Informer">
+            <div className="text-sm text-eve-text">PLEX is now a profile-side informer, not a main workspace tab.</div>
             <p className="text-xs text-eve-dim">
               Its market math remains isolated so another developer can continue that module without touching the main cockpit engine.
             </p>

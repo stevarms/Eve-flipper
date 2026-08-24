@@ -15,6 +15,15 @@ type UndercutStatus struct {
 	UndercutAmount float64 `json:"undercut_amount"` // absolute ISK difference (always >= 0)
 	UndercutPct    float64 `json:"undercut_pct"`    // % difference (always >= 0)
 	SuggestedPrice float64 `json:"suggested_price"` // price to beat best by 0.01 ISK
+	// Relist economics — populated only when the caller passes a broker
+	// fee via AnalyzeUndercutsWithRelistFee. All zero for the pre-fee
+	// (backward-compat) shape. NetRelistGainISK ≤ 0 means "hold, don't
+	// reprice" — the CCP modify-order broker fee eats the theoretical
+	// improvement. Fixes the audit-called-out case of 0.01 ISK undercuts
+	// on thin books where the relist recommendation loses money. Audit P2.7.
+	ModifyOrderFee     float64 `json:"modify_order_fee"`
+	GrossRelistGainISK float64 `json:"gross_relist_gain_isk"`
+	NetRelistGainISK   float64 `json:"net_relist_gain_isk"`
 	// Top of the order book (up to 5 levels)
 	BookLevels []BookLevel `json:"book_levels"`
 }
@@ -122,6 +131,58 @@ func AnalyzeUndercuts(playerOrders []esi.CharacterOrder, regionOrders []esi.Mark
 		results = append(results, us)
 	}
 
+	return results
+}
+
+// AnalyzeUndercutsWithRelistFee decorates the AnalyzeUndercuts output with
+// the CCP modify-order fee — the broker fee charged when repricing an
+// active order — so the order-desk "reprice" recommendation can weigh
+// the theoretical price improvement against its cost. Without this,
+// thin books with a 0.01 ISK undercut trigger a relist that a broker
+// fee eats entirely (and then some). Audit P2.7.
+//
+// Modify-order fee model (matches CCP in-client):
+//
+//	fee = max(brokerRate/100 × |priceChange| × remainingVolume, 100 ISK)
+//
+// (An over-approximation of the exact formula, which CCP has quietly
+// tweaked; erring generous here means the tool holds a relist that
+// might have been marginally profitable rather than recommending one
+// that isn't.)
+//
+// brokerFeePct is the effective per-order rate (post-skill, post-
+// standings) the character faces. When 0 (default, or no-fee caller),
+// the three fee fields on UndercutStatus stay at 0.
+func AnalyzeUndercutsWithRelistFee(playerOrders []esi.CharacterOrder, regionOrders []esi.MarketOrder, brokerFeePct float64) []UndercutStatus {
+	results := AnalyzeUndercuts(playerOrders, regionOrders)
+	if brokerFeePct <= 0 {
+		return results
+	}
+	byID := make(map[int64]esi.CharacterOrder, len(playerOrders))
+	for _, o := range playerOrders {
+		byID[o.OrderID] = o
+	}
+	for i := range results {
+		us := &results[i]
+		if us.Position == 1 {
+			continue
+		}
+		po, ok := byID[us.OrderID]
+		if !ok || po.VolumeRemain <= 0 {
+			continue
+		}
+		delta := us.SuggestedPrice - po.Price
+		if delta < 0 {
+			delta = -delta
+		}
+		if delta <= 0 {
+			continue
+		}
+		orderValue := delta * float64(po.VolumeRemain)
+		us.ModifyOrderFee = BrokerFeeForOrder(orderValue, brokerFeePct)
+		us.GrossRelistGainISK = orderValue
+		us.NetRelistGainISK = us.GrossRelistGainISK - us.ModifyOrderFee
+	}
 	return results
 }
 

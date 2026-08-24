@@ -12,6 +12,7 @@ import { formatISK, formatMargin } from "@/lib/format";
 import { Modal } from "./Modal";
 import { useGlobalToast } from "./Toast";
 import { useAchievements } from "./achievements";
+import { useI18n } from "@/lib/i18n";
 
 type StatusFilter = "active" | "all" | PaperTradeStatus;
 
@@ -310,6 +311,7 @@ function liveDraftSourceLabel(source: LiveTradeDraft["source"]): string {
 }
 
 export function PaperTradeJournalPopup({ open, onClose }: Props) {
+  const { t } = useI18n();
   const { addToast } = useGlobalToast();
   const { trackAchievementEvent } = useAchievements();
   const [filter, setFilter] = useState<StatusFilter>("active");
@@ -678,7 +680,7 @@ export function PaperTradeJournalPopup({ open, onClose }: Props) {
             disabled={loading}
             className="ml-auto px-2 py-1 rounded-sm border border-eve-border/70 text-eve-dim hover:border-eve-accent/50 hover:text-eve-accent disabled:opacity-50"
           >
-            {loading ? "Loading..." : "Refresh"}
+            {loading ? t("loading") : t("paperTradeRefresh")}
           </button>
           <button
             type="button"
@@ -713,7 +715,7 @@ export function PaperTradeJournalPopup({ open, onClose }: Props) {
             disabled={reconciling}
             className="px-2 py-1 rounded-sm border border-eve-accent/60 text-eve-accent hover:bg-eve-accent/10 disabled:opacity-50"
           >
-            {reconciling ? "Syncing..." : "Live sync"}
+            {reconciling ? "Syncing…" : "Live sync"}
           </button>
         </div>
 
@@ -826,8 +828,8 @@ export function PaperTradeJournalPopup({ open, onClose }: Props) {
                 <th className="px-2 py-1 text-left">Status</th>
                 <th className="px-2 py-1 text-left">Item / route</th>
                 <th className="px-2 py-1 text-right">Qty</th>
-                <th className="px-2 py-1 text-right">Buy</th>
-                <th className="px-2 py-1 text-right">Sell</th>
+                <th className="px-2 py-1 text-right">{t("paperTradeColBuy")}</th>
+                <th className="px-2 py-1 text-right">{t("paperTradeColSell")}</th>
                 <th className="px-2 py-1 text-right">Costs</th>
                 <th className="px-2 py-1 text-right">Expected</th>
                 <th className="px-2 py-1 text-right">Realized</th>
@@ -910,9 +912,9 @@ export function PaperTradeJournalPopup({ open, onClose }: Props) {
                     </td>
                     <td className="px-2 py-2 text-right">
                       <div className="flex justify-end gap-1 flex-wrap">
-                        <ActionButton disabled={busy} onClick={() => void saveTrade(trade)}>Save</ActionButton>
+                        <ActionButton disabled={busy} onClick={() => void saveTrade(trade)}>{t("paperTradeSaveBtn")}</ActionButton>
                         {live?.suggested_patch && (
-                          <ActionButton disabled={busy} onClick={() => void applyLivePatch(trade, live)}>Apply live</ActionButton>
+                          <ActionButton disabled={busy} onClick={() => void applyLivePatch(trade, live)}>{t("paperTradeApplyLiveBtn")}</ActionButton>
                         )}
                         {trade.status === "planned" && (
                           <ActionButton disabled={busy} onClick={() => void setStatus(trade, "bought")}>Bought</ActionButton>
@@ -930,9 +932,9 @@ export function PaperTradeJournalPopup({ open, onClose }: Props) {
                           <ActionButton disabled={busy} onClick={() => void setStatus(trade, "reconciled")}>Reconciled</ActionButton>
                         )}
                         {trade.status !== "cancelled" && trade.status !== "sold" && trade.status !== "reconciled" && (
-                          <ActionButton disabled={busy} danger onClick={() => void setStatus(trade, "cancelled")}>Cancel</ActionButton>
+                          <ActionButton disabled={busy} danger onClick={() => void setStatus(trade, "cancelled")}>{t("paperTradeMarkCancelledBtn")}</ActionButton>
                         )}
-                        <ActionButton disabled={busy} danger onClick={() => void removeTrade(trade)}>Delete</ActionButton>
+                        <ActionButton disabled={busy} danger onClick={() => void removeTrade(trade)}>{t("paperTradeDeleteBtn")}</ActionButton>
                       </div>
                     </td>
                   </tr>

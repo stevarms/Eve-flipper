@@ -1192,7 +1192,7 @@ export function TradeExecutionAutopilotPopup({
             disabled={creating || !!createdTrade || !mission || mission.executableQty <= 0}
             className="px-3 py-1.5 bg-eve-panel border border-eve-accent/60 text-eve-accent font-semibold uppercase tracking-wider text-xs disabled:opacity-50"
           >
-            {creating ? "Saving..." : createdTrade ? "Journal trade created" : "Create journal trade"}
+            {creating ? "Saving…" : createdTrade ? "Journal trade created" : "Create journal trade"}
           </button>
           {isLoggedIn && (
             <>
@@ -1395,8 +1395,8 @@ export function TradeExecutionAutopilotPopup({
                 <div className="p-3 space-y-2 text-sm">
                   <div className="flex justify-between"><span className="text-eve-dim">Wallet used</span><span className="font-mono text-eve-text">{mission.wallet > 0 ? formatISK(mission.wallet) : "-"}</span></div>
                   <div className="flex justify-between"><span className="text-eve-dim">Assets</span><span className="font-mono text-eve-text">{shortNumber(characterExposure.assets)}</span></div>
-                  <div className="flex justify-between"><span className="text-eve-dim">Buy orders</span><span className="font-mono text-eve-text">{shortNumber(characterExposure.buyOrders)}</span></div>
-                  <div className="flex justify-between"><span className="text-eve-dim">Sell orders</span><span className="font-mono text-eve-text">{shortNumber(characterExposure.sellOrders)}</span></div>
+                  <div className="flex justify-between"><span className="text-eve-dim">{t("autopilotColBuyOrders")}</span><span className="font-mono text-eve-text">{shortNumber(characterExposure.buyOrders)}</span></div>
+                  <div className="flex justify-between"><span className="text-eve-dim">{t("autopilotColSellOrders")}</span><span className="font-mono text-eve-text">{shortNumber(characterExposure.sellOrders)}</span></div>
                   <div className="flex justify-between"><span className="text-eve-dim">{isStationMode ? "Open order capital" : "Collateral guide"}</span><span className="font-mono text-eve-text">{formatISK(isStationMode ? mission.capitalFrozen : mission.collateral)}</span></div>
                   <div className="flex justify-between"><span className="text-eve-dim">{isStationMode ? "Price-risk reserve" : "Risk premium guide"}</span><span className="font-mono text-eve-text">{formatISK(mission.riskPremium)}</span></div>
                 </div>

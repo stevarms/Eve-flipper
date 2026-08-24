@@ -28,10 +28,49 @@ type IndustryParams struct {
 	StationID           int64   // Optional: specific station/structure for price lookup (0 = region-wide)
 	FacilityTax         float64 // Facility tax % (default 0)
 	StructureBonus      float64 // Structure material bonus % (e.g., 1% for Raitaru)
-	BrokerFee           float64 // Broker fee % when buying materials / product (default 0)
-	SalesTaxPercent     float64 // Sales tax % when selling product (for display / future use)
-	ReprocessingYield   float64 // Reprocessing efficiency (0-1, e.g., 0.50 for 50%)
-	IncludeReprocessing bool    // Whether to consider reprocessing ore as alternative
+	BrokerFee           float64 // Legacy: broker fee % applied to both sides when SplitTradeFees is false
+	SalesTaxPercent     float64 // Legacy: sales tax % applied to the sell side when SplitTradeFees is false
+	// Split-fee model — same shape as backtest / scanner / station_trading.
+	// When SplitTradeFees is true, the four side-specific rates below are
+	// consumed instead of the legacy BrokerFee/SalesTaxPercent pair. When
+	// false, BrokerFee is copied to both sides, sell tax is SalesTaxPercent,
+	// buy tax is zero (matches EVE — buy orders pay broker, sellers pay
+	// broker + sales tax). See internal/engine/fees.go for the canonical
+	// normalization.
+	SplitTradeFees       bool
+	BuyBrokerFeePercent  float64
+	SellBrokerFeePercent float64
+	BuySalesTaxPercent   float64
+	SellSalesTaxPercent  float64
+	// Reprocessing sourcing — when IncludeReprocessing is true, the
+	// analyzer considers "buy ore, reprocess, use as material" as an
+	// alternative to buying leaf materials (minerals, ice products, moon
+	// composites) directly. Uses SDE typeMaterials via
+	// SDE.Industry.Reprocessing and picks the cheapest source at query time.
+	IncludeReprocessing bool
+	// Fallback / manual override: when non-zero AND all skill/tax fields
+	// below are zero, this net yield is used directly (0-1, e.g. 0.85).
+	// Callers who don't know their exact skill levels can just pass a
+	// realistic net-yield estimate here.
+	ReprocessingYield float64
+	// Character skill levels (0-5). See ReprocessingYieldMultiplier for
+	// the composed formula. All-zero preserves the "no skill bonus" case.
+	// Structure yield (Athanor/Tatara/rigs) via ReprocessingBaseStationYield.
+	ReprocessingSkillLevel           int32
+	ReprocessingEfficiencySkillLevel int32
+	SpecificProcessingSkillLevel     int32
+	// Optional Reprocessing Efficiency implant bonus % (e.g. 4.0 for
+	// Zainou 'Beancounter' Reprocessing Efficiency RX-604). Applied
+	// multiplicatively on top of skill yield.
+	ReprocessingImplantYieldBonus float64
+	// Station tax on reprocessed output % (0-100). NPC stations up to 5%.
+	ReprocessingStationTaxPercent float64
+	// Base station yield (0-1). 0.50 NPC; Athanor = 0.52 + rig bonuses;
+	// Tatara = 0.54 + rig bonuses. Defaults to 0.50 when 0.
+	ReprocessingBaseStationYield float64
+	// SCCSurchargePercent overrides DefaultSCCSurchargePercent for this
+	// one call. Zero = use the package default (currently 4.0).
+	SCCSurchargePercent float64
 	MaxDepth            int     // Max recursion depth (default 10)
 	OwnBlueprint        bool    // true = user owns BP (default), false = must buy
 	BlueprintCost       float64 // ISK cost of blueprint (BPO or BPC)
@@ -42,6 +81,15 @@ type IndustryParams struct {
 	// decryptor's chance multiplier without needing to know the per-product
 	// SDE base. 0 or 1 = no adjustment.
 	InventionChanceMult float64
+	// Invention skill levels (0-5). When any is > 0 and InventionChance
+	// (absolute override) is 0, the engine applies EVE's canonical
+	// invention-chance skill formula:
+	//   chance = base × (1 + Encryption/40) × (1 + (Datacore1 + Datacore2)/30) × decryptorMult
+	// All-L5 = 1.5× base. Callers that already fold skills into an absolute
+	// InventionChance (e.g. legacy scanner rows) should leave these at 0.
+	InventionEncryptionLevel int32
+	InventionDatacoreLevel1  int32
+	InventionDatacoreLevel2  int32
 	DecryptorCost       float64 // Optional per-attempt decryptor cost
 	InventionOutputRuns int32   // Optional successful BPC runs override
 	// BuildMode governs the per-node build-vs-buy decision made in
@@ -272,10 +320,90 @@ type FlatMaterial struct {
 	Volume     float64 `json:"volume"`
 }
 
-// jobCostSCCSurchargePercent is CCP's flat "Secure Commerce Commission"
+// DefaultSCCSurchargePercent is CCP's flat "Secure Commerce Commission"
 // surcharge, added to every job's install cost as a fixed % of EIV
-// regardless of structure or location. Currently 4% (post-Uprising).
-const jobCostSCCSurchargePercent = 4.0
+// regardless of structure or location. Currently 4% (post-Uprising 2022;
+// stepped from 1.5% during the industry cost rework).
+//
+// This value has changed twice since the 2022 rework and CCP has publicly
+// discussed further adjustments. Callers can override per-call via
+// IndustryParams.SCCSurchargePercent; the analyzer honors the override
+// only when > 0 so a future patch is a one-line change in one place
+// (this const), and per-user experimentation is a request-field change
+// (no rebuild). Audit P5.26.
+var DefaultSCCSurchargePercent = 4.0
+
+// sccSurchargePercent resolves the effective SCC rate for one Analyze
+// call: the per-call override wins when > 0; otherwise the package
+// default.
+func (p IndustryParams) sccSurchargePercent() float64 {
+	if p.SCCSurchargePercent > 0 {
+		return p.SCCSurchargePercent
+	}
+	return DefaultSCCSurchargePercent
+}
+
+// industryFeeInputs unpacks IndustryParams into the canonical tradeFeeInputs
+// shape used by tradeFeeMultipliers. This is the ONLY place in industry.go
+// that reads fee fields — so any future fee-model change is a one-file
+// edit. Callers that leave the split-fee fields at zero see the legacy
+// behavior: BrokerFee applied to both sides, no buy-side sales tax, sell
+// tax = SalesTaxPercent. Matches EVE — buyers pay broker only, sellers
+// pay broker + sales tax.
+func industryFeeInputs(params IndustryParams) tradeFeeInputs {
+	return tradeFeeInputs{
+		SplitTradeFees:       params.SplitTradeFees,
+		BrokerFeePercent:     params.BrokerFee,
+		SalesTaxPercent:      params.SalesTaxPercent,
+		BuyBrokerFeePercent:  params.BuyBrokerFeePercent,
+		SellBrokerFeePercent: params.SellBrokerFeePercent,
+		BuySalesTaxPercent:   params.BuySalesTaxPercent,
+		SellSalesTaxPercent:  params.SellSalesTaxPercent,
+	}
+}
+
+// SellRevenueMultiplier returns the per-unit net-of-fees revenue multiplier
+// for the sell side (maker path — listing your own sell order and paying
+// broker + sales tax). Uses the canonical additive formula from fees.go.
+func (p IndustryParams) SellRevenueMultiplier() float64 {
+	_, m := tradeFeeMultipliers(industryFeeInputs(p))
+	return m
+}
+
+// InstantSellTaxOnlyMultiplier returns the sell-side multiplier for the
+// instant-sell (taker) path — dumping into buys as market taker. Takers
+// pay sales tax but NOT broker fee.
+func (p IndustryParams) InstantSellTaxOnlyMultiplier() float64 {
+	_, _, _, sellTax := tradeFeePercents(industryFeeInputs(p))
+	m := 1.0 - sellTax/100.0
+	if m < 0 {
+		m = 0
+	}
+	return m
+}
+
+// InventionSkillMultiplier returns the multiplier applied to the SDE base
+// invention probability from encryption and datacore skill levels.
+//
+//	mult = (1 + encryption/40) × (1 + (datacore1 + datacore2)/30)
+//
+// All-L5: 1.125 × 1.333... ≈ 1.5. All-0: 1.0. Levels are clamped 0..5.
+// Independent of decryptor multiplier (which composes on top).
+func InventionSkillMultiplier(encryption, datacore1, datacore2 int32) float64 {
+	clamp := func(v int32) int32 {
+		if v < 0 {
+			return 0
+		}
+		if v > 5 {
+			return 5
+		}
+		return v
+	}
+	e := clamp(encryption)
+	d1 := clamp(datacore1)
+	d2 := clamp(datacore2)
+	return (1.0 + float64(e)/40.0) * (1.0 + float64(d1+d2)/30.0)
+}
 
 // batchUtilizationThreshold is the minimum fraction of one blueprint run's
 // product output the parent must actually consume before the analyzer will
@@ -318,6 +446,11 @@ type IndustryAnalyzer struct {
 	marketBuyOrders      map[int32][]esi.MarketOrder
 	systemCostIndices    *esi.SystemCostIndices
 	jobCostBreakdown     JobCostBreakdown // reset at Analyze() start
+	// reprocessingSources indexes materialID → ores that reprocess into
+	// that material. Rebuilt once per Analyze() call when IncludeReprocessing
+	// is on. Nil when reprocessing is disabled or SDE isn't loaded.
+	reprocessingSources         ReprocessingSources
+	currentReprocessingNetYield float64
 	getAllAdjustedPrices func(cache *esi.IndustryCache) (map[int32]float64, error)
 	getSystemCostIndex   func(cache *esi.IndustryCache, systemID int32) (*esi.SystemCostIndices, error)
 	fetchMarketPricesFn  func(params IndustryParams) (map[int32]float64, error)
@@ -484,6 +617,18 @@ func (a *IndustryAnalyzer) Analyze(params IndustryParams, progress func(string))
 	// adds to jobCostBreakdown; must start from zero every Analyze.)
 	a.jobCostBreakdown = JobCostBreakdown{}
 
+	// Reprocessing setup (per-call): reset by default; build the reverse
+	// ore-material index and cache the net yield only when the caller
+	// asked for the ore-vs-buy sourcing comparison. Rebuilding per call
+	// keeps the SDE-owning analyzer thread-safe (each shallow-copy in the
+	// scanner gets its own map). Audit P2.5.
+	a.reprocessingSources = nil
+	a.currentReprocessingNetYield = 0
+	if params.IncludeReprocessing {
+		a.reprocessingSources = BuildReprocessingSources(a.SDE)
+		a.currentReprocessingNetYield = ReprocessingNetYield(params)
+	}
+
 	// Get system cost index
 	var costIndex float64
 	a.systemCostIndices = nil
@@ -566,23 +711,21 @@ func (a *IndustryAnalyzer) Analyze(params IndustryParams, progress func(string))
 	}
 
 	// FIX #6: Calculate profit if you sell the built product.
-	// Revenue = sell price × quantity × (1 - salesTax%) × (1 - brokerFee%)
-	// Capture the raw per-unit ask/bid up front so we can surface them on
-	// the response — this is what the user sees in the in-game market
-	// window, and having the number visible on the scanner row is what
-	// lets them catch a moon-price outlier that inflates modeled profit
-	// without having to reverse-engineer it from SellRevenue.
+	// Fees flow through the canonical tradeFeeMultipliers path (fees.go)
+	// so this file matches scanner.go / station_trading.go / route.go /
+	// backtest.go / contracts.go — one file owns the additive
+	// `1 - (broker + tax)/100` formula. Pre-2026 code multiplied
+	// `(1-tax) × (1-broker)` which drifted ~15 bp of revenue vs every
+	// other engine surface. Audit P1.3.
 	unitAsk := a.marketBestAsk(params.TypeID)
 	unitBid := a.marketBestBid(params.TypeID)
 	askDepth, bidDepth := a.marketBookDepth(params.TypeID)
 	askOrders, bidOrders := a.marketBookOrderCounts(params.TypeID)
-	makerSellRevenue := unitAsk * float64(totalQuantity) *
-		(1.0 - params.SalesTaxPercent/100) *
-		(1.0 - params.BrokerFee/100)
+	makerSellRevenue := unitAsk * float64(totalQuantity) * params.SellRevenueMultiplier()
 	instantSellRevenue, instantSellAvailable := a.marketInstantSellRevenue(
 		params.TypeID,
 		totalQuantity,
-		1.0-params.SalesTaxPercent/100,
+		params.InstantSellTaxOnlyMultiplier(),
 	)
 	// Pick the revenue quote per the caller's chosen model. "sell_to_sell"
 	// (list at the best ask) is the natural default a builder uses when
@@ -874,7 +1017,7 @@ func (a *IndustryAnalyzer) calculateCosts(node *MaterialNode, costIndex float64,
 		grossInstall = 0
 	}
 	facilityTax := eiv * (params.FacilityTax / 100.0)
-	sccSurcharge := eiv * jobCostSCCSurchargePercent / 100.0
+	sccSurcharge := eiv * params.sccSurchargePercent() / 100.0
 	node.JobCost = grossInstall + facilityTax + sccSurcharge
 
 	// Breakdown is populated ONLY for the root node — the specific job the
@@ -1331,11 +1474,26 @@ func (a *IndustryAnalyzer) calculateInventionStep(params IndustryParams, tree *M
 	}
 	chance := normalizeProbability(product.Probability)
 	if params.InventionChance > 0 {
+		// Absolute override: caller has already folded any skill / decryptor
+		// / standings adjustments into this value. Don't double-apply.
 		chance = normalizeProbability(params.InventionChance)
-	} else if params.InventionChanceMult > 0 && params.InventionChanceMult != 1.0 {
-		// Frontend picked a decryptor without knowing this product's SDE
-		// base probability — apply the picker's multiplier server-side.
-		chance = chance * params.InventionChanceMult
+	} else {
+		// Apply EVE's canonical invention skill formula to the SDE base:
+		//   base × (1 + Enc/40) × (1 + (DC1+DC2)/30)
+		// All levels zero = 1.0 (identity), preserving pre-skill-aware
+		// callers. Then compose the decryptor multiplier from the mult path.
+		if params.InventionEncryptionLevel > 0 || params.InventionDatacoreLevel1 > 0 || params.InventionDatacoreLevel2 > 0 {
+			chance = chance * InventionSkillMultiplier(
+				params.InventionEncryptionLevel,
+				params.InventionDatacoreLevel1,
+				params.InventionDatacoreLevel2,
+			)
+		}
+		if params.InventionChanceMult > 0 && params.InventionChanceMult != 1.0 {
+			// Frontend picked a decryptor without knowing this product's SDE
+			// base probability — apply the picker's multiplier server-side.
+			chance = chance * params.InventionChanceMult
+		}
 		if chance > 1 {
 			chance = 1
 		}
@@ -1384,7 +1542,7 @@ func (a *IndustryAnalyzer) calculateInventionStep(params IndustryParams, tree *M
 		invGrossInstall = 0
 	}
 	invFacilityTax := eivPerAttempt * (params.FacilityTax / 100.0)
-	invSCC := eivPerAttempt * jobCostSCCSurchargePercent / 100.0
+	invSCC := eivPerAttempt * params.sccSurchargePercent() / 100.0
 	jobCostPerAttempt := invGrossInstall + invFacilityTax + invSCC
 	// Accumulate the invention step's breakdown onto the analyzer's
 	// running totals, scaled by expected attempts.
@@ -1833,6 +1991,32 @@ func (a *IndustryAnalyzer) marketBestBid(typeID int32) float64 {
 // currently bidding on has no meaningful reference price, so we degrade to the
 // instant-cost quote rather than emit 0 and pretend materials are free.
 func (a *IndustryAnalyzer) materialCost(typeID int32, quantity int32, model string) float64 {
+	direct := a.materialCostRaw(typeID, quantity, model)
+	if a.reprocessingSources == nil || quantity <= 0 {
+		return direct
+	}
+	// See if any ore reprocesses into this material more cheaply than
+	// the direct market price. Net yield reflects the current params
+	// (skills, tax, implants, base station yield) captured at Analyze()
+	// entry. Audit P2.5.
+	perUnit, ok := a.cheapestReprocessedCostPerUnit(typeID, a.currentReprocessingNetYield, model)
+	if !ok {
+		return direct
+	}
+	reproCost := perUnit * float64(quantity)
+	if direct > 0 && reproCost >= direct {
+		return direct
+	}
+	if direct <= 0 {
+		return reproCost
+	}
+	return reproCost
+}
+
+// materialCostRaw is the no-reprocessing-alternative price path. The
+// public materialCost wraps this with the ore-reprocess-vs-direct
+// comparison so the analyzer picks the cheaper sourcing per material.
+func (a *IndustryAnalyzer) materialCostRaw(typeID int32, quantity int32, model string) float64 {
 	if quantity <= 0 {
 		return 0
 	}
