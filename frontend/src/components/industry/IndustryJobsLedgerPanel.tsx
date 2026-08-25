@@ -2,35 +2,25 @@ import type { ComponentProps } from "react";
 import { useI18n } from "@/lib/i18n";
 import type { IndustryJobsWorkspaceTab } from "./IndustryJobsWorkspaceNav";
 import { IndustryJobsGuidePanel } from "./IndustryJobsGuidePanel";
-import { IndustryPlannerWarningLog } from "./IndustryPlannerWarningLog";
-import { IndustryDependencyBoard } from "./IndustryDependencyBoard";
 import { IndustryOperationsBoards } from "./IndustryOperationsBoards";
-import { IndustryPlannerBuilderPanel } from "./IndustryPlannerBuilderPanel";
 import { IndustryOperationsJobsPanel } from "./IndustryOperationsJobsPanel";
 import { IndustryJobsProjectHeader } from "./IndustryJobsProjectHeader";
-import { IndustryJobsPlanningActions } from "./IndustryJobsPlanningActions";
 import { IndustryPlannerSchedulerPanel } from "./IndustryPlannerSchedulerPanel";
-import { IndustryPlanPreviewPanel } from "./IndustryPlanPreviewPanel";
 import { IndustryWorkspaceStatusBoards } from "./IndustryWorkspaceStatusBoards";
 
 interface IndustryJobsLedgerPanelProps {
   isLoggedIn: boolean;
   ledgerProjectsLoading: boolean;
-  /** Which top-level industry tab is active: "guide" (Projects), "planning"
-   *  (Plan), or "operations" (Operations). The internal panels still gate on
-   *  this value; the user-facing sub-nav that used to switch it was removed
-   *  when Projects/Plan/Operations became top-level tabs. */
+  /** Which top-level industry tab is active: "guide" (Projects) or
+   *  "operations" (Operations). The old "planning" case is gone —
+   *  Plan-tab responsibilities moved into Discover's reactive materials
+   *  preview (pre-commit) and Operations (post-commit / scheduler / diff). */
   jobsWorkspaceTab: IndustryJobsWorkspaceTab;
   projectHeaderProps: ComponentProps<typeof IndustryJobsProjectHeader>;
   guidePanelProps: ComponentProps<typeof IndustryJobsGuidePanel>;
-  planningActionsProps: ComponentProps<typeof IndustryJobsPlanningActions>;
-  warningLogProps: ComponentProps<typeof IndustryPlannerWarningLog>;
   workspaceStatusBoardsProps: ComponentProps<typeof IndustryWorkspaceStatusBoards>;
-  dependencyBoardProps: ComponentProps<typeof IndustryDependencyBoard>;
   schedulerPanelProps: ComponentProps<typeof IndustryPlannerSchedulerPanel>;
-  planPreviewPanelProps: ComponentProps<typeof IndustryPlanPreviewPanel>;
   operationsBoardsProps: ComponentProps<typeof IndustryOperationsBoards>;
-  plannerBuilderProps: ComponentProps<typeof IndustryPlannerBuilderPanel>;
   operationsJobsProps: ComponentProps<typeof IndustryOperationsJobsPanel>;
 }
 
@@ -40,14 +30,9 @@ export function IndustryJobsLedgerPanel({
   jobsWorkspaceTab,
   projectHeaderProps,
   guidePanelProps,
-  planningActionsProps,
-  warningLogProps,
   workspaceStatusBoardsProps,
-  dependencyBoardProps,
   schedulerPanelProps,
-  planPreviewPanelProps,
   operationsBoardsProps,
-  plannerBuilderProps,
   operationsJobsProps,
 }: IndustryJobsLedgerPanelProps) {
   const { t } = useI18n();
@@ -73,25 +58,11 @@ export function IndustryJobsLedgerPanel({
               <IndustryJobsGuidePanel {...guidePanelProps} />
             )}
 
-            <IndustryJobsPlanningActions {...planningActionsProps} />
-
-            {(jobsWorkspaceTab === "guide" || jobsWorkspaceTab === "planning") && (
-              <IndustryPlannerWarningLog {...warningLogProps} />
-            )}
-
             <IndustryWorkspaceStatusBoards {...workspaceStatusBoardsProps} />
-
-            {jobsWorkspaceTab === "planning" && (
-              <IndustryDependencyBoard {...dependencyBoardProps} />
-            )}
 
             <IndustryPlannerSchedulerPanel {...schedulerPanelProps} />
 
-            <IndustryPlanPreviewPanel {...planPreviewPanelProps} />
-
             <IndustryOperationsBoards {...operationsBoardsProps} />
-
-            <IndustryPlannerBuilderPanel {...plannerBuilderProps} />
 
             <IndustryOperationsJobsPanel {...operationsJobsProps} />
           </>

@@ -32,7 +32,10 @@ export function IndustryPlannerSchedulerPanel({
 }: IndustryPlannerSchedulerPanelProps) {
   const { t } = useI18n();
 
-  if (jobsWorkspaceTab !== "planning") {
+  // Scheduler moved from Plan to Operations. Splitting jobs across BPCs
+  // (e.g. "run 8 copy jobs off 1 BP" vs "4 jobs off 4 BPs available")
+  // is a real Operations-side concern.
+  if (jobsWorkspaceTab !== "operations") {
     return null;
   }
 

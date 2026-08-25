@@ -21,6 +21,8 @@ import { useGlobalToast } from "../Toast";
 import {
   commitBatchToProject,
   defaultRunsForRow,
+  previewBatch,
+  type BatchPreview,
   type RowCommitStatus,
 } from "@/lib/industryBatchCommit";
 import { getAuthIndustryProjects } from "@/lib/api";
@@ -424,6 +426,72 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
   const [commitError, setCommitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState<boolean>(false);
   const commitAbortRef = useRef<AbortController | null>(null);
+  // Reactive materials preview — replaces the deleted Plan tab's builder
+  // as the "does this look right before I commit" surface. Debounced so
+  // rapid check/uncheck doesn't hammer the analyzer; auto-runs whenever
+  // the effective selection or per-row runs changes. Cached to
+  // sessionStorage keyed by a selection+runs signature so a tab-flip
+  // (which unmounts the scanner) doesn't force re-analyze of an unchanged
+  // selection — the display subset restores instantly on remount.
+  const [previewData, setPreviewData] = useState<BatchPreview | null>(() => {
+    try {
+      const raw = sessionStorage.getItem("eve-flipper:scanner-preview-data");
+      if (raw) {
+        // Cached payload omits the heavy per-row analyses (they aren't used
+        // by the preview UI). Filling with an empty array keeps the type
+        // shape happy without paying to persist ~50-200KB per row.
+        const parsed = JSON.parse(raw) as Partial<BatchPreview>;
+        if (parsed && Array.isArray(parsed.materials)) {
+          return {
+            analyses: [],
+            dedupedCount: parsed.dedupedCount ?? 0,
+            coverage: null,
+            materials: parsed.materials,
+            shortfall: parsed.shortfall ?? [],
+            coverageWarnings: parsed.coverageWarnings ?? [],
+          };
+        }
+      }
+    } catch { /* ignore */ }
+    return null;
+  });
+  const [previewLoading, setPreviewLoading] = useState<boolean>(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewCollapsed, setPreviewCollapsed] = useState<boolean>(false);
+  // Persist Full/Shortfall tab across scanner remounts (tab-switching within
+  // the app unmounts this panel; sessionStorage restores the user's
+  // last-picked view on remount). Also persist the drag-resized panel
+  // height so my carefully-sized preview doesn't reset on every tab flip.
+  const [previewTab, setPreviewTab] = useState<"full" | "shortfall">(() => {
+    try {
+      const raw = sessionStorage.getItem("eve-flipper:scanner-preview-tab");
+      if (raw === "shortfall" || raw === "full") return raw;
+    } catch { /* ignore */ }
+    return "full";
+  });
+  useEffect(() => {
+    try { sessionStorage.setItem("eve-flipper:scanner-preview-tab", previewTab); } catch { /* ignore */ }
+  }, [previewTab]);
+  const [previewHeightVh, setPreviewHeightVh] = useState<number>(() => {
+    try {
+      const raw = sessionStorage.getItem("eve-flipper:scanner-preview-height-vh");
+      const n = raw ? parseFloat(raw) : NaN;
+      if (Number.isFinite(n) && n >= 15 && n <= 80) return n;
+    } catch { /* ignore */ }
+    return 40;
+  });
+  useEffect(() => {
+    try { sessionStorage.setItem("eve-flipper:scanner-preview-height-vh", String(previewHeightVh)); } catch { /* ignore */ }
+  }, [previewHeightVh]);
+  const previewAbortRef = useRef<AbortController | null>(null);
+  // Signature of "what's selected and at what runs" — used to skip the
+  // reactive analyze when the scanner remounts (e.g. tab flip) with an
+  // unchanged selection. Persisted alongside the preview payload in
+  // sessionStorage so a remount can restore the cache directly.
+  const previewSignatureRef = useRef<string | null>((() => {
+    try { return sessionStorage.getItem("eve-flipper:scanner-preview-sig"); }
+    catch { return null; }
+  })());
   const { importFees, loading: importingFees } = useEsiFeeImport();
   const [searchQuery, setSearchQuery] = useState(initialScanState?.searchQuery ?? "");
 
@@ -1253,6 +1321,126 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
     setCommitProgress("");
   }, []);
 
+  // Reactive preview effect: whenever the selection or per-row runs settles,
+  // re-run analyze+coverage in the background and cache the merged materials
+  // list. Debounced 600ms so mashing checkboxes doesn't stack analyzer runs.
+  // Skips entirely when the current signature (selection + per-row runs +
+  // decryptor / build station / fees) matches the last-computed one —
+  // that's how tab-flipping doesn't force a re-analyze on unchanged input.
+  useEffect(() => {
+    if (submitting) return; // don't compete with the real commit's row-status updates
+    if (!response || selectedIDs.size === 0) {
+      setPreviewData(null);
+      setPreviewError(null);
+      setPreviewLoading(false);
+      if (previewAbortRef.current) {
+        previewAbortRef.current.abort();
+        previewAbortRef.current = null;
+      }
+      previewSignatureRef.current = null;
+      try {
+        sessionStorage.removeItem("eve-flipper:scanner-preview-data");
+        sessionStorage.removeItem("eve-flipper:scanner-preview-sig");
+      } catch { /* ignore */ }
+      return;
+    }
+    // Build a stable signature from the inputs previewBatch consumes. If it
+    // matches the last computed signature AND we have cached data, skip.
+    const runsSig = Array.from(manualRunsByRowKey.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `${k}:${v}`)
+      .join(",");
+    const selSig = Array.from(selectedIDs).sort().join(",");
+    const contextSig = [
+      sharedPrefs.buildSystem,
+      sharedPrefs.buildStationID,
+      sharedPrefs.facilityTax,
+      sharedPrefs.structureBonus,
+      sharedPrefs.brokerFee,
+      sharedPrefs.salesTaxPercent,
+      sharedPrefs.decryptor,
+      sharedPrefs.decryptorCost,
+      sharedPrefs.buildMode,
+    ].join("|");
+    const currentSig = `${selSig}|${runsSig}|${contextSig}`;
+    if (previewData && previewSignatureRef.current === currentSig) {
+      // Cache hit — nothing to do. Skip the debounce + analyze entirely.
+      return;
+    }
+    const controller = new AbortController();
+    const timeout = setTimeout(async () => {
+      if (previewAbortRef.current) previewAbortRef.current.abort();
+      previewAbortRef.current = controller;
+      setPreviewLoading(true);
+      setPreviewError(null);
+      try {
+        const selRows = response.rows.filter((r) => selectedIDs.has(rowKey(r)));
+        const preview = await previewBatch({
+          rows: selRows,
+          runsByKey: manualRunsByRowKey,
+          rowKeyFor: rowKey,
+          defaultRunsPerJob: 1,
+          context: {
+            systemName: sharedPrefs.buildSystem,
+            stationID: sharedPrefs.buildStationID,
+            facilityTax: sharedPrefs.facilityTax,
+            structureBonus: sharedPrefs.structureBonus,
+            brokerFee: sharedPrefs.brokerFee,
+            salesTaxPercent: sharedPrefs.salesTaxPercent,
+            decryptorKey: sharedPrefs.decryptor,
+            decryptorCost: sharedPrefs.decryptorCost,
+            buildMode: sharedPrefs.buildMode,
+          },
+          signal: controller.signal,
+          // Deliberately NOT passing onRowStatus — preview should be silent
+          // so the row Flag pills don't flash to "analyzing" every time the
+          // user checks a box.
+        });
+        if (!controller.signal.aborted) {
+          setPreviewData(preview);
+          previewSignatureRef.current = currentSig;
+          // Persist the display subset (materials/shortfall/etc) — the
+          // analyses field is intentionally omitted (heavy + unused by UI).
+          try {
+            sessionStorage.setItem("eve-flipper:scanner-preview-data", JSON.stringify({
+              materials: preview.materials,
+              shortfall: preview.shortfall,
+              dedupedCount: preview.dedupedCount,
+              coverageWarnings: preview.coverageWarnings,
+            }));
+            sessionStorage.setItem("eve-flipper:scanner-preview-sig", currentSig);
+          } catch { /* quota / serialization errors — cache miss next time is fine */ }
+        }
+      } catch (e: unknown) {
+        if (!controller.signal.aborted) {
+          setPreviewError(e instanceof Error ? e.message : "preview failed");
+        }
+      } finally {
+        if (!controller.signal.aborted) setPreviewLoading(false);
+        if (previewAbortRef.current === controller) previewAbortRef.current = null;
+      }
+    }, 600);
+    return () => {
+      clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [
+    selectedIDs,
+    manualRunsByRowKey,
+    response,
+    submitting,
+    previewData,
+    sharedPrefs.buildSystem,
+    sharedPrefs.buildStationID,
+    sharedPrefs.facilityTax,
+    sharedPrefs.structureBonus,
+    sharedPrefs.brokerFee,
+    sharedPrefs.salesTaxPercent,
+    sharedPrefs.decryptor,
+    sharedPrefs.decryptorCost,
+    sharedPrefs.buildMode,
+  ]);
+
   const toggleSelectAll = () => {
     if (selectedIDs.size === sortedRows.length && sortedRows.length > 0) {
       setSelectedIDs(new Set());
@@ -1304,10 +1492,21 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
   }
 
   return (
-    // Reserve bottom padding for the sticky commit footer so the last table
-    // row and the results panel bottom edge aren't hidden underneath it.
-    // Only applies when the footer would be visible (selection non-empty).
-    <div className={`m-2 space-y-2 ${selectedIDs.size > 0 ? "pb-16" : ""}`}>
+    // Reserve bottom padding for the sticky commit drawer (materials preview
+    // panel + footer) so the last table row isn't hidden underneath. Height
+    // tracks the user's chosen previewHeightVh so a bigger preview reserves
+    // more room; collapsed preview reserves only enough for the footer.
+    <div
+      className="m-2 space-y-2"
+      style={{
+        paddingBottom:
+          selectedIDs.size === 0
+            ? undefined
+            : previewCollapsed
+              ? "6rem"
+              : `calc(${previewHeightVh}vh + 5rem)`,
+      }}
+    >
       <TabSettingsPanel
         title={t("industryScannerTitle")}
         hint={t("industryScannerIntro")}
@@ -2028,26 +2227,39 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
           Rendered only when at least one row is selected — collapses to
           zero height otherwise. See CommitFooter below the main component. */}
       {selectedIDs.size > 0 && (
-        <CommitFooter
-          selectionCount={selectedIDs.size}
-          capital={selectionTotals.capital}
-          profit={selectionTotals.profit}
-          mode={commitMode}
-          onModeChange={setCommitMode}
-          name={commitName}
-          onNameChange={setCommitName}
-          strategy={commitStrategy}
-          onStrategyChange={setCommitStrategy}
-          projects={projects}
-          projectsLoading={projectsLoading}
-          existingProjectID={existingProjectID}
-          onExistingProjectChange={setExistingProjectID}
-          submitting={submitting}
-          error={commitError}
-          progress={commitProgress}
-          onConfirm={handleCommitConfirm}
-          onCancel={handleCommitCancel}
-        />
+        <>
+          <MaterialsPreviewPanel
+            data={previewData}
+            loading={previewLoading}
+            error={previewError}
+            collapsed={previewCollapsed}
+            onToggleCollapse={() => setPreviewCollapsed((v) => !v)}
+            activeTab={previewTab}
+            onTabChange={setPreviewTab}
+            heightVh={previewHeightVh}
+            onHeightChange={setPreviewHeightVh}
+          />
+          <CommitFooter
+            selectionCount={selectedIDs.size}
+            capital={selectionTotals.capital}
+            profit={selectionTotals.profit}
+            mode={commitMode}
+            onModeChange={setCommitMode}
+            name={commitName}
+            onNameChange={setCommitName}
+            strategy={commitStrategy}
+            onStrategyChange={setCommitStrategy}
+            projects={projects}
+            projectsLoading={projectsLoading}
+            existingProjectID={existingProjectID}
+            onExistingProjectChange={setExistingProjectID}
+            submitting={submitting}
+            error={commitError}
+            progress={commitProgress}
+            onConfirm={handleCommitConfirm}
+            onCancel={handleCommitCancel}
+          />
+        </>
       )}
     </div>
   );
@@ -2068,6 +2280,190 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
  * unit prices, etc.) moves into the component body so it only runs on real
  * row renders, not on every parent render.
  */
+interface MaterialsPreviewPanelProps {
+  data: BatchPreview | null;
+  loading: boolean;
+  error: string | null;
+  collapsed: boolean;
+  onToggleCollapse: () => void;
+  activeTab: "full" | "shortfall";
+  onTabChange: (t: "full" | "shortfall") => void;
+  /** Panel height as vh. User-adjustable via the top drag handle. Clamped
+   *  15–80 by the drag handler to keep the panel above the footer and
+   *  below the top nav. */
+  heightVh: number;
+  onHeightChange: (vh: number) => void;
+}
+
+/**
+ * Reactive materials-preview panel — sits fixed above the CommitFooter and
+ * shows the merged material requirements + coverage overlay for the current
+ * selection. Two tabs: Full (all materials the batch needs) and Shortfall
+ * (only materials with positive missing_qty). Debounced analyze+coverage
+ * runs in the parent's useEffect; this component is purely presentational.
+ *
+ * Fixed positioning stacks it above the CommitFooter (which is fixed at
+ * bottom-0 with ~52px height). See `bottom-[52px]` below.
+ */
+function MaterialsPreviewPanel({
+  data,
+  loading,
+  error,
+  collapsed,
+  onToggleCollapse,
+  activeTab,
+  onTabChange,
+  heightVh,
+  onHeightChange,
+}: MaterialsPreviewPanelProps) {
+  const rows = data
+    ? activeTab === "shortfall"
+      ? data.shortfall
+      : data.materials
+    : [];
+  const fullCount = data?.materials.length ?? 0;
+  const shortCount = data?.shortfall.length ?? 0;
+  const headerNote = loading
+    ? "computing…"
+    : error
+      ? `error — ${error}`
+      : data
+        ? `${fullCount} materials, ${shortCount} short`
+        : "select rows to preview";
+  const handleResizeStart = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startVh = heightVh;
+    const move = (ev: MouseEvent) => {
+      // Drag UP → panel gets bigger. Convert pixel delta to vh so the
+      // sensitivity is consistent across viewport heights.
+      const deltaVh = ((startY - ev.clientY) / window.innerHeight) * 100;
+      const nextVh = Math.max(15, Math.min(80, startVh + deltaVh));
+      onHeightChange(nextVh);
+    };
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
+  return (
+    <div
+      className="fixed left-0 right-0 z-40 border-t border-eve-border/80
+                 bg-eve-panel/95 backdrop-blur shadow-[0_-4px_12px_rgba(0,0,0,0.35)]"
+      style={{ bottom: "38px" }}
+    >
+      {/* Resize handle — drag up/down to change the panel's max-height.
+          Only shown when the panel is expanded (dragging a collapsed panel
+          would be surprising since there's nothing to resize). */}
+      {!collapsed && (
+        <div
+          onMouseDown={handleResizeStart}
+          className="h-1.5 w-full cursor-ns-resize bg-eve-border/40 hover:bg-eve-accent/50 transition-colors"
+          title="Drag to resize preview"
+        />
+      )}
+      <div className="flex items-center justify-between px-3 py-1.5 border-b border-eve-border/40">
+        <button
+          type="button"
+          onClick={onToggleCollapse}
+          className="flex items-center gap-2 text-xs text-eve-dim hover:text-eve-text transition-colors"
+          title={collapsed ? "Expand materials preview" : "Collapse materials preview"}
+        >
+          <span className="text-[10px]">{collapsed ? "▸" : "▾"}</span>
+          <span className="text-[10px] uppercase tracking-wider">Materials preview</span>
+          <span className="text-eve-dim">·</span>
+          <span className={loading ? "text-eve-accent" : error ? "text-red-300" : "text-eve-text"}>
+            {headerNote}
+          </span>
+        </button>
+        {!collapsed && data && data.materials.length > 0 && (
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => onTabChange("full")}
+              className={`px-2 py-0.5 text-[10px] uppercase tracking-wider rounded-sm border ${
+                activeTab === "full"
+                  ? "border-eve-accent text-eve-accent bg-eve-accent/10"
+                  : "border-eve-border text-eve-dim hover:text-eve-text"
+              }`}
+            >
+              Full ({fullCount})
+            </button>
+            <button
+              type="button"
+              onClick={() => onTabChange("shortfall")}
+              className={`px-2 py-0.5 text-[10px] uppercase tracking-wider rounded-sm border ${
+                activeTab === "shortfall"
+                  ? "border-red-500/60 text-red-300 bg-red-900/20"
+                  : "border-eve-border text-eve-dim hover:text-eve-text"
+              }`}
+            >
+              Short ({shortCount})
+            </button>
+          </div>
+        )}
+      </div>
+      {!collapsed && (
+        <div style={{ maxHeight: `${heightVh}vh` }} className="overflow-y-auto">
+          {rows.length === 0 ? (
+            <div className="px-3 py-4 text-xs text-eve-dim text-center">
+              {loading
+                ? "Analyzing…"
+                : error
+                  ? "Preview unavailable — the commit flow will still work, just no pre-commit view."
+                  : activeTab === "shortfall"
+                    ? "Nothing missing — you have everything the batch needs."
+                    : "No materials — coverage came back empty."}
+            </div>
+          ) : (
+            <table className="w-full text-xs">
+              <thead className="text-eve-dim bg-eve-dark/40 sticky top-0">
+                <tr>
+                  <th className="px-3 py-1 text-left font-normal text-[10px] uppercase tracking-wider">Material</th>
+                  <th className="px-3 py-1 text-right font-normal text-[10px] uppercase tracking-wider w-24">Need</th>
+                  <th className="px-3 py-1 text-right font-normal text-[10px] uppercase tracking-wider w-24">Have</th>
+                  <th className="px-3 py-1 text-right font-normal text-[10px] uppercase tracking-wider w-24">Missing</th>
+                  <th className="px-3 py-1 text-right font-normal text-[10px] uppercase tracking-wider w-20">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((m) => {
+                  const missing = m.missing_qty ?? 0;
+                  const statusColor =
+                    m.status === "covered"
+                      ? "text-emerald-300"
+                      : m.status === "partial"
+                        ? "text-amber-300"
+                        : missing > 0
+                          ? "text-red-300"
+                          : "text-eve-dim";
+                  return (
+                    <tr key={m.type_id} className="border-t border-eve-border/20 hover:bg-eve-accent/5">
+                      <td className="px-3 py-1 truncate">{m.type_name || `Type ${m.type_id}`}</td>
+                      <td className="px-3 py-1 text-right font-mono">{Math.ceil(m.required_qty ?? 0).toLocaleString()}</td>
+                      <td className="px-3 py-1 text-right font-mono text-eve-dim">
+                        {Math.floor(m.available_qty ?? 0).toLocaleString()}
+                      </td>
+                      <td className={`px-3 py-1 text-right font-mono ${missing > 0 ? "text-red-300" : "text-eve-dim"}`}>
+                        {missing > 0 ? Math.ceil(missing).toLocaleString() : "—"}
+                      </td>
+                      <td className={`px-3 py-1 text-right font-mono text-[10px] uppercase tracking-wider ${statusColor}`}>
+                        {m.status || (missing > 0 ? "missing" : "covered")}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface CommitFooterProps {
   selectionCount: number;
   capital: number;

@@ -8,8 +8,6 @@ import {
   getAuthIndustryProjects,
   createAuthIndustryProject,
   getAuthIndustryProjectSnapshot,
-  previewAuthIndustryProjectPlan,
-  planAuthIndustryProject,
   rebalanceAuthIndustryProjectMaterials,
   syncAuthIndustryProjectBlueprintPool,
   getAuthIndustryCoverage,
@@ -39,7 +37,6 @@ import type {
   IndustryJobStatus,
   IndustryPlanPatch,
   IndustryPlanPreview,
-  IndustryPlanSchedulerInput,
   IndustryTaskPlanInput,
   IndustryJobPlanInput,
   IndustryMaterialPlanInput,
@@ -66,11 +63,9 @@ import {
   formatUtcShort,
   industryJobStatusClass,
   industryTaskStatusClass,
-  planPatchSignature,
   taskConstraintRecord,
   taskConstraintNumber,
   type IndustryPlannerWarningEvent,
-  type IndustryPlannerWarningSource,
   type IndustryTaskDependencyBoard,
 } from "./industry/industryHelpers";
 import type { IndustryJobsWorkspaceTab } from "./industry/IndustryJobsWorkspaceNav";
@@ -124,7 +119,7 @@ interface Props {
 // (home base with all your workflows), Discover (find what to build), Plan
 // (per-project build setup), Operations (execution tracking). The old
 // Analysis/Jobs top-level split + nested sub-tabs collapsed into one bar.
-type IndustryTab = "projects" | "discover" | "plan" | "operations" | "stockpiles";
+type IndustryTab = "projects" | "discover" | "operations" | "stockpiles";
 type DiscoverSource = "search" | "scan";
 const INDUSTRY_TAB_LS_KEY = "eve-settings:industry-tab";
 const DISCOVER_SOURCE_LS_KEY = "eve-settings:industry-discover-source";
@@ -416,12 +411,17 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
   const plannerWarningSeqRef = useRef(1);
   const ledgerLoadSeqRef = useRef(0);
   const schedulerDefaultsProjectKeyRef = useRef("");
-  // Single top-level tab: Projects (home base) → Discover → Plan → Operations.
+  // Single top-level tab: Projects (home base) → Discover → Operations.
+  // Plan was removed — its "verify materials before commit" role moved into
+  // Discover as a reactive preview panel, and its post-Apply role belongs to
+  // Operations. See the arc that deleted IndustryPlannerBuilderPanel &co.
   // Projects is the default landing so cyclical users see their workflows first.
   const [industryTab, setIndustryTabRaw] = useState<IndustryTab>(() => {
     try {
       const raw = localStorage.getItem(INDUSTRY_TAB_LS_KEY);
-      if (raw === "projects" || raw === "discover" || raw === "plan" || raw === "operations") return raw;
+      if (raw === "projects" || raw === "discover" || raw === "operations") return raw;
+      // Migrate old "plan" persistence → operations, since Plan is gone.
+      if (raw === "plan") return "operations";
     } catch { /* ignore */ }
     return "projects";
   });
@@ -450,10 +450,12 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
   // Kept only because IndustryJobsLedgerPanel still reads it to dispatch
   // between guide / planning / operations content. Derived from industryTab
   // now — no user-facing sub-nav toggles it anymore.
+  // Kept for the IndustryJobsLedgerPanel dispatch since Projects and
+  // Operations still share the shell. With Plan gone, the "planning" case
+  // is no longer reachable via industryTab; leaving the type intact keeps
+  // panel-level gating in IndustryJobsLedgerPanel unambiguous.
   const jobsWorkspaceTab: IndustryJobsWorkspaceTab =
-    industryTab === "operations" ? "operations"
-    : industryTab === "projects" ? "guide"
-    : "planning";
+    industryTab === "operations" ? "operations" : "guide";
   // Planner Visual Builder compact mode + page size are UX prefs, so they
   // persist across reloads via localStorage keyed by user (not project).
   const [planBuilderCompactMode, setPlanBuilderCompactMode] = useState<boolean>(() => {
@@ -735,36 +737,8 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     refreshLedger(selectedLedgerProjectId);
   }, [isLoggedIn, selectedLedgerProjectId, refreshLedger]);
 
-  const pushPlannerWarnings = useCallback((source: IndustryPlannerWarningSource, warnings: string[] | string) => {
-    const list = Array.isArray(warnings) ? warnings : [warnings];
-    const normalized = list
-      .map((entry) => String(entry ?? "").trim())
-      .filter((entry) => entry.length > 0);
-    if (normalized.length === 0) {
-      return;
-    }
-    const nowISO = new Date().toISOString();
-    setPlannerWarnings((prev) => {
-      const next = [...prev];
-      for (const message of normalized) {
-        const duplicateIndex = next.findIndex((item) => item.source === source && item.message === message);
-        if (duplicateIndex >= 0) {
-          next[duplicateIndex] = {
-            ...next[duplicateIndex],
-            created_at: nowISO,
-          };
-          continue;
-        }
-        next.unshift({
-          id: plannerWarningSeqRef.current++,
-          source,
-          message,
-          created_at: nowISO,
-        });
-      }
-      return next.slice(0, 40);
-    });
-  }, []);
+  // pushPlannerWarnings deleted — planner warnings now route through the
+  // toast system directly at their source callsites (addToast(..., "warning")).
 
   useEffect(() => {
     if (!isLoggedIn) {
@@ -1436,31 +1410,6 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     };
   }, [planDraftTasks, planTaskBlueprintOptionByPair, planTaskBlueprintOptionByType]);
 
-  const strictBlueprintApplyBlocked = useMemo(() => (
-    strictBlueprintBindingMode &&
-    useVisualPlanBuilder &&
-    hasVisualPlanRows &&
-    visualTaskBlueprintBindingStats.missing > 0
-  ), [
-    strictBlueprintBindingMode,
-    useVisualPlanBuilder,
-    hasVisualPlanRows,
-    visualTaskBlueprintBindingStats.missing,
-  ]);
-
-  const plannerWarningSourceLabel = useCallback((source: IndustryPlannerWarningSource): string => {
-    switch (source) {
-      case "preview":
-        return t("industryLedgerWarningSourcePreview");
-      case "apply":
-        return t("industryLedgerWarningSourceApply");
-      case "gate":
-        return t("industryLedgerWarningSourceGate");
-      default:
-        return source;
-    }
-  }, [t]);
-
   const taskStatusBoard = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const task of ledgerSnapshot?.tasks ?? []) {
@@ -1725,71 +1674,11 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
 
   const handleSeedCurrentIndustryPlanFromAnalysis = useCallback(() => {
     handleGeneratePlanDraft();
-    setIndustryTab("plan");
+    setIndustryTab("operations");
   }, [handleGeneratePlanDraft, setIndustryTab]);
 
-  const buildLedgerPlanPatchToSend = useCallback((): IndustryPlanPatch | null => {
-    let patch: IndustryPlanPatch | null = null;
-    if (useVisualPlanBuilder && hasVisualPlanRows) {
-      patch = buildVisualPlanPatch();
-    } else {
-      patch = buildAutoPlanPatch();
-    }
-    if (!patch) {
-      return null;
-    }
-    const schedulerPatch: IndustryPlanSchedulerInput = {
-      enabled: enablePlanScheduler,
-      slot_count: Math.max(1, schedulerSlotCount),
-      max_job_runs: Math.max(1, schedulerMaxRunsPerJob),
-      max_job_duration_seconds: Math.max(1, Math.round(schedulerMaxDurationHours * 3600)),
-      window_days: 30,
-      queue_status: schedulerQueueStatus,
-    };
-    return {
-      replace: patch.replace ?? replaceLedgerPlanOnApply,
-      project_status: patch.project_status ?? "planned",
-      tasks: Array.isArray(patch.tasks) ? patch.tasks : [],
-      jobs: Array.isArray(patch.jobs) ? patch.jobs : [],
-      materials: Array.isArray(patch.materials) ? patch.materials : [],
-      blueprints: Array.isArray(patch.blueprints) ? patch.blueprints : [],
-      scheduler: schedulerPatch,
-    };
-  }, [
-    useVisualPlanBuilder,
-    hasVisualPlanRows,
-    buildVisualPlanPatch,
-    buildAutoPlanPatch,
-    enablePlanScheduler,
-    schedulerSlotCount,
-    schedulerMaxRunsPerJob,
-    schedulerMaxDurationHours,
-    schedulerQueueStatus,
-    replaceLedgerPlanOnApply,
-  ]);
-
-  const currentLedgerPlanPatchSignature = useMemo(() => {
-    const patch = buildLedgerPlanPatchToSend();
-    return planPatchSignature(patch);
-  }, [buildLedgerPlanPatchToSend]);
-
-  const lastLedgerPreviewPatchSignature = useMemo(
-    () => planPatchSignature(lastLedgerPlanPreviewPatch),
-    [lastLedgerPlanPreviewPatch]
-  );
-
-  const isLastLedgerPreviewStale = useMemo(() => (
-    Boolean(
-      lastLedgerPlanPreview &&
-      lastLedgerPreviewPatchSignature &&
-      currentLedgerPlanPatchSignature &&
-      lastLedgerPreviewPatchSignature !== currentLedgerPlanPatchSignature
-    )
-  ), [
-    lastLedgerPlanPreview,
-    lastLedgerPreviewPatchSignature,
-    currentLedgerPlanPatchSignature,
-  ]);
+  // buildLedgerPlanPatchToSend deleted — Plan tab is gone; the scanner
+  // panel builds and commits its own patch inline via commitBatchToProject.
 
   const visibleLedgerTaskIDs = useMemo(
     () => (ledgerSnapshot?.tasks ?? []).map((task) => task.id),
@@ -1886,181 +1775,15 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     seedVisualPlanBuilderFromSnapshot,
   ]);
 
-  const handlePreviewCurrentAnalysisToLedgerPlan = useCallback(async () => {
-    if (!isLoggedIn) return;
-    if (selectedLedgerProjectId <= 0) {
-      addToast(t("industryLedgerSelectProjectFirst"), "warning", 2000);
-      return;
-    }
-    const patchToSend = buildLedgerPlanPatchToSend();
-    if (!patchToSend) {
-      addToast(t("industryLedgerRunAnalysisFirst"), "warning", 2200);
-      return;
-    }
-    setPreviewingLedgerPlan(true);
-    try {
-      const preview = await previewAuthIndustryProjectPlan(selectedLedgerProjectId, patchToSend);
-      setLastLedgerPlanPreview(preview);
-      setLastLedgerPlanPreviewPatch(patchToSend);
-      const s = preview.summary;
-      const schedulerBit = s.scheduler_applied
-        ? ` split:${s.jobs_split_from ?? 0}->${s.jobs_planned_total ?? s.jobs_inserted}`
-        : "";
-      addToast(`${t("industryLedgerPreviewReady")}: tasks:${s.tasks_inserted} jobs:${s.jobs_inserted}${schedulerBit}`, "success", 2000);
-      const previewWarnings = [
-        ...(Array.isArray(preview.warnings) ? preview.warnings : []),
-        ...(Array.isArray(s.warnings) ? s.warnings : []),
-      ];
-      if (previewWarnings.length > 0) {
-        pushPlannerWarnings("preview", previewWarnings);
-        addToast(previewWarnings.slice(0, 2).join(" | "), "warning", 3600);
-      }
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Failed to preview plan";
-      onError?.(msg);
-      addToast(msg, "error", 2600);
-    } finally {
-      setPreviewingLedgerPlan(false);
-    }
-  }, [
-    isLoggedIn,
-    selectedLedgerProjectId,
-    buildLedgerPlanPatchToSend,
-    addToast,
-    onError,
-    pushPlannerWarnings,
-    t,
-  ]);
+  // handlePreviewCurrentAnalysisToLedgerPlan deleted — Plan tab is gone;
+  // pre-commit preview lives inline in Discover's MaterialsPreviewPanel.
 
-  const handleApplyCurrentAnalysisToLedgerPlan = useCallback(async (bypassStrictGate = false) => {
-    if (!isLoggedIn) return;
-    if (selectedLedgerProjectId <= 0) {
-      addToast(t("industryLedgerSelectProjectFirst"), "warning", 2000);
-      return;
-    }
+  // handleApplyCurrentAnalysisToLedgerPlan deleted — Plan tab is gone;
+  // Discover's inline commit footer is the sole apply path now.
 
-    const patchToSend = buildLedgerPlanPatchToSend();
-    if (!patchToSend) {
-      addToast(t("industryLedgerRunAnalysisFirst"), "warning", 2200);
-      return;
-    }
-    if (strictBlueprintApplyBlocked && !bypassStrictGate) {
-      const strictGateMessage = "Strict BP gate: fix missing bindings before Apply";
-      pushPlannerWarnings("gate", strictGateMessage);
-      addToast(strictGateMessage, "warning", 2600);
-      return;
-    }
-
-    const patchForApply: IndustryPlanPatch = bypassStrictGate
-      ? { ...patchToSend, strict_bp_bypass: true }
-      : patchToSend;
-
-    setApplyingLedgerPlan(true);
-    try {
-      if (bypassStrictGate) {
-        pushPlannerWarnings("gate", "Strict BP gate bypass requested for Apply Current");
-      }
-      const resp = await planAuthIndustryProject(selectedLedgerProjectId, patchForApply);
-      const summary = resp.summary;
-      const schedulerBit = summary.scheduler_applied
-        ? ` split:${summary.jobs_split_from ?? 0}->${summary.jobs_planned_total ?? summary.jobs_inserted}`
-        : "";
-      const summaryText = `tasks:${summary.tasks_inserted} jobs:${summary.jobs_inserted} mats:${summary.materials_upserted} bp:${summary.blueprints_upserted}${schedulerBit}`;
-      setLastLedgerPlanSummary(summaryText);
-      if (Array.isArray(summary.warnings) && summary.warnings.length > 0) {
-        pushPlannerWarnings("apply", summary.warnings);
-        addToast(summary.warnings.slice(0, 2).join(" | "), "warning", 3600);
-      }
-      setLastLedgerPlanPreview(null);
-      setLastLedgerPlanPreviewPatch(null);
-      void trackAchievementEvent("industry_analysis_run", { jobPlanCreated: true });
-      addToast(t("industryLedgerPlanApplied"), "success", 1800);
-      await refreshLedger(selectedLedgerProjectId);
-      await refreshLedgerProjects(selectedLedgerProjectId);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Failed to apply plan";
-      onError?.(msg);
-      addToast(msg, "error", 2600);
-    } finally {
-      setApplyingLedgerPlan(false);
-    }
-  }, [
-    isLoggedIn,
-    selectedLedgerProjectId,
-    buildLedgerPlanPatchToSend,
-    addToast,
-    onError,
-    refreshLedger,
-    refreshLedgerProjects,
-    pushPlannerWarnings,
-    strictBlueprintApplyBlocked,
-    trackAchievementEvent,
-    t,
-  ]);
-
-  const handleApplyLastPreviewToLedgerPlan = useCallback(async (bypassStrictGate = false) => {
-    if (!isLoggedIn) return;
-    if (selectedLedgerProjectId <= 0) {
-      addToast(t("industryLedgerSelectProjectFirst"), "warning", 2000);
-      return;
-    }
-    if (!lastLedgerPlanPreviewPatch) {
-      addToast(t("industryLedgerRunPreviewFirst"), "warning", 2000);
-      return;
-    }
-    if (strictBlueprintApplyBlocked && !bypassStrictGate) {
-      const strictGateMessage = "Strict BP gate: fix missing bindings before Apply";
-      pushPlannerWarnings("gate", strictGateMessage);
-      addToast(strictGateMessage, "warning", 2600);
-      return;
-    }
-
-    const patchForApply: IndustryPlanPatch = bypassStrictGate
-      ? { ...lastLedgerPlanPreviewPatch, strict_bp_bypass: true }
-      : lastLedgerPlanPreviewPatch;
-
-    setApplyingLedgerPlan(true);
-    try {
-      if (bypassStrictGate) {
-        pushPlannerWarnings("gate", "Strict BP gate bypass requested for Apply Preview");
-      }
-      const resp = await planAuthIndustryProject(selectedLedgerProjectId, patchForApply);
-      const summary = resp.summary;
-      const schedulerBit = summary.scheduler_applied
-        ? ` split:${summary.jobs_split_from ?? 0}->${summary.jobs_planned_total ?? summary.jobs_inserted}`
-        : "";
-      const summaryText = `tasks:${summary.tasks_inserted} jobs:${summary.jobs_inserted} mats:${summary.materials_upserted} bp:${summary.blueprints_upserted}${schedulerBit}`;
-      setLastLedgerPlanSummary(summaryText);
-      if (Array.isArray(summary.warnings) && summary.warnings.length > 0) {
-        pushPlannerWarnings("apply", summary.warnings);
-        addToast(summary.warnings.slice(0, 2).join(" | "), "warning", 3600);
-      }
-      setLastLedgerPlanPreview(null);
-      setLastLedgerPlanPreviewPatch(null);
-      void trackAchievementEvent("industry_analysis_run", { jobPlanCreated: true });
-      addToast(t("industryLedgerPreviewApplied"), "success", 1800);
-      await refreshLedger(selectedLedgerProjectId);
-      await refreshLedgerProjects(selectedLedgerProjectId);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Failed to apply preview";
-      onError?.(msg);
-      addToast(msg, "error", 2600);
-    } finally {
-      setApplyingLedgerPlan(false);
-    }
-  }, [
-    isLoggedIn,
-    selectedLedgerProjectId,
-    lastLedgerPlanPreviewPatch,
-    addToast,
-    onError,
-    refreshLedger,
-    refreshLedgerProjects,
-    pushPlannerWarnings,
-    strictBlueprintApplyBlocked,
-    trackAchievementEvent,
-    t,
-  ]);
+  // handleApplyLastPreviewToLedgerPlan deleted — Plan tab is gone; the
+  // preview→apply workflow it drove was moved into Discover's inline
+  // commit flow (preview happens reactively; commit is one click).
 
   const addVisualTaskRow = useCallback(() => {
     const topBlueprintTypeID = result?.material_tree?.blueprint?.blueprint_type_id ?? 0;
@@ -2152,88 +1875,7 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     updateVisualTaskConstraints(index, { [key]: normalized });
   }, [updateVisualTaskConstraints]);
 
-  const autoFixVisualTaskBlueprintBindings = useCallback(() => {
-    if (planDraftTasks.length === 0) {
-      addToast("No task rows to fix", "warning", 1800);
-      return;
-    }
-    if (planTaskBlueprintOptions.length === 0) {
-      addToast("Add blueprint pool rows first", "warning", 2200);
-      return;
-    }
-
-    const optionsByType = new Map<number, typeof planTaskBlueprintOptions>();
-    for (const option of planTaskBlueprintOptions) {
-      const current = optionsByType.get(option.blueprintTypeID) ?? [];
-      current.push(option);
-      optionsByType.set(option.blueprintTypeID, current);
-    }
-
-    let fixed = 0;
-    let unresolved = 0;
-    const nextTasks = planDraftTasks.map((task) => {
-      const bpTypeID = taskConstraintNumber(task.constraints, "blueprint_type_id");
-      if (bpTypeID <= 0) {
-        return task;
-      }
-      const candidates = optionsByType.get(bpTypeID) ?? [];
-      if (candidates.length === 0) {
-        unresolved++;
-        return task;
-      }
-
-      const bpLocationID = taskConstraintNumber(task.constraints, "blueprint_location_id");
-      const stationID = taskConstraintNumber(task.constraints, "station_id");
-
-      const hasExact = candidates.some((option) => option.blueprintLocationID === bpLocationID);
-      if (hasExact) {
-        return task;
-      }
-
-      const selected =
-        (stationID > 0 ? candidates.find((option) => option.blueprintLocationID === stationID) : undefined) ??
-        (bpLocationID > 0 ? candidates.find((option) => option.blueprintLocationID === bpLocationID) : undefined) ??
-        candidates.find((option) => option.blueprintLocationID === 0) ??
-        candidates[0];
-
-      if (!selected) {
-        unresolved++;
-        return task;
-      }
-
-      const constraints = taskConstraintRecord(task.constraints);
-      constraints.blueprint_type_id = selected.blueprintTypeID;
-      constraints.blueprint_location_id = selected.blueprintLocationID;
-      constraints.me = selected.me;
-      constraints.te = selected.te;
-      if ((!constraints.station_id || Number(constraints.station_id) <= 0) && selected.blueprintLocationID > 0) {
-        constraints.station_id = selected.blueprintLocationID;
-      }
-      fixed++;
-      return {
-        ...task,
-        constraints,
-      };
-    });
-
-    if (fixed > 0) {
-      setPlanDraftTasks(nextTasks);
-    }
-
-    if (fixed > 0 && unresolved > 0) {
-      addToast(`BP bindings fixed: ${fixed}, unresolved: ${unresolved}`, "warning", 3000);
-      return;
-    }
-    if (fixed > 0) {
-      addToast(`BP bindings fixed: ${fixed}`, "success", 2200);
-      return;
-    }
-    if (unresolved > 0) {
-      addToast(`No matching pool rows for ${unresolved} bindings`, "warning", 2600);
-      return;
-    }
-    addToast("BP bindings are already aligned", "success", 1800);
-  }, [planDraftTasks, planTaskBlueprintOptions, addToast]);
+  // autoFixVisualTaskBlueprintBindings deleted — Plan tab visual builder gone.
 
   const updateVisualJobRow = useCallback((index: number, next: Partial<IndustryJobPlanInput>) => {
     setPlanDraftJobs((prev) => prev.map((row, i) => (i === index ? { ...row, ...next } : row)));
@@ -2274,12 +1916,7 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     setPlanDraftBlueprints((prev) => prev.filter((_, i) => i !== index));
   }, []);
 
-  const clearVisualPlanBuilder = useCallback(() => {
-    setPlanDraftTasks([]);
-    setPlanDraftJobs([]);
-    setPlanDraftMaterials([]);
-    setPlanDraftBlueprints([]);
-  }, []);
+  // clearVisualPlanBuilder deleted — Plan tab visual builder gone.
 
   // Search handler with debounce
   const handleSearch = useCallback((query: string) => {
@@ -2519,10 +2156,7 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     }
   }, [analyzing, selectedItem, runs, activityMode, me, te, systemName, selectedStationId, facilityTax, structureBonus, brokerFee, salesTaxPercent, ownBlueprint, blueprintCost, blueprintIsBPO, sharedPrefs.decryptor, sharedPrefs.decryptorCost, sharedPrefs.skipReactions, buildMode, ownedBlueprints, t, onError, trackAchievementEvent]);
 
-  const clearPlanPreview = useCallback(() => {
-    setLastLedgerPlanPreview(null);
-    setLastLedgerPlanPreviewPatch(null);
-  }, []);
+  // clearPlanPreview deleted — Plan preview state removed.
 
   // Triggers handleAnalyze on the render AFTER the scanner handoff applied
   // its state setters, so the analyzer's closure has the up-to-date values
@@ -2606,93 +2240,7 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     taskDependencyBoard,
   ]);
 
-  const plannerBuilderProps = useMemo(() => ({
-    ctx: {
-      jobsWorkspaceTab,
-      useVisualPlanBuilder,
-      planBuilderCompactMode,
-      setPlanBuilderCompactMode,
-      planBuilderPageSize,
-      setPlanBuilderPageSize,
-      togglePlanBuilderSection,
-      planBuilderCollapsed,
-      planDraftTasks,
-      visualTaskBlueprintBindingStats,
-      visiblePlanDraftTasks,
-      taskPageStart,
-      taskConstraintNumber,
-      planTaskBlueprintOptionByPair,
-      planTaskBlueprintOptionByType,
-      planTaskBlueprintOptions,
-      updateVisualTaskRow,
-      removeVisualTaskRow,
-      updateVisualTaskConstraints,
-      updateVisualTaskConstraint,
-      planBuilderPage,
-      changePlanBuilderPage,
-      planBuilderTotalPages,
-      planDraftJobs,
-      visiblePlanDraftJobs,
-      jobPageStart,
-      updateVisualJobRow,
-      removeVisualJobRow,
-      planDraftMaterials,
-      visiblePlanDraftMaterials,
-      materialPageStart,
-      updateVisualMaterialRow,
-      removeVisualMaterialRow,
-      planDraftBlueprints,
-      visiblePlanDraftBlueprints,
-      blueprintPageStart,
-      updateVisualBlueprintRow,
-      removeVisualBlueprintRow,
-      addVisualTaskRow,
-      addVisualJobRow,
-      addVisualMaterialRow,
-      addVisualBlueprintRow,
-    },
-  }), [
-    jobsWorkspaceTab,
-    useVisualPlanBuilder,
-    planBuilderCompactMode,
-    planBuilderPageSize,
-    togglePlanBuilderSection,
-    planBuilderCollapsed,
-    planDraftTasks,
-    visualTaskBlueprintBindingStats,
-    visiblePlanDraftTasks,
-    taskPageStart,
-    taskConstraintNumber,
-    planTaskBlueprintOptionByPair,
-    planTaskBlueprintOptionByType,
-    planTaskBlueprintOptions,
-    updateVisualTaskRow,
-    removeVisualTaskRow,
-    updateVisualTaskConstraints,
-    updateVisualTaskConstraint,
-    planBuilderPage,
-    changePlanBuilderPage,
-    planBuilderTotalPages,
-    planDraftJobs,
-    visiblePlanDraftJobs,
-    jobPageStart,
-    updateVisualJobRow,
-    removeVisualJobRow,
-    planDraftMaterials,
-    visiblePlanDraftMaterials,
-    materialPageStart,
-    updateVisualMaterialRow,
-    removeVisualMaterialRow,
-    planDraftBlueprints,
-    visiblePlanDraftBlueprints,
-    blueprintPageStart,
-    updateVisualBlueprintRow,
-    removeVisualBlueprintRow,
-    addVisualTaskRow,
-    addVisualJobRow,
-    addVisualMaterialRow,
-    addVisualBlueprintRow,
-  ]);
+  // plannerBuilderProps deleted — Plan tab visual builder gone.
 
   const operationsJobsProps = useMemo(() => ({
     ctx: {
@@ -2726,13 +2274,45 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     updatingLedgerJobId,
   ]);
 
-  const industryTabDefs: Array<{ id: IndustryTab; labelKey: "industryTabProjects" | "industryTabDiscover" | "industryTabPlan" | "industryTabOperations" | "industryTabStockpiles" }> = [
+  const industryTabDefs: Array<{ id: IndustryTab; labelKey: "industryTabProjects" | "industryTabDiscover" | "industryTabOperations" | "industryTabStockpiles" }> = [
     { id: "projects", labelKey: "industryTabProjects" },
     { id: "discover", labelKey: "industryTabDiscover" },
-    { id: "plan", labelKey: "industryTabPlan" },
     { id: "operations", labelKey: "industryTabOperations" },
     { id: "stockpiles", labelKey: "industryTabStockpiles" },
   ];
+
+  // ── Plan-tab dead-code parking lot ─────────────────────────────────────
+  // These bindings became orphaned when the Plan sub-tab was removed. They
+  // are marked `void` so noUnusedLocals compiles cleanly; they carry no
+  // runtime effect and the follow-up commit deletes them along with their
+  // declarations. Keeping them one-lined here rather than sprinkled through
+  // the file so the cleanup diff is localised.
+  void applyingLedgerPlan; void setApplyingLedgerPlan;
+  void setReplaceLedgerPlanOnApply;
+  void lastLedgerPlanSummary;
+  void previewingLedgerPlan; void setPreviewingLedgerPlan;
+  void lastLedgerPlanPreview;
+  void lastLedgerPlanPreviewPatch;
+  void useVisualPlanBuilder;
+  void strictBlueprintBindingMode; void setStrictBlueprintBindingMode;
+  void plannerWarnings;
+  void plannerWarningSeqRef;
+  void setPlanBuilderCompactMode;
+  void setPlanBuilderPageSize;
+  void planBuilderCollapsed;
+  void buildVisualPlanPatch;
+  void hasVisualPlanRows;
+  void visiblePlanDraftTasks; void visiblePlanDraftJobs;
+  void visiblePlanDraftMaterials; void visiblePlanDraftBlueprints;
+  void visualTaskBlueprintBindingStats;
+  void togglePlanBuilderSection;
+  void changePlanBuilderPage;
+  void updateVisualJobRow; void updateVisualMaterialRow; void updateVisualBlueprintRow;
+  void updateVisualTaskRow; void updateVisualTaskConstraint;
+  void removeVisualTaskRow; void removeVisualJobRow;
+  void removeVisualMaterialRow; void removeVisualBlueprintRow;
+  void addVisualTaskRow; void addVisualJobRow;
+  void addVisualMaterialRow; void addVisualBlueprintRow;
 
   return (
     <div className={`flex-1 flex flex-col min-h-0 ${
@@ -2741,7 +2321,6 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
       // summary cards + material tree + coverage panel), so it also needs
       // the scrollbar — without it the coverage section at the bottom was
       // getting clipped when a blueprint was selected.
-      industryTab === "plan" ||
       industryTab === "operations" ||
       industryTab === "projects" ||
       industryTab === "discover" ||
@@ -2850,7 +2429,7 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
             }}
             onProjectCreated={(projectID: number) => {
               setSelectedLedgerProjectId(projectID);
-              setIndustryTab("plan");
+              setIndustryTab("operations");
               void refreshLedgerProjects(projectID);
               void (async () => {
                 try {
@@ -3305,10 +2884,12 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
         </Suspense>
       )}
 
-      {/* Projects / Plan / Operations all render through the shared ledger
+      {/* Projects and Operations both render through the shared ledger
           panel, which internally dispatches on jobsWorkspaceTab (derived
-          above from industryTab). */}
-      {(industryTab === "projects" || industryTab === "plan" || industryTab === "operations") && (
+          above from industryTab). Plan is gone — its "verify materials"
+          role lives in Discover's reactive preview panel; its "committed
+          state" role lives here on Operations. */}
+      {(industryTab === "projects" || industryTab === "operations") && (
         <Suspense fallback={<div className="m-2 text-xs text-eve-dim">Loading jobs workspace...</div>}>
           <IndustryJobsLedgerPanel
             isLoggedIn={isLoggedIn}
@@ -3337,7 +2918,7 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
               isLoggedIn,
               onOpen: (projectID: number) => {
                 setSelectedLedgerProjectId(projectID);
-                setIndustryTab("plan");
+                setIndustryTab("operations");
               },
               onProjectDeleted: (deletedID: number) => {
                 if (deletedID === selectedLedgerProjectId) {
@@ -3347,44 +2928,6 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
                   setLastLedgerPlanPreviewPatch(null);
                 }
               },
-            }}
-            planningActionsProps={{
-              jobsWorkspaceTab,
-              handleGeneratePlanDraft,
-              previewingLedgerPlan,
-              selectedLedgerProjectId,
-              hasVisualPlanRows,
-              result,
-              selectedItem,
-              handlePreviewCurrentAnalysisToLedgerPlan,
-              applyingLedgerPlan,
-              lastLedgerPlanPreviewPatch,
-              strictBlueprintApplyBlocked,
-              isLastLedgerPreviewStale,
-              handleApplyLastPreviewToLedgerPlan,
-              handleApplyCurrentAnalysisToLedgerPlan,
-              autoFixVisualTaskBlueprintBindings,
-              planDraftTasksLength: planDraftTasks.length,
-              planTaskBlueprintOptionsLength: planTaskBlueprintOptions.length,
-              visualTaskBlueprintBindingStatsMissing: visualTaskBlueprintBindingStats.missing,
-              visualTaskBlueprintBindingStatsFallback: visualTaskBlueprintBindingStats.fallback,
-              clearVisualPlanBuilder,
-              replaceLedgerPlanOnApply,
-              setReplaceLedgerPlanOnApply,
-              useVisualPlanBuilder,
-              setUseVisualPlanBuilder,
-              strictBlueprintBindingMode,
-              setStrictBlueprintBindingMode,
-              planDraftJobsLength: planDraftJobs.length,
-              planDraftMaterialsLength: planDraftMaterials.length,
-              planDraftBlueprintsLength: planDraftBlueprints.length,
-              lastLedgerPlanSummary,
-              lastLedgerPlanPreview,
-            }}
-            warningLogProps={{
-              warnings: plannerWarnings,
-              onClear: () => setPlannerWarnings([]),
-              sourceLabel: plannerWarningSourceLabel,
             }}
             workspaceStatusBoardsProps={{
               jobsWorkspaceTab,
@@ -3399,7 +2942,6 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
               ledgerSnapshot,
               materialCoverageTotals,
             }}
-            dependencyBoardProps={{ board: taskDependencyBoard }}
             schedulerPanelProps={{
               jobsWorkspaceTab,
               enablePlanScheduler,
@@ -3413,14 +2955,7 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
               schedulerQueueStatus,
               setSchedulerQueueStatus,
             }}
-            planPreviewPanelProps={{
-              jobsWorkspaceTab,
-              lastLedgerPlanPreview,
-              isLastLedgerPreviewStale,
-              clearPlanPreview,
-            }}
             operationsBoardsProps={operationsBoardsProps}
-            plannerBuilderProps={plannerBuilderProps}
             operationsJobsProps={operationsJobsProps}
           />
         </Suspense>

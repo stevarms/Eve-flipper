@@ -11,7 +11,9 @@ import {
 import type {
   IndustryAnalysis,
   IndustryCoverageMaterialNeed,
+  IndustryCoverageMaterialRow,
   IndustryCoverageBlueprintNeed,
+  IndustryCoverageResult,
   IndustryParams,
   IndustryPlanPatch,
   ProfitableScanRow,
@@ -158,41 +160,67 @@ export function buildParamsForRow(
 }
 
 /**
- * Analyze every selected row → dedupe by output product → build per-row plan
- * patches → merge them → optionally attach coverage → create or select the
- * target project → apply the merged patch.
- *
- * Emits row-level status through onRowStatus so the caller can turn the flag
- * pill or a status column into "analyzing / done / error" per row.
- *
- * Throws on network / server errors so the caller can surface them; otherwise
- * resolves with the summary. Aborted runs resolve with count === 0.
+ * The read-only half of the batch flow — analyze every selected row and get
+ * one coverage snapshot spanning the union of their materials + sub-BPs.
+ * Shared between the pre-commit materials preview in Discover (reactive
+ * side-effect-free) and commitBatchToProject (which follows up with patch
+ * merge + apply).
  */
-export async function commitBatchToProject(args: CommitBatchArgs): Promise<CommitBatchResult> {
+export interface PreviewBatchArgs {
+  rows: ProfitableScanRow[];
+  runsByKey: Map<string, number>;
+  rowKeyFor: (row: ProfitableScanRow) => string;
+  defaultRunsPerJob: number;
+  context: ScannerAnalysisContext;
+  onProgress?: (msg: string) => void;
+  onRowStatus?: (rowKey: string, status: RowCommitStatus) => void;
+  signal?: AbortSignal;
+}
+
+export interface BatchPreview {
+  /** Per-row analysis outputs in the order they succeeded — parallel to
+   *  `analysesKeys`. Fed to commit's merge step verbatim. */
+  analyses: { row: ProfitableScanRow; analysis: IndustryAnalysis; runs: number; rowKey: string }[];
+  /** How many rows the dedupe step collapsed. Non-zero when the user
+   *  selected e.g. both a BPO and a BPC of the same source blueprint. */
+  dedupedCount: number;
+  /** Full coverage response — merged materials + blueprints + summary.
+   *  Null when the coverage endpoint threw (network / auth / role check);
+   *  the preview panel falls back to raw material requirements in that case. */
+  coverage: IndustryCoverageResult | null;
+  /** Merged flat material requirements across every analysis, coverage
+   *  overlay applied when available. Convenient for the preview UI. */
+  materials: IndustryCoverageMaterialRow[];
+  /** Only the materials with a positive missing_qty — the "delta" or
+   *  "shortfall" list, for the preview's Shortfall tab. */
+  shortfall: IndustryCoverageMaterialRow[];
+  /** Coverage warnings surfaced to the caller for toast display
+   *  ("re-authenticate for corp scope", "role check failed", etc.). */
+  coverageWarnings: string[];
+}
+
+export async function previewBatch(args: PreviewBatchArgs): Promise<BatchPreview> {
   const {
     rows,
     runsByKey,
     rowKeyFor,
     defaultRunsPerJob,
     context,
-    mode,
-    projectName,
-    strategy,
-    existingProjectID,
     onProgress,
     onRowStatus,
     signal,
   } = args;
 
   if (rows.length === 0) {
-    throw new Error("No rows selected");
+    return { analyses: [], dedupedCount: 0, coverage: null, materials: [], shortfall: [], coverageWarnings: [] };
   }
 
-  // Dedupe by (scan_mode, product_type_id). See original modal's comment for
-  // the full rationale: the scanner emits one row per source BP group, so a
-  // user who owns BOTH a BPO and a BPC of the same source gets two rows for
-  // the same output product. Merging their patches would double every
-  // material. Prefer BPO (unlimited runs); fall back to higher available_runs.
+  // --- Dedupe by (scan_mode, product_type_id) ---
+  // Same rationale as the original modal: a user who owns BOTH a BPO and a
+  // BPC of the same source blueprint would otherwise submit two patches for
+  // the same output product, doubling every material. Prefer BPO (unlimited
+  // runs); fall back to higher available_runs. Losing rows get onRowStatus
+  // marked "done" so the caller can visually collapse them.
   const uniqueRows: ProfitableScanRow[] = [];
   const uniqueKeys: string[] = [];
   let dedupedCount = 0;
@@ -217,8 +245,6 @@ export async function commitBatchToProject(args: CommitBatchArgs): Promise<Commi
           ? false
           : rRuns > eRuns;
       if (rWins) {
-        // Existing entry loses — mark its row done-as-deduped so the caller
-        // can visually collapse it.
         onRowStatus?.(existing.rowKey, { state: "done" });
         bestByKey.set(dedupeKey, { row: r, index: i, rowKey: rk });
       } else {
@@ -233,8 +259,8 @@ export async function commitBatchToProject(args: CommitBatchArgs): Promise<Commi
     }
   }
 
-  // Phase 1: analyze each unique row sequentially.
-  const analyses: { row: ProfitableScanRow; analysis: IndustryAnalysis; runs: number }[] = [];
+  // --- Phase 1: analyze each unique row sequentially ---
+  const analyses: BatchPreview["analyses"] = [];
   for (let u = 0; u < uniqueRows.length; u++) {
     if (signal?.aborted) break;
     const row = uniqueRows[u];
@@ -245,7 +271,7 @@ export async function commitBatchToProject(args: CommitBatchArgs): Promise<Commi
       const perRow = runsByKey.get(rk) ?? defaultRunsPerJob;
       const params = buildParamsForRow(row, context, perRow);
       const analysis = await analyzeIndustry(params, () => {}, signal);
-      analyses.push({ row, analysis, runs: perRow });
+      analyses.push({ row, analysis, runs: perRow, rowKey: rk });
       onRowStatus?.(rk, { state: "done" });
     } catch (e: unknown) {
       if (signal?.aborted) break;
@@ -255,13 +281,10 @@ export async function commitBatchToProject(args: CommitBatchArgs): Promise<Commi
   }
 
   if (signal?.aborted) {
-    return { projectID: 0, count: 0, summary: null, dedupedCount, coverageWarnings: [] };
-  }
-  if (analyses.length === 0) {
-    throw new Error("All rows failed to analyze; nothing was committed.");
+    return { analyses: [], dedupedCount, coverage: null, materials: [], shortfall: [], coverageWarnings: [] };
   }
 
-  // Phase 2: one coverage call spanning every material + sub-BP.
+  // --- Phase 2: one coverage call spanning every material + sub-BP ---
   onProgress?.("Fetching coverage…");
   const materialsForCoverage = new Map<number, IndustryCoverageMaterialNeed>();
   const bpsForCoverage = new Map<number, IndustryCoverageBlueprintNeed>();
@@ -295,7 +318,7 @@ export async function commitBatchToProject(args: CommitBatchArgs): Promise<Commi
     }
   }
 
-  let coverage = null;
+  let coverage: IndustryCoverageResult | null = null;
   try {
     const coverageResp = await getAuthIndustryCoverage({
       scope: "all",
@@ -308,6 +331,85 @@ export async function commitBatchToProject(args: CommitBatchArgs): Promise<Commi
   } catch {
     coverage = null;
   }
+
+  // Prefer the coverage-enriched material rows when we got them; fall back
+  // to bare requirements if coverage failed (still show what's needed, just
+  // no have/need split).
+  const materials: IndustryCoverageMaterialRow[] = coverage?.materials?.length
+    ? coverage.materials
+    : Array.from(materialsForCoverage.values()).map((m) => ({
+        type_id: m.type_id,
+        type_name: m.type_name ?? "",
+        required_qty: m.required_qty,
+        available_qty: 0,
+        missing_qty: m.required_qty,
+        coverage_pct: 0,
+        status: "missing",
+      }));
+  const shortfall = materials.filter((m) => (m.missing_qty ?? 0) > 0);
+
+  return {
+    analyses,
+    dedupedCount,
+    coverage,
+    materials,
+    shortfall,
+    coverageWarnings: coverage?.warnings ?? [],
+  };
+}
+
+/**
+ * Analyze every selected row → dedupe by output product → build per-row plan
+ * patches → merge them → optionally attach coverage → create or select the
+ * target project → apply the merged patch.
+ *
+ * Emits row-level status through onRowStatus so the caller can turn the flag
+ * pill or a status column into "analyzing / done / error" per row.
+ *
+ * Throws on network / server errors so the caller can surface them; otherwise
+ * resolves with the summary. Aborted runs resolve with count === 0.
+ */
+export async function commitBatchToProject(args: CommitBatchArgs): Promise<CommitBatchResult> {
+  const {
+    rows,
+    runsByKey,
+    rowKeyFor,
+    defaultRunsPerJob,
+    context,
+    mode,
+    projectName,
+    strategy,
+    existingProjectID,
+    onProgress,
+    onRowStatus,
+    signal,
+  } = args;
+
+  if (rows.length === 0) {
+    throw new Error("No rows selected");
+  }
+
+  // Phases 1-2 (dedupe + analyze + coverage) are shared with the reactive
+  // preview in the scanner panel — see previewBatch above.
+  const preview = await previewBatch({
+    rows,
+    runsByKey,
+    rowKeyFor,
+    defaultRunsPerJob,
+    context,
+    onProgress,
+    onRowStatus,
+    signal,
+  });
+
+  if (signal?.aborted) {
+    return { projectID: 0, count: 0, summary: null, dedupedCount: preview.dedupedCount, coverageWarnings: [] };
+  }
+  if (preview.analyses.length === 0) {
+    throw new Error("All rows failed to analyze; nothing was committed.");
+  }
+
+  const { analyses, coverage, dedupedCount, coverageWarnings } = preview;
 
   // Phase 3: per-row patch build then merge, coverage overlay once.
   onProgress?.("Merging plans…");
@@ -356,6 +458,6 @@ export async function commitBatchToProject(args: CommitBatchArgs): Promise<Commi
     count: analyses.length,
     summary,
     dedupedCount,
-    coverageWarnings: coverage?.warnings ?? [],
+    coverageWarnings,
   };
 }
