@@ -1,7 +1,8 @@
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import { useI18n } from "@/lib/i18n";
 import { formatISK } from "@/lib/format";
 import type { FlatMaterial } from "@/lib/types";
+import { useGlobalToast } from "../Toast";
 
 interface IndustryShoppingListProps {
   materials: FlatMaterial[];
@@ -15,6 +16,7 @@ export function IndustryShoppingList({
   onOpenExecutionPlan,
 }: IndustryShoppingListProps) {
   const { t } = useI18n();
+  const { addToast } = useGlobalToast();
 
   const totalCost = useMemo(
     () => materials.reduce((sum, material) => sum + material.total_price, 0),
@@ -26,8 +28,49 @@ export function IndustryShoppingList({
     [materials]
   );
 
+  // Copy the full list to EVE's multi-buy format: "Name\tQty" per line.
+  // Multi-buy accepts tab-separated so a single paste populates the entire
+  // buy order without hand-typing anything. Item names get sanitized of
+  // stray whitespace so a rogue newline in a type name (rare but possible)
+  // doesn't break a row.
+  const handleCopyMultibuy = useCallback(async () => {
+    if (materials.length === 0) {
+      addToast(t("industryShoppingListCopyEmpty"), "warning");
+      return;
+    }
+    const text = materials
+      .map((m) => `${m.type_name.replace(/[\r\n\t]/g, " ")}\t${Math.max(1, Math.round(m.quantity))}`)
+      .join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      addToast(
+        t("industryShoppingListCopyOK").replace("{count}", String(materials.length)),
+        "success",
+      );
+    } catch {
+      addToast(t("industryShoppingListCopyFail"), "error");
+    }
+  }, [materials, addToast, t]);
+
   return (
     <div>
+      <div className="flex items-center justify-between px-3 py-2 border-b border-eve-border/40">
+        <div className="text-xs text-eve-dim">
+          {t("industryShoppingListHeader")
+            .replace("{count}", String(materials.length))
+            .replace("{cost}", formatISK(totalCost))}
+        </div>
+        <button
+          type="button"
+          onClick={handleCopyMultibuy}
+          disabled={materials.length === 0}
+          title={t("industryShoppingListCopyMultibuyHint")}
+          className="px-2 py-1 text-[11px] font-semibold rounded-sm border border-eve-accent text-eve-accent
+                     hover:bg-eve-accent/10 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          {t("industryShoppingListCopyMultibuy")}
+        </button>
+      </div>
       <table className="w-full text-sm">
         <thead className="sticky top-0 bg-eve-dark z-10">
           <tr className="text-eve-dim text-[10px] uppercase tracking-wider border-b border-eve-border">
