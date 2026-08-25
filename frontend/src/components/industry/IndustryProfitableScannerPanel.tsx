@@ -18,7 +18,13 @@ import {
 import { SystemAutocomplete } from "../SystemAutocomplete";
 import { EmptyState } from "../EmptyState";
 import { useGlobalToast } from "../Toast";
-import { AddBlueprintsToProjectModal } from "./AddBlueprintsToProjectModal";
+import {
+  commitBatchToProject,
+  defaultRunsForRow,
+  type RowCommitStatus,
+} from "@/lib/industryBatchCommit";
+import { getAuthIndustryProjects } from "@/lib/api";
+import type { IndustryProject } from "@/lib/types";
 import { StructureRigPicker, computeRigTotals } from "./StructureRigPicker";
 import { PricingHubPicker } from "./PricingHubPicker";
 import { getStructureRigs } from "@/lib/api";
@@ -392,14 +398,32 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
   // gets one distinct key per row.
   const rowKey = (row: ProfitableScanRow) =>
     `${row.blueprint_type_id}-${row.is_bpo ? "bpo" : "bpc"}-${row.scan_mode ?? "t1_mfg"}-${row.product_type_id}`;
-  const [addToProjectOpen, setAddToProjectOpen] = useState(false);
-  // Add-to-project runs state, LIFTED FROM THE MODAL so cancelling out (to
-  // fix a selection or add another row) doesn't wipe manual runs edits.
-  // Keyed by rowKey — stable across selection changes and modal
-  // open/close cycles. Reset on new scan / clear so we never carry
-  // zombie overrides from a previous scan's row set.
+  // Batch-commit state — the inline replacement for the deleted
+  // AddBlueprintsToProjectModal. Everything here corresponds one-to-one with
+  // the modal's local state, promoted up so the sticky footer + editable
+  // Runs cells can share it. Reset on new scan / clear so a fresh scan
+  // doesn't inherit stale runs overrides from a previous scan's row set.
   const [manualRunsByRowKey, setManualRunsByRowKey] = useState<Map<string, number>>(new Map());
   const [dirtyRunsByRowKey, setDirtyRunsByRowKey] = useState<Set<string>>(new Set());
+  const [commitMode, setCommitMode] = useState<"new" | "existing">("new");
+  const [commitName, setCommitName] = useState<string>(
+    () => `Scanner ${new Date().toISOString().slice(0, 19).replace("T", " ")}`,
+  );
+  const [commitStrategy, setCommitStrategy] = useState<"conservative" | "balanced" | "aggressive">("balanced");
+  const [existingProjectID, setExistingProjectID] = useState<number>(0);
+  const [projects, setProjects] = useState<IndustryProject[]>([]);
+  const [projectsLoading, setProjectsLoading] = useState<boolean>(false);
+  // Market-share % of one day's aggressive-buy volume the auto-populated
+  // per-row runs target. 10% is the "one production run" ballpark that the
+  // scanner's flag heuristic also uses (INDUSTRY_MARKET_SHARE_CAP). The
+  // footer used to expose this as a knob but nobody could tell what it
+  // meant at a glance; if you want to nudge runs, you edit the Runs cell.
+  const marketSharePct = 10;
+  const [rowCommitStatuses, setRowCommitStatuses] = useState<Map<string, RowCommitStatus>>(new Map());
+  const [commitProgress, setCommitProgress] = useState<string>("");
+  const [commitError, setCommitError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState<boolean>(false);
+  const commitAbortRef = useRef<AbortController | null>(null);
   const { importFees, loading: importingFees } = useEsiFeeImport();
   const [searchQuery, setSearchQuery] = useState(initialScanState?.searchQuery ?? "");
 
@@ -1042,6 +1066,193 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
     params.pricingStationID,
   ]);
 
+  // Batch-commit: per-row runs edit handler (row-level input in the scanner
+  // table when a row is checked). Stable so ScannerRow memoization holds.
+  const handleRunsChange = useCallback((k: string, runs: number) => {
+    setManualRunsByRowKey((prev) => {
+      const next = new Map(prev);
+      next.set(k, runs);
+      return next;
+    });
+    setDirtyRunsByRowKey((prev) => {
+      if (prev.has(k)) return prev;
+      const next = new Set(prev);
+      next.add(k);
+      return next;
+    });
+  }, []);
+
+  // Auto-populate manualRunsByRowKey from defaultRunsForRow whenever the
+  // selection or the market-share % changes. Rows the user has manually
+  // edited (dirtyRunsByRowKey) are preserved; unset entries seed to the
+  // default; entries no longer selected are pruned so a stale runs value
+  // doesn't survive if the user re-checks the row later (it re-seeds from
+  // the current share %, which is what they'd expect).
+  useEffect(() => {
+    if (!response) return;
+    setManualRunsByRowKey((prev) => {
+      let changed = false;
+      const next = new Map(prev);
+      // Drop entries no longer in selection.
+      for (const k of Array.from(next.keys())) {
+        if (!selectedIDs.has(k)) {
+          next.delete(k);
+          changed = true;
+        }
+      }
+      // Seed or refresh non-dirty entries.
+      for (const k of selectedIDs) {
+        if (dirtyRunsByRowKey.has(k)) continue;
+        const row = response.rows.find((r) => rowKey(r) === k);
+        if (!row) continue;
+        const value = defaultRunsForRow(row, marketSharePct, 1);
+        if (next.get(k) !== value) {
+          next.set(k, value);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [selectedIDs, marketSharePct, response, dirtyRunsByRowKey]);
+
+  // Load eligible projects when the user picks "append to existing" mode.
+  // Runs once per (mode, non-empty selection) combo; caches list until mode
+  // flips back or projects change externally.
+  useEffect(() => {
+    if (commitMode !== "existing" || selectedIDs.size === 0) return;
+    let cancelled = false;
+    setProjectsLoading(true);
+    (async () => {
+      try {
+        const resp = await getAuthIndustryProjects({ limit: 100 });
+        if (cancelled) return;
+        const eligible = resp.projects.filter(
+          (p) => p.status === "draft" || p.status === "planned" || p.status === "active",
+        );
+        setProjects(eligible);
+        if (eligible.length > 0 && existingProjectID === 0) {
+          setExistingProjectID(eligible[0].id);
+        }
+      } catch {
+        // Silent — footer will show "No eligible projects" once loading ends.
+      } finally {
+        if (!cancelled) setProjectsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [commitMode, selectedIDs.size]);
+
+  // Commit the current selection to a project. Full flow lives in
+  // lib/industryBatchCommit — analyze each row, one coverage call, per-row
+  // patch merge, create/select project, apply. Streams row-level status
+  // back into rowCommitStatuses so the flag pill turns into a progress
+  // indicator per row.
+  const handleCommitConfirm = useCallback(async () => {
+    if (selectedIDs.size === 0 || !response) return;
+    const selRows = response.rows.filter((r) => selectedIDs.has(rowKey(r)));
+    if (selRows.length === 0) return;
+    setSubmitting(true);
+    setCommitError(null);
+    setCommitProgress("");
+    setRowCommitStatuses(new Map());
+    const controller = new AbortController();
+    commitAbortRef.current = controller;
+    try {
+      const result = await commitBatchToProject({
+        rows: selRows,
+        runsByKey: manualRunsByRowKey,
+        rowKeyFor: rowKey,
+        defaultRunsPerJob: 1,
+        context: {
+          systemName: sharedPrefs.buildSystem,
+          stationID: sharedPrefs.buildStationID,
+          facilityTax: sharedPrefs.facilityTax,
+          structureBonus: sharedPrefs.structureBonus,
+          brokerFee: sharedPrefs.brokerFee,
+          salesTaxPercent: sharedPrefs.salesTaxPercent,
+          decryptorKey: sharedPrefs.decryptor,
+          decryptorCost: sharedPrefs.decryptorCost,
+          buildMode: sharedPrefs.buildMode,
+        },
+        mode: commitMode,
+        projectName: commitName,
+        strategy: commitStrategy,
+        existingProjectID,
+        onProgress: setCommitProgress,
+        onRowStatus: (rk, status) => {
+          setRowCommitStatuses((prev) => {
+            const next = new Map(prev);
+            next.set(rk, status);
+            return next;
+          });
+        },
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
+      const detail = result.summary
+        ? ` (tasks:${result.summary.tasks_inserted} jobs:${result.summary.jobs_inserted} bp:${result.summary.blueprints_upserted})`
+        : "";
+      const dedupeNote = result.dedupedCount > 0
+        ? ` · merged ${result.dedupedCount} duplicate row${result.dedupedCount === 1 ? "" : "s"}`
+        : "";
+      addToast(
+        t("industryScannerAddToProjectSuccess").replace("{count}", String(result.count)) + detail + dedupeNote,
+        "success",
+        3600,
+      );
+      for (const w of result.coverageWarnings) {
+        addToast(w, "warning", 10000);
+      }
+      setSelectedIDs(new Set());
+      setManualRunsByRowKey(new Map());
+      setDirtyRunsByRowKey(new Set());
+      setRowCommitStatuses(new Map());
+      setCommitProgress("");
+      // Refresh timestamped default so the next batch doesn't collide.
+      setCommitName(`Scanner ${new Date().toISOString().slice(0, 19).replace("T", " ")}`);
+      if (onProjectCreated) onProjectCreated(result.projectID);
+    } catch (e: unknown) {
+      if (!controller.signal.aborted) {
+        setCommitError(e instanceof Error ? e.message : "Add to project failed");
+      }
+    } finally {
+      setSubmitting(false);
+      commitAbortRef.current = null;
+    }
+  }, [
+    selectedIDs,
+    response,
+    manualRunsByRowKey,
+    sharedPrefs.buildSystem,
+    sharedPrefs.buildStationID,
+    sharedPrefs.facilityTax,
+    sharedPrefs.structureBonus,
+    sharedPrefs.brokerFee,
+    sharedPrefs.salesTaxPercent,
+    sharedPrefs.decryptor,
+    sharedPrefs.decryptorCost,
+    sharedPrefs.buildMode,
+    commitMode,
+    commitName,
+    commitStrategy,
+    existingProjectID,
+    addToast,
+    t,
+    onProjectCreated,
+  ]);
+
+  const handleCommitCancel = useCallback(() => {
+    if (commitAbortRef.current) {
+      commitAbortRef.current.abort();
+      commitAbortRef.current = null;
+    }
+    setSubmitting(false);
+    setCommitProgress("");
+  }, []);
+
   const toggleSelectAll = () => {
     if (selectedIDs.size === sortedRows.length && sortedRows.length > 0) {
       setSelectedIDs(new Set());
@@ -1060,14 +1271,27 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
   }, [response, selectedIDs]);
 
   const selectionTotals = useMemo(() => {
+    // The row's Cap/unit and Prof/unit cells are anchored to the analyzer's
+    // batch (row.runs) — stable across runs edits so the "per item" numbers
+    // don't jump when the user tweaks the Runs input. The footer answers
+    // a different question: "if I commit to build user_runs of each selected
+    // row, how much ISK is that in total?" That's per-unit × user's intended
+    // units, i.e. linear scaling of the analyzer batch by user_runs /
+    // analyzer_runs. Simpler than the physically-correct invention-fixed
+    // scaling — the mental model users expressed is "table shows per-item,
+    // footer shows per-item × runs".
     let capital = 0;
     let profit = 0;
     for (const r of selectedRows) {
-      capital += r.optimal_build_cost || 0;
-      profit += r.profit || 0;
+      const analyzerRuns = r.runs > 0 ? r.runs : 1;
+      const wanted = manualRunsByRowKey.get(rowKey(r));
+      const effectiveRuns = wanted && wanted > 0 ? wanted : analyzerRuns;
+      const factor = effectiveRuns / analyzerRuns;
+      capital += (r.optimal_build_cost || 0) * factor;
+      profit += (r.profit || 0) * factor;
     }
     return { capital, profit };
-  }, [selectedRows]);
+  }, [selectedRows, manualRunsByRowKey]);
 
   if (!isLoggedIn) {
     return (
@@ -1080,7 +1304,10 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
   }
 
   return (
-    <div className="m-2 space-y-2">
+    // Reserve bottom padding for the sticky commit footer so the last table
+    // row and the results panel bottom edge aren't hidden underneath it.
+    // Only applies when the footer would be visible (selection non-empty).
+    <div className={`m-2 space-y-2 ${selectedIDs.size > 0 ? "pb-16" : ""}`}>
       <TabSettingsPanel
         title={t("industryScannerTitle")}
         hint={t("industryScannerIntro")}
@@ -1700,15 +1927,6 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
               </span>
               <button
                 type="button"
-                onClick={() => setAddToProjectOpen(true)}
-                disabled={selectedIDs.size === 0}
-                className="px-2 py-1 text-[11px] font-semibold rounded-sm border border-eve-accent text-eve-accent
-                           hover:bg-eve-accent/10 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-              >
-                {t("industryScannerAddToProject")}
-              </button>
-              <button
-                type="button"
                 onClick={handleExportCsv}
                 disabled={sortedRows.length === 0}
                 title={t("industryScannerExportCsvTitle")}
@@ -1774,10 +1992,10 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                       titleText={t("industryScannerColUnitAskTooltip")}
                     />
                     <SortableHeader sortKey="isk_per_hour" align="right" label={t("industryScannerColISKHour")} active={sortKey} dir={sortDir} onClick={toggleSort} />
-                    <SortableHeader sortKey="profit" align="right" label={t("industryScannerColProfit")} active={sortKey} dir={sortDir} onClick={toggleSort} />
+                    <SortableHeader sortKey="profit" align="right" label={t("industryScannerColProfit")} active={sortKey} dir={sortDir} onClick={toggleSort} titleText={t("industryScannerColProfitTooltip")} />
                     <SortableHeader sortKey="profit_percent" align="right" label={t("industryScannerColMargin")} active={sortKey} dir={sortDir} onClick={toggleSort} />
                     <SortableHeader sortKey="period_margin" align="right" label={t("industryScannerColPeriodMargin")} active={sortKey} dir={sortDir} onClick={toggleSort} titleText={t("industryScannerColPeriodMarginTooltip")} />
-                    <SortableHeader sortKey="optimal_build_cost" align="right" label={t("industryScannerColCapital")} active={sortKey} dir={sortDir} onClick={toggleSort} />
+                    <SortableHeader sortKey="optimal_build_cost" align="right" label={t("industryScannerColCapital")} active={sortKey} dir={sortDir} onClick={toggleSort} titleText={t("industryScannerColCapitalTooltip")} />
                     <SortableHeader sortKey="manufacturing_time" align="right" label={t("industryScannerColTime")} active={sortKey} dir={sortDir} onClick={toggleSort} />
                     <th className="px-2 py-1.5 text-right w-10" aria-label={t("industryScannerColActions")} title={t("industryScannerColActions")} />
                   </tr>
@@ -1793,6 +2011,9 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
                         checked={selectedIDs.has(k)}
                         onToggle={toggleSelect}
                         onView={onViewInAnalysis ? handleView : undefined}
+                        batchRuns={manualRunsByRowKey.get(k)}
+                        onBatchRunsChange={handleRunsChange}
+                        commitStatus={rowCommitStatuses.get(k)}
                       />
                     );
                   })}
@@ -1803,85 +2024,31 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
         </div>
       )}
 
-      <AddBlueprintsToProjectModal
-        open={addToProjectOpen}
-        onClose={() => setAddToProjectOpen(false)}
-        rows={selectedRows}
-        // Fallback default when a row has no market volume history; the
-        // modal drives real per-row values via daily_volume × target_days.
-        runsPerJob={1}
-        // Persist runs edits across modal open/close cycles within the
-        // same scan so cancelling to fix a selection doesn't lose the
-        // user's manual runs numbers. Parent resets these on new scan
-        // or clear results.
-        rowKeyFor={rowKey}
-        manualRunsByRowKey={manualRunsByRowKey}
-        dirtyRunsByRowKey={dirtyRunsByRowKey}
-        onManualRunsChange={(rk, runs) => {
-          setManualRunsByRowKey((prev) => {
-            const next = new Map(prev);
-            next.set(rk, runs);
-            return next;
-          });
-          setDirtyRunsByRowKey((prev) => {
-            if (prev.has(rk)) return prev;
-            const next = new Set(prev);
-            next.add(rk);
-            return next;
-          });
-        }}
-        analysisContext={{
-          systemName: sharedPrefs.buildSystem,
-          stationID: sharedPrefs.buildStationID,
-          facilityTax: sharedPrefs.facilityTax,
-          structureBonus: sharedPrefs.structureBonus,
-          brokerFee: sharedPrefs.brokerFee,
-          salesTaxPercent: sharedPrefs.salesTaxPercent,
-          decryptorKey: sharedPrefs.decryptor,
-          decryptorCost: sharedPrefs.decryptorCost,
-          // Scanner batch add-to-project uses the same build-mode preference
-          // the Analyze tab does — both surfaces read from the shared prefs
-          // hook so the value is always in sync.
-          buildMode: sharedPrefs.buildMode,
-        }}
-        onSuccess={(projectID, count, summary, dedupedCount, coverageWarnings) => {
-          setAddToProjectOpen(false);
-          const detail = summary
-            ? ` (tasks:${summary.tasks_inserted} jobs:${summary.jobs_inserted} bp:${summary.blueprints_upserted})`
-            : "";
-          // A dedupe means the selection contained multiple scanner rows
-          // pointing to the same output product (typically BPO + BPCs of
-          // the same source BP). We collapse them to avoid doubling every
-          // material — surface a note so the user isn't surprised the row
-          // count in the summary is lower than what they selected.
-          const dedupeNote = dedupedCount && dedupedCount > 0
-            ? ` · merged ${dedupedCount} duplicate row${dedupedCount === 1 ? "" : "s"}`
-            : "";
-          addToast(
-            t("industryScannerAddToProjectSuccess").replace("{count}", String(count)) + detail + dedupeNote,
-            "success",
-            3600,
-          );
-          // Surface any partial-coverage warnings as a SEPARATE warning
-          // toast per-message. Silent warnings (missing corp asset scope,
-          // failed role check, per-character asset fetch errors) otherwise
-          // just leave the user staring at "have: 0" with no explanation,
-          // which is exactly the class of confusion that just cost us a
-          // debug loop. Longer timeout because these are actionable
-          // ("re-authenticate to grant…") and easy to miss.
-          if (coverageWarnings && coverageWarnings.length > 0) {
-            for (const w of coverageWarnings) {
-              addToast(w, "warning", 10000);
-            }
-          }
-          setSelectedIDs(new Set());
-          // Rows just got committed to a project — flush their overrides so
-          // if the user re-selects them they start from defaults again.
-          setManualRunsByRowKey(new Map());
-          setDirtyRunsByRowKey(new Set());
-          if (onProjectCreated) onProjectCreated(projectID);
-        }}
-      />
+      {/* Sticky commit footer replaces the AddBlueprintsToProjectModal.
+          Rendered only when at least one row is selected — collapses to
+          zero height otherwise. See CommitFooter below the main component. */}
+      {selectedIDs.size > 0 && (
+        <CommitFooter
+          selectionCount={selectedIDs.size}
+          capital={selectionTotals.capital}
+          profit={selectionTotals.profit}
+          mode={commitMode}
+          onModeChange={setCommitMode}
+          name={commitName}
+          onNameChange={setCommitName}
+          strategy={commitStrategy}
+          onStrategyChange={setCommitStrategy}
+          projects={projects}
+          projectsLoading={projectsLoading}
+          existingProjectID={existingProjectID}
+          onExistingProjectChange={setExistingProjectID}
+          submitting={submitting}
+          error={commitError}
+          progress={commitProgress}
+          onConfirm={handleCommitConfirm}
+          onCancel={handleCommitCancel}
+        />
+      )}
     </div>
   );
 }
@@ -1901,6 +2068,181 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
  * unit prices, etc.) moves into the component body so it only runs on real
  * row renders, not on every parent render.
  */
+interface CommitFooterProps {
+  selectionCount: number;
+  capital: number;
+  profit: number;
+  mode: "new" | "existing";
+  onModeChange: (m: "new" | "existing") => void;
+  name: string;
+  onNameChange: (n: string) => void;
+  strategy: "conservative" | "balanced" | "aggressive";
+  onStrategyChange: (s: "conservative" | "balanced" | "aggressive") => void;
+  projects: IndustryProject[];
+  projectsLoading: boolean;
+  existingProjectID: number;
+  onExistingProjectChange: (id: number) => void;
+  submitting: boolean;
+  error: string | null;
+  progress: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}
+
+/**
+ * Sticky footer that replaces the AddBlueprintsToProjectModal. Only rendered
+ * when at least one row is selected. Holds the modal's config (name /
+ * strategy / new-vs-append / existing-project picker / market share %) plus
+ * the confirm/cancel buttons and progress/error line. Per-row runs live in
+ * the ScannerRow's editable Runs cell so this footer never needs a row
+ * table — everything lives in the scanner table above.
+ */
+function CommitFooter({
+  selectionCount,
+  capital,
+  profit,
+  mode,
+  onModeChange,
+  name,
+  onNameChange,
+  strategy,
+  onStrategyChange,
+  projects,
+  projectsLoading,
+  existingProjectID,
+  onExistingProjectChange,
+  submitting,
+  error,
+  progress,
+  onConfirm,
+  onCancel,
+}: CommitFooterProps) {
+  const { t } = useI18n();
+  const canConfirm =
+    !submitting &&
+    selectionCount > 0 &&
+    ((mode === "new" && name.trim().length > 0) ||
+      (mode === "existing" && existingProjectID > 0));
+  return (
+    <div
+      className="fixed bottom-0 left-0 right-0 z-40 border-t border-eve-border/80
+                 bg-eve-panel/95 backdrop-blur px-3 py-2 shadow-[0_-4px_12px_rgba(0,0,0,0.35)]"
+    >
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+        {/* ── Summary ──────────────────────────────────────── */}
+        <div className="flex items-center gap-2">
+          <span className="text-eve-accent font-semibold">{selectionCount}</span>
+          <span className="text-eve-dim">{t("industryScannerFooterSelected")}</span>
+          <span className="text-eve-dim">·</span>
+          <span className="text-eve-dim">{t("industryScannerFooterCapital")}</span>
+          <span className="font-mono">{formatISK(capital)}</span>
+          <span className="text-eve-dim">·</span>
+          <span className="text-eve-dim">{t("industryScannerFooterProfitPerRun")}</span>
+          <span className="font-mono">{formatISK(profit)}</span>
+        </div>
+
+        <div className="h-4 w-px bg-eve-border/50" />
+
+        {/* ── Mode radios ─────────────────────────────────── */}
+        <label className="flex items-center gap-1 cursor-pointer">
+          <input
+            type="radio"
+            name="commitMode"
+            checked={mode === "new"}
+            disabled={submitting}
+            onChange={() => onModeChange("new")}
+          />
+          <span>{t("industryScannerAddToProjectModeNew")}</span>
+        </label>
+        <label className="flex items-center gap-1 cursor-pointer">
+          <input
+            type="radio"
+            name="commitMode"
+            checked={mode === "existing"}
+            disabled={submitting}
+            onChange={() => onModeChange("existing")}
+          />
+          <span>{t("industryScannerAddToProjectModeExisting")}</span>
+        </label>
+
+        {/* ── Mode-specific fields ────────────────────────── */}
+        {mode === "new" ? (
+          <>
+            <input
+              type="text"
+              value={name}
+              disabled={submitting}
+              onChange={(e) => onNameChange(e.target.value)}
+              placeholder={t("industryScannerProjectName")}
+              className="w-56 px-2 py-1 bg-eve-input border border-eve-border rounded-sm text-eve-text text-[11px]
+                         focus:outline-none focus:border-eve-accent focus:ring-1 focus:ring-eve-accent/30 disabled:opacity-50"
+            />
+            <select
+              value={strategy}
+              disabled={submitting}
+              onChange={(e) => onStrategyChange(e.target.value as CommitFooterProps["strategy"])}
+              className="px-2 py-1 bg-eve-input border border-eve-border rounded-sm text-eve-text text-[11px]
+                         focus:outline-none focus:border-eve-accent focus:ring-1 focus:ring-eve-accent/30 disabled:opacity-50"
+            >
+              <option value="conservative">conservative</option>
+              <option value="balanced">balanced</option>
+              <option value="aggressive">aggressive</option>
+            </select>
+          </>
+        ) : projectsLoading ? (
+          <span className="text-eve-dim">{t("industryScannerFooterProjectsLoading")}</span>
+        ) : projects.length === 0 ? (
+          <span className="text-eve-dim">{t("industryScannerFooterProjectsEmpty")}</span>
+        ) : (
+          <select
+            value={existingProjectID}
+            disabled={submitting}
+            onChange={(e) => onExistingProjectChange(Number(e.target.value))}
+            className="w-64 px-2 py-1 bg-eve-input border border-eve-border rounded-sm text-eve-text text-[11px]
+                       focus:outline-none focus:border-eve-accent focus:ring-1 focus:ring-eve-accent/30 disabled:opacity-50"
+          >
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name} [{p.status}]
+              </option>
+            ))}
+          </select>
+        )}
+
+        <div className="flex-1" />
+
+        {/* ── Progress / error ────────────────────────────── */}
+        {progress && !error && (
+          <span className="text-eve-dim italic truncate max-w-md">{progress}</span>
+        )}
+        {error && <span className="text-red-300 truncate max-w-md">{error}</span>}
+
+        {/* ── Actions ─────────────────────────────────────── */}
+        {submitting ? (
+          <button
+            type="button"
+            onClick={onCancel}
+            className="px-3 py-1 text-[11px] font-semibold rounded-sm border border-red-500/60 text-red-300
+                       hover:bg-red-900/20 transition-colors"
+          >
+            {t("industryScannerAddToProjectCancel")}
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={!canConfirm}
+            className="px-3 py-1 text-[11px] font-semibold rounded-sm border border-eve-accent text-eve-accent
+                       hover:bg-eve-accent/10 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            {t("industryScannerAddToProjectConfirm")}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 interface ScannerRowProps {
   row: ProfitableScanRow;
   /** Composite key (blueprint id + BPO/BPC + scan mode + product id). Passed
@@ -1914,9 +2256,19 @@ interface ScannerRowProps {
    *  captures allStations, sharedPrefs, and pricing params so this row only
    *  needs to invoke it with the row itself. */
   onView: ((row: ProfitableScanRow) => void) | undefined;
+  /** Runs to build if this row is committed to a project. Suggested from
+   *  market volume × marketSharePct in the parent; the Runs cell is editable
+   *  when the row is checked so users can nudge it. Undefined = show the
+   *  suggested default from row's own defaultRunsForRow computation. */
+  batchRuns?: number;
+  onBatchRunsChange?: (k: string, runs: number) => void;
+  /** Live status while the batch commit is in flight. When present, the Flag
+   *  pill is replaced with an "Analyzing / Done / Failed" pill so commit
+   *  progress is legible per-row without a separate progress log. */
+  commitStatus?: RowCommitStatus;
 }
 
-const ScannerRow = memo(function ScannerRow({ row, k, checked, onToggle, onView }: ScannerRowProps) {
+const ScannerRow = memo(function ScannerRow({ row, k, checked, onToggle, onView, batchRuns, onBatchRunsChange, commitStatus }: ScannerRowProps) {
   const { t } = useI18n();
 
   const hours = row.manufacturing_time / 3600;
@@ -1986,12 +2338,17 @@ const ScannerRow = memo(function ScannerRow({ row, k, checked, onToggle, onView 
     profitTooltipLines.push(`  ${totalUnits.toLocaleString()} × ${formatISK(unitPrice)}/unit (after tax + broker fee)`);
   }
   profitTooltipLines.push("");
-  profitTooltipLines.push(`Build cost:     ${formatISK(row.optimal_build_cost)}`);
+  // Batch view — the tooltip is intentionally the batch-detail read since
+  // the on-row cells are per-unit. Include the per-unit split next to the
+  // headline numbers so a hover shows both views without a second click.
+  const perUnitCost = totalUnits > 0 ? row.optimal_build_cost / totalUnits : row.optimal_build_cost;
+  const perUnitProfit = totalUnits > 0 ? row.profit / totalUnits : row.profit;
+  profitTooltipLines.push(`Build cost:     ${formatISK(row.optimal_build_cost)}   (${formatISK(perUnitCost)} / unit)`);
   if (matCost > 0) profitTooltipLines.push(`  Materials:    ${formatISK(matCost)}`);
   if (jobCost > 0) profitTooltipLines.push(`  Job cost:     ${formatISK(jobCost)}`);
-  if (invCost > 0) profitTooltipLines.push(`  (of which invention: ${formatISK(invCost)})`);
+  if (invCost > 0) profitTooltipLines.push(`  (of which invention: ${formatISK(invCost)}, amortized ${formatISK(totalUnits > 0 ? invCost / totalUnits : invCost)} / unit)`);
   profitTooltipLines.push("");
-  profitTooltipLines.push(`Profit:         ${formatISK(row.profit)}`);
+  profitTooltipLines.push(`Profit:         ${formatISK(row.profit)}   (${formatISK(perUnitProfit)} / unit)`);
   profitTooltipLines.push(`ROI:            ${row.profit_percent.toFixed(1)}%`);
   if (row.manufacturing_time > 0) {
     const hoursDisp = row.manufacturing_time / 3600;
@@ -2108,7 +2465,25 @@ const ScannerRow = memo(function ScannerRow({ row, k, checked, onToggle, onView 
       <td className="px-2 py-1 text-eve-dim">{row.product_name}</td>
       <td className="px-2 py-1 text-right font-mono">{row.owned_quantity}</td>
       <td className="px-2 py-1 text-right font-mono text-eve-dim">
-        {row.is_bpo
+        {/* When the row is selected for a batch commit, the Runs cell becomes
+            an editable "runs to build" input — dual meaning: unchecked shows
+            available runs on the BP, checked shows the plan runs the batch
+            will submit for this row. */}
+        {checked && onBatchRunsChange ? (
+          <input
+            type="number"
+            min={1}
+            max={100000}
+            value={batchRuns ?? defaultRunsForRow(row, 10, 1)}
+            onChange={(e) => {
+              const n = Math.max(1, Math.min(100000, parseInt(e.target.value, 10) || 1));
+              onBatchRunsChange(k, n);
+            }}
+            className="w-16 px-1 py-0 bg-eve-input border border-eve-border rounded-sm text-right text-eve-text text-[11px] font-mono
+                       focus:outline-none focus:border-eve-accent focus:ring-1 focus:ring-eve-accent/30"
+            title="Runs to build in this batch (editable while row is selected)"
+          />
+        ) : row.is_bpo
           ? "∞"
           : row.owned === false
             ? "—"
@@ -2119,12 +2494,32 @@ const ScannerRow = memo(function ScannerRow({ row, k, checked, onToggle, onView 
       <td className="px-2 py-1 text-right font-mono">{row.me}</td>
       <td className="px-2 py-1 text-right font-mono">{row.te}</td>
       <td className="px-2 py-1 text-center">
-        <span
-          className={`px-1.5 py-0.5 rounded-sm border text-[10px] font-bold cursor-help ${flag.color}`}
-          title={flagHint}
-        >
-          {flagLabelText}
-        </span>
+        {commitStatus ? (
+          // During a batch commit the flag cell temporarily becomes a status
+          // pill so per-row progress is legible without a separate log —
+          // matches the modal's inline status list.
+          <span
+            className={`px-1.5 py-0.5 rounded-sm border text-[10px] font-bold ${
+              commitStatus.state === "analyzing" ? "text-eve-accent border-eve-accent/60 bg-eve-accent/10" :
+              commitStatus.state === "done" ? "text-emerald-300 border-emerald-500/60 bg-emerald-900/20" :
+              commitStatus.state === "error" ? "text-red-300 border-red-500/60 bg-red-900/20" :
+              "text-eve-dim border-eve-border/60"
+            }`}
+            title={commitStatus.errorMsg ?? commitStatus.state}
+          >
+            {commitStatus.state === "analyzing" ? "…" :
+              commitStatus.state === "done" ? "✓" :
+              commitStatus.state === "error" ? "✗" :
+              "·"}
+          </span>
+        ) : (
+          <span
+            className={`px-1.5 py-0.5 rounded-sm border text-[10px] font-bold cursor-help ${flag.color}`}
+            title={flagHint}
+          >
+            {flagLabelText}
+          </span>
+        )}
       </td>
       <td
         className={`px-2 py-1 text-right font-mono cursor-help ${(shallowBook || moonPrice) ? "text-amber-300" : "text-eve-dim"}`}
@@ -2167,7 +2562,11 @@ const ScannerRow = memo(function ScannerRow({ row, k, checked, onToggle, onView 
         className={`px-2 py-1 text-right font-mono cursor-help ${row.profit >= 0 ? "text-emerald-300" : "text-red-300"}`}
         title={profitTooltip}
       >
-        {formatISK(row.profit)}
+        {/* Per-unit profit: batch_profit / units. Paired with Cap/unit so the
+            two columns share the same denominator and ROI × Cap = Profit is
+            legible on-row. Full batch profit is still in the profit tooltip
+            and rolled up in the selection summary. */}
+        {formatISK(totalUnits > 0 ? row.profit / totalUnits : row.profit)}
       </td>
       <td
         className={`px-2 py-1 text-right font-mono cursor-help ${row.profit_percent >= 0 ? "text-eve-text" : "text-red-300"}`}
@@ -2198,7 +2597,12 @@ const ScannerRow = memo(function ScannerRow({ row, k, checked, onToggle, onView 
         {row.period_margin === undefined ? "—" : `${row.period_margin.toFixed(1)}%`}
       </td>
       <td className="px-2 py-1 text-right font-mono cursor-help" title={profitTooltip}>
-        {formatISK(row.optimal_build_cost)}
+        {/* Capital per OUTPUT UNIT: batch cost / units the batch produces.
+            Amortizes invention cost naturally: for an 8-run Claymore BPC, one
+            Claymore's share of the invention is 1/8. Reads as "how much ISK
+            does one output item actually cost me" instead of "how much for
+            the whole run". Footer's Capital sum still shows batch totals. */}
+        {formatISK(totalUnits > 0 ? row.optimal_build_cost / totalUnits : row.optimal_build_cost)}
       </td>
       <td className="px-2 py-1 text-right font-mono text-eve-dim">
         {hours >= 1 ? `${hours.toFixed(1)}h` : `${Math.round(row.manufacturing_time / 60)}m`}
