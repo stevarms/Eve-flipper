@@ -137,11 +137,49 @@ func stationRiskPenalty(row *StationCommandRow) float64 {
 }
 
 func applyStationDecision(row *StationCommandRow, decision stationActionDecision) {
+	// Reconciliation (item 3 of the order-maintenance track): if the
+	// tentative action is "reprice" but every populated per-order
+	// suggestion is already at position 1, the user has nothing to
+	// change — quietly demote to "hold" so the recommendation stops
+	// nagging them after they've applied it. State-free: pure function
+	// of the current per-order snapshot; no persistence needed.
+	if decision.Action == StationActionReprice && allSuggestionsAtTopOfBook(row) {
+		decision = stationActionDecision{
+			Action:           StationActionHold,
+			Reason:           "orders already top-of-book — reprice satisfied",
+			ExpectedDeltaPct: 0.05,
+			Priority:         stationCommandActionPriority(StationActionHold),
+			ScoreDelta:       decision.ScoreDelta,
+		}
+	}
 	row.RecommendedAction = decision.Action
 	row.ActionReason = decision.Reason + " (" + stationActionModelVersion + ")"
 	row.Priority = decision.Priority
 	row.PersonalizedScore = row.PersonalizedScore + decision.ScoreDelta
 	row.ExpectedDeltaDailyProfit = sanitizeStationDelta(row.Trade.DailyProfit * decision.ExpectedDeltaPct)
+}
+
+// allSuggestionsAtTopOfBook returns true when the row has at least one
+// per-order suggestion with a real (positive) best price AND every
+// populated suggestion is Position 1. Guarded on BestPrice > 0 because
+// a zero best-price means "book empty / unknown" — we can't meaningfully
+// claim the user is top of an unknown book, and the reconciliation
+// downgrade would then fire spuriously for tests / malformed rows.
+func allSuggestionsAtTopOfBook(row *StationCommandRow) bool {
+	countable := false
+	if row.SellSuggestion != nil && row.SellSuggestion.BestPrice > 0 {
+		countable = true
+		if row.SellSuggestion.Position != 1 {
+			return false
+		}
+	}
+	if row.BuySuggestion != nil && row.BuySuggestion.BestPrice > 0 {
+		countable = true
+		if row.BuySuggestion.Position != 1 {
+			return false
+		}
+	}
+	return countable
 }
 
 func stationCommandActionPriority(a StationCommandAction) int {

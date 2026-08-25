@@ -171,6 +171,51 @@ func TestBuildStationCommand_PerOrderSuggestion(t *testing.T) {
 	}
 }
 
+// TestBuildStationCommand_ReconciliationDemotesRepriceToHold — item 3 in
+// the order-maintenance track. When a "reprice" recommendation would
+// fire but the user's active order is already top-of-book (Position 1),
+// the action demotes to "hold" so the recommendation stops nagging
+// after the user applies it. Pure function of the current per-order
+// snapshot — no persistence needed.
+func TestBuildStationCommand_ReconciliationDemotesRepriceToHold(t *testing.T) {
+	// Trade profile that would normally trigger a "reprice" verb: user has
+	// an active order at station AND the row has queue pressure signals
+	// (low confidence / high CI).
+	trades := []StationTrade{
+		{
+			TypeID:          587,
+			StationID:       60003760,
+			SellPrice:       100_000_000,
+			DailyProfit:     500_000,
+			ConfidenceLabel: "low",
+			CI:              40,
+			CTS:             65,
+		},
+	}
+	// User's sell order is already top-of-book (equals best sell).
+	activeOrders := []esi.CharacterOrder{
+		{
+			OrderID:      888,
+			TypeID:       587,
+			LocationID:   60003760,
+			Price:        100_000_000,
+			VolumeRemain: 1,
+			IsBuyOrder:   false,
+		},
+	}
+	got := BuildStationCommand(trades, activeOrders, nil, 0)
+	if len(got.Rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(got.Rows))
+	}
+	row := got.Rows[0]
+	if row.SellSuggestion == nil || row.SellSuggestion.Position != 1 {
+		t.Fatalf("expected SellSuggestion at position 1, got %+v", row.SellSuggestion)
+	}
+	if row.RecommendedAction != StationActionHold {
+		t.Errorf("RecommendedAction = %q, want hold (reprice demoted since already top-of-book)", row.RecommendedAction)
+	}
+}
+
 // TestBuildStationCommand_PerOrderSuggestion_TopOfBook — when user is
 // already best on their side, the suggestion keeps their own price and
 // reports Position 1 without triggering the relist-fee warning.
