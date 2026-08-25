@@ -111,16 +111,22 @@ func AnalyzeUndercuts(playerOrders []esi.CharacterOrder, regionOrders []esi.Mark
 			us.UndercutPct = us.UndercutAmount / po.Price * 100
 		}
 
-		// Suggested price: beat best by 0.01 ISK.
+		// Suggested price: smallest legal step beating best. EVE enforces a
+		// 4-significant-digit price rule; ±0.01 is only legal below ~100 ISK.
+		// NextBuyOverbid / NextSellUndercut snap to the correct grid at any
+		// magnitude — see internal/engine/pricing.go.
 		if po.IsBuyOrder {
-			us.SuggestedPrice = us.BestPrice + 0.01
+			us.SuggestedPrice = NextBuyOverbid(us.BestPrice)
 		} else {
-			us.SuggestedPrice = us.BestPrice - 0.01
-			if us.SuggestedPrice < 0.01 {
-				us.SuggestedPrice = 0.01
-			}
+			us.SuggestedPrice = NextSellUndercut(us.BestPrice)
 		}
-		// If already best, keep current price.
+		if us.SuggestedPrice <= 0 {
+			// Degenerate best (zero / NaN / infinite input); leave the
+			// user's own price so the recommendation isn't garbage.
+			us.SuggestedPrice = po.Price
+		}
+		// If already best, keep current price (guaranteed legal — it was
+		// accepted last time it was placed).
 		if us.Position == 1 {
 			us.SuggestedPrice = po.Price
 		}

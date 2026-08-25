@@ -197,3 +197,45 @@ func TestComputeOrderDesk_UnavailableBookDoesNotAssumeTop(t *testing.T) {
 		t.Fatalf("recommendation = %q, want hold", row.Recommendation)
 	}
 }
+
+// Regression for the 4-sig-fig fix: a high-price sell order must produce a
+// suggested reprice on the legal grid, not X.99999 which the client would
+// silently round or the ESI API would reject.
+func TestComputeOrderDesk_HighPriceSellReprice(t *testing.T) {
+	issued := time.Now().UTC().AddDate(0, 0, -1).Format(time.RFC3339)
+	player := []esi.CharacterOrder{
+		{
+			OrderID:      1010,
+			TypeID:       587,
+			TypeName:     "Rifter",
+			LocationID:   60003760,
+			LocationName: "Jita",
+			RegionID:     10000002,
+			Price:        100_000_000, // 100M
+			VolumeRemain: 1,
+			VolumeTotal:  1,
+			IsBuyOrder:   false,
+			Duration:     90,
+			Issued:       issued,
+		},
+	}
+	regional := []esi.MarketOrder{
+		{OrderID: 2010, TypeID: 587, LocationID: 60003760, Price: 99_000_000, VolumeRemain: 1, IsBuyOrder: false},
+		{OrderID: 1010, TypeID: 587, LocationID: 60003760, Price: 100_000_000, VolumeRemain: 1, IsBuyOrder: false},
+	}
+	got := ComputeOrderDesk(player, regional, nil, nil, OrderDeskOptions{
+		SalesTaxPercent:  8,
+		BrokerFeePercent: 1,
+		TargetETADays:    1,
+		WarnExpiryDays:   2,
+	})
+	if len(got.Orders) != 1 {
+		t.Fatalf("orders len = %d, want 1", len(got.Orders))
+	}
+	row := got.Orders[0]
+	// Best 99M is on-grid at step 10k (magnitude 7) → step down → 98,990,000.
+	// Pre-fix would have been 98,999,999.99.
+	if math.Abs(row.SuggestedPrice-98_990_000) > 1 {
+		t.Fatalf("SuggestedPrice = %v, want 98,990,000 (legal 4-sig-fig)", row.SuggestedPrice)
+	}
+}

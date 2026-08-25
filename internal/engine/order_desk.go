@@ -256,21 +256,28 @@ func ComputeOrderDesk(
 					row.TotalOrders = 1
 				}
 
+				// EVE 4-sig-fig price rule: use the shared pricing helpers
+				// so the suggestion is legal at any magnitude (10k step in
+				// millions, 1M in billions, etc.) instead of the pre-fix
+				// ±0.01 which broke silently on high-value items.
 				if po.IsBuyOrder {
 					if row.BestPrice > po.Price {
 						row.UndercutAmount = row.BestPrice - po.Price
 					}
-					row.SuggestedPrice = row.BestPrice + 0.01
+					row.SuggestedPrice = NextBuyOverbid(row.BestPrice)
 				} else {
 					if row.BestPrice < po.Price {
 						row.UndercutAmount = po.Price - row.BestPrice
 					}
-					row.SuggestedPrice = row.BestPrice - 0.01
-					if row.SuggestedPrice < 0.01 {
-						row.SuggestedPrice = 0.01
-					}
+					row.SuggestedPrice = NextSellUndercut(row.BestPrice)
+				}
+				if row.SuggestedPrice <= 0 {
+					// Degenerate best price (zero / NaN); leave the user's
+					// own price so the recommendation isn't garbage.
+					row.SuggestedPrice = po.Price
 				}
 				if row.Position == 1 {
+					// Already best — current price is by definition legal.
 					row.SuggestedPrice = po.Price
 				}
 				if po.Price > 0 {

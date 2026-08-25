@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"sync"
 
+	"eve-flipper/internal/engine"
 	"eve-flipper/internal/sde"
 )
 
@@ -472,7 +473,7 @@ func (s *Server) handlePIFactoryPlan(w http.ResponseWriter, r *http.Request) {
 			res.PocoExportPerDay = exportTax
 			res.PocoTaxPerDay += exportTax
 			res.SalesFeesPerDay = res.GrossRevPerDay * ((req.SalesTaxPercent + req.BrokerFeePercent) / 100.0)
-			res.OutputUndercut = nextSellUndercut(p.sell)
+			res.OutputUndercut = engine.NextSellUndercut(p.sell)
 			// Build cost inclusive of POCO taxes.
 			buildCost := res.InputCostPerDay + res.PocoTaxPerDay
 			res.NetProfitPerDay = res.GrossRevPerDay - res.SalesFeesPerDay - buildCost

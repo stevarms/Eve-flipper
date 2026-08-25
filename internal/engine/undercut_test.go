@@ -295,3 +295,53 @@ func TestBuildBookLevels_IncludesPlayerBeyondMax(t *testing.T) {
 		t.Error("player level not found in truncated book")
 	}
 }
+
+// Regression: the pre-fix code used BestPrice ± 0.01 for suggested reprice.
+// At high magnitudes that's not a legal EVE price (fails the 4-sig-fig
+// rule) and the recommendation couldn't be pasted into the client. Verify
+// the new snap-to-grid helpers give a legal price on both sides.
+func TestAnalyzeUndercuts_HighPriceSellSnapsToLegalGrid(t *testing.T) {
+	player := esi.CharacterOrder{
+		OrderID:      1,
+		TypeID:       587,
+		LocationID:   60003760,
+		Price:        100_000_000, // 100M ISK sell — magnitude 8, step 100k
+		VolumeRemain: 1,
+		IsBuyOrder:   false,
+	}
+	region := []esi.MarketOrder{
+		{OrderID: 2, TypeID: 587, LocationID: 60003760, Price: 99_000_000, VolumeRemain: 1, IsBuyOrder: false},
+	}
+	got := AnalyzeUndercuts([]esi.CharacterOrder{player}, region)
+	if len(got) != 1 {
+		t.Fatalf("want 1 result, got %d", len(got))
+	}
+	// Best sell 99M — magnitude 7, step 10k. On-grid, so step down one
+	// place → 98,990,000. Pre-fix would have returned 98,999,999.99 (illegal).
+	if math.Abs(got[0].SuggestedPrice-98_990_000) > 1 {
+		t.Errorf("SuggestedPrice = %v, want 98,990,000 (legal 4-sig-fig)", got[0].SuggestedPrice)
+	}
+}
+
+func TestAnalyzeUndercuts_HighPriceBuySnapsToLegalGrid(t *testing.T) {
+	player := esi.CharacterOrder{
+		OrderID:      1,
+		TypeID:       587,
+		LocationID:   60003760,
+		Price:        100_000_000, // 100M ISK buy
+		VolumeRemain: 1,
+		IsBuyOrder:   true,
+	}
+	region := []esi.MarketOrder{
+		{OrderID: 2, TypeID: 587, LocationID: 60003760, Price: 101_000_000, VolumeRemain: 1, IsBuyOrder: true},
+	}
+	got := AnalyzeUndercuts([]esi.CharacterOrder{player}, region)
+	if len(got) != 1 {
+		t.Fatalf("want 1 result, got %d", len(got))
+	}
+	// Best is 101M (on-grid at 100k step) → step up one place → 101,100,000
+	// Pre-fix would have returned 101,000,000.01 (illegal).
+	if math.Abs(got[0].SuggestedPrice-101_100_000) > 1 {
+		t.Errorf("SuggestedPrice = %v, want 101,100,000 (legal 4-sig-fig)", got[0].SuggestedPrice)
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"eve-flipper/internal/engine"
 	"eve-flipper/internal/esi"
 	"eve-flipper/internal/sde"
 )
@@ -326,11 +327,11 @@ func (s *Server) handleHubAllocate(w http.ResponseWriter, r *http.Request) {
 					switch {
 					case stationLowSell > 0:
 						q.lowSell = stationLowSell
-						q.suggested = nextSellUndercut(stationLowSell)
+						q.suggested = engine.NextSellUndercut(stationLowSell)
 						q.source = "station"
 					case regionLowSell > 0:
 						q.lowSell = regionLowSell
-						q.suggested = nextSellUndercut(regionLowSell)
+						q.suggested = engine.NextSellUndercut(regionLowSell)
 						q.source = "region"
 					default:
 						if avg, ok := avgByType[item.typeID]; ok && avg > 0 {

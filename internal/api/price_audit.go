@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"eve-flipper/internal/engine"
 	"eve-flipper/internal/esi"
 )
 
@@ -41,43 +42,11 @@ type priceAuditResponse struct {
 	StationName string             `json:"station_name"`
 }
 
-// nextSellUndercut returns the largest EVE-legal (4-significant-digit) price
-// strictly less than lowestSell. Mirrors the pricing rule in the multisell
-// "Import Prices" workflow: minimum undercut is the place value of the 4th
-// significant digit (10k on prices in the millions, 1M on prices in the
-// billions, etc). Returns 0 when the input isn't a positive finite number.
-func nextSellUndercut(lowestSell float64) float64 {
-	if !(lowestSell > 0) || math.IsInf(lowestSell, 0) || math.IsNaN(lowestSell) {
-		return 0
-	}
-	magnitude := math.Floor(math.Log10(lowestSell))
-	place := math.Pow(10, magnitude-3)
-	if place <= 0 {
-		return 0
-	}
-	// Snap down to the nearest 4-sig-fig grid.
-	floored := math.Floor(lowestSell/place) * place
-	if floored < lowestSell {
-		return snapToGrid(floored, place)
-	}
-	// Already on a valid boundary — step down one place.
-	stepped := lowestSell - place
-	if stepped <= 0 {
-		return 0
-	}
-	return snapToGrid(stepped, place)
-}
-
-// snapToGrid rounds value to the nearest multiple of place, scrubbing IEEE-754
-// noise from the subtraction (e.g. 19.17 - 0.01 producing 19.16999...998).
-// After this the value is a clean multiple of place and JSON-encodes to the
-// expected decimal string.
-func snapToGrid(value, place float64) float64 {
-	if place <= 0 {
-		return value
-	}
-	return math.Round(value/place) * place
-}
+// The nextSellUndercut / snapToGrid helpers now live in
+// internal/engine/pricing.go as engine.NextSellUndercut / engine.SnapToGrid
+// so the same 4-sig-fig rule is used by the Order Desk + Command Center
+// reprice recommendations. Callers in this file use them via the engine
+// package.
 
 func (s *Server) handlePriceAudit(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -200,7 +169,7 @@ func (s *Server) handlePriceAudit(w http.ResponseWriter, r *http.Request) {
 				case stationLowSell > 0:
 					v := stationLowSell
 					results[job.idx].LowSell = &v
-					suggested := nextSellUndercut(stationLowSell)
+					suggested := engine.NextSellUndercut(stationLowSell)
 					if suggested > 0 {
 						results[job.idx].SuggestedPrice = &suggested
 					}
@@ -208,7 +177,7 @@ func (s *Server) handlePriceAudit(w http.ResponseWriter, r *http.Request) {
 				case regionLowSell > 0:
 					v := regionLowSell
 					results[job.idx].LowSell = &v
-					suggested := nextSellUndercut(regionLowSell)
+					suggested := engine.NextSellUndercut(regionLowSell)
 					if suggested > 0 {
 						results[job.idx].SuggestedPrice = &suggested
 					}
