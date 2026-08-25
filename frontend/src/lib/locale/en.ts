@@ -1832,6 +1832,14 @@ export const en = {
       "DS 0 — no region-average reference AND no local sell orders. Neither the discount depth nor the resale margin can be measured.",
     riskHighRiskHint:
       "High risk (🚨): Scam Detection Score {sds} ≥ 50. The order book shows manipulation patterns — 1-unit dust orders, suspicious price ladders, or one-sided saturation. Trades here can be traps: fill your buy at the shown price, then discover no one actually sells to that price.",
+    operatorSuggestedPriceCol: "Suggested",
+    operatorSuggestedPriceColHint:
+      "The next EVE-legal 4-sig-fig price that beats the top-of-book by one place value. Copy and paste into the modify-order dialog in game — no manual rounding needed.",
+    operatorSuggestedPriceCopyHint:
+      "Copy the raw digits to clipboard for the modify-order dialog.",
+    operatorCopiedToast: "Copied {value} ISK",
+    operatorUnprofitableRelistHint:
+      "Broker fee ({fee}) exceeds the theoretical gain from this reprice. Holding may be more profitable — the fee is charged even if the new order doesn't fill.",
     riskExtremePriceHint:
       "Extreme price (⚠️): current top buy order {buy} diverges {deviation}% from 30-day VWAP {vwap} (threshold 50%). Could be a genuine spike, a stale market history, or a bait order — sanity-check the order book before trading.",
     rowIgnoredHint:

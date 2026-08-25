@@ -1832,6 +1832,14 @@ export const ru = {
       "DS 0 — нет ни референса региона, ни sell ордеров. Ни глубину дисконта, ни margin перепродажи измерить нельзя.",
     riskHighRiskHint:
       "High risk (🚨): Scam Detection Score {sds} ≥ 50. Стакан выглядит манипулированным — 1-unit dust orders, подозрительные ценовые лестницы, односторонняя saturation. Сделки здесь могут быть ловушкой: buy заполнится по показанной цене, а sell по ней никто не сделает.",
+    operatorSuggestedPriceCol: "Suggested",
+    operatorSuggestedPriceColHint:
+      "Следующая EVE-legal 4-sig-fig цена, которая обходит top-of-book на одну place value. Скопируйте и вставьте в modify-order диалог — без ручного округления.",
+    operatorSuggestedPriceCopyHint:
+      "Скопировать raw digits в clipboard для modify-order.",
+    operatorCopiedToast: "Скопировано {value} ISK",
+    operatorUnprofitableRelistHint:
+      "Broker fee ({fee}) превышает теоретическую выгоду от reprice. Hold может быть выгоднее — fee платится даже если новый ордер не заполнится.",
     riskExtremePriceHint:
       "Extreme price (⚠️): текущий top buy order {buy} отклоняется на {deviation}% от 30-дневного VWAP {vwap} (порог 50%). Может быть реальный spike, устаревшая история, или bait ордер — проверьте стакан перед сделкой.",
     rowIgnoredHint:

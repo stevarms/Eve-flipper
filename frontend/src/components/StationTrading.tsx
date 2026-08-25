@@ -248,6 +248,7 @@ const STATION_CACHE_TTL_MS = 20 * 60 * 1000;
 const STATION_TRADING_LOCATION_STORAGE_KEY = "station.location";
 const STATION_IGNORED_CATEGORIES_STORAGE_KEY = "station.ignored_categories";
 const STATION_DISCOUNT_TARGET_KEY = "station.discount_bid_target";
+const STATION_OPERATOR_MODE_KEY = "station.operator_mode";
 const DEFAULT_DISCOUNT_TARGET = 0.5;
 
 function loadIgnoredCategories(): Set<number> {
@@ -546,7 +547,10 @@ export function StationTrading({
   showAIAssistant = true,
 }: Props) {
   const { t } = useI18n();
-  const operatorModeDevOnly = import.meta.env.DEV;
+  // Operator mode used to be gated on import.meta.env.DEV so real users
+  // never saw the action-badge + batch workflow. Now shipped as a regular
+  // per-user toggle for anyone logged in.
+  const operatorModeAvailable = true;
 
   const [stations, setStations] = useState<StationInfo[]>([]);
   // pendingStationLocationRef holds a persisted {system, station} restored from
@@ -613,7 +617,14 @@ export function StationTrading({
   const [includeStructures, setIncludeStructures] = useState(false);
   const [structureStations, setStructureStations] = useState<StationInfo[]>([]);
   const [loadingStructures, setLoadingStructures] = useState(false);
-  const [operatorMode, setOperatorMode] = useState(false);
+  const [operatorMode, setOperatorMode] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem(STATION_OPERATOR_MODE_KEY) === "1";
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(STATION_OPERATOR_MODE_KEY, operatorMode ? "1" : "0");
+  }, [operatorMode]);
   const [commandRowsByKey, setCommandRowsByKey] = useState<
     Record<string, StationCommandRow>
   >({});
@@ -745,10 +756,13 @@ export function StationTrading({
   }, [loadedResults]);
 
   useEffect(() => {
-    if ((!isLoggedIn || !operatorModeDevOnly) && operatorMode) {
+    // Auto-clear operator mode when the user logs out — the batch workflow
+    // relies on ESI-authenticated calls (character orders) that fail while
+    // signed out.
+    if (!isLoggedIn && operatorMode) {
       setOperatorMode(false);
     }
-  }, [isLoggedIn, operatorMode, operatorModeDevOnly]);
+  }, [isLoggedIn, operatorMode]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -869,7 +883,7 @@ export function StationTrading({
     }
   }, [stationColumnOrder, stationHiddenColumns, stationColumnWidths, stationPinnedColumns]);
 
-  const showOperatorColumns = operatorModeDevOnly && operatorMode && isLoggedIn;
+  const showOperatorColumns = operatorModeAvailable && operatorMode && isLoggedIn;
 
   const columnDefs = useMemo(() => {
     const byKey = new Map(baseStationColumnDefs.map((col) => [col.key, col] as const));
@@ -1664,7 +1678,7 @@ export function StationTrading({
         }
       }
 
-      if (operatorModeDevOnly && operatorMode && isLoggedIn) {
+      if (operatorModeAvailable && operatorMode && isLoggedIn) {
         const commandRes = await getStationCommand({
           ...scanParams,
           target_eta_days: 3,
@@ -2646,7 +2660,7 @@ export function StationTrading({
                     </SettingsField>
                   )}
 
-                  {isLoggedIn && operatorModeDevOnly && (
+                  {isLoggedIn && operatorModeAvailable && (
                     <SettingsField label="Operator mode">
                       <SettingsCheckbox
                         checked={operatorMode}
@@ -3626,6 +3640,12 @@ export function StationTrading({
                   <th className="min-w-[96px] px-2 py-2 text-right text-[10px] uppercase tracking-wider text-eve-dim font-medium">
                     Delta/day
                   </th>
+                  <th
+                    className="min-w-[132px] px-2 py-2 text-right text-[10px] uppercase tracking-wider text-eve-dim font-medium"
+                    title={t("operatorSuggestedPriceColHint")}
+                  >
+                    {t("operatorSuggestedPriceCol")}
+                  </th>
                 </>
               )}
               {columnDefs.map((col) => {
@@ -3794,6 +3814,23 @@ export function StationTrading({
                         {commandRow
                           ? `${commandRow.expected_delta_daily_profit >= 0 ? "+" : ""}${formatISK(commandRow.expected_delta_daily_profit)}`
                           : "\u2014"}
+                      </td>
+                      <td className="px-2 py-1 text-right">
+                        <SuggestedPriceCell
+                          suggestion={
+                            commandRow?.sell_suggestion ??
+                            commandRow?.buy_suggestion
+                          }
+                          formatISK={formatISK}
+                          t={t}
+                          onCopy={(text) =>
+                            addToast(
+                              t("operatorCopiedToast", { value: text }),
+                              "success",
+                              1500,
+                            )
+                          }
+                        />
                       </td>
                     </>
                   )}
@@ -4638,5 +4675,61 @@ function MetricTooltipContent({
       goodRange={data.goodKey ? t(data.goodKey) : undefined}
       badRange={data.badKey ? t(data.badKey) : undefined}
     />
+  );
+}
+
+// SuggestedPriceCell — renders the per-order suggested price with a copy
+// button (raw digits ready to paste into EVE's modify-order dialog) and a
+// ⚠ warning when the broker relist fee eats the theoretical gain. Reads
+// from StationCommandRow.sell_suggestion (or buy_suggestion) which the
+// backend now folds in from the Order Desk model. See plan file for the
+// full "merge engines" design.
+function SuggestedPriceCell({
+  suggestion,
+  formatISK,
+  t,
+  onCopy,
+}: {
+  suggestion?: import("../lib/types").StationCommandSuggestedOrder;
+  formatISK: (v: number) => string;
+  t: (key: TranslationKey, params?: Record<string, string | number>) => string;
+  onCopy: (text: string) => void;
+}) {
+  if (!suggestion) {
+    return <span className="text-eve-dim">—</span>;
+  }
+  const price = suggestion.suggested_price;
+  const rawDigits = price.toFixed(2);
+  const copy = () => {
+    void navigator.clipboard.writeText(rawDigits).then(() => onCopy(rawDigits));
+  };
+  const atTop = suggestion.position === 1;
+  const priceCls = atTop
+    ? "text-eve-dim font-mono"
+    : "text-eve-accent font-mono";
+  return (
+    <div className="inline-flex items-center gap-1.5 justify-end">
+      {suggestion.warn_unprofitable_relist && (
+        <span
+          title={t("operatorUnprofitableRelistHint", {
+            fee: formatISK(suggestion.relist_fee_isk),
+          })}
+          className="cursor-help text-yellow-400"
+        >
+          ⚠
+        </span>
+      )}
+      <span className={priceCls}>{formatISK(price)}</span>
+      {!atTop && (
+        <button
+          type="button"
+          onClick={copy}
+          className="text-[10px] px-1 py-0.5 rounded-sm border border-eve-border text-eve-dim hover:text-eve-accent hover:border-eve-accent transition-colors"
+          title={t("operatorSuggestedPriceCopyHint")}
+        >
+          📋
+        </button>
+      )}
+    </div>
   );
 }

@@ -42,7 +42,7 @@ func TestBuildStationCommand_ActionSelection(t *testing.T) {
 		{TypeID: 34, Quantity: 120},
 	}
 
-	got := BuildStationCommand(trades, activeOrders, openPositions)
+	got := BuildStationCommand(trades, activeOrders, openPositions, 0)
 
 	if got.Summary.Rows != 3 {
 		t.Fatalf("summary rows = %d, want 3", got.Summary.Rows)
@@ -109,11 +109,109 @@ func TestBuildStationCommand_SortingByPriorityThenScore(t *testing.T) {
 		{TypeID: 1001, LocationID: 60000001},
 	}
 
-	got := BuildStationCommand(trades, activeOrders, nil)
+	got := BuildStationCommand(trades, activeOrders, nil, 0)
 	if len(got.Rows) != 2 {
 		t.Fatalf("rows len = %d, want 2", len(got.Rows))
 	}
 	if got.Rows[0].RecommendedAction != StationActionCancel {
 		t.Fatalf("first action = %q, want cancel (highest priority)", got.Rows[0].RecommendedAction)
 	}
+}
+
+// TestBuildStationCommand_PerOrderSuggestion — new in item 2 of the
+// order-maintenance roadmap. Verifies that per-order suggestions carry a
+// legal 4-sig-fig price and correct position/fee fields.
+func TestBuildStationCommand_PerOrderSuggestion(t *testing.T) {
+	trades := []StationTrade{
+		{
+			TypeID:    587,
+			StationID: 60003760,
+			BuyPrice:  0,
+			SellPrice: 99_000_000, // 100M-magnitude sell top-of-book
+			CTS:       70,
+		},
+	}
+	// User has a sell listing 1M above the best (2 = not top).
+	activeOrders := []esi.CharacterOrder{
+		{
+			OrderID:      777,
+			TypeID:       587,
+			LocationID:   60003760,
+			Price:        100_000_000,
+			VolumeRemain: 1,
+			IsBuyOrder:   false,
+		},
+	}
+	got := BuildStationCommand(trades, activeOrders, nil, 1.0 /* 1% broker */)
+	if len(got.Rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(got.Rows))
+	}
+	row := got.Rows[0]
+	if row.SellSuggestion == nil {
+		t.Fatal("SellSuggestion is nil; wanted populated per-order recommendation")
+	}
+	s := row.SellSuggestion
+	if s.OrderID != 777 {
+		t.Errorf("OrderID = %d, want 777", s.OrderID)
+	}
+	if s.Position != 2 {
+		t.Errorf("Position = %d, want 2 (not top-of-book)", s.Position)
+	}
+	// Best is 99M, magnitude 7, step 10k → NextSellUndercut → 98,990,000.
+	if abs64(s.SuggestedPrice-98_990_000) > 1 {
+		t.Errorf("SuggestedPrice = %v, want 98,990,000 (legal 4-sig-fig)", s.SuggestedPrice)
+	}
+	if s.RelistFeeISK <= 0 {
+		t.Errorf("RelistFeeISK = %v, want > 0 with 1%% broker fee", s.RelistFeeISK)
+	}
+	if !s.WarnUnprofitableRelist {
+		// Selling at 98.99M vs current 100M is a per-unit loss; gross gain
+		// is negative → net should be negative → warn.
+		t.Errorf("WarnUnprofitableRelist = false, want true when net gain is negative")
+	}
+}
+
+// TestBuildStationCommand_PerOrderSuggestion_TopOfBook — when user is
+// already best on their side, the suggestion keeps their own price and
+// reports Position 1 without triggering the relist-fee warning.
+func TestBuildStationCommand_PerOrderSuggestion_TopOfBook(t *testing.T) {
+	trades := []StationTrade{
+		{
+			TypeID:    587,
+			StationID: 60003760,
+			SellPrice: 100_000_000,
+		},
+	}
+	// User's sell equals the best (top-of-book).
+	activeOrders := []esi.CharacterOrder{
+		{
+			OrderID:      777,
+			TypeID:       587,
+			LocationID:   60003760,
+			Price:        100_000_000,
+			VolumeRemain: 3,
+			IsBuyOrder:   false,
+		},
+	}
+	got := BuildStationCommand(trades, activeOrders, nil, 1.0)
+	if len(got.Rows) != 1 || got.Rows[0].SellSuggestion == nil {
+		t.Fatalf("want 1 row with SellSuggestion, got %+v", got)
+	}
+	s := got.Rows[0].SellSuggestion
+	if s.Position != 1 {
+		t.Errorf("Position = %d, want 1", s.Position)
+	}
+	if s.SuggestedPrice != 100_000_000 {
+		t.Errorf("SuggestedPrice = %v, want 100M (keep own price)", s.SuggestedPrice)
+	}
+	if s.WarnUnprofitableRelist {
+		t.Error("WarnUnprofitableRelist should be false when at top-of-book")
+	}
+}
+
+func abs64(x float64) float64 {
+	if x < 0 {
+		return -x
+	}
+	return x
 }

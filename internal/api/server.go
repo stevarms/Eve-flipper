@@ -8714,7 +8714,17 @@ func (s *Server) handleAuthStationCommand(w http.ResponseWriter, r *http.Request
 	if pnl := engine.ComputePortfolioPnL(txns, lookbackDays); pnl != nil && len(pnl.OpenPositions) > 0 {
 		openPositions = pnl.OpenPositions
 	}
-	command := engine.BuildStationCommand(scanResults, activeOrders, openPositions)
+	// Broker fee threaded so per-order suggestions can compute fee-aware
+	// relist economics — matches the AnalyzeUndercutsWithRelistFee model
+	// used by the character-popup Order Desk.
+	brokerFeeForCommand := req.BrokerFee
+	if req.SplitTradeFees {
+		brokerFeeForCommand = req.SellBrokerFeePercent
+		if brokerFeeForCommand <= 0 {
+			brokerFeeForCommand = req.BuyBrokerFeePercent
+		}
+	}
+	command := engine.BuildStationCommand(scanResults, activeOrders, openPositions, brokerFeeForCommand)
 
 	var openQtyTotal int64
 	for _, pos := range openPositions {

@@ -1769,6 +1769,20 @@ export interface StationCommandForecast {
   eta_days: StationForecastBand;
 }
 
+export interface StationCommandSuggestedOrder {
+  order_id: number;
+  is_buy_order: boolean;
+  current_price: number;
+  volume_remain: number;
+  best_price: number;
+  suggested_price: number;
+  position: number;
+  undercut_amount: number;
+  relist_fee_isk: number;
+  net_relist_gain_isk: number;
+  warn_unprofitable_relist: boolean;
+}
+
 export interface StationCommandRow {
   trade: StationTrade;
   personalized_score: number;
@@ -1780,6 +1794,8 @@ export interface StationCommandRow {
   open_position_qty: number;
   expected_delta_daily_profit: number;
   forecast: StationCommandForecast;
+  sell_suggestion?: StationCommandSuggestedOrder;
+  buy_suggestion?: StationCommandSuggestedOrder;
 }
 
 export interface StationCommandSummary {
