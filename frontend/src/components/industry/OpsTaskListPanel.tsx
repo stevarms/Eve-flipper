@@ -1,0 +1,466 @@
+import { Fragment, useMemo, useState, type Dispatch, type SetStateAction } from "react";
+import { useI18n } from "@/lib/i18n";
+import type {
+  IndustryJobStatus,
+  IndustryLedger,
+  IndustryLedgerEntry,
+  IndustryProjectSnapshot,
+  IndustryTaskRecord,
+  IndustryTaskStatus,
+} from "@/lib/types";
+import {
+  deriveTaskBlockStatus,
+  type IndustryTaskDependencyBoard,
+  type TaskBlockLevel,
+} from "./industryHelpers";
+
+/**
+ * Combined task + jobs view for Operations. Replaces IndustryTaskBoardPanel +
+ * IndustryOperationsJobsPanel. Each task row shows a block-status pill
+ * (ready/soft/hard/unknown) derived from per-task material coverage +
+ * parent-task completion state, and expanding a task reveals the jobs
+ * bound to it (via `job.task_id`) with the same status-transition
+ * controls the old jobs panel had.
+ *
+ * Default sort: taskDependencyBoard.depth_by_task ascending → priority
+ * descending → id ascending. Users can flip to priority-only by clicking
+ * the priority column header.
+ */
+
+interface OpsTaskListPanelProps {
+  ledgerSnapshot: IndustryProjectSnapshot | null;
+  ledgerData: IndustryLedger | null;
+  taskDependencyBoard: IndustryTaskDependencyBoard;
+  // Task-side actions
+  selectedLedgerTaskIDs: number[];
+  bulkLedgerTaskPriority: number;
+  setBulkLedgerTaskPriority: Dispatch<SetStateAction<number>>;
+  handleBulkSetLedgerTaskPriority: (priority: number) => Promise<void>;
+  updatingLedgerTasksBulk: boolean;
+  handleBulkSetLedgerTaskStatus: (status: IndustryTaskStatus) => Promise<void>;
+  setSelectedLedgerTaskIDs: Dispatch<SetStateAction<number[]>>;
+  allVisibleLedgerTasksSelected: boolean;
+  handleSelectAllVisibleLedgerTasks: (selected: boolean) => void;
+  selectedLedgerTaskIDSet: Set<number>;
+  toggleLedgerTaskSelection: (taskId: number, selected: boolean) => void;
+  industryTaskStatusClass: (status: string) => string;
+  industryJobStatusClass: (status: string) => string;
+  formatUtcShort: (value: string) => string;
+  formatISK: (value: number) => string;
+  handleSetLedgerTaskPriority: (taskId: number, priority: number) => Promise<void>;
+  updatingLedgerTaskId: number;
+  handleSetLedgerTaskStatus: (taskId: number, status: IndustryTaskStatus) => Promise<void>;
+  // Job-side actions (surfaced inside the task expansion)
+  handleSetLedgerJobStatus: (jobId: number, status: IndustryJobStatus) => Promise<void>;
+  updatingLedgerJobId: number;
+  updatingLedgerJobsBulk: boolean;
+}
+
+const BLOCK_PILL_CLASSES: Record<TaskBlockLevel, string> = {
+  ready: "border-emerald-500/60 text-emerald-300 bg-emerald-900/20",
+  soft: "border-amber-500/60 text-amber-300 bg-amber-900/20",
+  hard: "border-red-500/60 text-red-300 bg-red-900/20",
+  unknown: "border-slate-500/60 text-slate-300 bg-slate-800/40",
+};
+
+const BLOCK_PILL_LABELS: Record<TaskBlockLevel, string> = {
+  ready: "READY",
+  soft: "SOFT",
+  hard: "HARD",
+  unknown: "—",
+};
+
+export function OpsTaskListPanel(props: OpsTaskListPanelProps) {
+  const { t } = useI18n();
+  const {
+    ledgerSnapshot,
+    ledgerData,
+    taskDependencyBoard,
+    selectedLedgerTaskIDs,
+    bulkLedgerTaskPriority,
+    setBulkLedgerTaskPriority,
+    handleBulkSetLedgerTaskPriority,
+    updatingLedgerTasksBulk,
+    handleBulkSetLedgerTaskStatus,
+    setSelectedLedgerTaskIDs,
+    allVisibleLedgerTasksSelected,
+    handleSelectAllVisibleLedgerTasks,
+    selectedLedgerTaskIDSet,
+    toggleLedgerTaskSelection,
+    industryTaskStatusClass,
+    industryJobStatusClass,
+    formatUtcShort,
+    formatISK,
+    handleSetLedgerTaskPriority,
+    updatingLedgerTaskId,
+    handleSetLedgerTaskStatus,
+    handleSetLedgerJobStatus,
+    updatingLedgerJobId,
+    updatingLedgerJobsBulk,
+  } = props;
+
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const toggleExpanded = (id: number) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  // Group jobs by task_id for O(1) lookup during row expansion.
+  const jobsByTaskID = useMemo(() => {
+    const map = new Map<number, IndustryLedgerEntry[]>();
+    for (const entry of ledgerData?.entries ?? []) {
+      const list = map.get(entry.task_id) ?? [];
+      list.push(entry);
+      map.set(entry.task_id, list);
+    }
+    return map;
+  }, [ledgerData]);
+
+  // Compute block status per task once; reused for the row pill.
+  const blockByTask = useMemo(() => {
+    const map = new Map<number, ReturnType<typeof deriveTaskBlockStatus>>();
+    if (!ledgerSnapshot) return map;
+    for (const task of ledgerSnapshot.tasks) {
+      map.set(task.id, deriveTaskBlockStatus(task.id, ledgerSnapshot, taskDependencyBoard.parent_by_task));
+    }
+    return map;
+  }, [ledgerSnapshot, taskDependencyBoard.parent_by_task]);
+
+  // Default order: dep depth ascending → priority descending → id ascending.
+  // Tasks the user can start now bubble to the top; deeper dependencies wait.
+  const sortedTasks: IndustryTaskRecord[] = useMemo(() => {
+    if (!ledgerSnapshot) return [];
+    const arr = [...ledgerSnapshot.tasks];
+    arr.sort((a, b) => {
+      const da = taskDependencyBoard.depth_by_task[a.id] ?? 1;
+      const db = taskDependencyBoard.depth_by_task[b.id] ?? 1;
+      if (da !== db) return da - db;
+      const pa = a.priority || 0;
+      const pb = b.priority || 0;
+      if (pa !== pb) return pb - pa;
+      return a.id - b.id;
+    });
+    return arr;
+  }, [ledgerSnapshot, taskDependencyBoard.depth_by_task]);
+
+  if (!ledgerSnapshot) {
+    return (
+      <div className="mt-2 border border-eve-border/40 rounded-sm p-3 text-xs text-eve-dim">
+        Select a project to see its committed tasks.
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-2 border border-eve-border/40 rounded-sm bg-eve-dark/20">
+      {/* Bulk toolbar */}
+      <div className="flex flex-wrap items-center justify-between gap-2 px-2 py-1.5 border-b border-eve-border/40">
+        <div className="text-[10px] uppercase tracking-wider text-eve-dim">
+          {t("industryLedgerTaskBoardTitle", { count: ledgerSnapshot.tasks.length })}
+        </div>
+        <div className="inline-flex flex-wrap items-center gap-1 text-[11px]">
+          <span className="text-eve-dim">
+            {t("industryLedgerSelected")}: {selectedLedgerTaskIDs.length}
+          </span>
+          <input
+            type="number"
+            value={bulkLedgerTaskPriority}
+            onChange={(e) => setBulkLedgerTaskPriority(Math.round(Number(e.target.value) || 0))}
+            className="w-16 px-1.5 py-0.5 bg-eve-input border border-eve-border rounded-sm text-[11px] text-eve-text font-mono"
+            title={t("industryLedgerTaskBoardBulkPriorityTitle")}
+          />
+          <button
+            type="button"
+            onClick={() => { void handleBulkSetLedgerTaskPriority(bulkLedgerTaskPriority); }}
+            disabled={updatingLedgerTasksBulk || selectedLedgerTaskIDs.length === 0}
+            className="px-1.5 py-0.5 border border-fuchsia-500/40 text-fuchsia-300 rounded-sm hover:bg-fuchsia-500/10 disabled:opacity-50"
+          >
+            {t("industryLedgerTaskBoardPriorityShort")}
+          </button>
+          <button
+            type="button"
+            onClick={() => { void handleBulkSetLedgerTaskStatus("active"); }}
+            disabled={updatingLedgerTasksBulk || selectedLedgerTaskIDs.length === 0}
+            className="px-1.5 py-0.5 border border-blue-500/40 text-blue-300 rounded-sm hover:bg-blue-500/10 disabled:opacity-50"
+          >
+            {t("industryLedgerSetActive")}
+          </button>
+          <button
+            type="button"
+            onClick={() => { void handleBulkSetLedgerTaskStatus("paused"); }}
+            disabled={updatingLedgerTasksBulk || selectedLedgerTaskIDs.length === 0}
+            className="px-1.5 py-0.5 border border-indigo-500/40 text-indigo-300 rounded-sm hover:bg-indigo-500/10 disabled:opacity-50"
+          >
+            {t("industryLedgerTaskBoardFreeze")}
+          </button>
+          <button
+            type="button"
+            onClick={() => { void handleBulkSetLedgerTaskStatus("completed"); }}
+            disabled={updatingLedgerTasksBulk || selectedLedgerTaskIDs.length === 0}
+            className="px-1.5 py-0.5 border border-emerald-500/40 text-emerald-300 rounded-sm hover:bg-emerald-500/10 disabled:opacity-50"
+          >
+            {t("industryLedgerTaskBoardComplete")}
+          </button>
+          <button
+            type="button"
+            onClick={() => setSelectedLedgerTaskIDs([])}
+            disabled={selectedLedgerTaskIDs.length === 0}
+            className="px-1.5 py-0.5 border border-eve-border text-eve-dim rounded-sm hover:text-eve-accent hover:border-eve-accent/40 disabled:opacity-50"
+          >
+            {t("industryLedgerClearSelection")}
+          </button>
+        </div>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-[11px]">
+          <thead className="sticky top-0 bg-eve-dark z-10">
+            <tr className="text-eve-dim uppercase tracking-wider border-b border-eve-border/60 text-[10px]">
+              <th className="px-1.5 py-1 text-left w-6">
+                <input
+                  type="checkbox"
+                  checked={allVisibleLedgerTasksSelected}
+                  onChange={(e) => handleSelectAllVisibleLedgerTasks(e.target.checked)}
+                  className="accent-eve-accent"
+                />
+              </th>
+              <th className="px-1.5 py-1 text-left w-4" />
+              <th className="px-1.5 py-1 text-left">{t("industryLedgerTask")}</th>
+              <th className="px-1.5 py-1 text-left">{t("industryLedgerActivity")}</th>
+              <th className="px-1.5 py-1 text-right">{t("industryLedgerRuns")}</th>
+              <th className="px-1.5 py-1 text-right">{t("industryLedgerTaskBoardPriority")}</th>
+              <th className="px-1.5 py-1 text-left">{t("industryLedgerStatus")}</th>
+              <th className="px-1.5 py-1 text-left">Block</th>
+              <th className="px-1.5 py-1 text-left">{t("industryLedgerTaskBoardWindow")}</th>
+              <th className="px-1.5 py-1 text-right">{t("industryLedgerActions")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sortedTasks.map((task) => {
+              const block = blockByTask.get(task.id);
+              const level: TaskBlockLevel = block?.level ?? "unknown";
+              const isExpanded = expanded.has(task.id);
+              const taskJobs = jobsByTaskID.get(task.id) ?? [];
+              const parentID = taskDependencyBoard.parent_by_task[task.id] ?? 0;
+              const depth = taskDependencyBoard.depth_by_task[task.id] ?? 1;
+              const isCP = taskDependencyBoard.critical_task_ids.has(task.id);
+              return (
+                <Fragment key={`task-${task.id}`}>
+                  <tr className="border-b border-eve-border/30 hover:bg-eve-accent/5">
+                    <td className="px-1.5 py-1 text-eve-dim">
+                      <input
+                        type="checkbox"
+                        checked={selectedLedgerTaskIDSet.has(task.id)}
+                        onChange={(e) => toggleLedgerTaskSelection(task.id, e.target.checked)}
+                        className="accent-eve-accent"
+                      />
+                    </td>
+                    <td className="px-1.5 py-1">
+                      <button
+                        type="button"
+                        onClick={() => toggleExpanded(task.id)}
+                        disabled={taskJobs.length === 0}
+                        className="text-eve-dim hover:text-eve-accent disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                        title={taskJobs.length === 0 ? "No jobs bound to this task" : `${taskJobs.length} job(s)`}
+                      >
+                        {isExpanded ? "▾" : "▸"}
+                      </button>
+                    </td>
+                    <td className="px-1.5 py-1 text-eve-text">
+                      <div className="truncate">{task.name}</div>
+                      <div className="text-[10px] text-eve-dim">
+                        #{task.id}
+                        {parentID > 0 && (
+                          <span className="ml-2 text-eve-dim">
+                            ← <span className={taskDependencyBoard.parent_missing_by_task[task.id] ? "text-yellow-300" : "text-eve-dim"}>#{parentID}</span>
+                          </span>
+                        )}
+                        <span className="ml-2 font-mono">d{depth}</span>
+                        {isCP && (
+                          <span className="ml-1 px-1 py-0.5 text-[9px] uppercase rounded-sm border border-fuchsia-500/40 text-fuchsia-300 bg-fuchsia-500/10">
+                            CP
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-1.5 py-1 text-eve-dim">{task.activity}</td>
+                    <td className="px-1.5 py-1 text-right text-eve-accent font-mono">{task.target_runs || 0}</td>
+                    <td className="px-1.5 py-1 text-right text-eve-dim font-mono">{task.priority || 0}</td>
+                    <td className="px-1.5 py-1">
+                      <span className={`px-1.5 py-0.5 text-[10px] uppercase rounded-sm border ${industryTaskStatusClass(task.status)}`}>
+                        {task.status}
+                      </span>
+                    </td>
+                    <td className="px-1.5 py-1">
+                      <span
+                        className={`px-1.5 py-0.5 text-[10px] uppercase rounded-sm border font-bold cursor-help ${BLOCK_PILL_CLASSES[level]}`}
+                        title={block?.reason ?? ""}
+                      >
+                        {BLOCK_PILL_LABELS[level]}
+                      </span>
+                    </td>
+                    <td className="px-1.5 py-1 text-eve-dim whitespace-nowrap text-[10px]">
+                      {formatUtcShort(task.planned_start)} – {formatUtcShort(task.planned_end)}
+                    </td>
+                    <td className="px-1.5 py-1 text-right">
+                      <div className="inline-flex gap-1">
+                        <button
+                          type="button"
+                          onClick={() => { void handleSetLedgerTaskPriority(task.id, (task.priority || 0) + 10); }}
+                          disabled={updatingLedgerTaskId === task.id || updatingLedgerTasksBulk}
+                          className="px-1 py-0.5 text-[10px] border border-fuchsia-500/40 text-fuchsia-300 rounded-sm hover:bg-fuchsia-500/10 disabled:opacity-50"
+                          title={t("industryLedgerTaskBoardPriorityUpTitle")}
+                        >
+                          +P
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { void handleSetLedgerTaskPriority(task.id, (task.priority || 0) - 10); }}
+                          disabled={updatingLedgerTaskId === task.id || updatingLedgerTasksBulk}
+                          className="px-1 py-0.5 text-[10px] border border-fuchsia-500/40 text-fuchsia-300 rounded-sm hover:bg-fuchsia-500/10 disabled:opacity-50"
+                          title={t("industryLedgerTaskBoardPriorityDownTitle")}
+                        >
+                          -P
+                        </button>
+                        {task.status !== "active" && task.status !== "completed" && task.status !== "cancelled" && (
+                          <button
+                            type="button"
+                            onClick={() => { void handleSetLedgerTaskStatus(task.id, "active"); }}
+                            disabled={updatingLedgerTaskId === task.id || updatingLedgerTasksBulk}
+                            className="px-1 py-0.5 text-[10px] border border-blue-500/40 text-blue-300 rounded-sm hover:bg-blue-500/10 disabled:opacity-50"
+                          >
+                            {t("industryLedgerSetActive")}
+                          </button>
+                        )}
+                        {task.status === "paused" ? (
+                          <button
+                            type="button"
+                            onClick={() => { void handleSetLedgerTaskStatus(task.id, "ready"); }}
+                            disabled={updatingLedgerTaskId === task.id || updatingLedgerTasksBulk}
+                            className="px-1 py-0.5 text-[10px] border border-cyan-500/40 text-cyan-300 rounded-sm hover:bg-cyan-500/10 disabled:opacity-50"
+                          >
+                            {t("industryLedgerTaskBoardUnfreeze")}
+                          </button>
+                        ) : (
+                          task.status !== "completed" && task.status !== "cancelled" && (
+                            <button
+                              type="button"
+                              onClick={() => { void handleSetLedgerTaskStatus(task.id, "paused"); }}
+                              disabled={updatingLedgerTaskId === task.id || updatingLedgerTasksBulk}
+                              className="px-1 py-0.5 text-[10px] border border-indigo-500/40 text-indigo-300 rounded-sm hover:bg-indigo-500/10 disabled:opacity-50"
+                            >
+                              {t("industryLedgerTaskBoardFreeze")}
+                            </button>
+                          )
+                        )}
+                        {task.status !== "completed" && task.status !== "cancelled" && (
+                          <button
+                            type="button"
+                            onClick={() => { void handleSetLedgerTaskStatus(task.id, "completed"); }}
+                            disabled={updatingLedgerTaskId === task.id || updatingLedgerTasksBulk}
+                            className="px-1 py-0.5 text-[10px] border border-emerald-500/40 text-emerald-300 rounded-sm hover:bg-emerald-500/10 disabled:opacity-50"
+                          >
+                            {t("industryLedgerTaskBoardComplete")}
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                  {isExpanded && taskJobs.length > 0 && (
+                    <tr className="border-b border-eve-border/30 bg-eve-dark/40">
+                      <td colSpan={10} className="px-2 py-1">
+                        <table className="w-full text-[10px]">
+                          <thead className="text-eve-dim uppercase tracking-wider">
+                            <tr>
+                              <th className="px-1.5 py-0.5 text-left w-24">{t("industryLedgerJob")}</th>
+                              <th className="px-1.5 py-0.5 text-right w-16">{t("industryLedgerRuns")}</th>
+                              <th className="px-1.5 py-0.5 text-right w-24">{t("industryLedgerCost")}</th>
+                              <th className="px-1.5 py-0.5 text-left w-24">{t("industryLedgerStatus")}</th>
+                              <th className="px-1.5 py-0.5 text-left">{t("industryLedgerUpdated")}</th>
+                              <th className="px-1.5 py-0.5 text-right">{t("industryLedgerActions")}</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {taskJobs.map((entry) => (
+                              <tr key={`job-${entry.job_id}`} className="border-t border-eve-border/20">
+                                <td className="px-1.5 py-0.5 text-eve-dim">#{entry.job_id}</td>
+                                <td className="px-1.5 py-0.5 text-right text-eve-accent font-mono">{entry.runs}</td>
+                                <td className="px-1.5 py-0.5 text-right text-eve-dim font-mono">{formatISK(entry.cost_isk || 0)}</td>
+                                <td className="px-1.5 py-0.5">
+                                  <span className={`px-1.5 py-0.5 text-[10px] uppercase rounded-sm border ${industryJobStatusClass(entry.status)}`}>
+                                    {entry.status}
+                                  </span>
+                                </td>
+                                <td className="px-1.5 py-0.5 text-eve-dim whitespace-nowrap">{formatUtcShort(entry.updated_at)}</td>
+                                <td className="px-1.5 py-0.5 text-right">
+                                  <div className="inline-flex gap-1">
+                                    {entry.status !== "active" && entry.status !== "completed" && entry.status !== "cancelled" && (
+                                      <button
+                                        type="button"
+                                        onClick={() => { void handleSetLedgerJobStatus(entry.job_id, "active"); }}
+                                        disabled={updatingLedgerJobId === entry.job_id || updatingLedgerJobsBulk}
+                                        className="px-1.5 py-0.5 text-[10px] border border-blue-500/40 text-blue-300 rounded-sm hover:bg-blue-500/10 disabled:opacity-50"
+                                      >
+                                        {t("industryLedgerSetActive")}
+                                      </button>
+                                    )}
+                                    {entry.status === "paused" ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => { void handleSetLedgerJobStatus(entry.job_id, "queued"); }}
+                                        disabled={updatingLedgerJobId === entry.job_id || updatingLedgerJobsBulk}
+                                        className="px-1.5 py-0.5 text-[10px] border border-cyan-500/40 text-cyan-300 rounded-sm hover:bg-cyan-500/10 disabled:opacity-50"
+                                      >
+                                        {t("industryLedgerResume")}
+                                      </button>
+                                    ) : (
+                                      entry.status !== "completed" && entry.status !== "cancelled" && (
+                                        <button
+                                          type="button"
+                                          onClick={() => { void handleSetLedgerJobStatus(entry.job_id, "paused"); }}
+                                          disabled={updatingLedgerJobId === entry.job_id || updatingLedgerJobsBulk}
+                                          className="px-1.5 py-0.5 text-[10px] border border-indigo-500/40 text-indigo-300 rounded-sm hover:bg-indigo-500/10 disabled:opacity-50"
+                                        >
+                                          {t("industryLedgerPause")}
+                                        </button>
+                                      )
+                                    )}
+                                    {entry.status !== "completed" && entry.status !== "cancelled" && (
+                                      <button
+                                        type="button"
+                                        onClick={() => { void handleSetLedgerJobStatus(entry.job_id, "completed"); }}
+                                        disabled={updatingLedgerJobId === entry.job_id || updatingLedgerJobsBulk}
+                                        className="px-1.5 py-0.5 text-[10px] border border-emerald-500/40 text-emerald-300 rounded-sm hover:bg-emerald-500/10 disabled:opacity-50"
+                                      >
+                                        {t("industryLedgerSetCompleted")}
+                                      </button>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
+            {sortedTasks.length === 0 && (
+              <tr>
+                <td colSpan={10} className="px-2 py-4 text-center text-eve-dim text-xs">
+                  {t("industryLedgerTaskBoardNoTasks")}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}

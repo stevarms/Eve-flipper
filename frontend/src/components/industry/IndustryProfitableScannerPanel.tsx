@@ -27,6 +27,7 @@ import {
 } from "@/lib/industryBatchCommit";
 import { getAuthIndustryProjects } from "@/lib/api";
 import type { IndustryProject } from "@/lib/types";
+import { MaterialsPreviewPanel } from "./MaterialsPreviewPanel";
 import { StructureRigPicker, computeRigTotals } from "./StructureRigPicker";
 import { PricingHubPicker } from "./PricingHubPicker";
 import { getStructureRigs } from "@/lib/api";
@@ -2229,7 +2230,8 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
       {selectedIDs.size > 0 && (
         <>
           <MaterialsPreviewPanel
-            data={previewData}
+            materials={previewData?.materials ?? []}
+            shortfall={previewData?.shortfall ?? []}
             loading={previewLoading}
             error={previewError}
             collapsed={previewCollapsed}
@@ -2238,6 +2240,11 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
             onTabChange={setPreviewTab}
             heightVh={previewHeightVh}
             onHeightChange={setPreviewHeightVh}
+            bottomPx={38}
+            emptyFullMessage="No materials — coverage came back empty."
+            emptyShortMessage="Nothing missing — you have everything the batch needs."
+            emptyPreloadMessage="Select rows to preview."
+            emptyHeaderNote="select rows to preview"
           />
           <CommitFooter
             selectionCount={selectedIDs.size}
@@ -2260,205 +2267,6 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
             onCancel={handleCommitCancel}
           />
         </>
-      )}
-    </div>
-  );
-}
-
-/**
- * Memoized row for the scanner table.
- *
- * Reason for extracting: selection state (`selectedIDs`) is stored on the
- * parent, and toggling one row invalidates `sortedRows`, which used to force
- * React to reconcile all ~1500 rows every click. Each row's `title` string
- * is a ~30-line concat so the wasted work was very noticeable (0.5–0.75s
- * of lag on select).
- *
- * With React.memo + stable callbacks (`onToggle`, `onView` from the parent),
- * only the row whose `checked` prop actually flipped re-renders; the other
- * 1499 return the previous element. Row derivation (profitTooltip, flag,
- * unit prices, etc.) moves into the component body so it only runs on real
- * row renders, not on every parent render.
- */
-interface MaterialsPreviewPanelProps {
-  data: BatchPreview | null;
-  loading: boolean;
-  error: string | null;
-  collapsed: boolean;
-  onToggleCollapse: () => void;
-  activeTab: "full" | "shortfall";
-  onTabChange: (t: "full" | "shortfall") => void;
-  /** Panel height as vh. User-adjustable via the top drag handle. Clamped
-   *  15–80 by the drag handler to keep the panel above the footer and
-   *  below the top nav. */
-  heightVh: number;
-  onHeightChange: (vh: number) => void;
-}
-
-/**
- * Reactive materials-preview panel — sits fixed above the CommitFooter and
- * shows the merged material requirements + coverage overlay for the current
- * selection. Two tabs: Full (all materials the batch needs) and Shortfall
- * (only materials with positive missing_qty). Debounced analyze+coverage
- * runs in the parent's useEffect; this component is purely presentational.
- *
- * Fixed positioning stacks it above the CommitFooter (which is fixed at
- * bottom-0 with ~52px height). See `bottom-[52px]` below.
- */
-function MaterialsPreviewPanel({
-  data,
-  loading,
-  error,
-  collapsed,
-  onToggleCollapse,
-  activeTab,
-  onTabChange,
-  heightVh,
-  onHeightChange,
-}: MaterialsPreviewPanelProps) {
-  const rows = data
-    ? activeTab === "shortfall"
-      ? data.shortfall
-      : data.materials
-    : [];
-  const fullCount = data?.materials.length ?? 0;
-  const shortCount = data?.shortfall.length ?? 0;
-  const headerNote = loading
-    ? "computing…"
-    : error
-      ? `error — ${error}`
-      : data
-        ? `${fullCount} materials, ${shortCount} short`
-        : "select rows to preview";
-  const handleResizeStart = (e: React.MouseEvent) => {
-    e.preventDefault();
-    const startY = e.clientY;
-    const startVh = heightVh;
-    const move = (ev: MouseEvent) => {
-      // Drag UP → panel gets bigger. Convert pixel delta to vh so the
-      // sensitivity is consistent across viewport heights.
-      const deltaVh = ((startY - ev.clientY) / window.innerHeight) * 100;
-      const nextVh = Math.max(15, Math.min(80, startVh + deltaVh));
-      onHeightChange(nextVh);
-    };
-    const up = () => {
-      window.removeEventListener("mousemove", move);
-      window.removeEventListener("mouseup", up);
-    };
-    window.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", up);
-  };
-  return (
-    <div
-      className="fixed left-0 right-0 z-40 border-t border-eve-border/80
-                 bg-eve-panel/95 backdrop-blur shadow-[0_-4px_12px_rgba(0,0,0,0.35)]"
-      style={{ bottom: "38px" }}
-    >
-      {/* Resize handle — drag up/down to change the panel's max-height.
-          Only shown when the panel is expanded (dragging a collapsed panel
-          would be surprising since there's nothing to resize). */}
-      {!collapsed && (
-        <div
-          onMouseDown={handleResizeStart}
-          className="h-1.5 w-full cursor-ns-resize bg-eve-border/40 hover:bg-eve-accent/50 transition-colors"
-          title="Drag to resize preview"
-        />
-      )}
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-eve-border/40">
-        <button
-          type="button"
-          onClick={onToggleCollapse}
-          className="flex items-center gap-2 text-xs text-eve-dim hover:text-eve-text transition-colors"
-          title={collapsed ? "Expand materials preview" : "Collapse materials preview"}
-        >
-          <span className="text-[10px]">{collapsed ? "▸" : "▾"}</span>
-          <span className="text-[10px] uppercase tracking-wider">Materials preview</span>
-          <span className="text-eve-dim">·</span>
-          <span className={loading ? "text-eve-accent" : error ? "text-red-300" : "text-eve-text"}>
-            {headerNote}
-          </span>
-        </button>
-        {!collapsed && data && data.materials.length > 0 && (
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={() => onTabChange("full")}
-              className={`px-2 py-0.5 text-[10px] uppercase tracking-wider rounded-sm border ${
-                activeTab === "full"
-                  ? "border-eve-accent text-eve-accent bg-eve-accent/10"
-                  : "border-eve-border text-eve-dim hover:text-eve-text"
-              }`}
-            >
-              Full ({fullCount})
-            </button>
-            <button
-              type="button"
-              onClick={() => onTabChange("shortfall")}
-              className={`px-2 py-0.5 text-[10px] uppercase tracking-wider rounded-sm border ${
-                activeTab === "shortfall"
-                  ? "border-red-500/60 text-red-300 bg-red-900/20"
-                  : "border-eve-border text-eve-dim hover:text-eve-text"
-              }`}
-            >
-              Short ({shortCount})
-            </button>
-          </div>
-        )}
-      </div>
-      {!collapsed && (
-        <div style={{ maxHeight: `${heightVh}vh` }} className="overflow-y-auto">
-          {rows.length === 0 ? (
-            <div className="px-3 py-4 text-xs text-eve-dim text-center">
-              {loading
-                ? "Analyzing…"
-                : error
-                  ? "Preview unavailable — the commit flow will still work, just no pre-commit view."
-                  : activeTab === "shortfall"
-                    ? "Nothing missing — you have everything the batch needs."
-                    : "No materials — coverage came back empty."}
-            </div>
-          ) : (
-            <table className="w-full text-xs">
-              <thead className="text-eve-dim bg-eve-dark/40 sticky top-0">
-                <tr>
-                  <th className="px-3 py-1 text-left font-normal text-[10px] uppercase tracking-wider">Material</th>
-                  <th className="px-3 py-1 text-right font-normal text-[10px] uppercase tracking-wider w-24">Need</th>
-                  <th className="px-3 py-1 text-right font-normal text-[10px] uppercase tracking-wider w-24">Have</th>
-                  <th className="px-3 py-1 text-right font-normal text-[10px] uppercase tracking-wider w-24">Missing</th>
-                  <th className="px-3 py-1 text-right font-normal text-[10px] uppercase tracking-wider w-20">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((m) => {
-                  const missing = m.missing_qty ?? 0;
-                  const statusColor =
-                    m.status === "covered"
-                      ? "text-emerald-300"
-                      : m.status === "partial"
-                        ? "text-amber-300"
-                        : missing > 0
-                          ? "text-red-300"
-                          : "text-eve-dim";
-                  return (
-                    <tr key={m.type_id} className="border-t border-eve-border/20 hover:bg-eve-accent/5">
-                      <td className="px-3 py-1 truncate">{m.type_name || `Type ${m.type_id}`}</td>
-                      <td className="px-3 py-1 text-right font-mono">{Math.ceil(m.required_qty ?? 0).toLocaleString()}</td>
-                      <td className="px-3 py-1 text-right font-mono text-eve-dim">
-                        {Math.floor(m.available_qty ?? 0).toLocaleString()}
-                      </td>
-                      <td className={`px-3 py-1 text-right font-mono ${missing > 0 ? "text-red-300" : "text-eve-dim"}`}>
-                        {missing > 0 ? Math.ceil(missing).toLocaleString() : "—"}
-                      </td>
-                      <td className={`px-3 py-1 text-right font-mono text-[10px] uppercase tracking-wider ${statusColor}`}>
-                        {m.status || (missing > 0 ? "missing" : "covered")}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
-        </div>
       )}
     </div>
   );

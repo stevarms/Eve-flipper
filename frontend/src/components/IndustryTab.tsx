@@ -78,6 +78,15 @@ const IndustryJobsLedgerPanel = lazy(async () => {
   const mod = await import("./industry/IndustryJobsLedgerPanel");
   return { default: mod.IndustryJobsLedgerPanel };
 });
+// Operations-side inline panels (eager — the parent conditional already
+// gates them and they're small compared to the scanner/analysis paths).
+import { IndustryJobsProjectHeader } from "./industry/IndustryJobsProjectHeader";
+import { IndustryRecalcRemainingModal } from "./industry/IndustryRecalcRemainingModal";
+import { MaterialsPreviewPanel } from "./industry/MaterialsPreviewPanel";
+import { OpsGlobalStatusBar } from "./industry/OpsGlobalStatusBar";
+import { OpsSettingsDrawer } from "./industry/OpsSettingsDrawer";
+import { OpsTaskListPanel } from "./industry/OpsTaskListPanel";
+import { materialDiffToCoverageRows } from "./industry/industryHelpers";
 
 const IndustryAnalysisResultsPanel = lazy(async () => {
   const mod = await import("./industry/IndustryAnalysisResultsPanel");
@@ -383,6 +392,33 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
   const [updatingLedgerTasksBulk, setUpdatingLedgerTasksBulk] = useState(false);
   const [selectedLedgerTaskIDs, setSelectedLedgerTaskIDs] = useState<number[]>([]);
   const [bulkLedgerTaskPriority, setBulkLedgerTaskPriority] = useState(100);
+  // Operations-tab UI state — settings drawer visibility + materials footer
+  // collapse/height/tab persistence. Different sessionStorage keys from the
+  // scanner-side preview so both surfaces remember their state independently.
+  const [opsSettingsOpen, setOpsSettingsOpen] = useState(false);
+  const [opsRecalcOpen, setOpsRecalcOpen] = useState(false);
+  const [opsMaterialsCollapsed, setOpsMaterialsCollapsed] = useState<boolean>(false);
+  const [opsMaterialsHeightVh, setOpsMaterialsHeightVh] = useState<number>(() => {
+    try {
+      const raw = sessionStorage.getItem("eve-flipper:ops-materials-height-vh");
+      const n = raw ? parseFloat(raw) : NaN;
+      if (Number.isFinite(n) && n >= 15 && n <= 80) return n;
+    } catch { /* ignore */ }
+    return 30;
+  });
+  const [opsMaterialsTab, setOpsMaterialsTab] = useState<"full" | "shortfall">(() => {
+    try {
+      const raw = sessionStorage.getItem("eve-flipper:ops-materials-tab");
+      if (raw === "shortfall" || raw === "full") return raw;
+    } catch { /* ignore */ }
+    return "full";
+  });
+  useEffect(() => {
+    try { sessionStorage.setItem("eve-flipper:ops-materials-height-vh", String(opsMaterialsHeightVh)); } catch { /* ignore */ }
+  }, [opsMaterialsHeightVh]);
+  useEffect(() => {
+    try { sessionStorage.setItem("eve-flipper:ops-materials-tab", opsMaterialsTab); } catch { /* ignore */ }
+  }, [opsMaterialsTab]);
   const [updatingLedgerJobId, setUpdatingLedgerJobId] = useState(0);
   const [updatingLedgerJobsBulk, setUpdatingLedgerJobsBulk] = useState(false);
   const [selectedLedgerJobIDs, setSelectedLedgerJobIDs] = useState<number[]>([]);
@@ -1090,6 +1126,69 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     refreshLedger,
     onError,
   ]);
+
+  // Materials footer exports — CSV of the full material_diff, and an EVE
+  // Multi-Buy plaintext dump. Extracted from the deleted MaterialDiffPanel
+  // and rewritten to operate directly on ledgerSnapshot.material_diff.
+  const handleExportOpsMaterialsCSV = useCallback(() => {
+    const diff = ledgerSnapshot?.material_diff ?? [];
+    if (diff.length === 0) {
+      addToast(t("industryLedgerMaterialNoRowsExport"), "warning", 2000);
+      return;
+    }
+    const csvEscape = (s: string) => (/[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
+    const header = ["type_id", "type_name", "required_qty", "stock_qty", "buy_qty", "build_qty", "missing_qty"];
+    const rows = diff.map((row) => [
+      String(row.type_id || 0),
+      csvEscape(String(row.type_name || `Type ${row.type_id}`)),
+      String(row.required_qty || 0),
+      String(row.available_qty || 0),
+      String(row.buy_qty || 0),
+      String(row.build_qty || 0),
+      String(row.missing_qty || 0),
+    ]);
+    const content = [header.join(","), ...rows.map((r) => r.join(","))].join("\n");
+    const blob = new Blob([content], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `industry-shopping-diff-${Date.now()}.csv`;
+    document.body.appendChild(a);
+    try { a.click(); } finally { a.remove(); URL.revokeObjectURL(url); }
+    addToast(t("industryLedgerMaterialCSVExported", { count: diff.length }), "success", 1800);
+  }, [ledgerSnapshot, addToast, t]);
+
+  const handleExportOpsMaterialsMultibuy = useCallback(async () => {
+    const diff = ledgerSnapshot?.material_diff ?? [];
+    const lines = diff
+      .map((row) => {
+        const qty = (row.buy_qty || 0) + (row.missing_qty || 0);
+        if (qty <= 0) return "";
+        const name = String(row.type_name || `Type ${row.type_id}`).trim();
+        return name ? `${name}\t${qty}` : "";
+      })
+      .filter((line) => line.length > 0);
+    if (lines.length === 0) {
+      addToast(t("industryLedgerMaterialNoRowsMultibuy"), "warning", 2000);
+      return;
+    }
+    const payload = lines.join("\n");
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(payload);
+        addToast(t("industryLedgerMaterialMultibuyCopied", { count: lines.length }), "success", 2000);
+        return;
+      }
+    } catch { /* fall through to download */ }
+    const blob = new Blob([payload], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `industry-multibuy-${Date.now()}.txt`;
+    document.body.appendChild(a);
+    try { a.click(); } finally { a.remove(); URL.revokeObjectURL(url); }
+    addToast(t("industryLedgerMaterialMultibuyExported", { count: lines.length }), "success", 2000);
+  }, [ledgerSnapshot, addToast, t]);
 
   const handleCheckCurrentIndustryCoverage = useCallback(async () => {
     if (!isLoggedIn || !result) return;
@@ -2313,6 +2412,11 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
   void removeVisualMaterialRow; void removeVisualBlueprintRow;
   void addVisualTaskRow; void addVisualJobRow;
   void addVisualMaterialRow; void addVisualBlueprintRow;
+  // Operations-tab dead code — the old summary-boards / operations-boards /
+  // operations-jobs derivations are unused now that Operations renders
+  // inline with the new panels. Retained until the followup deep-delete pass.
+  void taskStatusDonePct; void jobStatusDonePct; void materialCoverageTotals;
+  void operationsBoardsProps; void operationsJobsProps;
 
   return (
     <div className={`flex-1 flex flex-col min-h-0 ${
@@ -2884,17 +2988,13 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
         </Suspense>
       )}
 
-      {/* Projects and Operations both render through the shared ledger
-          panel, which internally dispatches on jobsWorkspaceTab (derived
-          above from industryTab). Plan is gone — its "verify materials"
-          role lives in Discover's reactive preview panel; its "committed
-          state" role lives here on Operations. */}
-      {(industryTab === "projects" || industryTab === "operations") && (
+      {/* Projects — the project picker + guide list. Shell simplified after
+          Plan was removed; Operations no longer shares this panel. */}
+      {industryTab === "projects" && (
         <Suspense fallback={<div className="m-2 text-xs text-eve-dim">Loading jobs workspace...</div>}>
           <IndustryJobsLedgerPanel
             isLoggedIn={isLoggedIn}
             ledgerProjectsLoading={ledgerProjectsLoading}
-            jobsWorkspaceTab={jobsWorkspaceTab}
             projectHeaderProps={{
               newLedgerProjectName,
               setNewLedgerProjectName,
@@ -2929,36 +3029,189 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
                 }
               },
             }}
-            workspaceStatusBoardsProps={{
-              jobsWorkspaceTab,
-              taskStatusDone,
-              taskStatusTotal,
-              taskStatusDonePct,
-              taskStatusBoard,
-              jobStatusDone,
-              jobStatusTotal,
-              jobStatusDonePct,
-              jobStatusBoard,
-              ledgerSnapshot,
-              materialCoverageTotals,
-            }}
-            schedulerPanelProps={{
-              jobsWorkspaceTab,
-              enablePlanScheduler,
-              setEnablePlanScheduler,
-              schedulerSlotCount,
-              setSchedulerSlotCount,
-              schedulerMaxRunsPerJob,
-              setSchedulerMaxRunsPerJob,
-              schedulerMaxDurationHours,
-              setSchedulerMaxDurationHours,
-              schedulerQueueStatus,
-              setSchedulerQueueStatus,
-            }}
-            operationsBoardsProps={operationsBoardsProps}
-            operationsJobsProps={operationsJobsProps}
           />
         </Suspense>
+      )}
+
+      {/* Operations — one narrative flow (status bar → tasks → materials
+          footer) that answers "what next, am I blocked, what to buy?"
+          Replaces the old 5-panel stack. Settings drawer holds the
+          rarely-touched knobs; actions live in the materials footer's
+          headerActions slot. */}
+      {industryTab === "operations" && (
+        <div className="shrink-0 m-2 mt-0 pb-2" style={{
+          paddingBottom: opsMaterialsCollapsed ? "3.5rem" : `calc(${opsMaterialsHeightVh}vh + 3.5rem)`,
+        }}>
+          <div className="bg-eve-panel border border-eve-border rounded-sm p-3">
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <div className="text-[10px] uppercase tracking-wider text-eve-dim">{t("industryLedgerTitle")}</div>
+              {ledgerProjectsLoading && (
+                <span className="text-[10px] text-eve-dim">{t("industryLedgerSyncingProjects")}</span>
+              )}
+            </div>
+            {!isLoggedIn ? (
+              <div className="text-xs text-eve-dim">{t("industryLedgerLoginRequired")}</div>
+            ) : (
+              <>
+                <IndustryJobsProjectHeader
+                  newLedgerProjectName={newLedgerProjectName}
+                  setNewLedgerProjectName={setNewLedgerProjectName}
+                  newLedgerProjectStrategy={newLedgerProjectStrategy}
+                  setNewLedgerProjectStrategy={setNewLedgerProjectStrategy}
+                  creatingLedgerProject={creatingLedgerProject}
+                  handleCreateLedgerProject={handleCreateLedgerProject}
+                  refreshLedgerProjects={refreshLedgerProjects}
+                  selectedLedgerProjectId={selectedLedgerProjectId}
+                  setSelectedLedgerProjectId={setSelectedLedgerProjectId}
+                  ledgerProjects={ledgerProjects}
+                  ledgerLoading={ledgerLoading}
+                  ledgerData={ledgerData}
+                  ledgerSnapshotLoading={ledgerSnapshotLoading}
+                  ledgerSnapshot={ledgerSnapshot}
+                  handleLoadLedgerSnapshotToBuilder={handleLoadLedgerSnapshotToBuilder}
+                />
+
+                <OpsGlobalStatusBar
+                  ledgerSnapshot={ledgerSnapshot}
+                  ledgerData={ledgerData}
+                  taskDependencyBoard={taskDependencyBoard}
+                  onOpenSettings={() => setOpsSettingsOpen((v) => !v)}
+                  settingsOpen={opsSettingsOpen}
+                />
+
+                <OpsSettingsDrawer
+                  open={opsSettingsOpen}
+                  enablePlanScheduler={enablePlanScheduler}
+                  setEnablePlanScheduler={setEnablePlanScheduler}
+                  schedulerSlotCount={schedulerSlotCount}
+                  setSchedulerSlotCount={setSchedulerSlotCount}
+                  schedulerMaxRunsPerJob={schedulerMaxRunsPerJob}
+                  setSchedulerMaxRunsPerJob={setSchedulerMaxRunsPerJob}
+                  schedulerMaxDurationHours={schedulerMaxDurationHours}
+                  setSchedulerMaxDurationHours={setSchedulerMaxDurationHours}
+                  schedulerQueueStatus={schedulerQueueStatus}
+                  setSchedulerQueueStatus={setSchedulerQueueStatus}
+                  rebalanceInventoryScope={rebalanceInventoryScope}
+                  setRebalanceInventoryScope={setRebalanceInventoryScope}
+                  rebalanceLookbackDays={rebalanceLookbackDays}
+                  setRebalanceLookbackDays={setRebalanceLookbackDays}
+                  rebalanceStrategy={rebalanceStrategy}
+                  setRebalanceStrategy={setRebalanceStrategy}
+                  rebalanceWarehouseScope={rebalanceWarehouseScope}
+                  setRebalanceWarehouseScope={setRebalanceWarehouseScope}
+                  rebalanceUseSelectedStation={rebalanceUseSelectedStation}
+                  setRebalanceUseSelectedStation={setRebalanceUseSelectedStation}
+                  blueprintSyncDefaultBPCRuns={blueprintSyncDefaultBPCRuns}
+                  setBlueprintSyncDefaultBPCRuns={setBlueprintSyncDefaultBPCRuns}
+                />
+
+                <OpsTaskListPanel
+                  ledgerSnapshot={ledgerSnapshot}
+                  ledgerData={ledgerData}
+                  taskDependencyBoard={taskDependencyBoard}
+                  selectedLedgerTaskIDs={selectedLedgerTaskIDs}
+                  bulkLedgerTaskPriority={bulkLedgerTaskPriority}
+                  setBulkLedgerTaskPriority={setBulkLedgerTaskPriority}
+                  handleBulkSetLedgerTaskPriority={handleBulkSetLedgerTaskPriority}
+                  updatingLedgerTasksBulk={updatingLedgerTasksBulk}
+                  handleBulkSetLedgerTaskStatus={handleBulkSetLedgerTaskStatus}
+                  setSelectedLedgerTaskIDs={setSelectedLedgerTaskIDs}
+                  allVisibleLedgerTasksSelected={allVisibleLedgerTasksSelected}
+                  handleSelectAllVisibleLedgerTasks={handleSelectAllVisibleLedgerTasks}
+                  selectedLedgerTaskIDSet={selectedLedgerTaskIDSet}
+                  toggleLedgerTaskSelection={toggleLedgerTaskSelection}
+                  industryTaskStatusClass={industryTaskStatusClass}
+                  industryJobStatusClass={industryJobStatusClass}
+                  formatUtcShort={formatUtcShort}
+                  formatISK={formatISK}
+                  handleSetLedgerTaskPriority={handleSetLedgerTaskPriority}
+                  updatingLedgerTaskId={updatingLedgerTaskId}
+                  handleSetLedgerTaskStatus={handleSetLedgerTaskStatus}
+                  handleSetLedgerJobStatus={handleSetLedgerJobStatus}
+                  updatingLedgerJobId={updatingLedgerJobId}
+                  updatingLedgerJobsBulk={updatingLedgerJobsBulk}
+                />
+              </>
+            )}
+          </div>
+
+          {isLoggedIn && ledgerSnapshot && (() => {
+            const rows = materialDiffToCoverageRows(ledgerSnapshot.material_diff);
+            // Shortfall on Operations = anything not already in stock —
+            // materials the plan intends to BUY or BUILD, plus anything the
+            // plan can't source (missing_qty > 0). "Covered" (already stocked)
+            // is the only excluded state.
+            const shortfall = rows.filter((m) => m.status !== "covered");
+            return (
+              <MaterialsPreviewPanel
+                materials={rows}
+                shortfall={shortfall}
+                collapsed={opsMaterialsCollapsed}
+                onToggleCollapse={() => setOpsMaterialsCollapsed((v) => !v)}
+                activeTab={opsMaterialsTab}
+                onTabChange={setOpsMaterialsTab}
+                heightVh={opsMaterialsHeightVh}
+                onHeightChange={setOpsMaterialsHeightVh}
+                title="Committed materials"
+                bottomPx={0}
+                emptyFullMessage="No materials in the committed plan."
+                emptyShortMessage="Everything is covered — the plan can start."
+                emptyPreloadMessage="Load a project to see its committed materials."
+                emptyHeaderNote="no snapshot"
+                headerActions={
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => { void handleRebalanceLedgerMaterialsFromInventory(); }}
+                      disabled={rebalancingLedgerMaterials || !ledgerSnapshot}
+                      className="px-2 py-0.5 text-[10px] uppercase tracking-wider rounded-sm border border-cyan-500/60 text-cyan-300 bg-cyan-900/10 hover:bg-cyan-900/20 disabled:opacity-40"
+                      title="Rebalance material sourcing from current inventory"
+                    >
+                      Rebalance
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setOpsRecalcOpen(true)}
+                      disabled={selectedLedgerProjectId <= 0}
+                      className="px-2 py-0.5 text-[10px] uppercase tracking-wider rounded-sm border border-amber-500/60 text-amber-300 bg-amber-900/10 hover:bg-amber-900/20 disabled:opacity-40"
+                    >
+                      Recalc
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { void handleSyncLedgerBlueprintPoolFromAssets(); }}
+                      disabled={syncingLedgerBlueprintPool}
+                      className="px-2 py-0.5 text-[10px] uppercase tracking-wider rounded-sm border border-fuchsia-500/60 text-fuchsia-300 bg-fuchsia-900/10 hover:bg-fuchsia-900/20 disabled:opacity-40"
+                    >
+                      Sync BP
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleExportOpsMaterialsCSV}
+                      className="px-2 py-0.5 text-[10px] uppercase tracking-wider rounded-sm border border-eve-border text-eve-dim hover:text-eve-text"
+                    >
+                      CSV
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { void handleExportOpsMaterialsMultibuy(); }}
+                      className="px-2 py-0.5 text-[10px] uppercase tracking-wider rounded-sm border border-eve-accent text-eve-accent hover:bg-eve-accent/10"
+                    >
+                      Multibuy
+                    </button>
+                  </>
+                }
+              />
+            );
+          })()}
+
+          <IndustryRecalcRemainingModal
+            open={opsRecalcOpen}
+            onClose={() => setOpsRecalcOpen(false)}
+            projectID={selectedLedgerProjectId}
+            onWarnings={(ws) => ws.forEach((w) => addToast(w, "warning", 10000))}
+          />
+        </div>
       )}
 
       {/* Results */}
