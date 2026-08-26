@@ -78,6 +78,22 @@ type OrderDeskOrder struct {
 	DaysToExpire        int     `json:"days_to_expire"` // -1 if unknown
 	Recommendation      string  `json:"recommendation"` // hold | reprice | cancel
 	Reason              string  `json:"reason"`
+
+	// Owner tags stamped by the api-layer aggregator when scope=all so the
+	// multi-character Orders tab can group / filter by owning character.
+	// Empty when the row came through a single-character request.
+	CharacterID   int64  `json:"character_id,omitempty"`
+	CharacterName string `json:"character_name,omitempty"`
+
+	// Broker-fee-aware relist economics — matches
+	// AnalyzeUndercutsWithRelistFee at undercut.go. Populated inside
+	// ComputeOrderDesk when a broker rate is set. Surfaced here (they used
+	// to only exist internally) so the Orders tab can render the same
+	// ⚠ "fee eats the gain" warning the character-popup desk was silently
+	// computing but never showing.
+	RelistFeeISK           float64 `json:"relist_fee_isk,omitempty"`
+	NetRelistGainISK       float64 `json:"net_relist_gain_isk,omitempty"`
+	WarnUnprofitableRelist bool    `json:"warn_unprofitable_relist,omitempty"`
 }
 
 // OrderDeskResponse is the full API payload for the order desk tab.
@@ -282,6 +298,33 @@ func ComputeOrderDesk(
 				}
 				if po.Price > 0 {
 					row.UndercutPct = row.UndercutAmount / po.Price * 100.0
+				}
+				// Fee-aware relist economics — matches
+				// AnalyzeUndercutsWithRelistFee at undercut.go and
+				// buildSuggestedOrder in station_command_center.go. Only
+				// meaningful when we'd actually be repricing (not at
+				// position 1) and a broker rate is supplied.
+				if opt.BrokerFeePercent > 0 && row.Position != 1 && row.SuggestedPrice > 0 && po.VolumeRemain > 0 {
+					delta := row.SuggestedPrice - po.Price
+					if delta < 0 {
+						delta = -delta
+					}
+					fee := opt.BrokerFeePercent / 100.0 * delta * float64(po.VolumeRemain)
+					if fee < 100 {
+						fee = 100
+					}
+					row.RelistFeeISK = fee
+					// GrossGain is always negative for a reprice toward
+					// best (moving away from current position costs ISK
+					// per unit either way). Users still want to see the
+					// fee — the warning fires whenever net is negative,
+					// which is the common case for high-fee low-volume
+					// relists.
+					grossGain := -delta * float64(po.VolumeRemain)
+					row.NetRelistGainISK = grossGain - fee
+					if row.NetRelistGainISK < 0 {
+						row.WarnUnprofitableRelist = true
+					}
 				}
 			} else {
 				row.Position = 1

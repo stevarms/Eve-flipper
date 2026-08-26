@@ -8219,6 +8219,14 @@ func (s *Server) handleAuthOrderDesk(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var orders []esi.CharacterOrder
+	// Remember which order belongs to which session so the response can
+	// carry owner tags on each row. Empty in single-character mode (the
+	// map is only consulted when scope=all).
+	type orderOwner struct {
+		characterID   int64
+		characterName string
+	}
+	ownerByOrderID := make(map[int64]orderOwner)
 	for _, sess := range selectedSessions {
 		token, tokenErr := s.sessions.EnsureValidTokenForUserCharacter(s.sso, userID, sess.CharacterID)
 		if tokenErr != nil {
@@ -8237,6 +8245,9 @@ func (s *Server) handleAuthOrderDesk(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			continue
+		}
+		for _, o := range charOrders {
+			ownerByOrderID[o.OrderID] = orderOwner{characterID: sess.CharacterID, characterName: sess.CharacterName}
 		}
 		orders = append(orders, charOrders...)
 	}
@@ -8338,6 +8349,15 @@ func (s *Server) handleAuthOrderDesk(w http.ResponseWriter, r *http.Request) {
 		TargetETADays:    targetETADays,
 		WarnExpiryDays:   2,
 	})
+	// Stamp owner tags for multi-character views (Orders tab). Always
+	// populate — single-character requests just repeat the same identity
+	// per row, and the frontend can still use it.
+	for i := range result.Orders {
+		if owner, ok := ownerByOrderID[result.Orders[i].OrderID]; ok {
+			result.Orders[i].CharacterID = owner.characterID
+			result.Orders[i].CharacterName = owner.characterName
+		}
+	}
 	writeJSON(w, result)
 }
 

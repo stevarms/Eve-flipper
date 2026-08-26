@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../lib/i18n";
 
-type TabKey = "radius" | "region" | "contracts" | "station" | "price_audit" | "pi_factory" | "route" | "industry" | "trade_journal" | "demand";
+type TabKey = "radius" | "region" | "contracts" | "station" | "orders" | "price_audit" | "pi_factory" | "route" | "industry" | "trade_journal" | "demand";
 
 interface CommandItem {
   id: string;

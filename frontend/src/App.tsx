@@ -13,6 +13,8 @@ import { PriceAudit } from "./components/PriceAudit";
 import { PIFactory } from "./components/PIFactory";
 import { TradeJournal } from "./components/TradeJournal";
 import { ProfitPill } from "./components/ProfitPill";
+import { Orders } from "./components/Orders";
+import { OrdersPill } from "./components/OrdersPill";
 import { IndustryTab } from "./components/IndustryTab";
 import { WarTracker } from "./components/WarTracker";
 import { ItemIntelligenceModal } from "./components/ItemIntelligenceModal";
@@ -1996,6 +1998,7 @@ function App() {
              *  wider viewport lost the always-visible profit summary the
              *  top bar is supposed to carry. Rendered inline with the
              *  StatusBar for parity with the mobile menu's ordering. */}
+            <OrdersPill isLoggedIn={authStatus.logged_in} onOpen={() => setTab("orders")} />
             <ProfitPill isLoggedIn={authStatus.logged_in} onOpen={() => setTab("trade_journal")} />
             {!cockpitPreferences.hiddenPanels.statusBar && <StatusBar />}
           </div>
@@ -2252,6 +2255,7 @@ function App() {
           >
             {t("discordCta")}
           </a>
+          <OrdersPill isLoggedIn={authStatus.logged_in} onOpen={() => setTab("orders")} />
           <ProfitPill isLoggedIn={authStatus.logged_in} onOpen={() => setTab("trade_journal")} />
           <StatusBar />
         </div>
@@ -2490,6 +2494,9 @@ function App() {
           </TabPanel>
           <TabPanel active={tab === "trade_journal"}>
             <TradeJournal isLoggedIn={authStatus.logged_in} />
+          </TabPanel>
+          <TabPanel active={tab === "orders"}>
+            <Orders isLoggedIn={authStatus.logged_in} />
           </TabPanel>
           <TabPanel active={tab === "route"}>
             <RouteBuilder

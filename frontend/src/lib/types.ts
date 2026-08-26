@@ -1747,6 +1747,16 @@ export interface OrderDeskOrder {
   days_to_expire: number;
   recommendation: "hold" | "reprice" | "cancel" | string;
   reason: string;
+  // Owner tags stamped by the api-layer aggregator when scope=all so the
+  // multi-character Orders tab can group / filter by owning character.
+  character_id?: number;
+  character_name?: string;
+  // Broker-fee-aware relist economics — populated when BrokerFeePercent > 0
+  // on the request. Surfaced so the Orders tab can render the ⚠ warning
+  // when the fee eats the theoretical gain.
+  relist_fee_isk?: number;
+  net_relist_gain_isk?: number;
+  warn_unprofitable_relist?: boolean;
 }
 
 export interface OrderDeskResponse {
