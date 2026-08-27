@@ -1,15 +1,18 @@
 import { Fragment, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import { useI18n } from "@/lib/i18n";
 import type {
+  IndustryBlueprintPoolRecord,
   IndustryJobStatus,
   IndustryLedger,
   IndustryLedgerEntry,
+  IndustryMaterialPlanRecord,
   IndustryProjectSnapshot,
   IndustryTaskRecord,
   IndustryTaskStatus,
 } from "@/lib/types";
 import {
   deriveTaskBlockStatus,
+  taskConstraintNumber,
   type IndustryTaskDependencyBoard,
   type TaskBlockLevel,
 } from "./industryHelpers";
@@ -63,10 +66,12 @@ const BLOCK_PILL_CLASSES: Record<TaskBlockLevel, string> = {
   unknown: "border-slate-500/60 text-slate-300 bg-slate-800/40",
 };
 
+// Internal type names kept as ready/soft/hard for continuity; display
+// labels use the user-facing vocabulary: READY / PARTIAL / BLOCKED.
 const BLOCK_PILL_LABELS: Record<TaskBlockLevel, string> = {
   ready: "READY",
-  soft: "SOFT",
-  hard: "HARD",
+  soft: "PARTIAL",
+  hard: "BLOCKED",
   unknown: "—",
 };
 
@@ -120,6 +125,30 @@ export function OpsTaskListPanel(props: OpsTaskListPanelProps) {
     return map;
   }, [ledgerData]);
 
+  // Per-task material rows (tagged after the task_id-threading fix landed).
+  // Legacy plans without per-task tagging fall back to an empty list —
+  // the expansion just shows no per-task material section for those.
+  const materialsByTaskID = useMemo(() => {
+    const map = new Map<number, IndustryMaterialPlanRecord[]>();
+    for (const m of ledgerSnapshot?.materials ?? []) {
+      const list = map.get(m.task_id) ?? [];
+      list.push(m);
+      map.set(m.task_id, list);
+    }
+    return map;
+  }, [ledgerSnapshot]);
+
+  // Look up any blueprint by its type_id — used to render the "blueprint
+  // required" row inside a task expansion (task.constraints tells us the
+  // BP type; the snapshot tells us if it's a BPO/BPC, ME/TE, runs left).
+  const blueprintByTypeID = useMemo(() => {
+    const map = new Map<number, IndustryBlueprintPoolRecord>();
+    for (const bp of ledgerSnapshot?.blueprints ?? []) {
+      map.set(bp.blueprint_type_id, bp);
+    }
+    return map;
+  }, [ledgerSnapshot]);
+
   // Compute block status per task once; reused for the row pill.
   const blockByTask = useMemo(() => {
     const map = new Map<number, ReturnType<typeof deriveTaskBlockStatus>>();
@@ -130,8 +159,24 @@ export function OpsTaskListPanel(props: OpsTaskListPanelProps) {
     return map;
   }, [ledgerSnapshot, taskDependencyBoard.parent_by_task]);
 
-  // Default order: dep depth ascending → priority descending → id ascending.
-  // Tasks the user can start now bubble to the top; deeper dependencies wait.
+  // Default order: dep depth asc → activity prerequisite order → priority
+  // desc → id asc. Prerequisites (copy/invention/reaction) bubble above
+  // their manufacturing consumers even when the parent-link data isn't
+  // populated (which is the norm for scanner-committed plans where every
+  // task ends up depth=1). Priority is the user-editable override.
+  const activityOrder = (activity: string): number => {
+    switch (activity) {
+      case "copy":
+        return 0;
+      case "invention":
+        return 1;
+      case "reaction":
+        return 2;
+      case "manufacturing":
+      default:
+        return 3;
+    }
+  };
   const sortedTasks: IndustryTaskRecord[] = useMemo(() => {
     if (!ledgerSnapshot) return [];
     const arr = [...ledgerSnapshot.tasks];
@@ -139,6 +184,9 @@ export function OpsTaskListPanel(props: OpsTaskListPanelProps) {
       const da = taskDependencyBoard.depth_by_task[a.id] ?? 1;
       const db = taskDependencyBoard.depth_by_task[b.id] ?? 1;
       if (da !== db) return da - db;
+      const aa = activityOrder(a.activity);
+      const ab = activityOrder(b.activity);
+      if (aa !== ab) return aa - ab;
       const pa = a.priority || 0;
       const pb = b.priority || 0;
       if (pa !== pb) return pb - pa;
@@ -233,8 +281,11 @@ export function OpsTaskListPanel(props: OpsTaskListPanelProps) {
               <th className="px-1.5 py-1 text-left">{t("industryLedgerActivity")}</th>
               <th className="px-1.5 py-1 text-right">{t("industryLedgerRuns")}</th>
               <th className="px-1.5 py-1 text-right">{t("industryLedgerTaskBoardPriority")}</th>
-              <th className="px-1.5 py-1 text-left">{t("industryLedgerStatus")}</th>
-              <th className="px-1.5 py-1 text-left">Block</th>
+              {/* "State" = task lifecycle (planned/active/paused/etc);
+                  "Status" = workflow-blocker health (ready/partial/blocked).
+                  Separate columns so both readouts are available at a glance. */}
+              <th className="px-1.5 py-1 text-left">State</th>
+              <th className="px-1.5 py-1 text-left">Status</th>
               <th className="px-1.5 py-1 text-left">{t("industryLedgerTaskBoardWindow")}</th>
               <th className="px-1.5 py-1 text-right">{t("industryLedgerActions")}</th>
             </tr>
@@ -245,6 +296,12 @@ export function OpsTaskListPanel(props: OpsTaskListPanelProps) {
               const level: TaskBlockLevel = block?.level ?? "unknown";
               const isExpanded = expanded.has(task.id);
               const taskJobs = jobsByTaskID.get(task.id) ?? [];
+              const taskMaterials = materialsByTaskID.get(task.id) ?? [];
+              const bpTypeID = taskConstraintNumber(task.constraints, "blueprint_type_id");
+              const bpRecord = bpTypeID > 0 ? blueprintByTypeID.get(bpTypeID) : undefined;
+              const bpME = taskConstraintNumber(task.constraints, "me");
+              const bpTE = taskConstraintNumber(task.constraints, "te");
+              const hasExpandable = taskJobs.length > 0 || taskMaterials.length > 0 || bpTypeID > 0;
               const parentID = taskDependencyBoard.parent_by_task[task.id] ?? 0;
               const depth = taskDependencyBoard.depth_by_task[task.id] ?? 1;
               const isCP = taskDependencyBoard.critical_task_ids.has(task.id);
@@ -263,9 +320,13 @@ export function OpsTaskListPanel(props: OpsTaskListPanelProps) {
                       <button
                         type="button"
                         onClick={() => toggleExpanded(task.id)}
-                        disabled={taskJobs.length === 0}
+                        disabled={!hasExpandable}
                         className="text-eve-dim hover:text-eve-accent disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                        title={taskJobs.length === 0 ? "No jobs bound to this task" : `${taskJobs.length} job(s)`}
+                        title={
+                          !hasExpandable
+                            ? "No requirements or jobs bound to this task"
+                            : `${taskMaterials.length} material${taskMaterials.length === 1 ? "" : "s"}, ${taskJobs.length} job${taskJobs.length === 1 ? "" : "s"}`
+                        }
                       >
                         {isExpanded ? "▾" : "▸"}
                       </button>
@@ -370,22 +431,122 @@ export function OpsTaskListPanel(props: OpsTaskListPanelProps) {
                       </div>
                     </td>
                   </tr>
-                  {isExpanded && taskJobs.length > 0 && (
+                  {isExpanded && hasExpandable && (
                     <tr className="border-b border-eve-border/30 bg-eve-dark/40">
-                      <td colSpan={10} className="px-2 py-1">
-                        <table className="w-full text-[10px]">
-                          <thead className="text-eve-dim uppercase tracking-wider">
-                            <tr>
-                              <th className="px-1.5 py-0.5 text-left w-24">{t("industryLedgerJob")}</th>
-                              <th className="px-1.5 py-0.5 text-right w-16">{t("industryLedgerRuns")}</th>
-                              <th className="px-1.5 py-0.5 text-right w-24">{t("industryLedgerCost")}</th>
-                              <th className="px-1.5 py-0.5 text-left w-24">{t("industryLedgerStatus")}</th>
-                              <th className="px-1.5 py-0.5 text-left">{t("industryLedgerUpdated")}</th>
-                              <th className="px-1.5 py-0.5 text-right">{t("industryLedgerActions")}</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {taskJobs.map((entry) => (
+                      <td colSpan={10} className="px-3 py-2 space-y-3">
+                        {/* Blueprint required — comes from task.constraints */}
+                        {bpTypeID > 0 && (
+                          <section>
+                            <div className="text-[10px] uppercase tracking-wider text-eve-dim mb-1">
+                              Blueprint required
+                            </div>
+                            <div className="text-[11px] flex items-center flex-wrap gap-x-3 gap-y-1">
+                              <span className="text-eve-text">
+                                {bpRecord?.blueprint_name || `Type ${bpTypeID}`}
+                              </span>
+                              <span className={`px-1 py-0.5 text-[9px] uppercase rounded-sm border ${
+                                bpRecord?.is_bpo
+                                  ? "border-emerald-500/60 text-emerald-300"
+                                  : "border-amber-500/60 text-amber-300"
+                              }`}>
+                                {bpRecord ? (bpRecord.is_bpo ? "BPO" : "BPC") : "unknown"}
+                              </span>
+                              <span className="text-eve-dim">
+                                ME <span className="font-mono text-eve-text">{bpME}</span>
+                                {" · "}
+                                TE <span className="font-mono text-eve-text">{bpTE}</span>
+                              </span>
+                              {bpRecord && !bpRecord.is_bpo && (
+                                <span className="text-eve-dim">
+                                  runs left <span className="font-mono text-eve-text">{bpRecord.available_runs}</span>
+                                </span>
+                              )}
+                              {bpRecord?.quantity !== undefined && (
+                                <span className="text-eve-dim">
+                                  qty <span className="font-mono text-eve-text">{bpRecord.quantity}</span>
+                                </span>
+                              )}
+                              {!bpRecord && (
+                                <span className="text-red-300 text-[10px] uppercase">
+                                  not in pool — sync BP or add manually
+                                </span>
+                              )}
+                            </div>
+                          </section>
+                        )}
+
+                        {/* Task-scoped materials */}
+                        {taskMaterials.length > 0 && (
+                          <section>
+                            <div className="text-[10px] uppercase tracking-wider text-eve-dim mb-1">
+                              Materials · {taskMaterials.length}
+                            </div>
+                            <table className="w-full text-[10px]">
+                              <thead className="text-eve-dim uppercase tracking-wider">
+                                <tr>
+                                  <th className="px-1.5 py-0.5 text-left">Material</th>
+                                  <th className="px-1.5 py-0.5 text-right w-20">Need</th>
+                                  <th className="px-1.5 py-0.5 text-right w-20">Have</th>
+                                  <th className="px-1.5 py-0.5 text-right w-16">Missing</th>
+                                  <th className="px-1.5 py-0.5 text-left w-20">Status</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {taskMaterials.map((m) => {
+                                  const need = Math.max(0, m.required_qty ?? 0);
+                                  const have = Math.max(0, m.available_qty ?? 0);
+                                  // Same in-stock semantic as the footer:
+                                  // covered = fully stocked; partial = some
+                                  // in stock; missing = zero on hand.
+                                  const status =
+                                    have >= need ? "COVERED" : have > 0 ? "PARTIAL" : "MISSING";
+                                  const statusClass =
+                                    status === "COVERED"
+                                      ? "text-emerald-300"
+                                      : status === "PARTIAL"
+                                        ? "text-amber-300"
+                                        : "text-red-300";
+                                  const missing = Math.max(0, need - have);
+                                  return (
+                                    <tr key={`tm-${task.id}-${m.type_id}`} className="border-t border-eve-border/20">
+                                      <td className="px-1.5 py-0.5 truncate text-eve-text">
+                                        {m.type_name || `Type ${m.type_id}`}
+                                      </td>
+                                      <td className="px-1.5 py-0.5 text-right font-mono">{need.toLocaleString()}</td>
+                                      <td className="px-1.5 py-0.5 text-right font-mono text-eve-dim">{have.toLocaleString()}</td>
+                                      <td className={`px-1.5 py-0.5 text-right font-mono ${missing > 0 ? "text-red-300" : "text-eve-dim"}`}>
+                                        {missing > 0 ? missing.toLocaleString() : "—"}
+                                      </td>
+                                      <td className={`px-1.5 py-0.5 text-[10px] uppercase tracking-wider ${statusClass}`}>
+                                        {status}
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </section>
+                        )}
+
+                        {/* Bound EVE jobs (task_id-linked) */}
+                        {taskJobs.length > 0 && (
+                          <section>
+                            <div className="text-[10px] uppercase tracking-wider text-eve-dim mb-1">
+                              Jobs · {taskJobs.length}
+                            </div>
+                            <table className="w-full text-[10px]">
+                              <thead className="text-eve-dim uppercase tracking-wider">
+                                <tr>
+                                  <th className="px-1.5 py-0.5 text-left w-24">{t("industryLedgerJob")}</th>
+                                  <th className="px-1.5 py-0.5 text-right w-16">{t("industryLedgerRuns")}</th>
+                                  <th className="px-1.5 py-0.5 text-right w-24">{t("industryLedgerCost")}</th>
+                                  <th className="px-1.5 py-0.5 text-left w-24">{t("industryLedgerStatus")}</th>
+                                  <th className="px-1.5 py-0.5 text-left">{t("industryLedgerUpdated")}</th>
+                                  <th className="px-1.5 py-0.5 text-right">{t("industryLedgerActions")}</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {taskJobs.map((entry) => (
                               <tr key={`job-${entry.job_id}`} className="border-t border-eve-border/20">
                                 <td className="px-1.5 py-0.5 text-eve-dim">#{entry.job_id}</td>
                                 <td className="px-1.5 py-0.5 text-right text-eve-accent font-mono">{entry.runs}</td>
@@ -443,8 +604,10 @@ export function OpsTaskListPanel(props: OpsTaskListPanelProps) {
                                 </td>
                               </tr>
                             ))}
-                          </tbody>
-                        </table>
+                              </tbody>
+                            </table>
+                          </section>
+                        )}
                       </td>
                     </tr>
                   )}

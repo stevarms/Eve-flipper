@@ -199,18 +199,20 @@ export function deriveTaskBlockStatus(
   //   SOFT  — plan covers everything but at least one material isn't in stock
   //           right now (needs a market run or upstream build first)
   //   READY — every material's available_qty >= required_qty already
+  // "Can I actually start work right now?" is the block question.
+  // Reads look at available_qty ONLY — buy_qty / build_qty describe plan
+  // intent (what the pipeline says to source), but they don't put material
+  // in your hangar. A material with 0 in stock blocks the task even if the
+  // plan says "buy 5 of these".
   const materials = snapshot.materials.filter((m) => m.task_id === taskID);
-  let missingCount = 0;
-  let notStockedCount = 0;
+  let hardCount = 0;        // available === 0 (nothing to work with)
+  let notStockedCount = 0;  // available < required (short)
   for (const m of materials) {
     const required = m.required_qty ?? 0;
     if (required <= 0) continue;
     const available = m.available_qty ?? 0;
-    const buy = m.buy_qty ?? 0;
-    const build = m.build_qty ?? 0;
-    const missing = Math.max(0, required - (available + buy + build));
-    if (missing > 0) missingCount++;
     if (available < required) notStockedCount++;
+    if (available <= 0) hardCount++;
   }
 
   // Parent-task blocking: walk parentByTask up until we hit a root,
@@ -245,26 +247,29 @@ export function deriveTaskBlockStatus(
   //           yet (buy_qty > 0 or build_qty > 0 → market run or upstream build
   //           required first)
   //   READY — every material's available_qty >= required_qty right now
+  // Fallback: no per-task rows for this task (legacy projects with all
+  // materials tagged task_id: 0). Falls back to project-level material_diff.
   if (materials.length === 0) {
     const projectDiff = snapshot.material_diff ?? [];
-    let missingCountDiff = 0;
+    let hardCountDiff = 0;
     let notStockedCount = 0;
     for (const m of projectDiff) {
       const required = m.required_qty ?? 0;
       if (required <= 0) continue;
-      if ((m.missing_qty ?? 0) > 0) missingCountDiff++;
-      if ((m.available_qty ?? 0) < required) notStockedCount++;
+      const available = m.available_qty ?? 0;
+      if (available < required) notStockedCount++;
+      if (available <= 0) hardCountDiff++;
     }
     if (projectDiff.length > 0) {
       const hardOnParents = parentBlocking.length > 0;
-      if (missingCountDiff > 0 || hardOnParents) {
+      if (hardCountDiff > 0 || hardOnParents) {
         const bits: string[] = [];
-        if (missingCountDiff > 0) bits.push(`${missingCountDiff} project material${missingCountDiff === 1 ? "" : "s"} missing`);
+        if (hardCountDiff > 0) bits.push(`${hardCountDiff} project material${hardCountDiff === 1 ? "" : "s"} with none in stock`);
         if (hardOnParents) bits.push(`${parentBlocking.length} parent task${parentBlocking.length === 1 ? "" : "s"} incomplete`);
         return {
           level: "hard",
-          materialsMissingCount: missingCountDiff,
-          materialsHardCount: missingCountDiff,
+          materialsMissingCount: hardCountDiff,
+          materialsHardCount: hardCountDiff,
           parentBlocking,
           reason: bits.join(" · ") + " (project-level)",
         };
@@ -272,10 +277,10 @@ export function deriveTaskBlockStatus(
       if (notStockedCount > 0) {
         return {
           level: "soft",
-          materialsMissingCount: 0,
+          materialsMissingCount: notStockedCount,
           materialsHardCount: 0,
           parentBlocking: [],
-          reason: `${notStockedCount} material${notStockedCount === 1 ? "" : "s"} need buying/building first (project-level)`,
+          reason: `${notStockedCount} material${notStockedCount === 1 ? "" : "s"} partially stocked (project-level)`,
         };
       }
       return {
@@ -298,14 +303,14 @@ export function deriveTaskBlockStatus(
   }
 
   const hardOnParents = parentBlocking.length > 0;
-  if (missingCount > 0 || hardOnParents) {
+  if (hardCount > 0 || hardOnParents) {
     const bits: string[] = [];
-    if (missingCount > 0) bits.push(`${missingCount} material${missingCount === 1 ? "" : "s"} missing`);
+    if (hardCount > 0) bits.push(`${hardCount} material${hardCount === 1 ? "" : "s"} with none in stock`);
     if (hardOnParents) bits.push(`${parentBlocking.length} parent task${parentBlocking.length === 1 ? "" : "s"} incomplete`);
     return {
       level: "hard",
-      materialsMissingCount: missingCount,
-      materialsHardCount: missingCount,
+      materialsMissingCount: hardCount,
+      materialsHardCount: hardCount,
       parentBlocking,
       reason: bits.join(" · "),
     };
@@ -313,10 +318,10 @@ export function deriveTaskBlockStatus(
   if (notStockedCount > 0) {
     return {
       level: "soft",
-      materialsMissingCount: 0,
+      materialsMissingCount: notStockedCount,
       materialsHardCount: 0,
       parentBlocking: [],
-      reason: `${notStockedCount} material${notStockedCount === 1 ? "" : "s"} need buying/building first`,
+      reason: `${notStockedCount} material${notStockedCount === 1 ? "" : "s"} partially stocked`,
     };
   }
   return {
@@ -343,13 +348,13 @@ export function materialDiffToCoverageRows(
     const available = Math.max(0, m.available_qty ?? 0);
     const missing = Math.max(0, m.missing_qty ?? 0);
     const coveragePct = required > 0 ? Math.max(0, Math.min(1, available / required)) : 1;
-    // Match the block-derivation semantic — the preview pill should read
-    // the same way the task block pill does:
-    //   covered  = every unit already in stock (available >= required)
-    //   partial  = plan covers the gap (buy or build) but not stocked yet
-    //   missing  = plan can't source it (missing_qty > 0)
+    // Match the "can I start work right now?" block semantic:
+    //   covered  = available >= required (stocked, ready to go)
+    //   partial  = some in stock but short (0 < available < required)
+    //   missing  = nothing in stock (available === 0, even if plan says
+    //              to buy — buy_qty is intent, not inventory)
     const status: IndustryCoverageMaterialRow["status"] =
-      missing > 0 ? "missing" : available >= required ? "covered" : "partial";
+      available >= required ? "covered" : available > 0 ? "partial" : "missing";
     return {
       type_id: m.type_id,
       type_name: m.type_name,

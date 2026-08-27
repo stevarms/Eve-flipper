@@ -2419,19 +2419,11 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
   void operationsBoardsProps; void operationsJobsProps;
 
   return (
-    <div className={`flex-1 flex flex-col min-h-0 ${
-      // Enable page-level scrolling for every tab whose content can exceed
-      // the viewport. Discover-Search's analysis result panel is tall (four
-      // summary cards + material tree + coverage panel), so it also needs
-      // the scrollbar — without it the coverage section at the bottom was
-      // getting clipped when a blueprint was selected.
-      industryTab === "operations" ||
-      industryTab === "projects" ||
-      industryTab === "discover" ||
-      industryTab === "stockpiles"
-        ? "overflow-y-auto eve-scrollbar"
-        : ""
-    }`}>
+    // Two-layer flex: the top sub-tab nav (Projects / Discover / Operations /
+    // Stockpiles) stays pinned outside the scroll container, so it's always
+    // visible even when a tab's inner content scrolls. Only the wrapper
+    // below the nav takes overflow-y-auto.
+    <div className="flex-1 flex flex-col min-h-0">
       <div className="shrink-0 m-2 mb-0">
         <div className="inline-flex rounded-sm border border-eve-border overflow-hidden">
           {industryTabDefs.map((def) => (
@@ -2450,6 +2442,7 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
           ))}
         </div>
       </div>
+      <div className="flex-1 min-h-0 overflow-y-auto eve-scrollbar">
 
       {/* Discover has an item-source sub-picker (Search one item vs Scan
           owned BPs) — appears only when Discover is the active top-level tab. */}
@@ -3261,6 +3254,7 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
         brokerFeePercent={brokerFee}
         salesTaxPercent={salesTaxPercent}
       />
+      </div>
     </div>
   );
 }

@@ -876,6 +876,45 @@ func remapIndustryJobTaskIDs(
 	return ambiguousRefs
 }
 
+// remapIndustryMaterialTaskIDs is the material-side twin of
+// remapIndustryJobTaskIDs. Client-emitted material rows carry a task_id
+// that references one of the patch's own tasks via the negative-int ref
+// convention (-(i+1)); this walks each row, translates the ref into the
+// real inserted-task rowid, and rewrites the row in-place so the
+// downstream INSERT persists the correct link. Rows with task_id == 0
+// pass through unchanged (legacy patches that pre-date per-task tagging).
+func remapIndustryMaterialTaskIDs(
+	materials []IndustryMaterialPlanInput,
+	inputTaskIndexToID map[int64]int64,
+	sourceTaskIDToID map[int64]int64,
+	patchTaskCount int,
+	replace bool,
+	existingTaskIDs map[int64]struct{},
+) int {
+	if len(materials) == 0 {
+		return 0
+	}
+	ambiguousRefs := 0
+	for i := range materials {
+		if materials[i].TaskID == 0 {
+			continue
+		}
+		remappedID, ambiguous := remapIndustryTaskReference(
+			materials[i].TaskID,
+			inputTaskIndexToID,
+			sourceTaskIDToID,
+			patchTaskCount,
+			replace,
+			existingTaskIDs,
+		)
+		materials[i].TaskID = remappedID
+		if ambiguous {
+			ambiguousRefs++
+		}
+	}
+	return ambiguousRefs
+}
+
 func nullablePositiveInt64(v int64) interface{} {
 	if v <= 0 {
 		return nil
@@ -2667,7 +2706,22 @@ func (d *DB) ApplyIndustryPlanForUser(userID string, projectID int64, patch Indu
 	}
 
 	materialUpsertCount := 0
-	if len(patch.Materials) > 0 {
+	materialsForInsert := make([]IndustryMaterialPlanInput, len(patch.Materials))
+	copy(materialsForInsert, patch.Materials)
+	// Translate each material's client-supplied task ref (-(i+1) into the
+	// patch's local task slice) into the inserted-task rowid, matching what
+	// remapIndustryJobTaskIDs does for jobs. Without this, materials land
+	// with the raw negative refs and can't be per-task-filtered on read.
+	ambiguousMaterialTaskRefs := remapIndustryMaterialTaskIDs(
+		materialsForInsert,
+		inputTaskIndexToID,
+		sourceTaskIDToID,
+		len(patch.Tasks),
+		patch.Replace,
+		existingTaskIDs,
+	)
+	_ = ambiguousMaterialTaskRefs // metric plumbing left for a followup — inline
+	if len(materialsForInsert) > 0 {
 		stmt, err := tx.Prepare(`
 			INSERT INTO industry_material_plan (
 				user_id, project_id, task_id, type_id, type_name, required_qty, available_qty,
@@ -2689,7 +2743,7 @@ func (d *DB) ApplyIndustryPlanForUser(userID string, projectID int64, patch Indu
 		}
 		defer stmt.Close()
 
-		for _, m := range patch.Materials {
+		for _, m := range materialsForInsert {
 			if m.TypeID <= 0 {
 				continue
 			}

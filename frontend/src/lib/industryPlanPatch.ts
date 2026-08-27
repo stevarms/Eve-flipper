@@ -74,7 +74,10 @@ export function buildIndustryPlanPatch(input: BuildIndustryPlanPatchInput): Indu
         activity: step.activity || "manufacturing",
         product_type_id: step.product_type_id,
         target_runs: targetRuns,
-        priority: 100 + index,
+        // Prerequisite steps (invention → sub-mfg → final mfg) should sort
+        // above later steps under a priority-DESC sort. Assign in reverse
+        // so index 0 (usually invention) gets the highest number.
+        priority: 100 + (activitySteps.length - index),
         status: "planned",
         constraints: {
           me,
@@ -141,11 +144,22 @@ export function buildIndustryPlanPatch(input: BuildIndustryPlanPatchInput): Indu
   // per-row needs is what makes multi-row merging correct: the merged
   // required_qty is the true cross-row total instead of N copies of the
   // shared coverage snapshot.
+  //
+  // Each row's materials are attributed to that row's OUTPUT task —
+  // the last activity step, which is the manufacturing step for both
+  // T1 direct-mfg rows and T2 invention→mfg chains. flat_materials is
+  // a flattened bill (invention decryptors + mfg mats together), so
+  // tagging them to the mfg task means the mfg task's block-status
+  // pill reflects the full chain's needs. Enables per-task blocking
+  // in Operations (task's own materials → available vs required).
+  // Uses the same negative-int taskRef convention as jobs above.
+  const outputTaskRef = tasks.length > 0 ? -tasks.length : -1;
   const materials: IndustryMaterialPlanInput[] = (result.flat_materials ?? [])
     .filter((m) => m.type_id > 0)
     .map((m) => {
       const requiredQty = Math.max(0, Math.ceil(m.quantity ?? 0));
       return {
+        task_id: outputTaskRef,
         type_id: m.type_id,
         type_name: m.type_name || "",
         required_qty: requiredQty,
@@ -221,7 +235,12 @@ export function mergeIndustryPlanPatches(patches: IndustryPlanPatch[]): Industry
 
   const outTasks: IndustryTaskPlanInput[] = [];
   const outJobs: IndustryJobPlanInput[] = [];
-  const materialByType = new Map<number, IndustryMaterialPlanInput>();
+  // Materials dedup key includes task_id now that buildIndustryPlanPatch
+  // attributes each material to its owning output task. Two rows for the
+  // same output product (rare — usually the scanner dedup collapses them
+  // before we get here) can still land on the same (task, type) key.
+  // The DB layer uses the same (task_id, type_id) as its ON CONFLICT key.
+  const materialByTaskAndType = new Map<string, IndustryMaterialPlanInput>();
   const blueprintByKey = new Map<string, IndustryBlueprintPoolInput>();
 
   let taskOffset = 0;
@@ -252,9 +271,14 @@ export function mergeIndustryPlanPatches(patches: IndustryPlanPatch[]): Industry
     taskOffset += tasks.length;
 
     for (const m of patch.materials ?? []) {
-      const existing = materialByType.get(m.type_id);
+      const originalTaskRef = m.task_id;
+      const remappedTaskRef = originalTaskRef !== undefined
+        ? (taskIdRemap.get(originalTaskRef) ?? originalTaskRef)
+        : 0;
+      const key = `${remappedTaskRef}:${m.type_id}`;
+      const existing = materialByTaskAndType.get(key);
       if (!existing) {
-        materialByType.set(m.type_id, { ...m });
+        materialByTaskAndType.set(key, { ...m, task_id: remappedTaskRef });
         continue;
       }
       const requiredQty = (existing.required_qty ?? 0) + (m.required_qty ?? 0);
@@ -266,8 +290,9 @@ export function mergeIndustryPlanPatches(patches: IndustryPlanPatch[]): Industry
       const buildQty = (existing.build_qty ?? 0) + (m.build_qty ?? 0);
       // Prefer the non-empty unit cost.
       const unitCost = existing.unit_cost_isk || m.unit_cost_isk || 0;
-      materialByType.set(m.type_id, {
+      materialByTaskAndType.set(key, {
         ...existing,
+        task_id: remappedTaskRef,
         type_name: existing.type_name || m.type_name || "",
         required_qty: requiredQty,
         available_qty: clampedAvailable,
@@ -306,7 +331,7 @@ export function mergeIndustryPlanPatches(patches: IndustryPlanPatch[]): Industry
     project_status: patches[0].project_status ?? "planned",
     tasks: outTasks,
     jobs: outJobs,
-    materials: Array.from(materialByType.values()),
+    materials: Array.from(materialByTaskAndType.values()),
     blueprints: Array.from(blueprintByKey.values()),
     ...(scheduler ? { scheduler } : {}),
   };

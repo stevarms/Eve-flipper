@@ -64,11 +64,11 @@ export function OpsGlobalStatusBar({
       </span>
       <span className="text-eve-border">·</span>
       <span className="text-amber-300">
-        {counts.soft} <span className="text-eve-dim">soft-blocked</span>
+        {counts.soft} <span className="text-eve-dim">partial</span>
       </span>
       <span className="text-eve-border">·</span>
       <span className="text-red-300">
-        {counts.hard} <span className="text-eve-dim">hard-blocked</span>
+        {counts.hard} <span className="text-eve-dim">blocked</span>
       </span>
       {counts.unknown > 0 && (
         <>
