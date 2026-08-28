@@ -43,7 +43,11 @@ import type {
   IndustryBlueprintPoolInput,
 } from "@/lib/types";
 import { formatISK } from "@/lib/format";
-import { applyCoverageToIndustryPlanPatch, buildIndustryPlanPatch } from "@/lib/industryPlanPatch";
+import {
+  applyCoverageToIndustryPlanPatch,
+  applyJobSplitToIndustryPlanPatch,
+  buildIndustryPlanPatch,
+} from "@/lib/industryPlanPatch";
 import { useIndustrySharedPrefs } from "@/lib/useIndustrySharedPrefs";
 import { DECRYPTORS, DECRYPTOR_ORDER, T2_BPC_BASE_ME, T2_BPC_BASE_TE, effectiveInventionParams, type DecryptorKey } from "@/lib/industryDecryptors";
 import {
@@ -84,6 +88,8 @@ import { IndustryJobsProjectHeader } from "./industry/IndustryJobsProjectHeader"
 import { IndustryRecalcRemainingModal } from "./industry/IndustryRecalcRemainingModal";
 import { MaterialsPreviewPanel } from "./industry/MaterialsPreviewPanel";
 import { OpsGlobalStatusBar } from "./industry/OpsGlobalStatusBar";
+import { OpsNextActionCard } from "./industry/OpsNextActionCard";
+import { OpsSellFloorPanel } from "./industry/OpsSellFloorPanel";
 import { OpsSettingsDrawer } from "./industry/OpsSettingsDrawer";
 import { OpsTaskListPanel } from "./industry/OpsTaskListPanel";
 import { materialDiffToCoverageRows } from "./industry/industryHelpers";
@@ -525,6 +531,18 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
   const [schedulerMaxRunsPerJob, setSchedulerMaxRunsPerJob] = useState(200);
   const [schedulerMaxDurationHours, setSchedulerMaxDurationHours] = useState(24);
   const [schedulerQueueStatus, setSchedulerQueueStatus] = useState<IndustryJobStatus>("queued");
+  // Install-size limits for committed jobs. EVE installs one job per slot,
+  // so a 141-run invention batch has to become N separate installs; the
+  // commit path cuts jobs to these bounds so the Operations task expansion
+  // lists exactly what the user will queue. Switching the scheduler off
+  // leaves jobs whole.
+  const jobSplitLimits = useMemo(
+    () =>
+      enablePlanScheduler
+        ? { maxRunsPerJob: schedulerMaxRunsPerJob, maxDurationHours: schedulerMaxDurationHours }
+        : undefined,
+    [enablePlanScheduler, schedulerMaxRunsPerJob, schedulerMaxDurationHours],
+  );
   const [planBuilderCollapsed, setPlanBuilderCollapsed] = useState<Record<PlanBuilderSection, boolean>>({
     tasks: false,
     jobs: false,
@@ -792,7 +810,15 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
   // build whose sub-components the user owns well-researched BPOs for.
   // Cached in state; a single failure is non-fatal (analysis falls back
   // to the legacy cascade — same behavior as an anonymous caller).
-  const [ownedBlueprints, setOwnedBlueprints] = useState<Array<{ product_type_id: number; me: number; te: number }>>([]);
+  const [ownedBlueprints, setOwnedBlueprints] = useState<
+    Array<{
+      product_type_id: number;
+      me: number;
+      te: number;
+      is_bpo?: boolean;
+      available_runs?: number;
+    }>
+  >([]);
   useEffect(() => {
     if (!isLoggedIn) {
       setOwnedBlueprints([]);
@@ -808,6 +834,8 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
             product_type_id: b.product_type_id,
             me: b.me,
             te: b.te,
+            is_bpo: b.is_bpo,
+            available_runs: b.available_runs,
           })),
         );
       } catch (e) {
@@ -1260,7 +1288,8 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
       ownBlueprint,
       replace: replaceLedgerPlanOnApply,
     });
-    return applyCoverageToIndustryPlanPatch(patch, industryCoverage);
+    const withCoverage = applyCoverageToIndustryPlanPatch(patch, industryCoverage);
+    return jobSplitLimits ? applyJobSplitToIndustryPlanPatch(withCoverage, jobSplitLimits) : withCoverage;
   }, [
     result,
     selectedItem,
@@ -1272,6 +1301,7 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     ownBlueprint,
     replaceLedgerPlanOnApply,
     industryCoverage,
+    jobSplitLimits,
   ]);
 
   const seedVisualPlanBuilderFromPatch = useCallback((patch: IndustryPlanPatch) => {
@@ -2222,6 +2252,7 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
       invention_chance_mult: activityMode === "invention" ? inv.chanceMult : 0,
       invention_output_runs: activityMode === "invention" ? inv.outputRuns : 0,
       decryptor_cost: activityMode === "invention" ? sharedPrefs.decryptorCost : 0,
+      decryptor_type_id: activityMode === "invention" && inv.decryptorTypeID > 0 ? inv.decryptorTypeID : 0,
       build_mode: buildMode,
       skip_reactions: sharedPrefs.skipReactions,
       structure_rig_type_ids: sharedPrefs.structureRigTypeIDs,
@@ -2479,6 +2510,8 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
         <Suspense fallback={<div className="m-2 text-xs text-eve-dim">Loading scanner...</div>}>
           <IndustryProfitableScannerPanel
             isLoggedIn={isLoggedIn}
+            ownedBlueprints={ownedBlueprints}
+            jobSplit={jobSplitLimits}
             onViewInAnalysis={(handoff) => {
               setSelectedItem({
                 type_id: handoff.productTypeID,
@@ -3070,6 +3103,23 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
                   taskDependencyBoard={taskDependencyBoard}
                   onOpenSettings={() => setOpsSettingsOpen((v) => !v)}
                   settingsOpen={opsSettingsOpen}
+                />
+
+                <OpsNextActionCard
+                  ledgerSnapshot={ledgerSnapshot}
+                  taskDependencyBoard={taskDependencyBoard}
+                  handleSetLedgerTaskStatus={handleSetLedgerTaskStatus}
+                  updatingLedgerTaskId={updatingLedgerTaskId}
+                  updatingLedgerTasksBulk={updatingLedgerTasksBulk}
+                />
+
+                <OpsSellFloorPanel
+                  ledgerSnapshot={ledgerSnapshot}
+                  stationID={selectedStationId}
+                  stationName={selectedStationLabel}
+                  brokerFeePercent={brokerFee}
+                  salesTaxPercent={salesTaxPercent}
+                  onError={(msg) => onError?.(msg)}
                 />
 
                 <OpsSettingsDrawer

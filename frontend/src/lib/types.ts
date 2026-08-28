@@ -2045,6 +2045,12 @@ export interface IndustryParams {
    *  doesn't need to know each product's base chance. 0 or 1 = no change. */
   invention_chance_mult?: number;
   decryptor_cost?: number;
+  /** Decryptor typeID the user picked. Threaded to the analyzer so the
+   *  invention step's per-step material bill includes a row for the
+   *  decryptor (one per attempt), and the invention task's display name
+   *  can surface "with Decryptor X" without a separate SDE lookup on the
+   *  client. Zero = no decryptor. */
+  decryptor_type_id?: number;
   invention_output_runs?: number;
   /** Global build-vs-buy override for sub-materials.
    *   "auto" (default) — pick whichever is cheaper per node.
@@ -2081,7 +2087,22 @@ export interface IndustryParams {
    *  and passes it on every analyze call — matches the scanner's server-side
    *  index (buildOwnedBlueprintIndex). Omit for anonymous / unauthenticated
    *  callers; the analyzer falls back to legacy cascade in that case. */
-  owned_blueprints?: Array<{ product_type_id: number; me: number; te: number }>;
+  owned_blueprints?: Array<{
+    product_type_id: number;
+    me: number;
+    te: number;
+    /** Copy-step gating: true + available_runs=0 means "user has a BPO
+     *  but zero BPCs" — analyzer prepends a copying job before invention.
+     *  Absent (default false) preserves legacy behavior. */
+    is_bpo?: boolean;
+    /** Total BPC runs available for this product. BPOs contribute 0. */
+    available_runs?: number;
+    /** Optional ME research goal — analyzer emits research_material step
+     *  when owned ME < target_me. Zero = no goal. */
+    target_me?: number;
+    /** Optional TE research goal — same semantics for time efficiency. */
+    target_te?: number;
+  }>;
 }
 
 /** Wire shape of a Standup rig catalog entry, served by GET /api/industry/structure-rigs. */
@@ -2160,8 +2181,14 @@ export interface FlatMaterial {
   volume: number;
 }
 
+export interface IndustryActivityStepMaterial {
+  type_id: number;
+  type_name?: string;
+  quantity: number;
+}
+
 export interface IndustryActivityStep {
-  activity: "manufacturing" | "reaction" | "invention" | string;
+  activity: "manufacturing" | "reaction" | "invention" | "copy" | "research_material" | "research_time" | string;
   blueprint_type_id: number;
   blueprint_name: string;
   product_type_id: number;
@@ -2178,6 +2205,18 @@ export interface IndustryActivityStep {
    *  plan-patch builder uses this to default is_bpo=false on sub-BPs. */
   blueprint_is_bpc?: boolean;
   reason?: string;
+  /** Per-step material bill. Populated for invention (datacores), copy, and
+   *  research steps. Empty for manufacturing/reaction — their materials
+   *  live in the material tree and are already captured by flat_materials.
+   *  The plan-patch builder attributes these to the step's task_id AND
+   *  subtracts them from flat_materials before the mfg-task attribution,
+   *  so material_diff totals stay accurate. */
+  materials?: IndustryActivityStepMaterial[];
+  /** Decryptor typeID chosen for this invention step. Zero when none.
+   *  Surfaced on the task label so the user knows which decryptor to grab
+   *  in-game without expanding the row. */
+  decryptor_type_id?: number;
+  decryptor_name?: string;
 }
 
 export interface IndustryAnalysis {
@@ -2556,6 +2595,13 @@ export interface IndustryTaskPlanInput {
   priority?: number;
   status?: IndustryTaskStatus;
   constraints?: unknown;
+  // Plan-time expected value, captured at commit. Only set on tasks whose
+  // product is actually sold (the plan's output), so summing across every
+  // task in a project yields the project total without double-counting
+  // intermediate components.
+  expected_unit_revenue?: number;
+  expected_unit_cost?: number;
+  expected_output_qty?: number;
 }
 
 export interface IndustryJobPlanInput {
@@ -2722,6 +2768,11 @@ export interface IndustryTaskRecord {
   priority: number;
   status: IndustryTaskStatus;
   constraints: unknown;
+  // Plan-time expected value; zero on intermediate (component/invention/copy)
+  // tasks. See IndustryTaskPlanInput.
+  expected_unit_revenue: number;
+  expected_unit_cost: number;
+  expected_output_qty: number;
   created_at: string;
   updated_at: string;
 }

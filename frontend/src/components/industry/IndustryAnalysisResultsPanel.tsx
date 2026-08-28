@@ -679,11 +679,17 @@ function activityLabel(activity: string) {
   if (activity === "manufacturing") return "manufacturing";
   if (activity === "reaction") return "reaction";
   if (activity === "invention") return "invention";
+  if (activity === "copy") return "copy";
+  if (activity === "research_material") return "research ME";
+  if (activity === "research_time") return "research TE";
   return activity || "activity";
 }
 
 function activityClass(activity: string) {
   if (activity === "reaction") return "border-sky-500/25 bg-sky-500/10 text-sky-300";
   if (activity === "invention") return "border-purple-400/25 bg-purple-400/10 text-purple-200";
+  if (activity === "copy") return "border-cyan-500/25 bg-cyan-500/10 text-cyan-300";
+  if (activity === "research_material") return "border-emerald-500/25 bg-emerald-500/10 text-emerald-300";
+  if (activity === "research_time") return "border-lime-500/25 bg-lime-500/10 text-lime-300";
   return "border-eve-accent/25 bg-eve-accent/10 text-eve-accent";
 }

@@ -91,6 +91,13 @@ type IndustryParams struct {
 	InventionDatacoreLevel1  int32
 	InventionDatacoreLevel2  int32
 	DecryptorCost       float64 // Optional per-attempt decryptor cost
+	// DecryptorTypeID identifies the decryptor the user picked. Included on
+	// the invention step's per-step material bill and on IndustryAnalysis so
+	// the client can label the invention task without a separate SDE lookup.
+	// Zero = no decryptor (base invention). Independent of DecryptorCost so
+	// the caller can still supply a market-derived cost even when we don't
+	// know the exact typeID, though for the common case both are set.
+	DecryptorTypeID     int32
 	InventionOutputRuns int32   // Optional successful BPC runs override
 	// BuildMode governs the per-node build-vs-buy decision made in
 	// calculateCosts. "" or "auto" (default) picks whichever is cheaper at
@@ -147,12 +154,27 @@ type IndustryParams struct {
 	OwnedBlueprints map[int32]OwnedBlueprint
 }
 
-// OwnedBlueprint captures a user-owned blueprint's ME/TE for use as a
-// per-product override during tree recursion. Held by IndustryParams;
-// keyed by the PRODUCT typeID the blueprint manufactures.
+// OwnedBlueprint captures a user-owned blueprint's ME/TE plus originality
+// info for use as a per-product override during tree recursion. Held by
+// IndustryParams; keyed by the PRODUCT typeID the blueprint manufactures.
+//
+// IsBPO / AvailableRuns feed the analyzer's copy-step emitter: if a T2
+// invention step wants to consume a T1 BPC and the user owns only a BPO
+// (no BPCs, IsBPO=true and no copies in the pool), the analyzer prepends
+// a `copy` activity step to materialize BPCs first. Similarly a T1 mfg
+// task consuming an owned BPC decrements AvailableRuns for scheduling.
+//
+// TargetME / TargetTE describe the assumed research level for the analysis.
+// When the actual ME/TE (stored on this struct) is below the target, the
+// analyzer emits research_material / research_time steps to close the gap.
+// Zero targets mean "use whatever ME/TE the blueprint has" (no research).
 type OwnedBlueprint struct {
-	ME int32 `json:"me"`
-	TE int32 `json:"te"`
+	ME             int32 `json:"me"`
+	TE             int32 `json:"te"`
+	IsBPO          bool  `json:"is_bpo,omitempty"`
+	AvailableRuns  int32 `json:"available_runs,omitempty"`
+	TargetME       int32 `json:"target_me,omitempty"`
+	TargetTE       int32 `json:"target_te,omitempty"`
 }
 
 // StructureRigConfig describes the rig loadout for the analyzer's build
@@ -215,6 +237,18 @@ type BlueprintInfo struct {
 	Probability     float64 `json:"probability,omitempty"`
 }
 
+// IndustryActivityStepMaterial is one material consumed by a single activity
+// step (datacores for invention, none for copying/research, ME-adjusted BOM
+// for manufacturing/reaction). Emitted only for step types where the material
+// bill is step-specific and NOT captured by the recursive flat-materials
+// shopping list (invention/copy/research). Manufacturing/reaction steps leave
+// this empty — their materials live in the material tree.
+type IndustryActivityStepMaterial struct {
+	TypeID   int32  `json:"type_id"`
+	TypeName string `json:"type_name,omitempty"`
+	Quantity int32  `json:"quantity"`
+}
+
 // IndustryActivityStep is one executable activity in the industry plan.
 type IndustryActivityStep struct {
 	Activity         string  `json:"activity"`
@@ -236,6 +270,21 @@ type IndustryActivityStep struct {
 	// to BPO which is wrong for every T2 component in a build chain.
 	BlueprintIsBPC bool   `json:"blueprint_is_bpc,omitempty"`
 	Reason         string `json:"reason,omitempty"`
+	// Materials is the step-specific material bill. Populated for invention
+	// (datacores + optional decryptor), copy, and research steps — where the
+	// bill can't be recovered from flat_materials via cost aggregation.
+	// Empty for manufacturing/reaction (their materials live in the material
+	// tree and are already reflected in flat_materials). The plan-patch
+	// builder attributes these to the step's task_id AND subtracts them
+	// from flat_materials before attributing the remainder to the output
+	// (mfg) task, so datacores don't double-count in material_diff.
+	Materials []IndustryActivityStepMaterial `json:"materials,omitempty"`
+	// DecryptorTypeID / DecryptorName mirror params.DecryptorTypeID onto
+	// invention steps so the plan-patch task label can include the decryptor
+	// name ("invent Zealot Blueprint · Symmetry Decryptor") without the
+	// client re-doing an SDE lookup. Zero when no decryptor.
+	DecryptorTypeID int32  `json:"decryptor_type_id,omitempty"`
+	DecryptorName   string `json:"decryptor_name,omitempty"`
 }
 
 // IndustryAnalysis is the result of analyzing a production chain.
@@ -703,6 +752,20 @@ func (a *IndustryAnalyzer) Analyze(params IndustryParams, progress func(string))
 		inventionProbability = inventionStep.Probability
 		optimalCost += inventionCost
 	}
+	// Copy step — only when the invention source is BPO-only in the user's
+	// pool (no BPCs available). Detects via OwnedBlueprints keyed on the
+	// source BP's manufacturing product (the T1 item the source BP builds).
+	copyStep, hasCopy := a.calculateCopyStep(params, inventionStep, hasInvention, costIndex)
+	if hasCopy {
+		optimalCost += copyStep.TotalCost
+	}
+	// Research steps (ME/TE) — root-BP-only for now: when the user owns a
+	// BPO of the root but its actual ME/TE is below the analysis target,
+	// emit a research step to close the gap. Sub-BP research is followup.
+	researchSteps := a.calculateResearchSteps(params, costIndex)
+	for _, rs := range researchSteps {
+		optimalCost += rs.TotalCost
+	}
 
 	savings := marketBuyPrice - optimalCost
 	savingsPercent := 0.0
@@ -784,6 +847,17 @@ func (a *IndustryAnalyzer) Analyze(params IndustryParams, progress func(string))
 	activityPlan := a.buildActivityPlan(tree)
 	if hasInvention {
 		activityPlan = append([]IndustryActivityStep{inventionStep}, activityPlan...)
+	}
+	// Copy prepends before invention so the ordering reads:
+	// copy → invention → sub-mfg → root mfg.
+	if hasCopy {
+		activityPlan = append([]IndustryActivityStep{copyStep}, activityPlan...)
+	}
+	// Research steps prepend before everything else — you research the
+	// blueprint first, then copy, then invent, then build. Both
+	// research_material and research_time can appear in the same plan.
+	if len(researchSteps) > 0 {
+		activityPlan = append(researchSteps, activityPlan...)
 	}
 	// TotalActivityTime is the sum across the plan (serial worst-case).
 	// Root time drives ISK/h since it's the throughput of the queued job:
@@ -923,11 +997,20 @@ func (a *IndustryAnalyzer) buildMaterialTree(typeID int32, quantity int32, param
 		if owned, has := params.OwnedBlueprints[typeID]; has {
 			me = owned.ME
 			te = owned.TE
+		} else if params.BuildMode == "build_all" {
+			// User explicitly asked to build every buildable sub-node,
+			// even those they don't own a BP for. Fall back to ME=0/TE=0
+			// (the analyzer's baseline assumption when no research data
+			// is known) — the resulting build cost is a slight over-
+			// estimate but the whole point of build_all is to surface
+			// the fan-out as tasks, not to optimize cost.
+			me = 0
+			te = 0
 		} else {
-			// User opted into owned-BP mode but doesn't own a blueprint
-			// that produces this sub-material. Refuse to recommend
-			// building it — mark base so calculateCosts sets BuildCost
-			// = BuyPrice and ShouldBuild = false.
+			// Owned-BP mode + auto/buy_all: refuse to recommend building
+			// a sub-material without a BP for it. Mark base so
+			// calculateCosts sets BuildCost = BuyPrice and ShouldBuild
+			// = false.
 			node.IsBase = true
 			return node
 		}
@@ -1447,15 +1530,24 @@ func (a *IndustryAnalyzer) costIndexForActivity(activity string, fallback float6
 	if a.systemCostIndices == nil {
 		return fallback
 	}
+	// Non-manufacturing activities MUST NOT fall back to the manufacturing SCI
+	// — they're 5-10× lower than mfg in EVE, so borrowing the mfg SCI over-
+	// estimates install cost dramatically. A missing SCI for an activity means
+	// ESI didn't report one for this system (typical for high-throughput hubs
+	// where the copy/invention/research indices are effectively negligible);
+	// return 0 so install cost = 0 while facility_tax + SCC still apply — same
+	// behavior as the in-game industry window in that case.
 	switch activity {
 	case "reaction":
-		if a.systemCostIndices.Reaction > 0 {
-			return a.systemCostIndices.Reaction
-		}
+		return a.systemCostIndices.Reaction
 	case "invention":
-		if a.systemCostIndices.Invention > 0 {
-			return a.systemCostIndices.Invention
-		}
+		return a.systemCostIndices.Invention
+	case "copy":
+		return a.systemCostIndices.Copying
+	case "research_material":
+		return a.systemCostIndices.MEResearch
+	case "research_time":
+		return a.systemCostIndices.TEResearch
 	default:
 		if a.systemCostIndices.Manufacturing > 0 {
 			return a.systemCostIndices.Manufacturing
@@ -1560,6 +1652,40 @@ func (a *IndustryAnalyzer) calculateInventionStep(params IndustryParams, tree *M
 	// invented BPC has no market group entry. BlueprintIsBPC = false because
 	// the SOURCE (input) of invention is a T1 BP the user owns as BPO/BPC —
 	// this step spends that BP, not a T2 BPC.
+	// Per-step material bill: datacores from the invention activity BOM
+	// scaled by expectedAttempts (invention has no ME reduction), plus the
+	// decryptor (one per attempt) when the caller supplied a DecryptorTypeID.
+	// The plan-patch builder attributes these to the invention task's
+	// material rows so the task expansion in Operations shows what the user
+	// actually needs to buy. flat_materials doesn't include datacores or
+	// decryptors — they're routed through step.materials only, and the
+	// material_diff footer aggregates all rows by type_id so nothing is
+	// double-counted.
+	stepMats := make([]IndustryActivityStepMaterial, 0, len(attemptMaterials)+1)
+	for _, mat := range attemptMaterials {
+		if mat.TypeID <= 0 || mat.Quantity <= 0 {
+			continue
+		}
+		scaled := int32(math.Ceil(float64(mat.Quantity) * expectedAttempts))
+		if scaled <= 0 {
+			continue
+		}
+		stepMats = append(stepMats, IndustryActivityStepMaterial{
+			TypeID:   mat.TypeID,
+			TypeName: a.typeName(mat.TypeID),
+			Quantity: scaled,
+		})
+	}
+	if params.DecryptorTypeID > 0 {
+		decQty := int32(math.Ceil(expectedAttempts))
+		if decQty > 0 {
+			stepMats = append(stepMats, IndustryActivityStepMaterial{
+				TypeID:   params.DecryptorTypeID,
+				TypeName: a.typeName(params.DecryptorTypeID),
+				Quantity: decQty,
+			})
+		}
+	}
 	step := IndustryActivityStep{
 		Activity:         "invention",
 		BlueprintTypeID:  sourceBP.BlueprintTypeID,
@@ -1576,8 +1702,303 @@ func (a *IndustryAnalyzer) calculateInventionStep(params IndustryParams, tree *M
 		Probability:      chance,
 		ExpectedAttempts: expectedAttempts,
 		Reason:           "expected_bpc_cost",
+		Materials:        stepMats,
+	}
+	if params.DecryptorTypeID > 0 {
+		step.DecryptorTypeID = params.DecryptorTypeID
+		step.DecryptorName = a.typeName(params.DecryptorTypeID)
 	}
 	return step, true
+}
+
+// calculateCopyStep emits a `copy` activity step when the source blueprint
+// for an invention pipeline is BPO-only (user owns a BPO but no BPCs). In
+// EVE you can't invent from a BPO — invention consumes a T1 BPC. So the
+// analyzer prepends a copy job to materialize the BPCs first.
+//
+// Detection is client-input-driven: OwnedBlueprints[T1 mfg product typeID]
+// carries IsBPO + AvailableRuns after the seeding pass. AvailableRuns is
+// the count of BPC runs available in the user's pool; zero means the user
+// has to copy first. If they have some BPCs (AvailableRuns > 0), no copy
+// step is emitted even when a BPO also exists — the plan can lean on the
+// existing BPCs. Future refinement: emit copy for the SHORTFALL when
+// expected_attempts > AvailableRuns.
+//
+// Cost model mirrors invention/manufacturing: system cost index * EIV,
+// structure/rig discounts, facility tax, SCC surcharge. Copy jobs almost
+// never have materials in EVE so material_cost stays ~0.
+func (a *IndustryAnalyzer) calculateCopyStep(
+	params IndustryParams,
+	inventionStep IndustryActivityStep,
+	hasInvention bool,
+	fallbackCostIndex float64,
+) (IndustryActivityStep, bool) {
+	if !hasInvention {
+		log.Printf("[COPY] skip: hasInvention=false")
+		return IndustryActivityStep{}, false
+	}
+	// Look up the T1 source BP; its manufacturing product is the key into
+	// OwnedBlueprints for BPO/BPC discovery.
+	sourceBP, ok := a.SDE.Industry.Blueprints[inventionStep.BlueprintTypeID]
+	if !ok || sourceBP == nil {
+		log.Printf("[COPY] skip: source BP %d not in SDE", inventionStep.BlueprintTypeID)
+		return IndustryActivityStep{}, false
+	}
+	mfg := sourceBP.Activities["manufacturing"]
+	if mfg == nil || len(mfg.Products) == 0 {
+		log.Printf("[COPY] skip: source BP %d has no mfg activity/products", inventionStep.BlueprintTypeID)
+		return IndustryActivityStep{}, false
+	}
+	t1ProductID := mfg.Products[0].TypeID
+	if params.OwnedBlueprints == nil {
+		log.Printf("[COPY] skip: params.OwnedBlueprints is nil (client didn't send owned_blueprints or all entries filtered out)")
+		return IndustryActivityStep{}, false
+	}
+	owned, has := params.OwnedBlueprints[t1ProductID]
+	if !has {
+		log.Printf("[COPY] skip: T1 product %d not in OwnedBlueprints map (map has %d entries) — user doesn't own the T1 source BP that produces this item, or it wasn't sent by the client", t1ProductID, len(params.OwnedBlueprints))
+		return IndustryActivityStep{}, false
+	}
+	// Copying requires a BPO — you can't copy from a BPC.
+	if !owned.IsBPO {
+		log.Printf("[COPY] skip: T1 product %d owned entry has IsBPO=false (AvailableRuns=%d) — no BPO to copy from", t1ProductID, owned.AvailableRuns)
+		return IndustryActivityStep{}, false
+	}
+	// SHORTFALL sizing: invention consumes one BPC run per attempt. The user's
+	// existing BPC pool (owned.AvailableRuns) covers part of that; we only copy
+	// the remainder. Zero BPCs → copy everything (the original BPO-only case);
+	// enough BPCs already → no copy step at all.
+	requiredRuns := int64(math.Ceil(inventionStep.ExpectedAttempts))
+	if requiredRuns < 1 {
+		requiredRuns = 1
+	}
+	shortfallRuns := requiredRuns - int64(owned.AvailableRuns)
+	if shortfallRuns <= 0 {
+		log.Printf("[COPY] skip: T1 product %d has %d BPC runs available, invention needs %d — existing copies cover it", t1ProductID, owned.AvailableRuns, requiredRuns)
+		return IndustryActivityStep{}, false
+	}
+	// SDE copy activity (may be nil for BPs that don't support copying —
+	// rare but guard anyway).
+	copyAct := sourceBP.Activities["copying"]
+	if copyAct == nil {
+		log.Printf("[COPY] skip: source BP %d has no copying activity in SDE", inventionStep.BlueprintTypeID)
+		return IndustryActivityStep{}, false
+	}
+	log.Printf("[COPY] emitting: T1 product %d — invention needs %d runs, pool has %d, shortfall %d (source BP %d, %.2f expected attempts)",
+		t1ProductID, requiredRuns, owned.AvailableRuns, shortfallRuns, inventionStep.BlueprintTypeID, inventionStep.ExpectedAttempts)
+	baseCopyTime := copyAct.Time
+	if baseCopyTime <= 0 {
+		baseCopyTime = 60
+	}
+	// Sizing the copy job:
+	//   shortfallRuns   = BPC runs invention needs beyond what's already in
+	//                     the pool (computed above).
+	//   maxRunsPerBPC   = SDE top-level `maxProductionLimit` — the cap on
+	//                     runs any single BPC can hold when copied.
+	//   copiesNeeded    = ceil(shortfallRuns / maxRunsPerBPC) — number of
+	//                     BPCs to make.
+	//   totalRuns       = copiesNeeded × maxRunsPerBPC — total mfg-run-
+	//                     equivalents baked into all BPCs. Convention here
+	//                     is "always copy to max runs per BPC": if the
+	//                     shortfall is 3 and maxRunsPerBPC=600, we make 1
+	//                     BPC with 600 runs on it (extra runs stay for
+	//                     future invention jobs). Rationale: in EVE users
+	//                     always max out copy runs, and idle BPC runs don't
+	//                     burn anything.
+	attemptsNeeded := shortfallRuns
+	maxRunsPerBPC := int64(1)
+	if sourceBP.MaxProductionLimit > 0 {
+		maxRunsPerBPC = int64(sourceBP.MaxProductionLimit)
+	}
+	copiesNeeded := (attemptsNeeded + maxRunsPerBPC - 1) / maxRunsPerBPC
+	if copiesNeeded < 1 {
+		copiesNeeded = 1
+	}
+	totalRuns := copiesNeeded * maxRunsPerBPC
+	// TE / cost rigs for copying — mirrors what invention/manufacturing do.
+	copySec := a.resolveSystemSecurity(params.StructureRigs, params.SystemID)
+	_, copyRigTE, copyRigCost := a.rigContribution(params.StructureRigs, "copying", t1ProductID, copySec)
+	// Copy materials are almost always empty in EVE, but iterate anyway so
+	// exotic BPs with copy materials (rare) still cost through.
+	copyMaterials := calculateActivityMaterials(sourceBP, "copying", int32(copiesNeeded), 0, 0, 0)
+	materialCost := 0.0
+	eiv := 0.0
+	for _, mat := range copyMaterials {
+		materialCost += a.materialCost(mat.TypeID, mat.Quantity, params.CostModel)
+		eiv += a.adjustedPrices[mat.TypeID] * float64(mat.Quantity)
+	}
+	// CCP's cost formula: when the copying activity has no material bill
+	// (the common case), EIV = adjusted-price sum of one manufacturing run's
+	// materials × TOTAL RUNS BEING COPIED. Total runs = attemptsNeeded (what
+	// invention will consume). Matches the in-game copy-job window's install
+	// cost, which scales with runs_per_copy × copies, not with copies alone.
+	if eiv == 0 {
+		perRunMats := calculateActivityMaterials(sourceBP, "manufacturing", 1, 0, 0, 0)
+		perRunEIV := 0.0
+		for _, mat := range perRunMats {
+			perRunEIV += a.adjustedPrices[mat.TypeID] * float64(mat.Quantity)
+		}
+		// CCP's copy-cost formula multiplies the manufacturing-EIV base by
+		// 0.02 (a copy job is priced at ~2% of the equivalent mfg job for
+		// the same runs). Without this factor the analyzer produces ~50×
+		// the in-game install cost for the same copy job. Scales by
+		// totalRuns (copies × maxRunsPerBPC) because in EVE we always
+		// max-out the runs per copy — see totalRuns comment above.
+		eiv = perRunEIV * float64(totalRuns) * 0.02
+		log.Printf("[COPY] EIV breakdown for BP %d: perRunEIV=%.2f, totalRuns=%d (copies=%d × maxPerBPC=%d, attemptsNeeded=%d), eiv=%.2f (post 0.02× copy factor), mfg_mats=%d types",
+			inventionStep.BlueprintTypeID, perRunEIV, totalRuns, copiesNeeded, maxRunsPerBPC, attemptsNeeded, eiv, len(perRunMats))
+	}
+	// Time scaling: per-run copy time × totalRuns × rig TE reduction. Time
+	// scales with total mfg-run-equivalents baked into the BPCs (same
+	// convention as EIV — always max out runs per copy). TE bonus is a
+	// percent reduction; 0 = no bonus.
+	perRunTime := float64(baseCopyTime)
+	if copyRigTE > 0 {
+		perRunTime = perRunTime * (1 - copyRigTE/100.0)
+		if perRunTime < 1 {
+			perRunTime = 1
+		}
+	}
+	totalTime := int32(math.Ceil(perRunTime * float64(totalRuns)))
+	copySCI := a.costIndexForActivity("copy", fallbackCostIndex)
+	systemCost := eiv * copySCI
+	structureBonus := systemCost * (params.StructureJobCostReduction / 100.0)
+	if structureBonus < 0 {
+		structureBonus = 0
+	}
+	rigBonus := systemCost * (copyRigCost / 100.0)
+	if rigBonus < 0 {
+		rigBonus = 0
+	}
+	grossInstall := systemCost - structureBonus - rigBonus
+	if grossInstall < 0 {
+		grossInstall = 0
+	}
+	facilityTax := eiv * (params.FacilityTax / 100.0)
+	scc := eiv * params.sccSurchargePercent() / 100.0
+	jobCost := grossInstall + facilityTax + scc
+	a.jobCostBreakdown.EIV += eiv
+	a.jobCostBreakdown.SystemCost += systemCost
+	a.jobCostBreakdown.StructureBonus += structureBonus
+	a.jobCostBreakdown.RigBonus += rigBonus
+	a.jobCostBreakdown.GrossInstall += grossInstall
+	a.jobCostBreakdown.FacilityTax += facilityTax
+	a.jobCostBreakdown.SCCSurcharge += scc
+	a.jobCostBreakdown.NetInstall += jobCost
+	log.Printf("[COPY] cost: eiv=%.2f SCI=%.4f sys=%.2f str=-%.2f rig=-%.2f gross=%.2f tax=%.2f scc=%.2f total=%.2f (copies=%d × maxPerBPC=%d = totalRuns=%d, attemptsNeeded=%d, dur=%ds)",
+		eiv, copySCI, systemCost, structureBonus, rigBonus, grossInstall, facilityTax, scc, jobCost, copiesNeeded, maxRunsPerBPC, totalRuns, attemptsNeeded, totalTime)
+	return IndustryActivityStep{
+		Activity:        "copy",
+		BlueprintTypeID: sourceBP.BlueprintTypeID,
+		BlueprintName:   a.SDE.BlueprintName(sourceBP.BlueprintTypeID),
+		ProductTypeID:   sourceBP.BlueprintTypeID, // copies are of the same typeID
+		ProductName:     a.SDE.BlueprintName(sourceBP.BlueprintTypeID),
+		BlueprintIsBPC:  false, // source is BPO
+		Runs:            float64(copiesNeeded),
+		OutputQuantity:  int32(copiesNeeded),
+		MaterialCost:    materialCost,
+		JobCost:         jobCost,
+		TotalCost:       materialCost + jobCost,
+		TimeSeconds:     totalTime,
+		Reason:          "materialize_bpcs_for_invention",
+	}, true
+}
+
+// calculateResearchSteps emits `research_material` and/or `research_time`
+// activity steps when the root blueprint's actual ME/TE (from
+// OwnedBlueprints) is below the analysis target (params.MaterialEfficiency
+// / params.TimeEfficiency). Root-BP-only for now — sub-BP research is a
+// followup, since the analyzer doesn't currently model per-sub-BP
+// research targets.
+//
+// TIME MODEL: The SDE ships one "base time" per activity; EVE's actual
+// per-level time is base × 105^level (ME) or 105^level (TE), a geometric
+// series. For MVP simplicity this uses `base × levels` (linear) which
+// under-estimates for high target levels. Callers who need level-accurate
+// scheduling should treat these steps as advisory.
+//
+// COST MODEL: Research jobs have no materials in EVE, so EIV = 0 and the
+// standard SCI × EIV formula yields 0 cost. Real EVE research charges a
+// small install fee derived from the blueprint's own value; that's not
+// modeled here yet.
+func (a *IndustryAnalyzer) calculateResearchSteps(params IndustryParams, fallbackCostIndex float64) []IndustryActivityStep {
+	if params.OwnedBlueprints == nil {
+		return nil
+	}
+	// Look up the root blueprint from the product typeID being analyzed.
+	if a.SDE == nil || a.SDE.Industry == nil {
+		return nil
+	}
+	rootBPID, ok := a.SDE.Industry.ProductToBlueprint[params.TypeID]
+	if !ok || rootBPID == 0 {
+		return nil
+	}
+	bp, ok := a.SDE.Industry.Blueprints[rootBPID]
+	if !ok || bp == nil {
+		return nil
+	}
+	owned, has := params.OwnedBlueprints[params.TypeID]
+	if !has || !owned.IsBPO {
+		// Research only applies to BPOs. BPCs come pre-researched at
+		// their invention output ME/TE (or the researched BPO's) and
+		// can't be researched further.
+		return nil
+	}
+	var out []IndustryActivityStep
+	if act := bp.Activities["research_material"]; act != nil {
+		if params.MaterialEfficiency > owned.ME {
+			out = append(out, a.buildResearchStep("research_material", bp, act, params.MaterialEfficiency-owned.ME, params, fallbackCostIndex))
+		}
+	}
+	if act := bp.Activities["research_time"]; act != nil {
+		if params.TimeEfficiency > owned.TE {
+			out = append(out, a.buildResearchStep("research_time", bp, act, params.TimeEfficiency-owned.TE, params, fallbackCostIndex))
+		}
+	}
+	return out
+}
+
+func (a *IndustryAnalyzer) buildResearchStep(
+	activity string,
+	bp *sde.Blueprint,
+	act *sde.ActivityData,
+	levels int32,
+	params IndustryParams,
+	fallbackCostIndex float64,
+) IndustryActivityStep {
+	baseTime := act.Time
+	if baseTime <= 0 {
+		baseTime = 60
+	}
+	// Linear approximation — see calculateResearchSteps for the caveat.
+	totalTime := int32(math.Max(1, float64(baseTime)*float64(levels)))
+	sci := a.costIndexForActivity(activity, fallbackCostIndex)
+	// EIV=0 because research has no materials; the formula collapses to 0
+	// but we compute it anyway so future material-carrying research (rare
+	// exotic BPs) is handled uniformly.
+	systemCost := 0.0
+	structureBonus := 0.0
+	rigBonus := 0.0
+	facilityTax := 0.0
+	scc := 0.0
+	jobCost := systemCost - structureBonus - rigBonus + facilityTax + scc
+	_ = sci // reserved for future material-carrying research; keeps the
+	// route wired if EIV becomes non-zero later.
+	return IndustryActivityStep{
+		Activity:        activity,
+		BlueprintTypeID: bp.BlueprintTypeID,
+		BlueprintName:   a.SDE.BlueprintName(bp.BlueprintTypeID),
+		ProductTypeID:   bp.BlueprintTypeID, // research is done to the BP itself
+		ProductName:     a.SDE.BlueprintName(bp.BlueprintTypeID),
+		BlueprintIsBPC:  false,
+		Runs:            float64(levels),
+		OutputQuantity:  levels,
+		MaterialCost:    0,
+		JobCost:         jobCost,
+		TotalCost:       jobCost,
+		TimeSeconds:     totalTime,
+		Reason:          "close_me_te_gap",
+	}
 }
 
 func (a *IndustryAnalyzer) findInventionForBlueprint(blueprintTypeID int32) (*sde.Blueprint, sde.BlueprintProduct, bool) {
@@ -1598,8 +2019,27 @@ func (a *IndustryAnalyzer) findInventionForBlueprint(blueprintTypeID int32) (*sd
 	return nil, sde.BlueprintProduct{}, false
 }
 
+// buildActivityPlan walks the material tree post-order and emits one step per
+// buildable node, then COLLAPSES duplicates.
+//
+// A shared component (Nitrogen Fuel Block feeding six different parents, say)
+// appears once per tree position. Emitting all of them produces a task list
+// with the same job repeated a dozen times, which is unusable in Operations
+// and wrong as a work plan — in EVE you queue one job for the combined runs,
+// not N jobs for the same product. Collapsing sums runs / output / costs /
+// time across every occurrence.
+//
+// Ordering: post-order means every occurrence of a component precedes all of
+// its consumers, so keeping the FIRST occurrence's position preserves the
+// dependency ordering for every consumer that followed it.
 func (a *IndustryAnalyzer) buildActivityPlan(root *MaterialNode) []IndustryActivityStep {
 	var out []IndustryActivityStep
+	// (activity, productTypeID) → index into out, for the collapse.
+	type stepKey struct {
+		Activity  string
+		ProductID int32
+	}
+	indexByKey := make(map[stepKey]int)
 	var walk func(*MaterialNode)
 	walk = func(node *MaterialNode) {
 		if node == nil {
@@ -1611,10 +2051,25 @@ func (a *IndustryAnalyzer) buildActivityPlan(root *MaterialNode) []IndustryActiv
 		if node.IsBase || !node.ShouldBuild || node.Blueprint == nil {
 			return
 		}
+		key := stepKey{Activity: node.Activity, ProductID: node.TypeID}
+		if idx, seen := indexByKey[key]; seen {
+			// Merge into the existing step. Runs/quantity/cost/time are all
+			// additive; the identity fields (blueprint, names, probability)
+			// are identical by construction for the same product+activity.
+			existing := &out[idx]
+			existing.Runs += float64(node.Runs)
+			existing.OutputQuantity += node.Quantity
+			existing.MaterialCost += node.MaterialCost
+			existing.JobCost += node.JobCost
+			existing.TotalCost += node.BuildCost
+			existing.TimeSeconds += node.Blueprint.Time
+			return
+		}
 		isBPC := false
 		if a.SDE != nil && a.SDE.Industry != nil {
 			isBPC = a.SDE.Industry.InventionProducts[node.Blueprint.BlueprintTypeID]
 		}
+		indexByKey[key] = len(out)
 		out = append(out, IndustryActivityStep{
 			Activity:        node.Activity,
 			BlueprintTypeID: node.Blueprint.BlueprintTypeID,

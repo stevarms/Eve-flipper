@@ -32,6 +32,7 @@ import { StructureRigPicker, computeRigTotals } from "./StructureRigPicker";
 import { PricingHubPicker } from "./PricingHubPicker";
 import { getStructureRigs } from "@/lib/api";
 import type { StructureRig } from "@/lib/types";
+import type { JobSplitLimits } from "@/lib/industryPlanPatch";
 
 const SCANNER_PERSIST_KEY = "industry-scanner";
 const PARAMS_LS_KEY = "eve-settings:industry-scanner";
@@ -326,9 +327,31 @@ interface Props {
    *  pre-filled. The receiver typically sets selectedItem + the per-analysis
    *  state and switches `industryInnerTab` to "analysis". */
   onViewInAnalysis?: (handoff: ScannerAnalysisHandoff) => void;
+  /** Owned-BP index passed through to every analyze call in preview + commit.
+   *  Same shape the Analysis tab already uses. Owner is IndustryTab; it
+   *  fetches once per session. Without this the analyzer can't emit copy
+   *  steps for BPO-only invention (or research steps toward ME/TE goals). */
+  ownedBlueprints?: Array<{
+    product_type_id: number;
+    me: number;
+    te: number;
+    is_bpo?: boolean;
+    available_runs?: number;
+  }>;
+  /** Install-size limits applied to committed jobs. Owner is IndustryTab
+   *  (the Operations settings drawer); omitted when the user has the plan
+   *  scheduler switched off, in which case each task gets one job however
+   *  long it runs. */
+  jobSplit?: JobSplitLimits;
 }
 
-export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, onViewInAnalysis }: Props) {
+export function IndustryProfitableScannerPanel({
+  isLoggedIn,
+  onProjectCreated,
+  onViewInAnalysis,
+  ownedBlueprints,
+  jobSplit,
+}: Props) {
   const { t } = useI18n();
   const { addToast } = useGlobalToast();
 
@@ -1245,6 +1268,21 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
           decryptorKey: sharedPrefs.decryptor,
           decryptorCost: sharedPrefs.decryptorCost,
           buildMode: sharedPrefs.buildMode,
+          // Depth 10 matches the Analyze tab. Omitting it makes the backend
+          // clamp to 1, which kills component fan-out entirely.
+          maxDepth: 10,
+          // Reactions are buy-only unless the scan explicitly included them.
+          // params.includeReactions is the scanner's own "should reactions be
+          // part of this plan" toggle; without folding it in here the commit
+          // fans out reaction sub-trees the user never asked to scan.
+          skipReactions: sharedPrefs.skipReactions || !params.includeReactions,
+          structureRigTypeIDs: sharedPrefs.structureRigTypeIDs,
+          structureTypeID: sharedPrefs.structureTypeID,
+          structureJobCostReduction: sharedPrefs.structureJobCostReduction,
+          revenueModel: sharedPrefs.revenueModel,
+          costModel: sharedPrefs.costModel,
+          ownedBlueprints,
+          jobSplit,
         },
         mode: commitMode,
         projectName: commitName,
@@ -1362,6 +1400,16 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
       sharedPrefs.decryptor,
       sharedPrefs.decryptorCost,
       sharedPrefs.buildMode,
+      sharedPrefs.skipReactions,
+      params.includeReactions,
+      sharedPrefs.structureTypeID,
+      sharedPrefs.structureJobCostReduction,
+      (sharedPrefs.structureRigTypeIDs ?? []).join(","),
+      sharedPrefs.revenueModel,
+      sharedPrefs.costModel,
+      // owned-BP count is enough for cache-busting — the underlying set
+      // changes rarely and adding IDs would make the signature huge.
+      ownedBlueprints?.length ?? 0,
     ].join("|");
     const currentSig = `${selSig}|${runsSig}|${contextSig}`;
     if (previewData && previewSignatureRef.current === currentSig) {
@@ -1391,6 +1439,14 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
             decryptorKey: sharedPrefs.decryptor,
             decryptorCost: sharedPrefs.decryptorCost,
             buildMode: sharedPrefs.buildMode,
+            maxDepth: 10,
+            skipReactions: sharedPrefs.skipReactions || !params.includeReactions,
+            structureRigTypeIDs: sharedPrefs.structureRigTypeIDs,
+            structureTypeID: sharedPrefs.structureTypeID,
+            structureJobCostReduction: sharedPrefs.structureJobCostReduction,
+            revenueModel: sharedPrefs.revenueModel,
+            costModel: sharedPrefs.costModel,
+            ownedBlueprints,
           },
           signal: controller.signal,
           // Deliberately NOT passing onRowStatus — preview should be silent
@@ -1440,6 +1496,14 @@ export function IndustryProfitableScannerPanel({ isLoggedIn, onProjectCreated, o
     sharedPrefs.decryptor,
     sharedPrefs.decryptorCost,
     sharedPrefs.buildMode,
+    sharedPrefs.skipReactions,
+    params.includeReactions,
+    sharedPrefs.structureTypeID,
+    sharedPrefs.structureJobCostReduction,
+    sharedPrefs.structureRigTypeIDs,
+    sharedPrefs.revenueModel,
+    sharedPrefs.costModel,
+    ownedBlueprints,
   ]);
 
   const toggleSelectAll = () => {

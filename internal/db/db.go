@@ -1793,6 +1793,37 @@ func (d *DB) migrate() error {
 		logger.Info("DB", "Applied migration v41 (trade journal: corp wallet + industry job archive)")
 	}
 
+	if version < 42 {
+		// Expected-value tracking on industry tasks. Captured at plan time so
+		// the Operations tab can answer "what is this project worth?" and
+		// "am I about to sell below what I planned for?" months later, when
+		// live market prices have drifted away from the numbers the build
+		// decision was actually made on.
+		//
+		// Only OUTPUT tasks (the product the user intends to sell) carry
+		// non-zero values; intermediate component/invention/copy tasks leave
+		// them at 0 so a naive SUM over all tasks yields the correct project
+		// revenue without needing an is_final flag.
+		for _, c := range []struct{ name, def string }{
+			// Net per-unit revenue assumed at plan time (after sales tax and
+			// broker fee) — the sell-floor reference.
+			{"expected_unit_revenue", "REAL NOT NULL DEFAULT 0"},
+			// All-in per-unit build cost assumed at plan time (materials +
+			// job costs + blueprint amortization) — the break-even floor.
+			{"expected_unit_cost", "REAL NOT NULL DEFAULT 0"},
+			// Units this task is expected to yield (runs × output per run).
+			{"expected_output_qty", "INTEGER NOT NULL DEFAULT 0"},
+		} {
+			if err := d.ensureTableColumn("industry_tasks", c.name, c.def); err != nil {
+				return fmt.Errorf("migration v42 add industry_tasks.%s: %w", c.name, err)
+			}
+		}
+		if _, err := d.sql.Exec(`INSERT OR IGNORE INTO schema_version (version) VALUES (42);`); err != nil {
+			return fmt.Errorf("migration v42: %w", err)
+		}
+		logger.Info("DB", "Applied migration v42 (industry task expected-value tracking)")
+	}
+
 	return nil
 }
 

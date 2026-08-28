@@ -3,6 +3,7 @@ import type {
   IndustryMaterialDiff,
   IndustryPlanPatch,
   IndustryProjectSnapshot,
+  IndustryTaskRecord,
 } from "@/lib/types";
 
 export type IndustryPlannerWarningSource = "preview" | "apply" | "gate";
@@ -250,6 +251,35 @@ export function deriveTaskBlockStatus(
   // Fallback: no per-task rows for this task (legacy projects with all
   // materials tagged task_id: 0). Falls back to project-level material_diff.
   if (materials.length === 0) {
+    // Some activities legitimately have no material bill — copy jobs consume
+    // only time (barring rare corner cases), and research_material /
+    // research_time consume only time too. Falling back to project-level
+    // material_diff for those wrongly reports them "hard blocked" whenever
+    // the DOWNSTREAM mfg has any unmet material, which is user-visible as
+    // "copy job says blocked but I have the BPO". For those activities,
+    // block only on parent completion.
+    const taskRec = snapshot.tasks.find((t) => t.id === taskID);
+    const activity = (taskRec?.activity ?? "").toLowerCase();
+    const noMaterialsByDesign =
+      activity === "copy" || activity === "research_material" || activity === "research_time";
+    if (noMaterialsByDesign) {
+      if (parentBlocking.length > 0) {
+        return {
+          level: "hard",
+          materialsMissingCount: 0,
+          materialsHardCount: 0,
+          parentBlocking,
+          reason: `${parentBlocking.length} parent task${parentBlocking.length === 1 ? "" : "s"} incomplete`,
+        };
+      }
+      return {
+        level: "ready",
+        materialsMissingCount: 0,
+        materialsHardCount: 0,
+        parentBlocking: [],
+        reason: `${activity} step — no materials to stage`,
+      };
+    }
     const projectDiff = snapshot.material_diff ?? [];
     let hardCountDiff = 0;
     let notStockedCount = 0;
@@ -365,4 +395,164 @@ export function materialDiffToCoverageRows(
       status,
     };
   });
+}
+
+/**
+ * Plan-time value rollup for a committed project.
+ *
+ * Revenue comes from the expected_unit_revenue / expected_output_qty snapped
+ * onto tasks at commit time (see industryPlanPatch). Only the saleable output
+ * task of each chain carries non-zero values, so a plain sum over every task
+ * is the project total with no double-counting of intermediate components.
+ *
+ * Costs are read back off the committed rows rather than the plan-time cost
+ * basis, so they track edits (rebalance, recalc-remaining, manual qty fixes)
+ * that happen after the plan was applied:
+ *   materialCost = Σ materials.unit_cost_isk × required_qty
+ *   jobCost      = Σ jobs.cost_isk
+ *
+ * remainingBuyCost prices the *shortfall* — what's still to be acquired —
+ * by joining material_diff.missing_qty against the per-type unit cost on the
+ * material plan rows.
+ */
+export interface IndustryProjectValuation {
+  expectedRevenue: number;
+  materialCost: number;
+  jobCost: number;
+  totalCost: number;
+  expectedProfit: number;
+  /** profit / revenue, 0 when there's no revenue estimate. */
+  marginPct: number;
+  remainingBuyCost: number;
+  /**
+   * False for projects committed before expected-value capture existed —
+   * the UI should say "not estimated" instead of showing a confident 0 ISK.
+   */
+  hasRevenueEstimate: boolean;
+}
+
+export function deriveProjectValuation(
+  snapshot: IndustryProjectSnapshot | null | undefined,
+): IndustryProjectValuation {
+  const empty: IndustryProjectValuation = {
+    expectedRevenue: 0,
+    materialCost: 0,
+    jobCost: 0,
+    totalCost: 0,
+    expectedProfit: 0,
+    marginPct: 0,
+    remainingBuyCost: 0,
+    hasRevenueEstimate: false,
+  };
+  if (!snapshot) return empty;
+
+  let expectedRevenue = 0;
+  let hasRevenueEstimate = false;
+  for (const task of snapshot.tasks ?? []) {
+    if (task.status === "cancelled") continue;
+    const qty = task.expected_output_qty ?? 0;
+    const unit = task.expected_unit_revenue ?? 0;
+    if (qty > 0 && unit > 0) {
+      expectedRevenue += unit * qty;
+      hasRevenueEstimate = true;
+    }
+  }
+
+  let materialCost = 0;
+  const unitCostByType = new Map<number, number>();
+  for (const m of snapshot.materials ?? []) {
+    const unit = m.unit_cost_isk ?? 0;
+    materialCost += unit * Math.max(0, m.required_qty ?? 0);
+    // Same type can appear on several tasks; keep the highest quoted unit
+    // cost so the shortfall estimate errs toward over- rather than
+    // under-budgeting.
+    if (unit > (unitCostByType.get(m.type_id) ?? 0)) {
+      unitCostByType.set(m.type_id, unit);
+    }
+  }
+
+  let jobCost = 0;
+  for (const j of snapshot.jobs ?? []) {
+    if (j.status === "cancelled" || j.status === "failed") continue;
+    jobCost += j.cost_isk ?? 0;
+  }
+
+  let remainingBuyCost = 0;
+  for (const d of snapshot.material_diff ?? []) {
+    const missing = Math.max(0, d.missing_qty ?? 0);
+    if (missing <= 0) continue;
+    remainingBuyCost += missing * (unitCostByType.get(d.type_id) ?? 0);
+  }
+
+  const totalCost = materialCost + jobCost;
+  const expectedProfit = expectedRevenue - totalCost;
+  return {
+    expectedRevenue,
+    materialCost,
+    jobCost,
+    totalCost,
+    expectedProfit,
+    marginPct: expectedRevenue > 0 ? expectedProfit / expectedRevenue : 0,
+    remainingBuyCost,
+    hasRevenueEstimate,
+  };
+}
+
+/**
+ * Canonical Operations ordering, shared by the runbook card and the task
+ * list so "step 3 of 9" in one always points at the same row in the other.
+ *
+ * dep depth asc → activity prerequisite order → priority desc → id asc.
+ * Prerequisites (copy/invention/reaction) bubble above their manufacturing
+ * consumers even when parent links aren't populated, which is the norm for
+ * scanner-committed plans where every task lands at depth 1.
+ */
+function operationsActivityOrder(activity: string): number {
+  switch (activity) {
+    case "copy":
+      return 0;
+    case "invention":
+      return 1;
+    case "reaction":
+      return 2;
+    case "manufacturing":
+    default:
+      return 3;
+  }
+}
+
+export function sortOperationsTasks(
+  tasks: IndustryTaskRecord[],
+  depthByTask: Record<number, number>,
+): IndustryTaskRecord[] {
+  const arr = [...tasks];
+  arr.sort((a, b) => {
+    const da = depthByTask[a.id] ?? 1;
+    const db = depthByTask[b.id] ?? 1;
+    if (da !== db) return da - db;
+    const aa = operationsActivityOrder(a.activity);
+    const ab = operationsActivityOrder(b.activity);
+    if (aa !== ab) return aa - ab;
+    const pa = a.priority || 0;
+    const pb = b.priority || 0;
+    if (pa !== pb) return pb - pa;
+    return a.id - b.id;
+  });
+  return arr;
+}
+
+/**
+ * Split an Operations task name into its base label and the decryptor
+ * suffix that stepLabel appends for invention ("invention Zealot Blueprint ·
+ * Symmetry Decryptor"). Returns an empty decryptor for every other activity.
+ */
+export function splitTaskDecryptorSuffix(
+  name: string,
+  activity: string,
+): { base: string; decryptor: string } {
+  const sep = " · ";
+  if (activity !== "invention") return { base: name, decryptor: "" };
+  const idx = name.lastIndexOf(sep);
+  if (idx < 0) return { base: name, decryptor: "" };
+  return { base: name.slice(0, idx), decryptor: name.slice(idx + sep.length) };
 }

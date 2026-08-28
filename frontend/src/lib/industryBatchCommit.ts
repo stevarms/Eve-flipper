@@ -6,6 +6,7 @@ import {
   analyzeIndustry,
   createAuthIndustryProject,
   getAuthIndustryCoverage,
+  getAuthIndustryOwnedBlueprints,
   planAuthIndustryProject,
 } from "@/lib/api";
 import type {
@@ -20,10 +21,13 @@ import type {
 } from "@/lib/types";
 import {
   applyCoverageToIndustryPlanPatch,
+  applyJobSplitToIndustryPlanPatch,
   buildIndustryPlanPatch,
   mergeIndustryPlanPatches,
+  type JobSplitLimits,
 } from "@/lib/industryPlanPatch";
 import {
+  DECRYPTORS,
   effectiveInventionParams,
   type DecryptorKey,
 } from "@/lib/industryDecryptors";
@@ -39,6 +43,38 @@ export interface ScannerAnalysisContext {
   decryptorCost: number;
   /** Global build-vs-buy override for the analyze pass on each row. */
   buildMode: "auto" | "buy_all" | "build_all";
+  /** Recursion depth for the material tree. MUST be set — the backend clamps
+   *  a missing/zero value to 1, which collapses the whole sub-tree and makes
+   *  build_all emit only the root step (no component fan-out at all). The
+   *  Analyze tab hardcodes 10; the scanner should match. */
+  maxDepth: number;
+  /** Treat reaction-produced materials as buy-only. Mirrors the Analyze
+   *  tab's sharedPrefs.skipReactions — without it the scanner silently
+   *  disagrees with Analyze on every T2 chain containing reactions. */
+  skipReactions: boolean;
+  /** Structure rig / bonus context — affects ME/TE and job cost per node. */
+  structureRigTypeIDs: number[];
+  structureTypeID: number;
+  structureJobCostReduction: number;
+  /** Revenue / cost model selection, same values the Analyze tab sends. */
+  revenueModel: IndustryParams["revenue_model"];
+  costModel: IndustryParams["cost_model"];
+  /** Optional per-product owned-BP index, threaded through to the analyzer
+   *  so sub-tree recursion uses each product's own ME/TE (instead of
+   *  cascading the top-level) AND so copy-step detection can fire when
+   *  invention needs BPCs the user hasn't yet made. Same shape the
+   *  Analysis tab already sends; scanner commit path fetches once per
+   *  batch via getAuthIndustryOwnedBlueprints. */
+  ownedBlueprints?: Array<{
+    product_type_id: number;
+    me: number;
+    te: number;
+    is_bpo?: boolean;
+    available_runs?: number;
+  }>;
+  /** Split committed jobs so no single install exceeds these limits. Omit
+   *  (or set both to 0) to emit one job per task regardless of length. */
+  jobSplit?: JobSplitLimits;
 }
 
 export type RowCommitState = "pending" | "analyzing" | "done" | "error";
@@ -133,7 +169,22 @@ export function buildParamsForRow(
   runsPerJob: number,
 ): IndustryParams {
   const isT2 = row.scan_mode === "t2_invention";
-  const inv = effectiveInventionParams(ctx.decryptorKey, row.output_bpc_runs);
+  // Scanner picks the highest-ISK/h decryptor PER ROW (row.best_decryptor_key)
+  // — that's what the row's profit numbers assume. Honoring it here keeps the
+  // committed plan aligned with what the row displayed (e.g. "[Accelerant]"
+  // tag). Fall back to the shared-prefs decryptor for legacy rows without
+  // best_decryptor_key set.
+  const rowKey = row.best_decryptor_key as DecryptorKey | undefined;
+  const decryptorKey: DecryptorKey =
+    isT2 && rowKey && rowKey in DECRYPTORS ? rowKey : ctx.decryptorKey;
+  const inv = effectiveInventionParams(decryptorKey, row.output_bpc_runs);
+  // Cost: use the picked decryptor's default when it differs from the shared-
+  // prefs pick (shared cost only tracks the shared pick). Users can override
+  // per-row cost in a follow-up if it matters.
+  const decryptorCost =
+    decryptorKey === ctx.decryptorKey
+      ? ctx.decryptorCost
+      : DECRYPTORS[decryptorKey]?.defaultCost ?? 0;
   return {
     type_id: row.product_type_id,
     runs: runsPerJob,
@@ -149,12 +200,26 @@ export function buildParamsForRow(
     own_blueprint: true,
     blueprint_is_bpo: row.is_bpo,
     build_mode: ctx.buildMode,
+    max_depth: ctx.maxDepth,
+    skip_reactions: ctx.skipReactions,
+    structure_rig_type_ids: ctx.structureRigTypeIDs,
+    structure_type_id: ctx.structureTypeID,
+    structure_job_cost_reduction: ctx.structureJobCostReduction,
+    revenue_model: ctx.revenueModel,
+    cost_model: ctx.costModel,
     ...(isT2
       ? {
           invention_chance: (row.invention_probability ?? 0) * 100,
           invention_output_runs: inv.outputRuns,
-          decryptor_cost: ctx.decryptorCost,
+          decryptor_cost: decryptorCost,
+          // Only send typeID when a real decryptor is picked; "none" (typeID 0)
+          // would otherwise trigger the analyzer's decryptor-emit path with a
+          // bogus typeID.
+          ...(inv.decryptorTypeID > 0 ? { decryptor_type_id: inv.decryptorTypeID } : {}),
         }
+      : {}),
+    ...(ctx.ownedBlueprints && ctx.ownedBlueprints.length > 0
+      ? { owned_blueprints: ctx.ownedBlueprints }
       : {}),
   };
 }
@@ -205,7 +270,7 @@ export async function previewBatch(args: PreviewBatchArgs): Promise<BatchPreview
     runsByKey,
     rowKeyFor,
     defaultRunsPerJob,
-    context,
+    context: rawContext,
     onProgress,
     onRowStatus,
     signal,
@@ -214,6 +279,39 @@ export async function previewBatch(args: PreviewBatchArgs): Promise<BatchPreview
   if (rows.length === 0) {
     return { analyses: [], dedupedCount: 0, coverage: null, materials: [], shortfall: [], coverageWarnings: [] };
   }
+
+  // Guarantee the analyzer sees owned_blueprints for invention pipelines —
+  // without it, the copy-step detector (IsBPO && AvailableRuns==0) can't
+  // fire and users see invention plans that skip the "print copies first"
+  // step even when they only own a BPO. Prefer the caller-supplied list
+  // (IndustryTab keeps a fetched-once cache), fetch fresh on the fly when
+  // absent. Cheap enough — one ESI blueprints call per authenticated
+  // character — and only actually hit when the caller didn't pre-load.
+  const context = rawContext.ownedBlueprints && rawContext.ownedBlueprints.length > 0
+    ? rawContext
+    : await (async (): Promise<ScannerAnalysisContext> => {
+        try {
+          const resp = await getAuthIndustryOwnedBlueprints();
+          return {
+            ...rawContext,
+            ownedBlueprints: resp.blueprints.map((b) => ({
+              product_type_id: b.product_type_id,
+              me: b.me,
+              te: b.te,
+              is_bpo: b.is_bpo,
+              available_runs: b.available_runs,
+            })),
+          };
+        } catch {
+          // Non-fatal: analyzer falls back to legacy cascade for sub-BP ME/TE
+          // and no copy step gets emitted. Same behavior as pre-owned-BP-aware
+          // callers, so preview still works; the user just doesn't see copy
+          // jobs even where they'd apply. Surface via console for diagnosis.
+          // eslint-disable-next-line no-console
+          console.warn("previewBatch: getAuthIndustryOwnedBlueprints failed, analyzer will lack owned-BP context");
+          return rawContext;
+        }
+      })();
 
   // --- Dedupe by (scan_mode, product_type_id) ---
   // Same rationale as the original modal: a user who owns BOTH a BPO and a
@@ -315,6 +413,23 @@ export async function previewBatch(args: PreviewBatchArgs): Promise<BatchPreview
         type_name: m.type_name || existing?.type_name || "",
         required_qty: (existing?.required_qty ?? 0) + Math.max(0, Math.ceil(m.quantity ?? 0)),
       });
+    }
+    // Step-specific materials (invention datacores, etc.) aren't in
+    // flat_materials — fold them in so the coverage scan asks the ESI
+    // asset endpoint for their inventory too. Without this, the invention
+    // task shows "have 0" for datacores the user actually owns.
+    for (const step of analysis.activity_plan ?? []) {
+      for (const m of step.materials ?? []) {
+        if (!m.type_id || m.type_id <= 0) continue;
+        const qty = Math.max(0, Math.ceil(m.quantity ?? 0));
+        if (qty <= 0) continue;
+        const existing = materialsForCoverage.get(m.type_id);
+        materialsForCoverage.set(m.type_id, {
+          type_id: m.type_id,
+          type_name: m.type_name || existing?.type_name || "",
+          required_qty: (existing?.required_qty ?? 0) + qty,
+        });
+      }
     }
   }
 
@@ -429,7 +544,12 @@ export async function commitBatchToProject(args: CommitBatchArgs): Promise<Commi
       replace: false,
     });
   });
-  const merged = applyCoverageToIndustryPlanPatch(mergeIndustryPlanPatches(patches), coverage);
+  const mergedWithCoverage = applyCoverageToIndustryPlanPatch(mergeIndustryPlanPatches(patches), coverage);
+  // Split last: merging first means two rows sharing a component produce one
+  // combined job, which is then cut into install-sized batches once.
+  const merged = context.jobSplit
+    ? applyJobSplitToIndustryPlanPatch(mergedWithCoverage, context.jobSplit)
+    : mergedWithCoverage;
 
   // Phase 4: create or select project, apply patch.
   onProgress?.("Committing plan…");

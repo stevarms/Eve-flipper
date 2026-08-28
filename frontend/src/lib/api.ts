@@ -1612,6 +1612,17 @@ export interface OwnedBlueprintEntry {
   product_name?: string;
   me: number;
   te: number;
+  /** True if the user owns at least one BPO for this product. Sticky across
+   *  BPO + BPC merges. When paired with available_runs === 0 this drives
+   *  the analyzer's copy-step emitter — invention needs a physical BPC, so
+   *  a BPO-only pool means "print copies first, then invent". */
+  is_bpo: boolean;
+  /** Total BPC runs available across every copy of this product's
+   *  blueprint. BPOs contribute 0 (unlimited but not directly consumable
+   *  by invention). Zero + is_bpo=true → copy step; zero + is_bpo=false →
+   *  no BP at all (currently no analyzer path handles this — user would
+   *  need to acquire a BPC via market). */
+  available_runs: number;
 }
 
 export interface OwnedBlueprintIndexResponse {

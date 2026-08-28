@@ -16,6 +16,12 @@ type Blueprint struct {
 	Materials       []BlueprintMaterial      // Required materials for manufacturing
 	Time            int32                    // Manufacturing time in seconds (base)
 	Activities      map[string]*ActivityData // All activities (manufacturing, copying, invention, etc.)
+	// MaxProductionLimit is the SDE's top-level `maxProductionLimit` — the
+	// max runs any single BPC of this blueprint can hold when copied. The
+	// copy-step analyzer uses it to size a copy job (copies_needed =
+	// ceil(runs_needed / MaxProductionLimit)). The `activities.copying`
+	// section carries only time; runs-per-copy lives here.
+	MaxProductionLimit int32
 }
 
 // BlueprintMaterial represents a single material requirement.
@@ -236,8 +242,9 @@ func (ind *IndustryData) parseBlueprintLine(raw json.RawMessage) error {
 	//   }
 	// }
 	var bp struct {
-		Key        int32 `json:"_key"`
-		Activities struct {
+		Key                int32 `json:"_key"`
+		MaxProductionLimit int32 `json:"maxProductionLimit"`
+		Activities         struct {
 			Manufacturing *struct {
 				Time      int32 `json:"time"`
 				Materials []struct {
@@ -276,6 +283,28 @@ func (ind *IndustryData) parseBlueprintLine(raw json.RawMessage) error {
 					Quantity int32 `json:"quantity"`
 				} `json:"products"`
 			} `json:"reaction"`
+			// Copying + research (ME + TE) activities. Feed the analyzer's
+			// copy-step / research-step emit path — see IndustryAnalyzer.
+			// Copying products carry `quantity` = max runs per output BPC
+			// (EVE's SDE convention). Copy materials are almost always empty
+			// but the field is preserved for completeness.
+			Copying *struct {
+				Time      int32 `json:"time"`
+				Materials []struct {
+					TypeID   int32 `json:"typeID"`
+					Quantity int32 `json:"quantity"`
+				} `json:"materials"`
+				Products []struct {
+					TypeID   int32 `json:"typeID"`
+					Quantity int32 `json:"quantity"`
+				} `json:"products"`
+			} `json:"copying"`
+			ResearchMaterial *struct {
+				Time int32 `json:"time"`
+			} `json:"research_material"`
+			ResearchTime *struct {
+				Time int32 `json:"time"`
+			} `json:"research_time"`
 		} `json:"activities"`
 	}
 
@@ -284,8 +313,9 @@ func (ind *IndustryData) parseBlueprintLine(raw json.RawMessage) error {
 	}
 
 	blueprint := &Blueprint{
-		BlueprintTypeID: bp.Key,
-		Activities:      make(map[string]*ActivityData),
+		BlueprintTypeID:    bp.Key,
+		MaxProductionLimit: bp.MaxProductionLimit,
+		Activities:         make(map[string]*ActivityData),
 	}
 
 	// Process manufacturing activity (main focus)
@@ -370,6 +400,33 @@ func (ind *IndustryData) parseBlueprintLine(raw json.RawMessage) error {
 			})
 		}
 		blueprint.Activities["invention"] = actData
+	}
+
+	// Copy activity. Produces BPCs of the same typeID as the input BPO;
+	// the SDE `products[].quantity` here is the max-runs-per-BPC that a
+	// single copy job will stamp onto each output copy.
+	if cpy := bp.Activities.Copying; cpy != nil {
+		actData := &ActivityData{Time: cpy.Time}
+		for _, m := range cpy.Materials {
+			actData.Materials = append(actData.Materials, BlueprintMaterial{
+				TypeID: m.TypeID, Quantity: m.Quantity,
+			})
+		}
+		for _, p := range cpy.Products {
+			actData.Products = append(actData.Products, BlueprintProduct{
+				TypeID: p.TypeID, Quantity: p.Quantity,
+			})
+		}
+		blueprint.Activities["copying"] = actData
+	}
+
+	// ME / TE research activities. SDE ships only a base time per BP; the
+	// per-level multiplier (EVE canonical) is computed by the analyzer.
+	if rm := bp.Activities.ResearchMaterial; rm != nil {
+		blueprint.Activities["research_material"] = &ActivityData{Time: rm.Time}
+	}
+	if rt := bp.Activities.ResearchTime; rt != nil {
+		blueprint.Activities["research_time"] = &ActivityData{Time: rt.Time}
 	}
 
 	// Store any blueprint that has at least one activity. Historically the

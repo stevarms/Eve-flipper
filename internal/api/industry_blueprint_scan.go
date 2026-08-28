@@ -799,11 +799,30 @@ func buildOwnedBlueprintIndex(groups []blueprintGroup, sdeData *sde.Data) map[in
 			if product.TypeID <= 0 {
 				continue
 			}
-			entry := engine.OwnedBlueprint{ME: g.ME, TE: g.TE}
+			// IsBPO/AvailableRuns feed the analyzer's copy-step emitter:
+			// when we hit an invention step whose source is BPO-only, the
+			// analyzer prepends a copy job to materialize BPCs first. Keep
+			// the "any BPO for this product" bit sticky — one BPO in the
+			// pool is enough to unlock copying even alongside BPCs.
+			entry := engine.OwnedBlueprint{
+				ME:            g.ME,
+				TE:            g.TE,
+				IsBPO:         g.IsBPO,
+				AvailableRuns: int32(g.AvailableRuns),
+			}
 			if existing, has := out[product.TypeID]; has {
 				// Keep the highest-researched copy the user owns. BPO ME=10
 				// beats invented BPC ME=2 every time when both are held.
 				if existing.ME >= entry.ME && existing.TE >= entry.TE {
+					// Preserve existing ME/TE but still surface BPO / runs
+					// info from the new entry if the existing one lacked it.
+					if !existing.IsBPO && entry.IsBPO {
+						existing.IsBPO = true
+					}
+					if entry.AvailableRuns > 0 {
+						existing.AvailableRuns += entry.AvailableRuns
+					}
+					out[product.TypeID] = existing
 					continue
 				}
 				if entry.ME < existing.ME {
@@ -812,6 +831,10 @@ func buildOwnedBlueprintIndex(groups []blueprintGroup, sdeData *sde.Data) map[in
 				if entry.TE < existing.TE {
 					entry.TE = existing.TE
 				}
+				if existing.IsBPO {
+					entry.IsBPO = true
+				}
+				entry.AvailableRuns += existing.AvailableRuns
 			}
 			out[product.TypeID] = entry
 		}

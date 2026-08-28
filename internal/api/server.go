@@ -8018,6 +8018,15 @@ func (s *Server) handleAuthIndustryOwnedBlueprints(w http.ResponseWriter, r *htt
 		ProductName   string `json:"product_name,omitempty"`
 		ME            int32  `json:"me"`
 		TE            int32  `json:"te"`
+		// IsBPO — user owns at least one BPO for this product. Sticks across
+		// merges so a BPO + BPCs collapse into "IsBPO=true, AvailableRuns=sum
+		// of BPC runs". Feeds the analyzer's copy-step emitter: IsBPO=true
+		// + AvailableRuns==0 means "no BPCs available, print copies first".
+		IsBPO bool `json:"is_bpo"`
+		// AvailableRuns — sum of BPC runs across every copy of this product.
+		// BPOs contribute 0 (unlimited runs, but each invention job needs
+		// a physical BPC to consume). Zero + IsBPO=true triggers copy step.
+		AvailableRuns int32 `json:"available_runs"`
 	}
 
 	// Keyed by product typeID so multiple BPs producing the same product
@@ -8059,10 +8068,22 @@ func (s *Server) handleAuthIndustryOwnedBlueprints(w http.ResponseWriter, r *htt
 			if bp.TypeID <= 0 {
 				continue
 			}
-			// Skip zero-run BPCs — the user physically can't queue a job.
-			// Runs < 0 marks a BPO (unlimited); Runs == 0 is a spent BPC.
+			// Runs < 0 is a BPO (unlimited); Runs == 0 is a spent BPC;
+			// Runs > 0 is a BPC with copies left. All three matter here:
+			// BPOs seed IsBPO=true so copy steps can fire; live BPCs
+			// contribute to AvailableRuns; spent BPCs are useless and
+			// dropped early.
 			if bp.Runs == 0 {
 				continue
+			}
+			isBPO := bp.Runs < 0
+			runs := int32(0)
+			if !isBPO {
+				qty := bp.Quantity
+				if qty <= 0 {
+					qty = 1
+				}
+				runs = int32(bp.Runs * qty)
 			}
 			sdeBP, ok := sdeData.Industry.Blueprints[bp.TypeID]
 			if !ok || sdeBP == nil {
@@ -8084,14 +8105,19 @@ func (s *Server) handleAuthIndustryOwnedBlueprints(w http.ResponseWriter, r *htt
 					ProductTypeID: product.TypeID,
 					ME:            bp.MaterialEfficiency,
 					TE:            bp.TimeEfficiency,
+					IsBPO:         isBPO,
+					AvailableRuns: runs,
 				}
 				if existing, has := byProduct[product.TypeID]; has {
-					// Keep the higher ME; on ME tie, keep the higher TE.
-					if existing.ME > candidate.ME {
-						continue
+					// Merge: sticky IsBPO, sum runs, keep best ME/TE.
+					if existing.IsBPO {
+						candidate.IsBPO = true
 					}
-					if existing.ME == candidate.ME && existing.TE >= candidate.TE {
-						continue
+					candidate.AvailableRuns += existing.AvailableRuns
+					if existing.ME > candidate.ME ||
+						(existing.ME == candidate.ME && existing.TE >= candidate.TE) {
+						candidate.ME = existing.ME
+						candidate.TE = existing.TE
 					}
 				}
 				byProduct[product.TypeID] = candidate
@@ -8099,18 +8125,127 @@ func (s *Server) handleAuthIndustryOwnedBlueprints(w http.ResponseWriter, r *htt
 		}
 	}
 
-	if len(selectedSessions) > 0 && charactersUsed == 0 {
-		writeError(w, 500, "failed to fetch blueprints for any character")
+	// Also scan corp blueprints — the same seeding pass the Scanner does.
+	// Characters with a Director role in their corp can read corp BP lists;
+	// silent skip for chars without the role or without the scope. Without
+	// this, a user whose BPOs live in a corp hangar sees empty owned-BP
+	// lists (and no copy-step detection for invention pipelines).
+	corpsScanned := 0
+	corpBPsScanned := 0
+	corpsSeen := make(map[int32]struct{})
+	corpForbiddenWarned := false
+	corpScopeWarned := false
+	for _, sess := range selectedSessions {
+		token, tokenErr := s.sessions.EnsureValidTokenForUserCharacter(s.sso, userID, sess.CharacterID)
+		if tokenErr != nil {
+			continue
+		}
+		corpID, corpErr := s.esi.GetCharacterCorporationID(sess.CharacterID)
+		if corpErr != nil || corpID <= 0 {
+			continue
+		}
+		if _, done := corpsSeen[corpID]; done {
+			continue
+		}
+		roles, rolesErr := s.esi.GetCharacterRoles(sess.CharacterID, token)
+		if rolesErr != nil {
+			msg := strings.ToLower(rolesErr.Error())
+			if (strings.Contains(msg, "403") || strings.Contains(msg, "scope")) && !corpScopeWarned {
+				appendWarningOnce("corp blueprints skipped: missing esi-characters.read_corporation_roles.v1 scope (re-authenticate)")
+				corpScopeWarned = true
+			}
+			continue
+		}
+		hasDirector := false
+		if roles != nil {
+			for _, r := range roles.Roles {
+				if strings.EqualFold(r, "Director") {
+					hasDirector = true
+					break
+				}
+			}
+		}
+		if !hasDirector {
+			continue
+		}
+		corpBPs, corpBpErr := s.esi.GetCorporationBlueprints(corpID, token)
+		if corpBpErr != nil {
+			msg := strings.ToLower(corpBpErr.Error())
+			if strings.Contains(msg, "403") && !corpForbiddenWarned {
+				appendWarningOnce("corp blueprints scope missing or insufficient corp role (re-authenticate to grant esi-corporations.read_blueprints.v1)")
+				corpForbiddenWarned = true
+			}
+			continue
+		}
+		corpsSeen[corpID] = struct{}{}
+		corpsScanned++
+		corpBPsScanned += len(corpBPs)
+		for _, bp := range corpBPs {
+			if bp.TypeID <= 0 || bp.Runs == 0 {
+				continue
+			}
+			isBPO := bp.Runs < 0
+			runs := int32(0)
+			if !isBPO {
+				qty := bp.Quantity
+				if qty <= 0 {
+					qty = 1
+				}
+				runs = int32(bp.Runs * qty)
+			}
+			sdeBP, ok := sdeData.Industry.Blueprints[bp.TypeID]
+			if !ok || sdeBP == nil {
+				continue
+			}
+			mfg := sdeBP.Activities["manufacturing"]
+			if mfg == nil || len(mfg.Products) == 0 {
+				continue
+			}
+			for _, product := range mfg.Products {
+				if product.TypeID <= 0 {
+					continue
+				}
+				candidate := ownedBP{
+					ProductTypeID: product.TypeID,
+					ME:            bp.MaterialEfficiency,
+					TE:            bp.TimeEfficiency,
+					IsBPO:         isBPO,
+					AvailableRuns: runs,
+				}
+				if existing, has := byProduct[product.TypeID]; has {
+					if existing.IsBPO {
+						candidate.IsBPO = true
+					}
+					candidate.AvailableRuns += existing.AvailableRuns
+					if existing.ME > candidate.ME ||
+						(existing.ME == candidate.ME && existing.TE >= candidate.TE) {
+						candidate.ME = existing.ME
+						candidate.TE = existing.TE
+					}
+				}
+				byProduct[product.TypeID] = candidate
+			}
+		}
+	}
+
+	if len(selectedSessions) > 0 && charactersUsed == 0 && corpsScanned == 0 {
+		writeError(w, 500, "failed to fetch blueprints for any character or corp")
 		return
 	}
 
 	rows := make([]ownedBP, 0, len(byProduct))
+	bpoCount := 0
 	for _, entry := range byProduct {
 		if t, ok := sdeData.Types[entry.ProductTypeID]; ok {
 			entry.ProductName = strings.TrimSpace(t.Name)
 		}
+		if entry.IsBPO {
+			bpoCount++
+		}
 		rows = append(rows, entry)
 	}
+	log.Printf("[OwnedBP] returning %d products (%d BPO), scanned %d personal BPs across %d chars + %d corp BPs across %d corps",
+		len(rows), bpoCount, blueprintsScanned, charactersUsed, corpBPsScanned, corpsScanned)
 	// Stable order for deterministic diffs / cache keys.
 	sort.Slice(rows, func(i, j int) bool { return rows[i].ProductTypeID < rows[j].ProductTypeID })
 
@@ -12240,6 +12375,7 @@ func (s *Server) handleIndustryAnalyze(w http.ResponseWriter, r *http.Request) {
 		InventionDatacoreLevel1  int32 `json:"invention_datacore_level_1"`
 		InventionDatacoreLevel2  int32 `json:"invention_datacore_level_2"`
 		DecryptorCost       float64 `json:"decryptor_cost"`
+		DecryptorTypeID     int32   `json:"decryptor_type_id"`
 		InventionOutputRuns int32   `json:"invention_output_runs"`
 		BuildMode                 string  `json:"build_mode"`
 		SkipReactions             bool    `json:"skip_reactions"`
@@ -12260,6 +12396,19 @@ func (s *Server) handleIndustryAnalyze(w http.ResponseWriter, r *http.Request) {
 			ProductTypeID int32 `json:"product_type_id"`
 			ME            int32 `json:"me"`
 			TE            int32 `json:"te"`
+			// IsBPO/AvailableRuns feed the analyzer's copy-step emitter.
+			// IsBPO=true + AvailableRuns=0 means "user owns a BPO for this
+			// product but has zero BPCs" — analyzer emits a copy job so
+			// invention can consume BPCs. Absent (default zero-values) means
+			// legacy behavior: BPC-only or unknown, copy step not emitted.
+			IsBPO         bool  `json:"is_bpo,omitempty"`
+			AvailableRuns int32 `json:"available_runs,omitempty"`
+			// TargetME/TargetTE are future-facing (ME/TE research goal-seeker).
+			// The analyzer's calculateResearchSteps compares OwnedBlueprints
+			// ME/TE against these and emits research jobs to close the gap.
+			// Zero values disable research-step emission for that product.
+			TargetME int32 `json:"target_me,omitempty"`
+			TargetTE int32 `json:"target_te,omitempty"`
 		} `json:"owned_blueprints"`
 	}
 
@@ -12413,6 +12562,7 @@ func (s *Server) handleIndustryAnalyze(w http.ResponseWriter, r *http.Request) {
 		InventionDatacoreLevel1:  req.InventionDatacoreLevel1,
 		InventionDatacoreLevel2:  req.InventionDatacoreLevel2,
 		DecryptorCost:            req.DecryptorCost,
+		DecryptorTypeID:          req.DecryptorTypeID,
 		InventionOutputRuns:      req.InventionOutputRuns,
 		BuildMode:           req.BuildMode,
 		SkipReactions:       req.SkipReactions,
@@ -12430,6 +12580,7 @@ func (s *Server) handleIndustryAnalyze(w http.ResponseWriter, r *http.Request) {
 	// cascading the top-level; sub-products missing from the map are
 	// marked base (buy-only). See engine.IndustryParams.OwnedBlueprints
 	// for the full contract.
+	log.Printf("[Analyze] received owned_blueprints: %d entries (typeID=%d activity=%s build_mode=%q)", len(req.OwnedBlueprints), req.TypeID, req.ActivityMode, req.BuildMode)
 	if len(req.OwnedBlueprints) > 0 {
 		bpMap := make(map[int32]engine.OwnedBlueprint, len(req.OwnedBlueprints))
 		for _, bp := range req.OwnedBlueprints {
@@ -12438,16 +12589,35 @@ func (s *Server) handleIndustryAnalyze(w http.ResponseWriter, r *http.Request) {
 			}
 			// Duplicates in the request collapse to the higher-ME copy —
 			// same "best copy the user could queue from" rule the scanner's
-			// buildOwnedBlueprintIndex applies server-side.
+			// buildOwnedBlueprintIndex applies server-side. IsBPO stays
+			// sticky across duplicates (any BPO among duplicates makes the
+			// merged entry BPO-eligible for copy-step detection) and
+			// AvailableRuns accumulates across BPCs for the same product.
+			entry := engine.OwnedBlueprint{
+				ME:            bp.ME,
+				TE:            bp.TE,
+				IsBPO:         bp.IsBPO,
+				AvailableRuns: bp.AvailableRuns,
+				TargetME:      bp.TargetME,
+				TargetTE:      bp.TargetTE,
+			}
 			if existing, has := bpMap[bp.ProductTypeID]; has {
-				if existing.ME > bp.ME {
-					continue
+				if existing.IsBPO {
+					entry.IsBPO = true
 				}
-				if existing.ME == bp.ME && existing.TE >= bp.TE {
-					continue
+				entry.AvailableRuns += existing.AvailableRuns
+				if existing.TargetME > entry.TargetME {
+					entry.TargetME = existing.TargetME
+				}
+				if existing.TargetTE > entry.TargetTE {
+					entry.TargetTE = existing.TargetTE
+				}
+				if existing.ME > entry.ME || (existing.ME == entry.ME && existing.TE >= entry.TE) {
+					entry.ME = existing.ME
+					entry.TE = existing.TE
 				}
 			}
-			bpMap[bp.ProductTypeID] = engine.OwnedBlueprint{ME: bp.ME, TE: bp.TE}
+			bpMap[bp.ProductTypeID] = entry
 		}
 		if len(bpMap) > 0 {
 			params.OwnedBlueprints = bpMap
@@ -12487,7 +12657,7 @@ func (s *Server) handleIndustryAnalyze(w http.ResponseWriter, r *http.Request) {
 	}
 
 	durationMs := time.Since(startTime).Milliseconds()
-	log.Printf("[API] IndustryAnalyze complete in %dms", durationMs)
+	log.Printf("[API] IndustryAnalyze complete in %dms, activity_plan=%d steps", durationMs, len(result.ActivityPlan))
 
 	line, _ := json.Marshal(map[string]interface{}{"type": "result", "data": result})
 	fmt.Fprintf(w, "%s\n", line)

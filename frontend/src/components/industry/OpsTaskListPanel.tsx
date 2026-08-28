@@ -12,6 +12,8 @@ import type {
 } from "@/lib/types";
 import {
   deriveTaskBlockStatus,
+  sortOperationsTasks,
+  splitTaskDecryptorSuffix,
   taskConstraintNumber,
   type IndustryTaskDependencyBoard,
   type TaskBlockLevel,
@@ -159,40 +161,11 @@ export function OpsTaskListPanel(props: OpsTaskListPanelProps) {
     return map;
   }, [ledgerSnapshot, taskDependencyBoard.parent_by_task]);
 
-  // Default order: dep depth asc → activity prerequisite order → priority
-  // desc → id asc. Prerequisites (copy/invention/reaction) bubble above
-  // their manufacturing consumers even when the parent-link data isn't
-  // populated (which is the norm for scanner-committed plans where every
-  // task ends up depth=1). Priority is the user-editable override.
-  const activityOrder = (activity: string): number => {
-    switch (activity) {
-      case "copy":
-        return 0;
-      case "invention":
-        return 1;
-      case "reaction":
-        return 2;
-      case "manufacturing":
-      default:
-        return 3;
-    }
-  };
+  // Shared with the "Do this next" card so its "step N of M" always points
+  // at the same row here.
   const sortedTasks: IndustryTaskRecord[] = useMemo(() => {
     if (!ledgerSnapshot) return [];
-    const arr = [...ledgerSnapshot.tasks];
-    arr.sort((a, b) => {
-      const da = taskDependencyBoard.depth_by_task[a.id] ?? 1;
-      const db = taskDependencyBoard.depth_by_task[b.id] ?? 1;
-      if (da !== db) return da - db;
-      const aa = activityOrder(a.activity);
-      const ab = activityOrder(b.activity);
-      if (aa !== ab) return aa - ab;
-      const pa = a.priority || 0;
-      const pb = b.priority || 0;
-      if (pa !== pb) return pb - pa;
-      return a.id - b.id;
-    });
-    return arr;
+    return sortOperationsTasks(ledgerSnapshot.tasks, taskDependencyBoard.depth_by_task);
   }, [ledgerSnapshot, taskDependencyBoard.depth_by_task]);
 
   if (!ledgerSnapshot) {
@@ -332,7 +305,24 @@ export function OpsTaskListPanel(props: OpsTaskListPanelProps) {
                       </button>
                     </td>
                     <td className="px-1.5 py-1 text-eve-text">
-                      <div className="truncate">{task.name}</div>
+                      <div className="truncate">
+                        {(() => {
+                          // Highlight the decryptor suffix that stepLabel
+                          // appended for invention tasks — same sky-300 the
+                          // Scanner uses for its per-row decryptor chip so the
+                          // pairing pops visually and matches "[Accelerant]"-
+                          // style tags there.
+                          const { base, decryptor } = splitTaskDecryptorSuffix(task.name || "", task.activity);
+                          if (!decryptor) return base;
+                          return (
+                            <>
+                              {base}
+                              <span className="text-eve-dim"> · </span>
+                              <span className="text-sky-300">{decryptor}</span>
+                            </>
+                          );
+                        })()}
+                      </div>
                       <div className="text-[10px] text-eve-dim">
                         #{task.id}
                         {parentID > 0 && (

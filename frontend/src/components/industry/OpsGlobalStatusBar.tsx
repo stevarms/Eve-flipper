@@ -1,6 +1,11 @@
 import { useMemo } from "react";
+import { formatISK, formatISKFull } from "@/lib/format";
 import type { IndustryLedger, IndustryProjectSnapshot } from "@/lib/types";
-import { deriveTaskBlockStatus, type IndustryTaskDependencyBoard } from "./industryHelpers";
+import {
+  deriveProjectValuation,
+  deriveTaskBlockStatus,
+  type IndustryTaskDependencyBoard,
+} from "./industryHelpers";
 
 /**
  * Compact single-line status strip for the Operations tab. Replaces the
@@ -51,9 +56,12 @@ export function OpsGlobalStatusBar({
     };
   }, [ledgerSnapshot, taskDependencyBoard.parent_by_task]);
 
+  const valuation = useMemo(() => deriveProjectValuation(ledgerSnapshot), [ledgerSnapshot]);
+
   const activeJobs = ledgerData?.active ?? 0;
 
   return (
+    <>
     <div className="mt-2 flex items-center flex-wrap gap-3 px-3 py-1.5 border border-eve-border/40 rounded-sm bg-eve-dark/20 text-[11px]">
       <span className="text-eve-text font-semibold">
         {counts.total} <span className="text-eve-dim font-normal">tasks</span>
@@ -98,5 +106,68 @@ export function OpsGlobalStatusBar({
         Settings {settingsOpen ? "▾" : "▸"}
       </button>
     </div>
+
+    {/* Project value rollup: what the whole run is worth, what it costs, and
+        what's still unfunded. Only rendered once there's something to value —
+        an empty project shouldn't show a wall of 0 ISK. */}
+    {(valuation.hasRevenueEstimate || valuation.totalCost > 0) && (
+      <div className="mt-1 flex items-center flex-wrap gap-3 px-3 py-1.5 border border-eve-border/40 rounded-sm bg-eve-dark/20 text-[11px]">
+        <span className="text-eve-dim uppercase tracking-wider text-[10px]">Project value</span>
+        <span className="text-eve-border">·</span>
+        <span className="text-eve-dim">
+          Revenue{" "}
+          {valuation.hasRevenueEstimate ? (
+            <span className="text-emerald-300 font-semibold" title={`${formatISKFull(valuation.expectedRevenue)} ISK`}>
+              {formatISK(valuation.expectedRevenue)}
+            </span>
+          ) : (
+            <span className="text-eve-dim italic">not estimated</span>
+          )}
+        </span>
+        <span className="text-eve-border">·</span>
+        <span className="text-eve-dim">
+          Materials{" "}
+          <span className="text-eve-text font-semibold" title={`${formatISKFull(valuation.materialCost)} ISK`}>
+            {formatISK(valuation.materialCost)}
+          </span>
+        </span>
+        <span className="text-eve-border">·</span>
+        <span className="text-eve-dim">
+          Job fees{" "}
+          <span className="text-eve-text font-semibold" title={`${formatISKFull(valuation.jobCost)} ISK`}>
+            {formatISK(valuation.jobCost)}
+          </span>
+        </span>
+        {valuation.hasRevenueEstimate && (
+          <>
+            <span className="text-eve-border">·</span>
+            <span className="text-eve-dim">
+              Profit{" "}
+              <span
+                className={`font-semibold ${valuation.expectedProfit >= 0 ? "text-emerald-300" : "text-red-300"}`}
+                title={`${formatISKFull(valuation.expectedProfit)} ISK`}
+              >
+                {formatISK(valuation.expectedProfit)}
+              </span>{" "}
+              <span className={valuation.expectedProfit >= 0 ? "text-emerald-400/70" : "text-red-400/70"}>
+                ({(valuation.marginPct * 100).toFixed(1)}%)
+              </span>
+            </span>
+          </>
+        )}
+        {valuation.remainingBuyCost > 0 && (
+          <>
+            <span className="text-eve-border">·</span>
+            <span className="text-eve-dim" title="Priced from the material shortfall still outstanding">
+              Still to buy{" "}
+              <span className="text-amber-300 font-semibold" title={`${formatISKFull(valuation.remainingBuyCost)} ISK`}>
+                {formatISK(valuation.remainingBuyCost)}
+              </span>
+            </span>
+          </>
+        )}
+      </div>
+    )}
+    </>
   );
 }

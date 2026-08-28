@@ -43,7 +43,14 @@ function stepRuns(step: IndustryActivityStep): number {
 function stepLabel(step: IndustryActivityStep): string {
   const activity = step.activity || "industry";
   const product = step.product_name || `Type ${step.product_type_id}`;
-  return `${activity} ${product}`;
+  const base = `${activity} ${product}`;
+  // For invention, tag the decryptor onto the label so the row header shows
+  // "invention Zealot Blueprint · Symmetry Decryptor" — the user knows which
+  // decryptor to grab in-game without expanding the task.
+  if (step.activity === "invention" && step.decryptor_name) {
+    return `${base} · ${step.decryptor_name}`;
+  }
+  return base;
 }
 
 export function buildIndustryPlanPatch(input: BuildIndustryPlanPatchInput): IndustryPlanPatch {
@@ -137,39 +144,95 @@ export function buildIndustryPlanPatch(input: BuildIndustryPlanPatchInput): Indu
     });
   }
 
-  // Materials: strictly this row's own needs. Coverage-derived data
-  // (available_qty, buy_qty) is filled in later via
-  // applyCoverageToIndustryPlanPatch — either post-merge (Scanner batch
-  // flow) or immediately after build (Analyze tab flow). Emitting only
-  // per-row needs is what makes multi-row merging correct: the merged
-  // required_qty is the true cross-row total instead of N copies of the
-  // shared coverage snapshot.
+  // Expected value, captured once at plan time on the OUTPUT task only.
   //
-  // Each row's materials are attributed to that row's OUTPUT task —
-  // the last activity step, which is the manufacturing step for both
-  // T1 direct-mfg rows and T2 invention→mfg chains. flat_materials is
-  // a flattened bill (invention decryptors + mfg mats together), so
-  // tagging them to the mfg task means the mfg task's block-status
-  // pill reflects the full chain's needs. Enables per-task blocking
-  // in Operations (task's own materials → available vs required).
+  // Only the final saleable product carries non-zero numbers; intermediate
+  // component / invention / copy tasks stay at zero. That keeps the project
+  // rollup a plain SUM over every task with no is-final flag and no risk of
+  // double-counting a component's notional value on top of the hull it goes
+  // into.
+  //
+  // expected_unit_cost is the per-unit cost basis (materials + job costs at
+  // plan time), which is what the sell-floor guard compares live market
+  // prices against so a dipped price never gets sold below what it cost.
+  if (tasks.length > 0) {
+    const outputQty = Math.max(0, Math.round(result.total_quantity || 0));
+    if (outputQty > 0) {
+      const outputTask = tasks[tasks.length - 1];
+      outputTask.expected_unit_revenue = (result.sell_revenue || 0) / outputQty;
+      outputTask.expected_unit_cost = (result.optimal_build_cost || 0) / outputQty;
+      outputTask.expected_output_qty = outputQty;
+    }
+  }
+
+  // Materials attribution has two paths that COMPOSE:
+  //
+  // 1) Per-step materials — invention/copy/research steps carry their own
+  //    material bill on step.materials (e.g. datacores for invention). We
+  //    emit those with task_id set to the step's own task, so the task
+  //    expansion in Operations shows what each step consumes. Manufacturing
+  //    and reaction steps leave step.materials empty; their materials fall
+  //    through to path 2.
+  //
+  // 2) Output-task fallback — flat_materials is a flattened bill covering
+  //    every base material in the tree (datacores, decryptor cost, and
+  //    ME-adjusted mfg mats all together). Whatever quantities are already
+  //    attributed via path 1 are subtracted from flat_materials before the
+  //    remainder is attributed to the OUTPUT (mfg) task. This prevents
+  //    double-counting in material_diff while still keeping the mfg-task
+  //    block-status pill reflecting its own direct BOM.
+  //
   // Uses the same negative-int taskRef convention as jobs above.
   const outputTaskRef = tasks.length > 0 ? -tasks.length : -1;
-  const materials: IndustryMaterialPlanInput[] = (result.flat_materials ?? [])
-    .filter((m) => m.type_id > 0)
-    .map((m) => {
-      const requiredQty = Math.max(0, Math.ceil(m.quantity ?? 0));
-      return {
-        task_id: outputTaskRef,
-        type_id: m.type_id,
-        type_name: m.type_name || "",
-        required_qty: requiredQty,
+
+  // Path 1: per-step materials (invention/copy/research). Also track the
+  // per-typeID quantities already attributed so we can subtract from
+  // flat_materials.
+  const materials: IndustryMaterialPlanInput[] = [];
+  const attributedByType = new Map<number, number>();
+  activitySteps.forEach((step, index) => {
+    if (!step.materials || step.materials.length === 0) return;
+    const taskRef = -(index + 1);
+    for (const mat of step.materials) {
+      if (!mat.type_id || mat.type_id <= 0) continue;
+      const qty = Math.max(0, Math.ceil(mat.quantity ?? 0));
+      if (qty <= 0) continue;
+      materials.push({
+        task_id: taskRef,
+        type_id: mat.type_id,
+        type_name: mat.type_name || "",
+        required_qty: qty,
         available_qty: 0,
-        buy_qty: requiredQty,
+        buy_qty: qty,
         build_qty: 0,
-        unit_cost_isk: m.unit_price ?? 0,
+        unit_cost_isk: 0,
         source: "market" as const,
-      };
+      });
+      attributedByType.set(mat.type_id, (attributedByType.get(mat.type_id) ?? 0) + qty);
+    }
+  });
+
+  // Path 2: flat_materials minus what path 1 already attributed. Any
+  // material fully consumed by earlier steps (typical case: datacores)
+  // drops out; anything left over lands on the output/mfg task.
+  for (const m of result.flat_materials ?? []) {
+    if (!m.type_id || m.type_id <= 0) continue;
+    const total = Math.max(0, Math.ceil(m.quantity ?? 0));
+    const alreadyAttributed = attributedByType.get(m.type_id) ?? 0;
+    const remaining = total - alreadyAttributed;
+    if (remaining <= 0) continue;
+    materials.push({
+      task_id: outputTaskRef,
+      type_id: m.type_id,
+      type_name: m.type_name || "",
+      required_qty: remaining,
+      available_qty: 0,
+      buy_qty: remaining,
+      build_qty: 0,
+      unit_cost_isk: m.unit_price ?? 0,
+      source: "market" as const,
     });
+  }
 
   // Blueprints: only the ones this row's activity plan actually needs,
   // with per-row required_runs. Merge accumulates required_runs across
@@ -243,32 +306,83 @@ export function mergeIndustryPlanPatches(patches: IndustryPlanPatch[]): Industry
   const materialByTaskAndType = new Map<string, IndustryMaterialPlanInput>();
   const blueprintByKey = new Map<string, IndustryBlueprintPoolInput>();
 
-  let taskOffset = 0;
+  // Cross-row task dedup. Two scanner rows whose chains share a component
+  // (both need Nitrogen Fuel Block, say) each carry their own task for it.
+  // Emitting both produces duplicate work in Operations — in EVE you queue
+  // one job for the combined runs. Key on activity + product + task name so
+  // genuinely-different work stays separate (e.g. two invention tasks for
+  // the same BPC under different decryptors have different names).
+  const taskIndexByKey = new Map<string, number>();
+  const taskRefByIndex = (i: number) => -(i + 1);
+  const dedupeKeyFor = (t: IndustryTaskPlanInput) =>
+    `${t.activity ?? ""}:${t.product_type_id ?? 0}:${t.name ?? ""}`;
+  // Jobs are deduped alongside their task: one merged task should carry one
+  // merged job, not N identical ones.
+  const jobIndexByTaskAndActivity = new Map<string, number>();
+
   for (const patch of patches) {
     const tasks = patch.tasks ?? [];
     const jobs = patch.jobs ?? [];
-    // Build a translation map from the source patch's local task_id refs
-    // (negative ints, indexed by position in tasks) to their new global refs.
-    // Tasks in buildIndustryPlanPatch use -(i+1) at index i.
+    // Translate this patch's local task refs (-(i+1) at index i) to global
+    // refs. A task that dedupes into an existing one maps to that one's ref,
+    // so its jobs and materials attach to the surviving task.
     const taskIdRemap = new Map<number, number>();
-    tasks.forEach((_, i) => {
+    tasks.forEach((task, i) => {
       const sourceRef = -(i + 1);
-      const newRef = -(taskOffset + i + 1);
-      taskIdRemap.set(sourceRef, newRef);
+      const key = dedupeKeyFor(task);
+      const existingIdx = taskIndexByKey.get(key);
+      if (existingIdx !== undefined) {
+        // Merge: runs are additive, priority takes the more urgent (higher)
+        // value so a component needed early in one chain isn't demoted by a
+        // later chain that needs it less urgently.
+        const existing = outTasks[existingIdx];
+        // Expected value merges as a quantity-weighted average: two scanner
+        // rows for the same product can carry different unit economics (a
+        // different decryptor, a stale price), and the surviving task should
+        // reflect the blend of what was actually committed.
+        const existingQty = existing.expected_output_qty ?? 0;
+        const incomingQty = task.expected_output_qty ?? 0;
+        const mergedQty = existingQty + incomingQty;
+        const blend = (a: number | undefined, b: number | undefined) =>
+          mergedQty > 0
+            ? ((a ?? 0) * existingQty + (b ?? 0) * incomingQty) / mergedQty
+            : 0;
+        outTasks[existingIdx] = {
+          ...existing,
+          target_runs: (existing.target_runs ?? 0) + (task.target_runs ?? 0),
+          priority: Math.max(existing.priority ?? 0, task.priority ?? 0),
+          expected_unit_revenue: blend(existing.expected_unit_revenue, task.expected_unit_revenue),
+          expected_unit_cost: blend(existing.expected_unit_cost, task.expected_unit_cost),
+          expected_output_qty: mergedQty,
+        };
+        taskIdRemap.set(sourceRef, taskRefByIndex(existingIdx));
+        return;
+      }
+      const newIdx = outTasks.length;
+      outTasks.push(task);
+      taskIndexByKey.set(key, newIdx);
+      taskIdRemap.set(sourceRef, taskRefByIndex(newIdx));
     });
 
-    for (const task of tasks) {
-      outTasks.push(task);
-    }
     for (const job of jobs) {
       const originalRef = job.task_id;
       const remapped = originalRef !== undefined ? taskIdRemap.get(originalRef) : undefined;
-      outJobs.push({
-        ...job,
-        task_id: remapped ?? originalRef,
-      });
+      const taskRef = remapped ?? originalRef;
+      const jobKey = `${taskRef}:${job.activity ?? ""}`;
+      const existingJobIdx = jobIndexByTaskAndActivity.get(jobKey);
+      if (existingJobIdx !== undefined) {
+        const existing = outJobs[existingJobIdx];
+        outJobs[existingJobIdx] = {
+          ...existing,
+          runs: (existing.runs ?? 0) + (job.runs ?? 0),
+          duration_seconds: (existing.duration_seconds ?? 0) + (job.duration_seconds ?? 0),
+          cost_isk: (existing.cost_isk ?? 0) + (job.cost_isk ?? 0),
+        };
+        continue;
+      }
+      jobIndexByTaskAndActivity.set(jobKey, outJobs.length);
+      outJobs.push({ ...job, task_id: taskRef });
     }
-    taskOffset += tasks.length;
 
     for (const m of patch.materials ?? []) {
       const originalTaskRef = m.task_id;
@@ -362,12 +476,15 @@ export function applyCoverageToIndustryPlanPatch(
   const nextMaterials: IndustryMaterialPlanInput[] = (patch.materials ?? []).map((m) => {
     const required = Math.max(0, Math.ceil(m.required_qty ?? 0));
     const rawAvailable = availByType.get(m.type_id) ?? 0;
-    const available = Math.min(required, rawAvailable);
-    const buy = Math.max(0, required - available);
+    // Store raw stockpile count, not the clamped "usable" amount — showing
+    // "have 3" when the user actually has 500 datacores is confusing.
+    // buy_qty is still safe because max(0, required - rawAvailable) clamps
+    // negatives to zero, so overshoots don't turn into negative purchases.
+    const buy = Math.max(0, required - rawAvailable);
     return {
       ...m,
       required_qty: required,
-      available_qty: available,
+      available_qty: rawAvailable,
       buy_qty: buy,
       source: buy > 0 ? ("market" as const) : ("stock" as const),
     };
@@ -410,4 +527,93 @@ export function applyCoverageToIndustryPlanPatch(
     materials: nextMaterials,
     blueprints: nextBlueprints,
   };
+}
+
+export interface JobSplitLimits {
+  /** Hard cap on runs in a single installed job. <= 0 disables the cap. */
+  maxRunsPerJob: number;
+  /** Cap on wall-clock length of a single installed job. <= 0 disables. */
+  maxDurationHours: number;
+}
+
+/**
+ * Distribute `total` across `batches` as evenly as possible, largest first.
+ * 141 over 2 gives [71, 70] rather than [140, 1] — an even split means every
+ * installed job finishes at roughly the same time, so the slots free up
+ * together instead of leaving one straggler.
+ */
+function evenBatches(total: number, batches: number): number[] {
+  const base = Math.floor(total / batches);
+  const remainder = total % batches;
+  const out: number[] = [];
+  for (let i = 0; i < batches; i++) out.push(base + (i < remainder ? 1 : 0));
+  return out;
+}
+
+/**
+ * Split every job in a plan patch so no single installed job exceeds the
+ * user's runs-per-job or hours-per-job limits.
+ *
+ * EVE installs jobs one slot at a time, and a 141-run invention batch is
+ * not a thing you can queue in one go — it has to become N separate
+ * installs. Doing that here (after merge, before apply) means the Operations
+ * task expansion lists exactly the jobs the user will install, in the sizes
+ * they will install them.
+ *
+ * Duration and cost are apportioned pro-rata off the original job's
+ * per-run rates, so the project rollup totals are unchanged by splitting.
+ * Jobs at or under the limits pass through untouched, with no "batch 1/1"
+ * noise added to their notes.
+ */
+export function applyJobSplitToIndustryPlanPatch(
+  patch: IndustryPlanPatch,
+  limits: JobSplitLimits,
+): IndustryPlanPatch {
+  const jobs = patch.jobs ?? [];
+  if (jobs.length === 0) return patch;
+
+  const maxRuns = limits.maxRunsPerJob > 0 ? Math.floor(limits.maxRunsPerJob) : Infinity;
+  const maxSeconds = limits.maxDurationHours > 0 ? limits.maxDurationHours * 3600 : Infinity;
+  if (maxRuns === Infinity && maxSeconds === Infinity) return patch;
+
+  const out: IndustryJobPlanInput[] = [];
+  let splitAny = false;
+
+  for (const job of jobs) {
+    const runs = Math.max(0, Math.floor(job.runs ?? 0));
+    const totalSeconds = Math.max(0, job.duration_seconds ?? 0);
+    const totalCost = job.cost_isk ?? 0;
+    const perRunSeconds = runs > 0 ? totalSeconds / runs : 0;
+
+    // A single run is indivisible: if even one run blows the duration cap,
+    // one run per job is the smallest legal batch.
+    const runsByDuration =
+      perRunSeconds > 0 && maxSeconds !== Infinity
+        ? Math.max(1, Math.floor(maxSeconds / perRunSeconds))
+        : Infinity;
+    const perJob = Math.min(maxRuns, runsByDuration);
+
+    if (runs <= 1 || perJob === Infinity || runs <= perJob) {
+      out.push(job);
+      continue;
+    }
+
+    splitAny = true;
+    const batches = Math.ceil(runs / perJob);
+    const sizes = evenBatches(runs, batches);
+    sizes.forEach((size, i) => {
+      const share = size / runs;
+      const suffix = `batch ${i + 1}/${batches}`;
+      out.push({
+        ...job,
+        runs: size,
+        duration_seconds: Math.round(perRunSeconds * size),
+        cost_isk: totalCost * share,
+        notes: job.notes ? `${job.notes} · ${suffix}` : suffix,
+      });
+    });
+  }
+
+  if (!splitAny) return patch;
+  return { ...patch, jobs: out };
 }

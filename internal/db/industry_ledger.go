@@ -72,8 +72,15 @@ type IndustryTask struct {
 	Priority      int             `json:"priority"`
 	Status        string          `json:"status"`
 	Constraints   json.RawMessage `json:"constraints"`
-	CreatedAt     string          `json:"created_at"`
-	UpdatedAt     string          `json:"updated_at"`
+	// Expected-value snapshot taken at plan time. Non-zero only on output
+	// tasks (the product the user intends to sell); component/invention/copy
+	// tasks stay 0 so summing across tasks yields project revenue directly.
+	// See migration v42 for the full rationale.
+	ExpectedUnitRevenue float64 `json:"expected_unit_revenue"`
+	ExpectedUnitCost    float64 `json:"expected_unit_cost"`
+	ExpectedOutputQty   int64   `json:"expected_output_qty"`
+	CreatedAt           string  `json:"created_at"`
+	UpdatedAt           string  `json:"updated_at"`
 }
 
 type IndustryJob struct {
@@ -147,6 +154,12 @@ type IndustryTaskPlanInput struct {
 	Priority      int             `json:"priority"`
 	Status        string          `json:"status"`
 	Constraints   json.RawMessage `json:"constraints"`
+	// Plan-time expected value; see IndustryTask for semantics. Optional —
+	// callers that don't compute it leave zeros and the project rollup
+	// simply reports no revenue estimate.
+	ExpectedUnitRevenue float64 `json:"expected_unit_revenue,omitempty"`
+	ExpectedUnitCost    float64 `json:"expected_unit_cost,omitempty"`
+	ExpectedOutputQty   int64   `json:"expected_output_qty,omitempty"`
 }
 
 type IndustryJobPlanInput struct {
@@ -2503,8 +2516,10 @@ func (d *DB) ApplyIndustryPlanForUser(userID string, projectID int64, patch Indu
 		stmt, err := tx.Prepare(`
 			INSERT INTO industry_tasks (
 				user_id, project_id, parent_task_id, name, activity, product_type_id, target_runs,
-				planned_start, planned_end, priority, status, constraints_json, created_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				planned_start, planned_end, priority, status, constraints_json,
+				expected_unit_revenue, expected_unit_cost, expected_output_qty,
+				created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`)
 		if err != nil {
 			return IndustryPlanSummary{}, err
@@ -2530,6 +2545,9 @@ func (d *DB) ApplyIndustryPlanForUser(userID string, projectID int64, patch Indu
 				t.Priority,
 				defaultIndustryTaskStatus(t.Status),
 				constraintsJSON,
+				t.ExpectedUnitRevenue,
+				t.ExpectedUnitCost,
+				t.ExpectedOutputQty,
 				now,
 				now,
 			)
@@ -3826,7 +3844,9 @@ func (d *DB) GetIndustryProjectSnapshotForUser(userID string, projectID int64) (
 
 	taskRows, err := d.sql.Query(`
 		SELECT id, user_id, project_id, COALESCE(parent_task_id, 0), name, activity, product_type_id, target_runs,
-		       planned_start, planned_end, priority, status, constraints_json, created_at, updated_at
+		       planned_start, planned_end, priority, status, constraints_json,
+		       COALESCE(expected_unit_revenue, 0), COALESCE(expected_unit_cost, 0), COALESCE(expected_output_qty, 0),
+		       created_at, updated_at
 		  FROM industry_tasks
 		 WHERE user_id = ? AND project_id = ?
 		 ORDER BY priority DESC, id ASC
@@ -3855,6 +3875,9 @@ func (d *DB) GetIndustryProjectSnapshotForUser(userID string, projectID int64) (
 			&row.Priority,
 			&row.Status,
 			&constraintsRaw,
+			&row.ExpectedUnitRevenue,
+			&row.ExpectedUnitCost,
+			&row.ExpectedOutputQty,
 			&row.CreatedAt,
 			&row.UpdatedAt,
 		); err != nil {
