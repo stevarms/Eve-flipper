@@ -69,6 +69,14 @@ Release packages are published as two runtime families:
 | Web/server binary | `eve-flipper-web-windows-amd64.exe`, `eve-flipper-web-linux-*`, `eve-flipper-web-darwin-*` | You want to run the local backend and open the UI in a browser. |
 | Checksums | `SHA256SUMS.txt` | Used by the updater and for manual release verification. |
 
+### Docker (Linux server)
+
+A Linux container image is published to GHCR alongside each release
+(`ghcr.io/<owner>/eve-flipper:latest`) for self-hosting the backend on Unraid,
+a NAS, or a spare Linux box. Mount one volume at `/data` for persistence and
+set `ESI_CALLBACK_URL` to match the hostname you'll access the app through —
+full instructions in [docs/DOCKER.md](docs/DOCKER.md).
+
 ## Main Modules
 
 | Module | What It Does |

@@ -1,0 +1,42 @@
+.git
+.github
+.gitignore
+.gitattributes
+
+# Local debug tooling and scratch dirs
+.debug
+.chrome-debug
+scripts/debug
+
+# Build outputs (rebuilt inside the image)
+build/
+frontend/dist
+frontend/node_modules
+node_modules
+
+# Local dev SDE cache and other data files — must NOT leak into the image;
+# the container downloads its own SDE into the /data volume on first launch.
+data/
+
+# Local dev database and WAL files
+flipper.db
+flipper.db-shm
+flipper.db-wal
+*.db
+
+# Local secrets and logs
+.env
+.env.*
+*.log
+eve-flipper-*.log
+
+# Editor / OS junk
+.vscode
+.idea
+*.swp
+.DS_Store
+Thumbs.db
+
+# Prebuilt Windows binaries in tree
+eve-flipper.exe
+resource_windows_amd64.syso

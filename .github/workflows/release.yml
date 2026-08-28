@@ -242,6 +242,51 @@ jobs:
           path: eve-flipper-desktop-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
           if-no-files-found: error
 
+  build-docker:
+    name: Build & Publish Docker Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/eve-flipper
+          flavor: |
+            latest=false
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-rc') }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            VITE_APP_VERSION=${{ github.ref_name }}
+            ESI_CLIENT_ID=${{ secrets.ESI_CLIENT_ID }}
+            ESI_CLIENT_SECRET=${{ secrets.ESI_CLIENT_SECRET }}
+
   release:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
