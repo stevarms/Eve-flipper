@@ -101,11 +101,14 @@ function ToastItem({ toast, onRemove }: { toast: ToastMessage; onRemove: (id: nu
     requestAnimationFrame(() => setVisible(true));
   }, []);
 
+  // Toast bg must be OPAQUE — semi-transparent bg lets the app text underneath
+  // bleed through (white-on-white unreadable). Use near-black darkened variants
+  // so the type still reads visually while the fg text stays legible.
   const typeStyles: Record<ToastType, string> = {
-    info: "border-eve-accent/50 bg-eve-panel",
-    success: "border-green-500/50 bg-green-900/20",
-    error: "border-eve-error/50 bg-red-900/20",
-    warning: "border-yellow-500/50 bg-yellow-900/20",
+    info: "border-eve-accent/60 bg-eve-panel",
+    success: "border-green-500/60 bg-green-950",
+    error: "border-eve-error/60 bg-red-950",
+    warning: "border-yellow-500/60 bg-yellow-950",
   };
 
   const iconMap: Record<ToastType, string> = {
