@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
   "repo": "stevarms/Eve-flipper",
-  "generated_at": "2026-08-26T17:14:58.978Z",
-  "latest_release": "v1.9.1",
+  "generated_at": "2026-08-28T22:48:36.989Z",
+  "latest_release": "v1.10.0",
   "total_downloads": 1864,
   "current_github_total": 6,
-  "active_asset_count": 42,
+  "active_asset_count": 45,
   "archived_asset_count": 323,
   "clone_stats": {
     "window": "14d",
@@ -5057,6 +5057,48 @@
       "updated_at": "2026-02-03T18:18:24Z",
       "first_seen_at": "2026-06-10T12:45:36.421Z",
       "last_seen_at": "2026-07-15T03:39:17.156Z"
+    },
+    {
+      "id": "534438139",
+      "name": "eve-flipper-desktop-windows-amd64.exe",
+      "tag_name": "v1.10.0",
+      "release_id": "378801679",
+      "state": "active",
+      "download_count": 0,
+      "github_download_count": 0,
+      "browser_download_url": "https://github.com/stevarms/Eve-flipper/releases/download/v1.10.0/eve-flipper-desktop-windows-amd64.exe",
+      "created_at": "2026-08-28T22:48:27Z",
+      "updated_at": "2026-08-28T22:48:28Z",
+      "first_seen_at": "2026-08-28T22:48:36.989Z",
+      "last_seen_at": "2026-08-28T22:48:36.989Z"
+    },
+    {
+      "id": "534438140",
+      "name": "eve-flipper-web-windows-amd64.exe",
+      "tag_name": "v1.10.0",
+      "release_id": "378801679",
+      "state": "active",
+      "download_count": 0,
+      "github_download_count": 0,
+      "browser_download_url": "https://github.com/stevarms/Eve-flipper/releases/download/v1.10.0/eve-flipper-web-windows-amd64.exe",
+      "created_at": "2026-08-28T22:48:27Z",
+      "updated_at": "2026-08-28T22:48:28Z",
+      "first_seen_at": "2026-08-28T22:48:36.989Z",
+      "last_seen_at": "2026-08-28T22:48:36.989Z"
+    },
+    {
+      "id": "534438138",
+      "name": "SHA256SUMS.txt",
+      "tag_name": "v1.10.0",
+      "release_id": "378801679",
+      "state": "active",
+      "download_count": 0,
+      "github_download_count": 0,
+      "browser_download_url": "https://github.com/stevarms/Eve-flipper/releases/download/v1.10.0/SHA256SUMS.txt",
+      "created_at": "2026-08-28T22:48:27Z",
+      "updated_at": "2026-08-28T22:48:27Z",
+      "first_seen_at": "2026-08-28T22:48:36.989Z",
+      "last_seen_at": "2026-08-28T22:48:36.989Z"
     },
     {
       "id": "349965415",
