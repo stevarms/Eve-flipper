@@ -89,19 +89,46 @@ func loadDotEnv() {
 //go:embed frontend/dist/*
 var frontendFS embed.FS
 
+// resolveLogDir picks where eve-flipper-prod.log / -debug.log are written.
+//
+// Precedence:
+//  1. EF_LOG_DIR env var — explicit override, always wins.
+//  2. The running binary's directory — correct for release builds and
+//     double-clicked binaries, where logs should sit next to the exe.
+//  3. The current working directory — used when the exe lives in a Go build
+//     cache temp dir, which is what `go run .` produces. Without this the dev
+//     loop writes its logs into a throwaway temp folder that's deleted on exit
+//     (and impossible to find), which defeats the point of file logging.
+func resolveLogDir() string {
+	if dir := strings.TrimSpace(os.Getenv("EF_LOG_DIR")); dir != "" {
+		return dir
+	}
+	exePath, err := os.Executable()
+	if err != nil {
+		return "."
+	}
+	exeDir := filepath.Dir(exePath)
+	if exeDir == "" {
+		return "."
+	}
+	// `go run` compiles into $TMPDIR/go-build*/…; detect that and fall back to
+	// the working directory so dev-loop logs land in the repo.
+	normalized := filepath.ToSlash(exeDir)
+	if strings.Contains(normalized, "/go-build") {
+		if cwd, cwdErr := os.Getwd(); cwdErr == nil && cwd != "" {
+			return cwd
+		}
+		return "."
+	}
+	return exeDir
+}
+
 func main() {
 	// Load .env for double-clicked binaries / local builds. This is a no-op
 	// when the file is absent, and never overrides existing OS env vars.
 	loadDotEnv()
 
-	// File logs live next to the running binary (release/build folder).
-	logDir := "."
-	if exePath, err := os.Executable(); err == nil {
-		if exeDir := filepath.Dir(exePath); exeDir != "" {
-			logDir = exeDir
-		}
-	}
-	if err := logger.InitFileLogging(logDir); err != nil {
+	if err := logger.InitFileLogging(resolveLogDir()); err != nil {
 		fmt.Fprintf(os.Stderr, "[WARN] file logging init failed: %v\n", err)
 	} else {
 		defer logger.CloseFileLogging()
