@@ -2257,6 +2257,13 @@ export interface IndustryAnalysis {
   invention_job_cost?: number;
   invention_attempts?: number;
   invention_probability?: number;
+  /** Slice of invention_cost covering T2 BPC runs already in the hangar at
+   *  matching ME/TE. Those runs carry no invention step and their datacores
+   *  aren't on the shopping list, but the cost stays in the basis priced as
+   *  replacement value — so profit is the same as if nothing were owned. */
+  invention_replacement_cost?: number;
+  /** Manufacturing runs the owned T2 BPC covers. */
+  invention_covered_runs?: number;
   activity_mode?: "auto" | "manufacturing" | "reaction" | "invention" | string;
   activity_plan?: IndustryActivityStep[];
   material_tree: MaterialNode;
@@ -2650,6 +2657,20 @@ export interface IndustryPlanSchedulerInput {
   max_job_duration_seconds?: number;
   window_days?: number;
   queue_status?: IndustryJobStatus;
+}
+
+/** Result of re-splitting a committed project's outstanding jobs. */
+export interface IndustryJobResplitSummary {
+  project_id: number;
+  /** Jobs left untouched because the user had already acted on them. */
+  jobs_preserved: number;
+  jobs_removed: number;
+  jobs_created: number;
+  tasks_resplit: number;
+  /** Tasks whose runs were already fully covered, so nothing was re-planned. */
+  tasks_skipped: number;
+  warnings?: string[];
+  updated_at: string;
 }
 
 export interface IndustryPlanPatch {

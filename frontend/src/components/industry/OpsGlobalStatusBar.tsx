@@ -41,7 +41,7 @@ export function OpsGlobalStatusBar({
       if (task.status === "completed" || task.status === "cancelled") {
         continue; // completed/cancelled tasks aren't blockers — omit from block counts
       }
-      const level = deriveTaskBlockStatus(task.id, ledgerSnapshot, taskDependencyBoard.parent_by_task).level;
+      const level = deriveTaskBlockStatus(task.id, ledgerSnapshot, taskDependencyBoard.prereqs_by_task).level;
       if (level === "ready") ready++;
       else if (level === "soft") soft++;
       else if (level === "hard") hard++;
@@ -54,7 +54,7 @@ export function OpsGlobalStatusBar({
       hard,
       unknown,
     };
-  }, [ledgerSnapshot, taskDependencyBoard.parent_by_task]);
+  }, [ledgerSnapshot, taskDependencyBoard.prereqs_by_task]);
 
   const valuation = useMemo(() => deriveProjectValuation(ledgerSnapshot), [ledgerSnapshot]);
 

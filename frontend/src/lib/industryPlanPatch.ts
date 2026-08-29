@@ -18,6 +18,7 @@ import type {
   IndustryMaterialPlanInput,
   IndustryPlanPatch,
   IndustryTaskPlanInput,
+  MaterialNode,
 } from "./types";
 
 export interface BuildIndustryPlanPatchInput {
@@ -53,6 +54,115 @@ function stepLabel(step: IndustryActivityStep): string {
   return base;
 }
 
+/**
+ * Component → parent edges, keyed by product type ID.
+ *
+ * These are the edges that cannot be recovered after the fact: a parent
+ * task's material rows come from the flattened base-material bill and never
+ * mention the intermediate component it consumes, so unless we write them
+ * here they're gone. The invention/copy/research chain, by contrast, is
+ * re-derivable from committed rows (see inferTaskPrerequisites), which is why
+ * the scalar parent_task_id column is spent on components first.
+ */
+function componentEdges(root: MaterialNode | null | undefined): Map<number, number[]> {
+  const edges = new Map<number, number[]>();
+  if (!root) return edges;
+  const seen = new Set<number>();
+  const walk = (node: MaterialNode) => {
+    if (seen.has(node.type_id)) return;
+    seen.add(node.type_id);
+    const built = (node.children ?? []).filter((c) => !c.is_base && c.should_build && c.blueprint);
+    if (built.length > 0) {
+      edges.set(node.type_id, built.map((c) => c.type_id));
+    }
+    for (const child of node.children ?? []) walk(child);
+  };
+  walk(root);
+  return edges;
+}
+
+interface DirectBOMEntry {
+  typeID: number;
+  typeName: string;
+  requiredQty: number;
+  buyQty: number;
+  buildQty: number;
+  unitCost: number;
+}
+
+/**
+ * Direct bill of materials for every produced type in the tree, keyed by
+ * product type ID.
+ *
+ * This is what makes a component or T1 task show its own materials. The
+ * flattened `flat_materials` bill is base-materials-only and describes the
+ * WHOLE chain, so attributing it wholesale to the final output task (what
+ * this used to do) left every intermediate task — the T1 hull feeding a T2
+ * build, every sub-component — with an empty material list.
+ *
+ * Aggregated across every occurrence of a type, because a component shared by
+ * two branches appears once per branch in the tree while `buildActivityPlan`
+ * merges it into a single step (one task, combined runs). Summing the
+ * occurrences is what keeps the task's bill matching its merged run count.
+ *
+ * Quantities stay whole-tree absolute, exactly as the analyzer sized them, so
+ * summing every task's rows by type_id still reproduces the project total:
+ * each base material is consumed at exactly one level.
+ */
+function directBOMByProduct(
+  root: MaterialNode | null | undefined,
+): Map<number, Map<number, DirectBOMEntry>> {
+  const byProduct = new Map<number, Map<number, DirectBOMEntry>>();
+  if (!root) return byProduct;
+  const walk = (node: MaterialNode) => {
+    const children = node.children ?? [];
+    if (children.length > 0 && node.type_id > 0) {
+      let bom = byProduct.get(node.type_id);
+      if (!bom) {
+        bom = new Map<number, DirectBOMEntry>();
+        byProduct.set(node.type_id, bom);
+      }
+      for (const child of children) {
+        if (!child.type_id || child.type_id <= 0) continue;
+        const qty = Math.max(0, Math.ceil(child.quantity ?? 0));
+        if (qty <= 0) continue;
+        // A built child is produced by its own task, so it's a build
+        // obligation rather than something to shop for. A split child is
+        // part bought / part built — the analyzer guarantees
+        // buy_units + build_units == quantity.
+        const built = !child.is_base && child.should_build && !!child.blueprint;
+        let buyQty = built ? 0 : qty;
+        let buildQty = built ? qty : 0;
+        if (child.should_split) {
+          buyQty = Math.max(0, Math.ceil(child.buy_units ?? 0));
+          buildQty = Math.max(0, Math.ceil(child.build_units ?? 0));
+        }
+        // buy_price is the walked cost of the FULL quantity, not per unit.
+        const unitCost = qty > 0 ? (child.buy_price ?? 0) / qty : 0;
+        const prev = bom.get(child.type_id);
+        if (prev) {
+          prev.requiredQty += qty;
+          prev.buyQty += buyQty;
+          prev.buildQty += buildQty;
+          if (prev.unitCost <= 0) prev.unitCost = unitCost;
+        } else {
+          bom.set(child.type_id, {
+            typeID: child.type_id,
+            typeName: child.type_name || "",
+            requiredQty: qty,
+            buyQty,
+            buildQty,
+            unitCost,
+          });
+        }
+      }
+    }
+    for (const child of children) walk(child);
+  };
+  walk(root);
+  return byProduct;
+}
+
 export function buildIndustryPlanPatch(input: BuildIndustryPlanPatchInput): IndustryPlanPatch {
   const {
     result,
@@ -73,12 +183,58 @@ export function buildIndustryPlanPatch(input: BuildIndustryPlanPatchInput): Indu
   const jobs: IndustryJobPlanInput[] = [];
 
   if (activitySteps.length > 0) {
+    // Placeholder refs for the dependency edges. The backend remaps negative
+    // task_ids to real rowids at insert (internal/db/industry_ledger.go:2599),
+    // and jobs already lean on that, so parents ride the same mechanism.
+    const refByKey = new Map<string, number>();
+    activitySteps.forEach((step, index) => {
+      refByKey.set(`${(step.activity || "manufacturing").toLowerCase()}:${step.product_type_id}`, -(index + 1));
+    });
+    const refFor = (activity: string, typeID: number) => refByKey.get(`${activity}:${typeID}`) ?? 0;
+    const childrenByProduct = componentEdges(result.material_tree);
+
+    // parent_task_id is scalar, and buildActivityPlan already merges a shared
+    // component into one step — so a task with several prerequisites can only
+    // persist one. Pick the component edge when there is one, because that is
+    // the edge nothing else can reconstruct; the invention/copy/research chain
+    // is inferred from committed rows anyway.
+    const primaryParentRef = (step: IndustryActivityStep): number => {
+      const activity = (step.activity || "manufacturing").toLowerCase();
+      if (activity === "manufacturing" || activity === "reaction") {
+        for (const childTypeID of childrenByProduct.get(step.product_type_id) ?? []) {
+          const ref =
+            refFor("manufacturing", childTypeID) || refFor("reaction", childTypeID);
+          if (ref !== 0) return ref;
+        }
+        const bp = step.blueprint_type_id || 0;
+        if (bp > 0) {
+          return (
+            refFor("invention", bp) ||
+            refFor("research_material", bp) ||
+            refFor("research_time", bp) ||
+            0
+          );
+        }
+        return 0;
+      }
+      if (activity === "invention") {
+        // Invention consumes a T1 BPC, which the copy step produces under the
+        // same typeID it started from.
+        return refFor("copy", step.blueprint_type_id || 0);
+      }
+      return 0;
+    };
+
     activitySteps.forEach((step, index) => {
       const targetRuns = stepRuns(step);
       const taskRef = -(index + 1);
+      const parentRef = primaryParentRef(step);
       tasks.push({
         name: stepLabel(step),
         activity: step.activity || "manufacturing",
+        // Self-reference is impossible here (a step is never its own
+        // component) but guard anyway — the board flags self_links loudly.
+        parent_task_id: parentRef === taskRef ? 0 : parentRef,
         product_type_id: step.product_type_id,
         target_runs: targetRuns,
         // Prerequisite steps (invention → sub-mfg → final mfg) should sort
@@ -212,26 +368,75 @@ export function buildIndustryPlanPatch(input: BuildIndustryPlanPatchInput): Indu
     }
   });
 
-  // Path 2: flat_materials minus what path 1 already attributed. Any
-  // material fully consumed by earlier steps (typical case: datacores)
-  // drops out; anything left over lands on the output/mfg task.
+  // Path 2: the direct bill of materials per producing task, read off the
+  // material tree. Each manufacturing/reaction step gets exactly what its own
+  // job consumes — which is the only way a component or T1 task ever shows a
+  // material list, and what makes its block-status pill mean anything.
+  //
+  // Preferred over the flat bill because flat_materials is base-materials-only
+  // for the WHOLE chain: dumping it on the output task (path 3) leaves every
+  // intermediate empty and tells the user to buy minerals against the task
+  // that doesn't consume them.
+  const bomByProduct = directBOMByProduct(result.material_tree);
+  // Prices come from the flat bill where it has them; it's the same walked
+  // market data and already per-unit.
+  const flatUnitCost = new Map<number, number>();
   for (const m of result.flat_materials ?? []) {
-    if (!m.type_id || m.type_id <= 0) continue;
-    const total = Math.max(0, Math.ceil(m.quantity ?? 0));
-    const alreadyAttributed = attributedByType.get(m.type_id) ?? 0;
-    const remaining = total - alreadyAttributed;
-    if (remaining <= 0) continue;
-    materials.push({
-      task_id: outputTaskRef,
-      type_id: m.type_id,
-      type_name: m.type_name || "",
-      required_qty: remaining,
-      available_qty: 0,
-      buy_qty: remaining,
-      build_qty: 0,
-      unit_cost_isk: m.unit_price ?? 0,
-      source: "market" as const,
+    if (m.type_id > 0) flatUnitCost.set(m.type_id, m.unit_price ?? 0);
+  }
+  let attributedPerTask = false;
+  if (bomByProduct.size > 0) {
+    activitySteps.forEach((step, index) => {
+      const activity = step.activity || "manufacturing";
+      // Invention/copy/research consume their own bill via path 1; they
+      // produce blueprints, which are not material-tree nodes.
+      if (activity !== "manufacturing" && activity !== "reaction") return;
+      const bom = bomByProduct.get(step.product_type_id);
+      if (!bom || bom.size === 0) return;
+      const taskRef = -(index + 1);
+      for (const entry of bom.values()) {
+        materials.push({
+          task_id: taskRef,
+          type_id: entry.typeID,
+          type_name: entry.typeName,
+          required_qty: entry.requiredQty,
+          available_qty: 0,
+          buy_qty: entry.buyQty,
+          build_qty: entry.buildQty,
+          unit_cost_isk: flatUnitCost.get(entry.typeID) ?? entry.unitCost,
+          // "build" marks a row covered by another task in this project
+          // rather than by the market, which is what keeps intermediates out
+          // of the multibuy export (it ships buy_qty + missing_qty).
+          source: entry.buildQty > 0 && entry.buyQty <= 0 ? ("build" as const) : ("market" as const),
+        });
+        attributedPerTask = true;
+      }
     });
+  }
+
+  // Path 3: legacy flat fallback, for an analysis that arrived without a
+  // material tree (nothing in-tree to attribute). Same behaviour as before:
+  // flat_materials minus whatever path 1 already claimed, all on the output
+  // task, so a treeless result still produces a usable shopping list.
+  if (!attributedPerTask) {
+    for (const m of result.flat_materials ?? []) {
+      if (!m.type_id || m.type_id <= 0) continue;
+      const total = Math.max(0, Math.ceil(m.quantity ?? 0));
+      const alreadyAttributed = attributedByType.get(m.type_id) ?? 0;
+      const remaining = total - alreadyAttributed;
+      if (remaining <= 0) continue;
+      materials.push({
+        task_id: outputTaskRef,
+        type_id: m.type_id,
+        type_name: m.type_name || "",
+        required_qty: remaining,
+        available_qty: 0,
+        buy_qty: remaining,
+        build_qty: 0,
+        unit_cost_isk: m.unit_price ?? 0,
+        source: "market" as const,
+      });
+    }
   }
 
   // Blueprints: only the ones this row's activity plan actually needs,
@@ -327,6 +532,10 @@ export function mergeIndustryPlanPatches(patches: IndustryPlanPatch[]): Industry
     // refs. A task that dedupes into an existing one maps to that one's ref,
     // so its jobs and materials attach to the surviving task.
     const taskIdRemap = new Map<number, number>();
+    // parent_task_id is a local ref too, and it can point forward (a step's
+    // component may sit at a later index), so it can only be translated once
+    // the whole patch has been walked.
+    const pendingParents: Array<{ outIdx: number; sourceParentRef: number }> = [];
     tasks.forEach((task, i) => {
       const sourceRef = -(i + 1);
       const key = dedupeKeyFor(task);
@@ -362,7 +571,23 @@ export function mergeIndustryPlanPatches(patches: IndustryPlanPatch[]): Industry
       outTasks.push(task);
       taskIndexByKey.set(key, newIdx);
       taskIdRemap.set(sourceRef, taskRefByIndex(newIdx));
+      const parentRef = task.parent_task_id ?? 0;
+      // Only negative refs are local to this patch; a positive one is an
+      // existing rowid and passes through untouched.
+      if (parentRef < 0) pendingParents.push({ outIdx: newIdx, sourceParentRef: parentRef });
     });
+
+    // Deduped tasks keep whichever parent the first patch gave them — merging
+    // the prerequisite lists of a shared component isn't expressible in a
+    // scalar column, and the inferred graph covers the rest.
+    for (const { outIdx, sourceParentRef } of pendingParents) {
+      const remapped = taskIdRemap.get(sourceParentRef) ?? 0;
+      const selfRef = taskRefByIndex(outIdx);
+      outTasks[outIdx] = {
+        ...outTasks[outIdx],
+        parent_task_id: remapped === selfRef ? 0 : remapped,
+      };
+    }
 
     for (const job of jobs) {
       const originalRef = job.task_id;

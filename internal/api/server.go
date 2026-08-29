@@ -962,6 +962,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auth/industry/projects/{projectID}/materials/rebalance", s.handleAuthRebalanceIndustryProjectMaterials)
 	mux.HandleFunc("POST /api/auth/industry/projects/{projectID}/materials/recalc-remaining", s.handleAuthRecalcRemainingIndustryProjectMaterials)
 	mux.HandleFunc("POST /api/auth/industry/projects/{projectID}/blueprints/sync", s.handleAuthSyncIndustryProjectBlueprintPool)
+	mux.HandleFunc("POST /api/auth/industry/projects/{projectID}/jobs/resplit", s.handleAuthResplitIndustryProjectJobs)
 	mux.HandleFunc("POST /api/auth/industry/blueprints/profitable-scan", s.handleAuthIndustryProfitableScan)
 	mux.HandleFunc("GET /api/auth/stockpiles", s.handleListStockpiles)
 	mux.HandleFunc("POST /api/auth/stockpiles", s.handleCreateStockpile)

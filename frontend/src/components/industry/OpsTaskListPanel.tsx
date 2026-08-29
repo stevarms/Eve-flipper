@@ -156,10 +156,10 @@ export function OpsTaskListPanel(props: OpsTaskListPanelProps) {
     const map = new Map<number, ReturnType<typeof deriveTaskBlockStatus>>();
     if (!ledgerSnapshot) return map;
     for (const task of ledgerSnapshot.tasks) {
-      map.set(task.id, deriveTaskBlockStatus(task.id, ledgerSnapshot, taskDependencyBoard.parent_by_task));
+      map.set(task.id, deriveTaskBlockStatus(task.id, ledgerSnapshot, taskDependencyBoard.prereqs_by_task));
     }
     return map;
-  }, [ledgerSnapshot, taskDependencyBoard.parent_by_task]);
+  }, [ledgerSnapshot, taskDependencyBoard.prereqs_by_task]);
 
   // Shared with the "Do this next" card so its "step N of M" always points
   // at the same row here.
@@ -351,7 +351,9 @@ export function OpsTaskListPanel(props: OpsTaskListPanelProps) {
                         className={`px-1.5 py-0.5 text-[10px] uppercase rounded-sm border font-bold cursor-help ${BLOCK_PILL_CLASSES[level]}`}
                         title={block?.reason ?? ""}
                       >
-                        {BLOCK_PILL_LABELS[level]}
+                        {level === "soft" && (block?.prereqPending ?? 0) > 0
+                          ? "WAITING"
+                          : BLOCK_PILL_LABELS[level]}
                       </span>
                     </td>
                     <td className="px-1.5 py-1 text-eve-dim whitespace-nowrap text-[10px]">
@@ -471,14 +473,24 @@ export function OpsTaskListPanel(props: OpsTaskListPanelProps) {
                             <div className="text-[10px] uppercase tracking-wider text-eve-dim mb-1">
                               Materials · {taskMaterials.length}
                             </div>
-                            <table className="w-full text-[10px]">
+                            {/*
+                              table-fixed with an explicit width on every real
+                              column plus a trailing spacer. Without the spacer
+                              the name column absorbs all the slack of a very
+                              wide row and throws the numbers to the far right
+                              edge, yards away from the material they describe.
+                              Everything is left-aligned and packed against the
+                              name; font-mono keeps the digits in line.
+                            */}
+                            <table className="w-full text-[10px] table-fixed">
                               <thead className="text-eve-dim uppercase tracking-wider">
                                 <tr>
-                                  <th className="px-1.5 py-0.5 text-left">Material</th>
-                                  <th className="px-1.5 py-0.5 text-right w-20">Need</th>
-                                  <th className="px-1.5 py-0.5 text-right w-20">Have</th>
-                                  <th className="px-1.5 py-0.5 text-right w-16">Missing</th>
+                                  <th className="px-1.5 py-0.5 text-left w-56">Material</th>
+                                  <th className="px-1.5 py-0.5 text-left w-24">Need</th>
+                                  <th className="px-1.5 py-0.5 text-left w-24">Have</th>
+                                  <th className="px-1.5 py-0.5 text-left w-24">Missing</th>
                                   <th className="px-1.5 py-0.5 text-left w-20">Status</th>
+                                  <th className="px-1.5 py-0.5" />
                                 </tr>
                               </thead>
                               <tbody>
@@ -499,17 +511,24 @@ export function OpsTaskListPanel(props: OpsTaskListPanelProps) {
                                   const missing = Math.max(0, need - have);
                                   return (
                                     <tr key={`tm-${task.id}-${m.type_id}`} className="border-t border-eve-border/20">
-                                      <td className="px-1.5 py-0.5 truncate text-eve-text">
+                                      {/* title so a truncated name is still
+                                          readable on hover — table-fixed means
+                                          truncate now actually bites. */}
+                                      <td
+                                        className="px-1.5 py-0.5 truncate text-eve-text"
+                                        title={m.type_name || `Type ${m.type_id}`}
+                                      >
                                         {m.type_name || `Type ${m.type_id}`}
                                       </td>
-                                      <td className="px-1.5 py-0.5 text-right font-mono">{need.toLocaleString()}</td>
-                                      <td className="px-1.5 py-0.5 text-right font-mono text-eve-dim">{have.toLocaleString()}</td>
-                                      <td className={`px-1.5 py-0.5 text-right font-mono ${missing > 0 ? "text-red-300" : "text-eve-dim"}`}>
+                                      <td className="px-1.5 py-0.5 font-mono">{need.toLocaleString()}</td>
+                                      <td className="px-1.5 py-0.5 font-mono text-eve-dim">{have.toLocaleString()}</td>
+                                      <td className={`px-1.5 py-0.5 font-mono ${missing > 0 ? "text-red-300" : "text-eve-dim"}`}>
                                         {missing > 0 ? missing.toLocaleString() : "—"}
                                       </td>
                                       <td className={`px-1.5 py-0.5 text-[10px] uppercase tracking-wider ${statusClass}`}>
                                         {status}
                                       </td>
+                                      <td />
                                     </tr>
                                   );
                                 })}
@@ -527,27 +546,31 @@ export function OpsTaskListPanel(props: OpsTaskListPanelProps) {
                             <table className="w-full text-[10px]">
                               <thead className="text-eve-dim uppercase tracking-wider">
                                 <tr>
+                                  {/* Same packing as the materials table above:
+                                      widths on the real columns, a w-full
+                                      spacer at the end to eat the slack. */}
                                   <th className="px-1.5 py-0.5 text-left w-24">{t("industryLedgerJob")}</th>
-                                  <th className="px-1.5 py-0.5 text-right w-16">{t("industryLedgerRuns")}</th>
-                                  <th className="px-1.5 py-0.5 text-right w-24">{t("industryLedgerCost")}</th>
+                                  <th className="px-1.5 py-0.5 text-left w-16">{t("industryLedgerRuns")}</th>
+                                  <th className="px-1.5 py-0.5 text-left w-24">{t("industryLedgerCost")}</th>
                                   <th className="px-1.5 py-0.5 text-left w-24">{t("industryLedgerStatus")}</th>
-                                  <th className="px-1.5 py-0.5 text-left">{t("industryLedgerUpdated")}</th>
-                                  <th className="px-1.5 py-0.5 text-right">{t("industryLedgerActions")}</th>
+                                  <th className="px-1.5 py-0.5 text-left w-28">{t("industryLedgerUpdated")}</th>
+                                  <th className="px-1.5 py-0.5 text-left">{t("industryLedgerActions")}</th>
+                                  <th className="px-1.5 py-0.5 w-full" />
                                 </tr>
                               </thead>
                               <tbody>
                                 {taskJobs.map((entry) => (
                               <tr key={`job-${entry.job_id}`} className="border-t border-eve-border/20">
                                 <td className="px-1.5 py-0.5 text-eve-dim">#{entry.job_id}</td>
-                                <td className="px-1.5 py-0.5 text-right text-eve-accent font-mono">{entry.runs}</td>
-                                <td className="px-1.5 py-0.5 text-right text-eve-dim font-mono">{formatISK(entry.cost_isk || 0)}</td>
+                                <td className="px-1.5 py-0.5 text-eve-accent font-mono">{entry.runs}</td>
+                                <td className="px-1.5 py-0.5 text-eve-dim font-mono">{formatISK(entry.cost_isk || 0)}</td>
                                 <td className="px-1.5 py-0.5">
                                   <span className={`px-1.5 py-0.5 text-[10px] uppercase rounded-sm border ${industryJobStatusClass(entry.status)}`}>
                                     {entry.status}
                                   </span>
                                 </td>
                                 <td className="px-1.5 py-0.5 text-eve-dim whitespace-nowrap">{formatUtcShort(entry.updated_at)}</td>
-                                <td className="px-1.5 py-0.5 text-right">
+                                <td className="px-1.5 py-0.5">
                                   <div className="inline-flex gap-1">
                                     {entry.status !== "active" && entry.status !== "completed" && entry.status !== "cancelled" && (
                                       <button
@@ -592,6 +615,7 @@ export function OpsTaskListPanel(props: OpsTaskListPanelProps) {
                                     )}
                                   </div>
                                 </td>
+                                <td />
                               </tr>
                             ))}
                               </tbody>

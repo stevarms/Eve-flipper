@@ -37,6 +37,13 @@ export interface IndustryTaskDependencyBoard {
   self_links: number;
   depth_by_task: Record<number, number>;
   parent_by_task: Record<number, number>;
+  /**
+   * Many-to-many prerequisites. `parent_by_task` is the persisted scalar
+   * column (one edge per task, best-effort); this is the real graph, merging
+   * that column with edges inferred from the committed rows. Callers asking
+   * "can this start?" want this one.
+   */
+  prereqs_by_task: Record<number, number[]>;
   parent_missing_by_task: Record<number, boolean>;
   critical_task_ids: Set<number>;
   rows: IndustryTaskDependencyRow[];
@@ -158,13 +165,87 @@ export function industryPlannerWarningSourceClass(source: IndustryPlannerWarning
 }
 
 /**
+ * Recover the prerequisite graph from committed task rows.
+ *
+ * The planner only persists a scalar `parent_task_id`, and older projects
+ * don't have even that — so the edges that matter most (the
+ * copy → invention → manufacturing chain) have to be re-derived from what
+ * every task already carries: its `product_type_id` and its
+ * `constraints.blueprint_type_id`.
+ *
+ *   invention → manufacturing   mfg's blueprint IS the invention's product
+ *                               (invention emits the T2 *blueprint* typeID,
+ *                               internal/engine/industry.go:1693)
+ *   copy      → invention       invention's source blueprint IS the copy's
+ *                               product (copies keep the BPO typeID, :1894)
+ *   research  → manufacturing   research's product IS the blueprint itself
+ *                               (:1991)
+ *
+ * Cancelled tasks are never prerequisites: cancelling the invention step is
+ * exactly how the user says "I already have that blueprint".
+ *
+ * Component → parent edges can't be recovered this way — a parent's material
+ * rows are flattened to base materials and never mention the intermediate —
+ * so those come from `parent_task_id`, written at plan time.
+ */
+export function inferTaskPrerequisites(
+  snapshot: IndustryProjectSnapshot | null,
+): Record<number, number[]> {
+  const edges: Record<number, number[]> = {};
+  if (!snapshot) return edges;
+
+  const add = (childID: number, parentID: number) => {
+    if (!childID || !parentID || childID === parentID) return;
+    const list = (edges[childID] ??= []);
+    if (!list.includes(parentID)) list.push(parentID);
+  };
+
+  // Producers indexed by what they hand downstream. A cancelled producer is
+  // omitted so it can't block anything.
+  const byProduct = new Map<string, number[]>();
+  for (const t of snapshot.tasks) {
+    if ((t.status || "") === "cancelled") continue;
+    const product = Number(t.product_type_id) || 0;
+    if (product <= 0) continue;
+    const key = `${(t.activity || "").toLowerCase()}:${product}`;
+    const list = byProduct.get(key);
+    if (list) list.push(t.id);
+    else byProduct.set(key, [t.id]);
+  }
+  const producersOf = (activity: string, typeID: number) =>
+    byProduct.get(`${activity}:${typeID}`) ?? [];
+
+  for (const t of snapshot.tasks) {
+    if ((t.status || "") === "cancelled") continue;
+    const activity = (t.activity || "").toLowerCase();
+    const blueprintID = taskConstraintNumber(t.constraints, "blueprint_type_id");
+    if (blueprintID <= 0) continue;
+
+    if (activity === "manufacturing") {
+      for (const id of producersOf("invention", blueprintID)) add(t.id, id);
+      for (const id of producersOf("research_material", blueprintID)) add(t.id, id);
+      for (const id of producersOf("research_time", blueprintID)) add(t.id, id);
+    } else if (activity === "invention") {
+      for (const id of producersOf("copy", blueprintID)) add(t.id, id);
+    }
+  }
+
+  return edges;
+}
+
+/**
  * Per-task block status derived from the committed plan snapshot.
  *
- *   ready    all materials fully covered AND all parent tasks completed
- *   soft     every material has some stock but at least one is short
- *   hard     at least one required material is completely absent, OR
- *            at least one parent task hasn't completed yet
+ *   ready    all materials fully covered AND every prerequisite completed
+ *   soft     every material has some stock but at least one is short, OR a
+ *            prerequisite task hasn't completed yet
+ *   hard     at least one required material is completely absent
  *   unknown  task has no material plan rows (rare — legacy pre-plan tasks)
+ *
+ * A pending prerequisite is deliberately SOFT, not hard. The graph is
+ * inferred (see inferTaskPrerequisites) and the user may legitimately know
+ * better — they might already hold the invented BPC, or want to stage the
+ * mfg job anyway. Amber says "check this" without refusing to offer it.
  */
 export type TaskBlockLevel = "ready" | "soft" | "hard" | "unknown";
 
@@ -172,14 +253,42 @@ export interface TaskBlockStatus {
   level: TaskBlockLevel;
   materialsMissingCount: number;
   materialsHardCount: number;
+  /** Task IDs of incomplete prerequisites, nearest first. */
   parentBlocking: number[];
+  /** Convenience count of parentBlocking, for callers that only need "is it waiting". */
+  prereqPending: number;
   reason: string;
+}
+
+/**
+ * Walk the prerequisite DAG from `taskID` and collect every upstream task
+ * that hasn't completed. Cancelled prerequisites don't block — a cancelled
+ * invention step means the user sourced the blueprint some other way.
+ */
+function collectPendingPrereqs(
+  taskID: number,
+  prereqsByTask: Record<number, number[]>,
+  statusByID: Record<number, string>,
+): number[] {
+  const pending: number[] = [];
+  const seen = new Set<number>([taskID]);
+  const queue = [...(prereqsByTask[taskID] ?? [])];
+  while (queue.length > 0) {
+    const cursor = queue.shift() as number;
+    if (seen.has(cursor)) continue;
+    seen.add(cursor);
+    const status = statusByID[cursor];
+    if (status === undefined) continue;
+    if (status !== "completed" && status !== "cancelled") pending.push(cursor);
+    for (const up of prereqsByTask[cursor] ?? []) if (!seen.has(up)) queue.push(up);
+  }
+  return pending;
 }
 
 export function deriveTaskBlockStatus(
   taskID: number,
   snapshot: IndustryProjectSnapshot | null,
-  parentByTask: Record<number, number>,
+  prereqsByTask: Record<number, number[]>,
 ): TaskBlockStatus {
   if (!snapshot) {
     return {
@@ -187,6 +296,7 @@ export function deriveTaskBlockStatus(
       materialsMissingCount: 0,
       materialsHardCount: 0,
       parentBlocking: [],
+      prereqPending: 0,
       reason: "no snapshot loaded",
     };
   }
@@ -212,29 +322,33 @@ export function deriveTaskBlockStatus(
     const required = m.required_qty ?? 0;
     if (required <= 0) continue;
     const available = m.available_qty ?? 0;
-    if (available < required) notStockedCount++;
-    if (available <= 0) hardCount++;
+    if (available >= required) continue;
+    notStockedCount++;
+    // A row with build_qty is sourced from another task in this project, not
+    // from the market. Counting it hard would paint every parent assembly
+    // red for components it is about to build — and the prerequisite walk
+    // below already reports that as "waiting on", which is the useful framing.
+    if (available <= 0 && (m.build_qty ?? 0) <= 0) hardCount++;
   }
 
-  // Parent-task blocking: walk parentByTask up until we hit a root,
-  // collecting any parent whose status isn't completed.
-  const parentBlocking: number[] = [];
-  const tasksByID: Record<number, string> = {};
+  // Prerequisite blocking: walk the upstream DAG collecting anything that
+  // hasn't finished. A single task can have several prerequisites (an
+  // assembly waits on every component), so this is a BFS, not a parent walk.
+  const statusByID: Record<number, string> = {};
+  const nameByID: Record<number, string> = {};
   for (const t of snapshot.tasks) {
-    tasksByID[t.id] = t.status || "planned";
+    statusByID[t.id] = t.status || "planned";
+    nameByID[t.id] = t.name || `task ${t.id}`;
   }
-  {
-    let cursor = parentByTask[taskID] ?? 0;
-    const seen = new Set<number>();
-    while (cursor > 0 && !seen.has(cursor)) {
-      seen.add(cursor);
-      const parentStatus = tasksByID[cursor];
-      if (parentStatus && parentStatus !== "completed") {
-        parentBlocking.push(cursor);
-      }
-      cursor = parentByTask[cursor] ?? 0;
-    }
-  }
+  const parentBlocking = collectPendingPrereqs(taskID, prereqsByTask, statusByID);
+  // Name the nearest one or two — "waiting on 4 tasks" tells the user nothing
+  // actionable, "waiting on: Invent Quake XL BP" tells them exactly what to
+  // go install.
+  const prereqReason = () => {
+    const names = parentBlocking.slice(0, 2).map((id) => nameByID[id] ?? `task ${id}`);
+    const more = parentBlocking.length - names.length;
+    return `waiting on: ${names.join(", ")}${more > 0 ? ` +${more} more` : ""}`;
+  };
 
   // Fallback: when no per-task material rows are present (backend applied
   // the plan without tagging task_id on IndustryMaterialPlanRecord rows —
@@ -265,11 +379,12 @@ export function deriveTaskBlockStatus(
     if (noMaterialsByDesign) {
       if (parentBlocking.length > 0) {
         return {
-          level: "hard",
+          level: "soft",
           materialsMissingCount: 0,
           materialsHardCount: 0,
           parentBlocking,
-          reason: `${parentBlocking.length} parent task${parentBlocking.length === 1 ? "" : "s"} incomplete`,
+          prereqPending: parentBlocking.length,
+          reason: prereqReason(),
         };
       }
       return {
@@ -277,6 +392,7 @@ export function deriveTaskBlockStatus(
         materialsMissingCount: 0,
         materialsHardCount: 0,
         parentBlocking: [],
+        prereqPending: 0,
         reason: `${activity} step — no materials to stage`,
       };
     }
@@ -291,26 +407,31 @@ export function deriveTaskBlockStatus(
       if (available <= 0) hardCountDiff++;
     }
     if (projectDiff.length > 0) {
-      const hardOnParents = parentBlocking.length > 0;
-      if (hardCountDiff > 0 || hardOnParents) {
-        const bits: string[] = [];
-        if (hardCountDiff > 0) bits.push(`${hardCountDiff} project material${hardCountDiff === 1 ? "" : "s"} with none in stock`);
-        if (hardOnParents) bits.push(`${parentBlocking.length} parent task${parentBlocking.length === 1 ? "" : "s"} incomplete`);
+      if (hardCountDiff > 0) {
+        const bits = [`${hardCountDiff} project material${hardCountDiff === 1 ? "" : "s"} with none in stock`];
+        if (parentBlocking.length > 0) bits.push(prereqReason());
         return {
           level: "hard",
           materialsMissingCount: hardCountDiff,
           materialsHardCount: hardCountDiff,
           parentBlocking,
+          prereqPending: parentBlocking.length,
           reason: bits.join(" · ") + " (project-level)",
         };
       }
-      if (notStockedCount > 0) {
+      if (notStockedCount > 0 || parentBlocking.length > 0) {
+        const bits: string[] = [];
+        if (parentBlocking.length > 0) bits.push(prereqReason());
+        if (notStockedCount > 0) {
+          bits.push(`${notStockedCount} material${notStockedCount === 1 ? "" : "s"} partially stocked (project-level)`);
+        }
         return {
           level: "soft",
           materialsMissingCount: notStockedCount,
           materialsHardCount: 0,
-          parentBlocking: [],
-          reason: `${notStockedCount} material${notStockedCount === 1 ? "" : "s"} partially stocked (project-level)`,
+          parentBlocking,
+          prereqPending: parentBlocking.length,
+          reason: bits.join(" · "),
         };
       }
       return {
@@ -318,6 +439,7 @@ export function deriveTaskBlockStatus(
         materialsMissingCount: 0,
         materialsHardCount: 0,
         parentBlocking: [],
+        prereqPending: 0,
         reason: "everything is in stock",
       };
     }
@@ -327,31 +449,37 @@ export function deriveTaskBlockStatus(
         materialsMissingCount: 0,
         materialsHardCount: 0,
         parentBlocking,
+        prereqPending: 0,
         reason: "no material plan for this task",
       };
     }
   }
 
-  const hardOnParents = parentBlocking.length > 0;
-  if (hardCount > 0 || hardOnParents) {
-    const bits: string[] = [];
-    if (hardCount > 0) bits.push(`${hardCount} material${hardCount === 1 ? "" : "s"} with none in stock`);
-    if (hardOnParents) bits.push(`${parentBlocking.length} parent task${parentBlocking.length === 1 ? "" : "s"} incomplete`);
+  if (hardCount > 0) {
+    const bits = [`${hardCount} material${hardCount === 1 ? "" : "s"} with none in stock`];
+    if (parentBlocking.length > 0) bits.push(prereqReason());
     return {
       level: "hard",
       materialsMissingCount: hardCount,
       materialsHardCount: hardCount,
       parentBlocking,
+      prereqPending: parentBlocking.length,
       reason: bits.join(" · "),
     };
   }
-  if (notStockedCount > 0) {
+  if (notStockedCount > 0 || parentBlocking.length > 0) {
+    const bits: string[] = [];
+    if (parentBlocking.length > 0) bits.push(prereqReason());
+    if (notStockedCount > 0) {
+      bits.push(`${notStockedCount} material${notStockedCount === 1 ? "" : "s"} partially stocked`);
+    }
     return {
       level: "soft",
       materialsMissingCount: notStockedCount,
       materialsHardCount: 0,
-      parentBlocking: [],
-      reason: `${notStockedCount} material${notStockedCount === 1 ? "" : "s"} partially stocked`,
+      parentBlocking,
+      prereqPending: parentBlocking.length,
+      reason: bits.join(" · "),
     };
   }
   return {
@@ -359,6 +487,7 @@ export function deriveTaskBlockStatus(
     materialsMissingCount: 0,
     materialsHardCount: 0,
     parentBlocking: [],
+    prereqPending: 0,
     reason: "everything is in stock",
   };
 }

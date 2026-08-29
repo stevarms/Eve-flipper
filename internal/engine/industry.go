@@ -13,23 +13,23 @@ import (
 
 // IndustryParams holds parameters for industry analysis.
 type IndustryParams struct {
-	TypeID              int32   // Target item to analyze
-	Runs                int32   // Number of runs (default 1)
-	ActivityMode        string  // auto/manufacturing/reaction/invention
-	MaterialEfficiency  int32   // Blueprint ME (0-10)
-	TimeEfficiency      int32   // Blueprint TE (0-20)
-	SystemID            int32   // Manufacturing system (drives system cost index)
+	TypeID             int32  // Target item to analyze
+	Runs               int32  // Number of runs (default 1)
+	ActivityMode       string // auto/manufacturing/reaction/invention
+	MaterialEfficiency int32  // Blueprint ME (0-10)
+	TimeEfficiency     int32  // Blueprint TE (0-20)
+	SystemID           int32  // Manufacturing system (drives system cost index)
 	// PricingSystemID, when non-zero, overrides which region market prices are
 	// fetched from. Lets the scanner build in one region (cost index, structure
 	// bonuses) while quoting prices from another (e.g. Jita). When zero, the
 	// pricing region is derived from StationID, then SystemID — preserving the
 	// pre-existing single-location analyzer behavior.
-	PricingSystemID     int32
-	StationID           int64   // Optional: specific station/structure for price lookup (0 = region-wide)
-	FacilityTax         float64 // Facility tax % (default 0)
-	StructureBonus      float64 // Structure material bonus % (e.g., 1% for Raitaru)
-	BrokerFee           float64 // Legacy: broker fee % applied to both sides when SplitTradeFees is false
-	SalesTaxPercent     float64 // Legacy: sales tax % applied to the sell side when SplitTradeFees is false
+	PricingSystemID int32
+	StationID       int64   // Optional: specific station/structure for price lookup (0 = region-wide)
+	FacilityTax     float64 // Facility tax % (default 0)
+	StructureBonus  float64 // Structure material bonus % (e.g., 1% for Raitaru)
+	BrokerFee       float64 // Legacy: broker fee % applied to both sides when SplitTradeFees is false
+	SalesTaxPercent float64 // Legacy: sales tax % applied to the sell side when SplitTradeFees is false
 	// Split-fee model — same shape as backtest / scanner / station_trading.
 	// When SplitTradeFees is true, the four side-specific rates below are
 	// consumed instead of the legacy BrokerFee/SalesTaxPercent pair. When
@@ -90,7 +90,7 @@ type IndustryParams struct {
 	InventionEncryptionLevel int32
 	InventionDatacoreLevel1  int32
 	InventionDatacoreLevel2  int32
-	DecryptorCost       float64 // Optional per-attempt decryptor cost
+	DecryptorCost            float64 // Optional per-attempt decryptor cost
 	// DecryptorTypeID identifies the decryptor the user picked. Included on
 	// the invention step's per-step material bill and on IndustryAnalysis so
 	// the client can label the invention task without a separate SDE lookup.
@@ -98,7 +98,7 @@ type IndustryParams struct {
 	// the caller can still supply a market-derived cost even when we don't
 	// know the exact typeID, though for the common case both are set.
 	DecryptorTypeID     int32
-	InventionOutputRuns int32   // Optional successful BPC runs override
+	InventionOutputRuns int32 // Optional successful BPC runs override
 	// BuildMode governs the per-node build-vs-buy decision made in
 	// calculateCosts. "" or "auto" (default) picks whichever is cheaper at
 	// runtime. "buy_all" forces buy on every non-root sub-product (falls
@@ -169,12 +169,12 @@ type IndustryParams struct {
 // analyzer emits research_material / research_time steps to close the gap.
 // Zero targets mean "use whatever ME/TE the blueprint has" (no research).
 type OwnedBlueprint struct {
-	ME             int32 `json:"me"`
-	TE             int32 `json:"te"`
-	IsBPO          bool  `json:"is_bpo,omitempty"`
-	AvailableRuns  int32 `json:"available_runs,omitempty"`
-	TargetME       int32 `json:"target_me,omitempty"`
-	TargetTE       int32 `json:"target_te,omitempty"`
+	ME            int32 `json:"me"`
+	TE            int32 `json:"te"`
+	IsBPO         bool  `json:"is_bpo,omitempty"`
+	AvailableRuns int32 `json:"available_runs,omitempty"`
+	TargetME      int32 `json:"target_me,omitempty"`
+	TargetTE      int32 `json:"target_te,omitempty"`
 }
 
 // StructureRigConfig describes the rig loadout for the analyzer's build
@@ -289,23 +289,23 @@ type IndustryActivityStep struct {
 
 // IndustryAnalysis is the result of analyzing a production chain.
 type IndustryAnalysis struct {
-	TargetTypeID          int32                  `json:"target_type_id"`
-	TargetTypeName        string                 `json:"target_type_name"`
-	Runs                  int32                  `json:"runs"`
-	TotalQuantity         int32                  `json:"total_quantity"`
-	MarketBuyPrice        float64                `json:"market_buy_price"`   // Cost to buy ready product (from sell orders, no broker fee)
-	TotalBuildCost        float64                `json:"total_build_cost"`   // Cost to build from scratch
-	OptimalBuildCost      float64                `json:"optimal_build_cost"` // Cost with optimal buy/build decisions
-	Savings               float64                `json:"savings"`            // MarketBuyPrice - OptimalBuildCost
-	SavingsPercent        float64                `json:"savings_percent"`
-	SellRevenue           float64                `json:"sell_revenue"`       // Revenue after sales tax + broker fee
-	Profit                float64                `json:"profit"`             // SellRevenue - OptimalBuildCost
-	ProfitPercent         float64                `json:"profit_percent"`     // Profit / OptimalBuildCost * 100
-	MakerSellRevenue      float64                `json:"maker_sell_revenue"` // Listing at visible ask after tax + broker fee
-	MakerSellProfit       float64                `json:"maker_sell_profit"`
-	InstantSellRevenue    float64                `json:"instant_sell_revenue"` // Selling into visible buy orders after sales tax
-	InstantSellProfit     float64                `json:"instant_sell_profit"`
-	InstantSellAvailable  bool                   `json:"instant_sell_available"`
+	TargetTypeID         int32   `json:"target_type_id"`
+	TargetTypeName       string  `json:"target_type_name"`
+	Runs                 int32   `json:"runs"`
+	TotalQuantity        int32   `json:"total_quantity"`
+	MarketBuyPrice       float64 `json:"market_buy_price"`   // Cost to buy ready product (from sell orders, no broker fee)
+	TotalBuildCost       float64 `json:"total_build_cost"`   // Cost to build from scratch
+	OptimalBuildCost     float64 `json:"optimal_build_cost"` // Cost with optimal buy/build decisions
+	Savings              float64 `json:"savings"`            // MarketBuyPrice - OptimalBuildCost
+	SavingsPercent       float64 `json:"savings_percent"`
+	SellRevenue          float64 `json:"sell_revenue"`       // Revenue after sales tax + broker fee
+	Profit               float64 `json:"profit"`             // SellRevenue - OptimalBuildCost
+	ProfitPercent        float64 `json:"profit_percent"`     // Profit / OptimalBuildCost * 100
+	MakerSellRevenue     float64 `json:"maker_sell_revenue"` // Listing at visible ask after tax + broker fee
+	MakerSellProfit      float64 `json:"maker_sell_profit"`
+	InstantSellRevenue   float64 `json:"instant_sell_revenue"` // Selling into visible buy orders after sales tax
+	InstantSellProfit    float64 `json:"instant_sell_profit"`
+	InstantSellAvailable bool    `json:"instant_sell_available"`
 	// UnitAskPrice is the raw per-unit best ask (before sales tax + broker
 	// fee) in the pricing region the analyzer used for this run. This is
 	// the "list price" a user sees in the in-game market window when they
@@ -314,10 +314,10 @@ type IndustryAnalysis struct {
 	// SellRevenue. Zero when the pricing region has no visible sell orders
 	// for the type, which is often the root cause of a "why does this row
 	// think profit is huge/tiny?" investigation.
-	UnitAskPrice          float64                `json:"unit_ask_price"`
+	UnitAskPrice float64 `json:"unit_ask_price"`
 	// UnitBidPrice is the raw per-unit best bid (before sales tax), for
 	// the same auditing purpose on the instant-sell path.
-	UnitBidPrice          float64                `json:"unit_bid_price"`
+	UnitBidPrice float64 `json:"unit_bid_price"`
 	// AskDepthUnits and BidDepthUnits are the total unit volume visible
 	// on the sell / buy side of the pricing-region order book. When
 	// AskDepthUnits is small (e.g. 1 unit) but the naive revenue math is
@@ -327,22 +327,32 @@ type IndustryAnalysis struct {
 	// see "only 3 units listed" in the tooltip and immediately know the
 	// listing price isn't a bulk-market signal. Bid depth serves the
 	// mirror-image question on the instant-sell path.
-	AskDepthUnits         int64                  `json:"ask_depth_units"`
-	BidDepthUnits         int64                  `json:"bid_depth_units"`
+	AskDepthUnits int64 `json:"ask_depth_units"`
+	BidDepthUnits int64 `json:"bid_depth_units"`
 	// AskOrdersCount / BidOrdersCount pair with the depth fields: 100
 	// units across 20 sellers = real market; 100 units in 1 order = one
 	// seller who could pull it any moment. Distinct signal from depth.
-	AskOrdersCount        int32                  `json:"ask_orders_count"`
-	BidOrdersCount        int32                  `json:"bid_orders_count"`
-	ISKPerHour            float64                `json:"isk_per_hour"`       // Profit / manufacturing hours (root activity time)
-	ManufacturingTime     int32                  `json:"manufacturing_time"` // Root activity's own time in seconds (matches in-game display)
-	TotalActivityTime     int32                  `json:"total_activity_time"` // Sum of every step's time across the plan (for planners that serialize all sub-builds)
-	TotalJobCost          float64                `json:"total_job_cost"`      // Root install cost (+ invention install if any) — matches in-game single-job display
-	TotalMaterialCost     float64                `json:"total_material_cost"` // All non-install spending: mfg materials + (for invention rows) datacores/decryptor. Reconciles: material + job + bp = optimal.
-	InventionCost         float64                `json:"invention_cost"`
-	InventionJobCost      float64                `json:"invention_job_cost"`
-	InventionAttempts     float64                `json:"invention_attempts"`
-	InventionProbability  float64                `json:"invention_probability"`
+	AskOrdersCount       int32   `json:"ask_orders_count"`
+	BidOrdersCount       int32   `json:"bid_orders_count"`
+	ISKPerHour           float64 `json:"isk_per_hour"`        // Profit / manufacturing hours (root activity time)
+	ManufacturingTime    int32   `json:"manufacturing_time"`  // Root activity's own time in seconds (matches in-game display)
+	TotalActivityTime    int32   `json:"total_activity_time"` // Sum of every step's time across the plan (for planners that serialize all sub-builds)
+	TotalJobCost         float64 `json:"total_job_cost"`      // Root install cost (+ invention install if any) — matches in-game single-job display
+	TotalMaterialCost    float64 `json:"total_material_cost"` // All non-install spending: mfg materials + (for invention rows) datacores/decryptor. Reconciles: material + job + bp = optimal.
+	InventionCost        float64 `json:"invention_cost"`
+	InventionJobCost     float64 `json:"invention_job_cost"`
+	InventionAttempts    float64 `json:"invention_attempts"`
+	InventionProbability float64 `json:"invention_probability"`
+	// InventionReplacementCost is the slice of InventionCost covering T2 BPC
+	// runs already in the user's hangar at matching ME/TE. Those runs are NOT
+	// in the activity plan (there is nothing to install) and their datacores
+	// are NOT on the shopping list — but the cost stays in the basis, priced
+	// as what it would take to replace the blueprint. Without this line the
+	// materials total and optimal_build_cost look inconsistent.
+	InventionReplacementCost float64 `json:"invention_replacement_cost,omitempty"`
+	// InventionCoveredRuns is how many manufacturing runs that hangar BPC
+	// covers, for the UI to name alongside the replacement cost.
+	InventionCoveredRuns  int32                  `json:"invention_covered_runs,omitempty"`
 	ActivityMode          string                 `json:"activity_mode"`
 	ActivityPlan          []IndustryActivityStep `json:"activity_plan"`
 	MaterialTree          *MaterialNode          `json:"material_tree"`
@@ -486,24 +496,24 @@ type JobCostBreakdown struct {
 
 // IndustryAnalyzer performs industry calculations.
 type IndustryAnalyzer struct {
-	SDE                  *sde.Data
-	ESI                  *esi.Client
-	IndustryCache        *esi.IndustryCache
-	adjustedPrices       map[int32]float64
-	marketPrices         map[int32]float64 // Best sell order prices
-	marketSellOrders     map[int32][]esi.MarketOrder
-	marketBuyOrders      map[int32][]esi.MarketOrder
-	systemCostIndices    *esi.SystemCostIndices
-	jobCostBreakdown     JobCostBreakdown // reset at Analyze() start
+	SDE               *sde.Data
+	ESI               *esi.Client
+	IndustryCache     *esi.IndustryCache
+	adjustedPrices    map[int32]float64
+	marketPrices      map[int32]float64 // Best sell order prices
+	marketSellOrders  map[int32][]esi.MarketOrder
+	marketBuyOrders   map[int32][]esi.MarketOrder
+	systemCostIndices *esi.SystemCostIndices
+	jobCostBreakdown  JobCostBreakdown // reset at Analyze() start
 	// reprocessingSources indexes materialID → ores that reprocess into
 	// that material. Rebuilt once per Analyze() call when IncludeReprocessing
 	// is on. Nil when reprocessing is disabled or SDE isn't loaded.
 	reprocessingSources         ReprocessingSources
 	currentReprocessingNetYield float64
-	getAllAdjustedPrices func(cache *esi.IndustryCache) (map[int32]float64, error)
-	getSystemCostIndex   func(cache *esi.IndustryCache, systemID int32) (*esi.SystemCostIndices, error)
-	fetchMarketPricesFn  func(params IndustryParams) (map[int32]float64, error)
-	fetchMarketBooksFn   func(params IndustryParams) (map[int32][]esi.MarketOrder, map[int32][]esi.MarketOrder, error)
+	getAllAdjustedPrices        func(cache *esi.IndustryCache) (map[int32]float64, error)
+	getSystemCostIndex          func(cache *esi.IndustryCache, systemID int32) (*esi.SystemCostIndices, error)
+	fetchMarketPricesFn         func(params IndustryParams) (map[int32]float64, error)
+	fetchMarketBooksFn          func(params IndustryParams) (map[int32][]esi.MarketOrder, map[int32][]esi.MarketOrder, error)
 }
 
 // NewIndustryAnalyzer creates a new analyzer.
@@ -743,19 +753,28 @@ func (a *IndustryAnalyzer) Analyze(params IndustryParams, progress func(string))
 		optimalCost += bpCostIncluded
 	}
 
-	inventionStep, hasInvention := a.calculateInventionStep(params, tree, costIndex)
+	inventionOut, hasInvention := a.calculateInventionStep(params, tree, costIndex)
+	inventionStep := inventionOut.Step
+	// hasInventionStep is narrower than hasInvention: the build can carry
+	// invention economics while having no invention JOB to install, because a
+	// matching T2 BPC is already in the hangar.
+	hasInventionStep := hasInvention && inventionOut.HasStep
 	var inventionCost, inventionJobCost, inventionAttempts, inventionProbability float64
+	var inventionReplacementCost float64
 	if hasInvention {
-		inventionCost = inventionStep.TotalCost
-		inventionJobCost = inventionStep.JobCost
-		inventionAttempts = inventionStep.ExpectedAttempts
-		inventionProbability = inventionStep.Probability
+		inventionCost = inventionOut.TotalCost
+		inventionJobCost = inventionOut.JobCost
+		inventionAttempts = inventionOut.ExpectedAttempts
+		inventionProbability = inventionOut.Probability
+		inventionReplacementCost = inventionOut.ReplacementCost
 		optimalCost += inventionCost
 	}
 	// Copy step — only when the invention source is BPO-only in the user's
 	// pool (no BPCs available). Detects via OwnedBlueprints keyed on the
 	// source BP's manufacturing product (the T1 item the source BP builds).
-	copyStep, hasCopy := a.calculateCopyStep(params, inventionStep, hasInvention, costIndex)
+	// Gated on the STEP, not the economics: with the T2 BPC already in hand
+	// there is no invention to feed, so there are no T1 copies to make.
+	copyStep, hasCopy := a.calculateCopyStep(params, inventionStep, hasInventionStep, costIndex)
 	if hasCopy {
 		optimalCost += copyStep.TotalCost
 	}
@@ -845,7 +864,7 @@ func (a *IndustryAnalyzer) Analyze(params IndustryParams, progress func(string))
 		totalMaterialCost += inventionCost - inventionJobCost
 	}
 	activityPlan := a.buildActivityPlan(tree)
-	if hasInvention {
+	if hasInventionStep {
 		activityPlan = append([]IndustryActivityStep{inventionStep}, activityPlan...)
 	}
 	// Copy prepends before invention so the ordering reads:
@@ -874,47 +893,49 @@ func (a *IndustryAnalyzer) Analyze(params IndustryParams, progress func(string))
 	regionID, regionName := a.resolveMarketRegion(params)
 
 	return &IndustryAnalysis{
-		TargetTypeID:          params.TypeID,
-		TargetTypeName:        typeInfo.Name,
-		Runs:                  params.Runs,
-		TotalQuantity:         totalQuantity,
-		MarketBuyPrice:        marketBuyPrice,
-		TotalBuildCost:        tree.BuildCost,
-		OptimalBuildCost:      optimalCost,
-		Savings:               savings,
-		SavingsPercent:        savingsPercent,
-		SellRevenue:           sellRevenue,
-		Profit:                profit,
-		ProfitPercent:         profitPercent,
-		MakerSellRevenue:      makerSellRevenue,
-		MakerSellProfit:       makerSellRevenue - optimalCost,
-		InstantSellRevenue:    instantSellRevenue,
-		InstantSellProfit:     instantSellRevenue - optimalCost,
-		InstantSellAvailable:  instantSellAvailable,
-		UnitAskPrice:          unitAsk,
-		UnitBidPrice:          unitBid,
-		AskDepthUnits:         askDepth,
-		BidDepthUnits:         bidDepth,
-		AskOrdersCount:        askOrders,
-		BidOrdersCount:        bidOrders,
-		ISKPerHour:            iskPerHour,
-		ManufacturingTime:     rootTime,
-		TotalActivityTime:     totalActivityTime,
-		TotalJobCost:          totalJobCost,
-		TotalMaterialCost:     totalMaterialCost,
-		InventionCost:         inventionCost,
-		InventionJobCost:      inventionJobCost,
-		InventionAttempts:     inventionAttempts,
-		InventionProbability:  inventionProbability,
-		ActivityMode:          params.ActivityMode,
-		ActivityPlan:          activityPlan,
-		MaterialTree:          tree,
-		FlatMaterials:         flatMaterials,
-		SystemCostIndex:       costIndex,
-		RegionID:              regionID,
-		RegionName:            regionName,
-		BlueprintCostIncluded: bpCostIncluded,
-		JobCostBreakdown:      a.jobCostBreakdown,
+		TargetTypeID:             params.TypeID,
+		TargetTypeName:           typeInfo.Name,
+		Runs:                     params.Runs,
+		TotalQuantity:            totalQuantity,
+		MarketBuyPrice:           marketBuyPrice,
+		TotalBuildCost:           tree.BuildCost,
+		OptimalBuildCost:         optimalCost,
+		Savings:                  savings,
+		SavingsPercent:           savingsPercent,
+		SellRevenue:              sellRevenue,
+		Profit:                   profit,
+		ProfitPercent:            profitPercent,
+		MakerSellRevenue:         makerSellRevenue,
+		MakerSellProfit:          makerSellRevenue - optimalCost,
+		InstantSellRevenue:       instantSellRevenue,
+		InstantSellProfit:        instantSellRevenue - optimalCost,
+		InstantSellAvailable:     instantSellAvailable,
+		UnitAskPrice:             unitAsk,
+		UnitBidPrice:             unitBid,
+		AskDepthUnits:            askDepth,
+		BidDepthUnits:            bidDepth,
+		AskOrdersCount:           askOrders,
+		BidOrdersCount:           bidOrders,
+		ISKPerHour:               iskPerHour,
+		ManufacturingTime:        rootTime,
+		TotalActivityTime:        totalActivityTime,
+		TotalJobCost:             totalJobCost,
+		TotalMaterialCost:        totalMaterialCost,
+		InventionCost:            inventionCost,
+		InventionReplacementCost: inventionReplacementCost,
+		InventionCoveredRuns:     inventionOut.CoveredRuns,
+		InventionJobCost:         inventionJobCost,
+		InventionAttempts:        inventionAttempts,
+		InventionProbability:     inventionProbability,
+		ActivityMode:             params.ActivityMode,
+		ActivityPlan:             activityPlan,
+		MaterialTree:             tree,
+		FlatMaterials:            flatMaterials,
+		SystemCostIndex:          costIndex,
+		RegionID:                 regionID,
+		RegionName:               regionName,
+		BlueprintCostIncluded:    bpCostIncluded,
+		JobCostBreakdown:         a.jobCostBreakdown,
 	}, nil
 }
 
@@ -1556,13 +1577,77 @@ func (a *IndustryAnalyzer) costIndexForActivity(activity string, fallback float6
 	return fallback
 }
 
-func (a *IndustryAnalyzer) calculateInventionStep(params IndustryParams, tree *MaterialNode, fallbackCostIndex float64) (IndustryActivityStep, bool) {
+// inventionOutcome separates the two things the invention step used to
+// conflate: what the user must actually queue in EVE, and what the build
+// costs.
+//
+// A T2 BPC already sitting in the hangar at matching ME/TE covers some or all
+// of the runs, so there is nothing to invent for that portion — but its cost
+// is NOT sunk. The user speculatively invents things they like to produce and
+// deliberately prices builds with the invention cost included; treating a
+// hangar BPC as free would silently reprice every such build and shuffle the
+// scanner rankings. So the covered portion keeps its cost as a REPLACEMENT
+// value (what it'd cost to make that BPC again) and only drops out of the
+// runbook and the shopping list.
+type inventionOutcome struct {
+	// Step is the invention job to actually install, sized to the runs the
+	// hangar doesn't already cover. Valid only when HasStep.
+	Step    IndustryActivityStep
+	HasStep bool
+	// TotalCost / JobCost cover the FULL invention economics — planned plus
+	// replacement — so profit, margin and every downstream total are
+	// identical to what they'd be with no owned BPC at all.
+	TotalCost        float64
+	JobCost          float64
+	ExpectedAttempts float64
+	Probability      float64
+	// ReplacementCost is the slice of TotalCost attributable to BPC runs the
+	// user already holds. Surfaced separately because those datacores never
+	// reach the shopping list even though their cost stays in the basis.
+	ReplacementCost float64
+	CoveredRuns     int32
+}
+
+// ownedT2BPCCoverage reports how many manufacturing runs of the analysis
+// target are already covered by a T2 BPC in the user's hangar.
+//
+// Deliberately strict, and strict is the point: a blueprint at different ME
+// or TE builds a different thing at a different cost, so "close enough" would
+// quietly invalidate the whole analysis. Anything short of an exact match
+// counts as no coverage and the invention step stands.
+func ownedT2BPCCoverage(params IndustryParams) int32 {
+	if params.OwnedBlueprints == nil {
+		return 0
+	}
+	owned, has := params.OwnedBlueprints[params.TypeID]
+	if !has {
+		return 0
+	}
+	// A BPO can't be an invention output — if the user holds a BPO of a T2
+	// item they're in a different situation entirely and invention is moot,
+	// but that's not this function's call to make.
+	if owned.IsBPO {
+		return 0
+	}
+	if owned.ME != params.MaterialEfficiency || owned.TE != params.TimeEfficiency {
+		return 0
+	}
+	if owned.AvailableRuns <= 0 {
+		return 0
+	}
+	if int64(owned.AvailableRuns) > int64(params.Runs) {
+		return params.Runs
+	}
+	return owned.AvailableRuns
+}
+
+func (a *IndustryAnalyzer) calculateInventionStep(params IndustryParams, tree *MaterialNode, fallbackCostIndex float64) (inventionOutcome, bool) {
 	if params.ActivityMode != "invention" || tree == nil || tree.Blueprint == nil {
-		return IndustryActivityStep{}, false
+		return inventionOutcome{}, false
 	}
 	sourceBP, product, ok := a.findInventionForBlueprint(tree.Blueprint.BlueprintTypeID)
 	if !ok || sourceBP == nil || product.TypeID == 0 {
-		return IndustryActivityStep{}, false
+		return inventionOutcome{}, false
 	}
 	chance := normalizeProbability(product.Probability)
 	if params.InventionChance > 0 {
@@ -1591,7 +1676,7 @@ func (a *IndustryAnalyzer) calculateInventionStep(params IndustryParams, tree *M
 		}
 	}
 	if chance <= 0 {
-		return IndustryActivityStep{}, false
+		return inventionOutcome{}, false
 	}
 	outputRuns := product.Quantity
 	if params.InventionOutputRuns > 0 {
@@ -1604,7 +1689,18 @@ func (a *IndustryAnalyzer) calculateInventionStep(params IndustryParams, tree *M
 	if successesNeeded < 1 {
 		successesNeeded = 1
 	}
+	// Full economics, computed as though nothing were owned — this is what
+	// keeps profit and margin stable whether or not a BPC is in the hangar.
 	expectedAttempts := successesNeeded / chance
+	// Planned economics: only the runs the hangar doesn't cover need inventing.
+	// A part-used BPC covers some of them, exactly the way calculateCopyStep
+	// sizes a copy job against the BPC pool it already has.
+	coveredRuns := ownedT2BPCCoverage(params)
+	plannedSuccesses := math.Ceil(float64(params.Runs-coveredRuns) / float64(outputRuns))
+	if plannedSuccesses < 0 {
+		plannedSuccesses = 0
+	}
+	plannedAttempts := plannedSuccesses / chance
 	// Invention rigs apply here: TE reduces invention time, cost bonus
 	// reduces invention job cost. ME rigs don't affect invention (datacore
 	// materials aren't ME-reduced in EVE).
@@ -1661,12 +1757,38 @@ func (a *IndustryAnalyzer) calculateInventionStep(params IndustryParams, tree *M
 	// decryptors — they're routed through step.materials only, and the
 	// material_diff footer aggregates all rows by type_id so nothing is
 	// double-counted.
+	//
+	// Sized to plannedAttempts, not expectedAttempts: datacores for runs an
+	// owned BPC already covers won't be consumed, so they must not appear on
+	// the shopping list even though their replacement cost stays in the basis.
+	outcome := inventionOutcome{
+		TotalCost:        totalPerAttempt * expectedAttempts,
+		JobCost:          jobCostPerAttempt * expectedAttempts,
+		ExpectedAttempts: expectedAttempts,
+		Probability:      chance,
+		ReplacementCost:  totalPerAttempt * (expectedAttempts - plannedAttempts),
+		CoveredRuns:      coveredRuns,
+	}
+	if outcome.ReplacementCost < 0 {
+		outcome.ReplacementCost = 0
+	}
+	if plannedAttempts <= 0 {
+		// Fully covered by the hangar. No job to install; the cost stays.
+		log.Printf("[INVENTION] skip step: owned T2 BPC for type %d covers all %d runs at ME=%d TE=%d — replacement cost %.2f retained",
+			params.TypeID, params.Runs, params.MaterialEfficiency, params.TimeEfficiency, outcome.ReplacementCost)
+		return outcome, true
+	}
+	if coveredRuns > 0 {
+		log.Printf("[INVENTION] partial: owned T2 BPC for type %d covers %d of %d runs — inventing the %d-run shortfall (%.2f of %.2f attempts)",
+			params.TypeID, coveredRuns, params.Runs, params.Runs-coveredRuns, plannedAttempts, expectedAttempts)
+	}
+
 	stepMats := make([]IndustryActivityStepMaterial, 0, len(attemptMaterials)+1)
 	for _, mat := range attemptMaterials {
 		if mat.TypeID <= 0 || mat.Quantity <= 0 {
 			continue
 		}
-		scaled := int32(math.Ceil(float64(mat.Quantity) * expectedAttempts))
+		scaled := int32(math.Ceil(float64(mat.Quantity) * plannedAttempts))
 		if scaled <= 0 {
 			continue
 		}
@@ -1677,7 +1799,7 @@ func (a *IndustryAnalyzer) calculateInventionStep(params IndustryParams, tree *M
 		})
 	}
 	if params.DecryptorTypeID > 0 {
-		decQty := int32(math.Ceil(expectedAttempts))
+		decQty := int32(math.Ceil(plannedAttempts))
 		if decQty > 0 {
 			stepMats = append(stepMats, IndustryActivityStepMaterial{
 				TypeID:   params.DecryptorTypeID,
@@ -1693,14 +1815,14 @@ func (a *IndustryAnalyzer) calculateInventionStep(params IndustryParams, tree *M
 		ProductTypeID:    product.TypeID,
 		ProductName:      a.SDE.BlueprintName(product.TypeID),
 		BlueprintIsBPC:   false,
-		Runs:             expectedAttempts,
-		OutputQuantity:   int32(math.Ceil(successesNeeded)) * outputRuns,
-		MaterialCost:     materialCostPerAttempt * expectedAttempts,
-		JobCost:          jobCostPerAttempt * expectedAttempts,
-		TotalCost:        totalPerAttempt * expectedAttempts,
-		TimeSeconds:      int32(math.Ceil(float64(calculateActivityTime(sourceBP, "invention", 1, 0, invRigTE)) * expectedAttempts)),
+		Runs:             plannedAttempts,
+		OutputQuantity:   int32(math.Ceil(plannedSuccesses)) * outputRuns,
+		MaterialCost:     materialCostPerAttempt * plannedAttempts,
+		JobCost:          jobCostPerAttempt * plannedAttempts,
+		TotalCost:        totalPerAttempt * plannedAttempts,
+		TimeSeconds:      int32(math.Ceil(float64(calculateActivityTime(sourceBP, "invention", 1, 0, invRigTE)) * plannedAttempts)),
 		Probability:      chance,
-		ExpectedAttempts: expectedAttempts,
+		ExpectedAttempts: plannedAttempts,
 		Reason:           "expected_bpc_cost",
 		Materials:        stepMats,
 	}
@@ -1708,7 +1830,9 @@ func (a *IndustryAnalyzer) calculateInventionStep(params IndustryParams, tree *M
 		step.DecryptorTypeID = params.DecryptorTypeID
 		step.DecryptorName = a.typeName(params.DecryptorTypeID)
 	}
-	return step, true
+	outcome.Step = step
+	outcome.HasStep = true
+	return outcome, true
 }
 
 // calculateCopyStep emits a `copy` activity step when the source blueprint

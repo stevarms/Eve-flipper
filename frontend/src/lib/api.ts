@@ -33,6 +33,8 @@ import type {
   IndustryPlanPatch,
   IndustryPlanPreview,
   IndustryPlanSummary,
+  IndustryPlanSchedulerInput,
+  IndustryJobResplitSummary,
   IndustryProject,
   IndustryProjectSnapshot,
   IndustryProjectStatus,
@@ -1229,6 +1231,26 @@ export async function planAuthIndustryProject(
     body: JSON.stringify(patch),
   });
   return handleResponse<IndustryProjectPlanResponse>(res);
+}
+
+/**
+ * Re-cut a committed project's outstanding jobs under new scheduler settings.
+ *
+ * Unlike planAuthIndustryProject (Replace-mode: wipes and reinserts the whole
+ * project), this only touches planned/queued job rows. Jobs already active,
+ * paused, completed, failed or cancelled keep their ids and their history,
+ * and their runs are deducted from what gets re-planned.
+ */
+export async function resplitAuthIndustryProjectJobs(
+  projectID: number,
+  scheduler: IndustryPlanSchedulerInput
+): Promise<{ ok: boolean; summary: IndustryJobResplitSummary }> {
+  const res = await apiFetch(`${BASE}/api/auth/industry/projects/${projectID}/jobs/resplit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(scheduler),
+  });
+  return handleResponse<{ ok: boolean; summary: IndustryJobResplitSummary }>(res);
 }
 
 export async function previewAuthIndustryProjectPlan(

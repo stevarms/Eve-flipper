@@ -64,6 +64,8 @@ export function IndustryAnalysisResultsPanel({
   const totalUnits = result.total_quantity ?? 0;
   const jobCost = result.total_job_cost ?? 0;
   const invCost = result.invention_cost ?? 0;
+  const replacementCost = result.invention_replacement_cost ?? 0;
+  const coveredRuns = result.invention_covered_runs ?? 0;
   const bpCost = result.blueprint_cost_included ?? 0;
   const optimal = result.optimal_build_cost ?? 0;
   const totalBuild = result.total_build_cost ?? 0;
@@ -92,6 +94,16 @@ export function IndustryAnalysisResultsPanel({
   if (jobCost > 0) l.push(`  Job cost:                    ${formatISK(jobCost)}`);
   if (bpCost > 0) l.push(`  Blueprint amortization:      ${formatISK(bpCost)}`);
   if (invCost > 0) l.push(`  (of which invention:         ${formatISK(invCost)} incl. datacores + install)`);
+  // A hangar BPC covering some or all of the runs has no invention job and
+  // buys no datacores — but it isn't free either, so its replacement value
+  // stays in the build cost above. Say so, or the numbers look wrong.
+  if (replacementCost > 0) {
+    l.push(
+      `    of that, ${formatISK(replacementCost)} is replacement value for a BPC` +
+        `${coveredRuns > 0 ? ` covering ${coveredRuns.toLocaleString()} run${coveredRuns === 1 ? "" : "s"}` : ""}`,
+    );
+    l.push(`    you already own — no invention job, no datacores to buy`);
+  }
   if (totalBuild > 0 && Math.abs(totalBuild - optimal) > 1) {
     l.push(`  (all-build cost:             ${formatISK(totalBuild)})`);
   }

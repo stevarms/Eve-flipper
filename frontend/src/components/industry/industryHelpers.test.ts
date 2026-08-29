@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { IndustryProjectSnapshot } from "@/lib/types";
 import {
   deriveProjectValuation,
+  deriveTaskBlockStatus,
+  inferTaskPrerequisites,
   sortOperationsTasks,
   splitTaskDecryptorSuffix,
 } from "./industryHelpers";
@@ -173,5 +175,141 @@ describe("splitTaskDecryptorSuffix", () => {
       base: "invention Zealot Blueprint",
       decryptor: "",
     });
+  });
+});
+
+describe("inferTaskPrerequisites", () => {
+  // Type IDs standing in for a T2 build: the T1 BPO (copied), the T2 BP
+  // (invented), and the T2 item (manufactured).
+  const T1_BP = 1001;
+  const T2_BP = 2002;
+  const T2_ITEM = 3003;
+
+  const t2Chain = () => [
+    task({ id: 10, status: "planned", activity: "copy", product_type_id: T1_BP, constraints: { blueprint_type_id: T1_BP } }),
+    task({ id: 11, status: "planned", activity: "invention", product_type_id: T2_BP, constraints: { blueprint_type_id: T1_BP } }),
+    task({ id: 12, status: "planned", activity: "manufacturing", product_type_id: T2_ITEM, constraints: { blueprint_type_id: T2_BP } }),
+  ];
+
+  it("returns nothing for a null snapshot", () => {
+    expect(inferTaskPrerequisites(null)).toEqual({});
+  });
+
+  it("links manufacturing to the invention that produces its blueprint", () => {
+    const edges = inferTaskPrerequisites(snapshot({ tasks: t2Chain() }));
+    expect(edges[12]).toEqual([11]);
+  });
+
+  it("links invention to the copy that produces its source blueprint", () => {
+    const edges = inferTaskPrerequisites(snapshot({ tasks: t2Chain() }));
+    expect(edges[11]).toEqual([10]);
+  });
+
+  it("links manufacturing to research done on the same blueprint", () => {
+    const edges = inferTaskPrerequisites(
+      snapshot({
+        tasks: [
+          task({ id: 20, status: "planned", activity: "research_material", product_type_id: T2_BP, constraints: { blueprint_type_id: T2_BP } }),
+          task({ id: 21, status: "planned", activity: "manufacturing", product_type_id: T2_ITEM, constraints: { blueprint_type_id: T2_BP } }),
+        ],
+      }),
+    );
+    expect(edges[21]).toEqual([20]);
+  });
+
+  it("never treats a cancelled task as a prerequisite", () => {
+    // Cancelling the invention step is how the user says "I already have
+    // that blueprint" — the mfg step must not stay blocked on it.
+    const tasks = t2Chain();
+    tasks[1] = task({ ...(tasks[1] as unknown as Record<string, unknown>), status: "cancelled" });
+    const edges = inferTaskPrerequisites(snapshot({ tasks }));
+    expect(edges[12]).toBeUndefined();
+  });
+
+  it("does not link tasks that share no blueprint", () => {
+    const edges = inferTaskPrerequisites(
+      snapshot({
+        tasks: [
+          task({ id: 30, status: "planned", activity: "invention", product_type_id: 9999, constraints: { blueprint_type_id: T1_BP } }),
+          task({ id: 31, status: "planned", activity: "manufacturing", product_type_id: T2_ITEM, constraints: { blueprint_type_id: T2_BP } }),
+        ],
+      }),
+    );
+    expect(edges[31]).toBeUndefined();
+  });
+});
+
+describe("deriveTaskBlockStatus prerequisites", () => {
+  // Materials all in stock, so materials never colour the result — the only
+  // thing under test is what a pending prerequisite does.
+  const stocked = (taskID: number) => mat({ task_id: taskID, type_id: 34, required_qty: 10, available_qty: 10 });
+
+  const twoStep = (inventionStatus: string) =>
+    snapshot({
+      tasks: [
+        task({ id: 1, name: "Invent Quake XL BP", status: inventionStatus, activity: "invention", product_type_id: 2002, constraints: {} }),
+        task({ id: 2, name: "Manufacturing Quake XL", status: "planned", activity: "manufacturing", product_type_id: 3003, constraints: {} }),
+      ],
+      materials: [stocked(1), stocked(2)],
+    });
+
+  it("is amber, not blocked, while a prerequisite is outstanding", () => {
+    // The user's call: an inferred edge shouldn't refuse to offer the job.
+    const status = deriveTaskBlockStatus(2, twoStep("planned"), { 2: [1] });
+    expect(status.level).toBe("soft");
+    expect(status.prereqPending).toBe(1);
+    expect(status.parentBlocking).toEqual([1]);
+  });
+
+  it("names the blocking task so the reason is actionable", () => {
+    const status = deriveTaskBlockStatus(2, twoStep("planned"), { 2: [1] });
+    expect(status.reason).toContain("Invent Quake XL BP");
+  });
+
+  it("goes ready once the prerequisite completes", () => {
+    const status = deriveTaskBlockStatus(2, twoStep("completed"), { 2: [1] });
+    expect(status.level).toBe("ready");
+    expect(status.prereqPending).toBe(0);
+  });
+
+  it("treats a cancelled prerequisite as satisfied", () => {
+    const status = deriveTaskBlockStatus(2, twoStep("cancelled"), { 2: [1] });
+    expect(status.level).toBe("ready");
+  });
+
+  it("walks transitively — a pending copy blocks the manufacturing step", () => {
+    const snap = snapshot({
+      tasks: [
+        task({ id: 1, name: "Copy Quake BPO", status: "planned", activity: "copy", product_type_id: 1001, constraints: {} }),
+        task({ id: 2, name: "Invent Quake XL BP", status: "planned", activity: "invention", product_type_id: 2002, constraints: {} }),
+        task({ id: 3, name: "Manufacturing Quake XL", status: "planned", activity: "manufacturing", product_type_id: 3003, constraints: {} }),
+      ],
+      materials: [stocked(3)],
+    });
+    const status = deriveTaskBlockStatus(3, snap, { 3: [2], 2: [1] });
+    expect(status.level).toBe("soft");
+    expect(status.parentBlocking.sort()).toEqual([1, 2]);
+  });
+
+  it("still reports hard when a material is genuinely absent", () => {
+    // A pending prerequisite softens nothing — an empty hangar is still hard.
+    const snap = snapshot({
+      tasks: [
+        task({ id: 1, name: "Invent Quake XL BP", status: "planned", activity: "invention", product_type_id: 2002, constraints: {} }),
+        task({ id: 2, name: "Manufacturing Quake XL", status: "planned", activity: "manufacturing", product_type_id: 3003, constraints: {} }),
+      ],
+      materials: [mat({ task_id: 2, type_id: 34, required_qty: 10, available_qty: 0 })],
+    });
+    const status = deriveTaskBlockStatus(2, snap, { 2: [1] });
+    expect(status.level).toBe("hard");
+    expect(status.prereqPending).toBe(1);
+  });
+
+  it("does not block a copy step on its own downstream consumers", () => {
+    const snap = snapshot({
+      tasks: [task({ id: 1, name: "Copy Quake BPO", status: "planned", activity: "copy", product_type_id: 1001, constraints: {} })],
+      materials: [],
+    });
+    expect(deriveTaskBlockStatus(1, snap, {}).level).toBe("ready");
   });
 });

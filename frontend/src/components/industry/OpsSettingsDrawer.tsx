@@ -23,6 +23,13 @@ interface OpsSettingsDrawerProps {
   setSchedulerMaxDurationHours: Dispatch<SetStateAction<number>>;
   schedulerQueueStatus: IndustryJobStatus;
   setSchedulerQueueStatus: Dispatch<SetStateAction<IndustryJobStatus>>;
+  /**
+   * Apply the scheduler settings to the jobs already committed on the open
+   * project. Absent when no project is open — the settings then only shape
+   * the next commit, which is what the hint below says.
+   */
+  onResplitJobs?: () => void;
+  resplitting?: boolean;
   // Rebalance defaults
   rebalanceInventoryScope: "single" | "all";
   setRebalanceInventoryScope: Dispatch<SetStateAction<"single" | "all">>;
@@ -53,6 +60,8 @@ export function OpsSettingsDrawer(props: OpsSettingsDrawerProps) {
     setSchedulerMaxDurationHours,
     schedulerQueueStatus,
     setSchedulerQueueStatus,
+    onResplitJobs,
+    resplitting,
     rebalanceInventoryScope,
     setRebalanceInventoryScope,
     rebalanceLookbackDays,
@@ -123,6 +132,24 @@ export function OpsSettingsDrawer(props: OpsSettingsDrawerProps) {
             </>
           )}
         </div>
+        {/*
+          These knobs shape the next plan commit. Without this action there
+          was no way to act on "these jobs are the wrong size" for a project
+          already committed short of wiping and re-committing it, which would
+          have thrown away every install record along with the job rows.
+        */}
+        {enablePlanScheduler && onResplitJobs && (
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <button
+              onClick={onResplitJobs}
+              disabled={resplitting}
+              className="px-2 py-1 text-[11px] border border-eve-accent/50 text-eve-accent rounded-sm hover:bg-eve-accent/10 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {resplitting ? t("industryLedgerResplitJobsBusy") : t("industryLedgerResplitJobs")}
+            </button>
+            <span className="text-[10px] text-eve-dim">{t("industryLedgerResplitJobsHint")}</span>
+          </div>
+        )}
       </section>
 
       {/* Rebalance defaults */}
@@ -186,7 +213,7 @@ export function OpsSettingsDrawer(props: OpsSettingsDrawerProps) {
       <section>
         <div className="text-[10px] uppercase tracking-wider text-eve-dim mb-1.5">BP pool sync defaults</div>
         <div className="flex flex-wrap items-center gap-2 text-[11px]">
-          <span className="text-eve-dim">Default BPC runs</span>
+          <span className="text-eve-dim">Fallback BPC runs</span>
           <input
             type="number"
             min={1}
@@ -195,6 +222,13 @@ export function OpsSettingsDrawer(props: OpsSettingsDrawerProps) {
             className="w-16 px-1.5 py-1 bg-eve-input border border-eve-border rounded-sm text-eve-text font-mono"
           />
         </div>
+        {/*
+          Named "Default BPC runs" until it was clear how narrow it is: the
+          blueprints endpoint reports real per-BPC run counts, so this only
+          ever fills in for the assets fallback, which carries no run data.
+          Leaving it at 1 there reads a max-run copy as a single run.
+        */}
+        <div className="mt-1 text-[10px] text-eve-dim">{t("industryLedgerBlueprintFallbackRunsHint")}</div>
       </section>
     </div>
   );

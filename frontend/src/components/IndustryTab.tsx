@@ -8,6 +8,7 @@ import {
   getAuthIndustryProjects,
   createAuthIndustryProject,
   getAuthIndustryProjectSnapshot,
+  resplitAuthIndustryProjectJobs,
   rebalanceAuthIndustryProjectMaterials,
   syncAuthIndustryProjectBlueprintPool,
   getAuthIndustryCoverage,
@@ -65,6 +66,7 @@ import { useAchievements } from "./achievements";
 import { ExecutionPlannerPopup } from "./ExecutionPlannerPopup";
 import {
   formatUtcShort,
+  inferTaskPrerequisites,
   industryJobStatusClass,
   industryTaskStatusClass,
   taskConstraintRecord,
@@ -429,6 +431,7 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
   const [updatingLedgerJobsBulk, setUpdatingLedgerJobsBulk] = useState(false);
   const [selectedLedgerJobIDs, setSelectedLedgerJobIDs] = useState<number[]>([]);
   const [rebalancingLedgerMaterials, setRebalancingLedgerMaterials] = useState(false);
+  const [resplittingLedgerJobs, setResplittingLedgerJobs] = useState(false);
   const [syncingLedgerBlueprintPool, setSyncingLedgerBlueprintPool] = useState(false);
   const [rebalanceInventoryScope, setRebalanceInventoryScope] = useState<"single" | "all">("single");
   const [rebalanceLookbackDays, setRebalanceLookbackDays] = useState(180);
@@ -1064,6 +1067,58 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
       setUpdatingLedgerJobsBulk(false);
     }
   }, [isLoggedIn, selectedLedgerProjectId, selectedLedgerJobIDs, addToast, refreshLedger, onError, t]);
+
+  /**
+   * Apply the scheduler settings to the jobs already committed on this
+   * project. Only planned and queued rows are re-cut; anything the user has
+   * installed, held, delivered or written off keeps its row and its id, and
+   * its runs are deducted from what gets re-planned.
+   */
+  const handleResplitLedgerJobs = useCallback(async () => {
+    if (!isLoggedIn || selectedLedgerProjectId <= 0) return;
+    setResplittingLedgerJobs(true);
+    try {
+      const resp = await resplitAuthIndustryProjectJobs(selectedLedgerProjectId, {
+        enabled: true,
+        slot_count: Math.max(1, Math.min(64, Math.round(schedulerSlotCount || 1))),
+        max_job_runs: Math.max(1, Math.round(schedulerMaxRunsPerJob || 1)),
+        max_job_duration_seconds: Math.max(1, Math.round(schedulerMaxDurationHours || 1)) * 3600,
+        queue_status: schedulerQueueStatus,
+      });
+      const s = resp.summary;
+      if (s.jobs_created === 0 && s.jobs_removed === 0) {
+        addToast(t("industryLedgerResplitJobsNoop"), "info", 2400);
+      } else {
+        addToast(
+          t("industryLedgerResplitJobsDone")
+            .replace("{created}", String(s.jobs_created))
+            .replace("{removed}", String(s.jobs_removed))
+            .replace("{preserved}", String(s.jobs_preserved)),
+          "success",
+          2800
+        );
+      }
+      for (const warning of s.warnings ?? []) addToast(warning, "warning", 3200);
+      await refreshLedger(selectedLedgerProjectId);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Failed to recalculate jobs";
+      onError?.(msg);
+      addToast(msg, "error", 2600);
+    } finally {
+      setResplittingLedgerJobs(false);
+    }
+  }, [
+    isLoggedIn,
+    selectedLedgerProjectId,
+    schedulerSlotCount,
+    schedulerMaxRunsPerJob,
+    schedulerMaxDurationHours,
+    schedulerQueueStatus,
+    addToast,
+    refreshLedger,
+    onError,
+    t,
+  ]);
 
   const handleRebalanceLedgerMaterialsFromInventory = useCallback(async () => {
     if (!isLoggedIn || selectedLedgerProjectId <= 0) return;
@@ -1762,6 +1817,19 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
       return a.child_id - b.child_id;
     });
 
+    // The real prerequisite graph: edges inferred from the committed rows
+    // (which is what repairs projects committed before the planner started
+    // writing parent_task_id) merged with the persisted scalar column. Kept
+    // separate from parent_by_task so the Gantt / critical-path maths above
+    // keeps operating on exactly the edges it always has.
+    const prereqsByTaskID = inferTaskPrerequisites(ledgerSnapshot);
+    for (const [childID, parentID] of Object.entries(parentByTaskID)) {
+      if (parentMissingByTaskID[Number(childID)]) continue;
+      const key = Number(childID);
+      const list = (prereqsByTaskID[key] ??= []);
+      if (!list.includes(parentID)) list.push(parentID);
+    }
+
     return {
       total_tasks: tasks.length,
       total_edges: edgeCount,
@@ -1774,6 +1842,7 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
       self_links: selfLinkCount,
       depth_by_task: Object.fromEntries(depthByID.entries()) as Record<number, number>,
       parent_by_task: parentByTaskID,
+      prereqs_by_task: prereqsByTaskID,
       parent_missing_by_task: parentMissingByTaskID,
       critical_task_ids: criticalTaskIDSet,
       rows,
@@ -3134,6 +3203,8 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
                   setSchedulerMaxDurationHours={setSchedulerMaxDurationHours}
                   schedulerQueueStatus={schedulerQueueStatus}
                   setSchedulerQueueStatus={setSchedulerQueueStatus}
+                  onResplitJobs={selectedLedgerProjectId > 0 ? handleResplitLedgerJobs : undefined}
+                  resplitting={resplittingLedgerJobs}
                   rebalanceInventoryScope={rebalanceInventoryScope}
                   setRebalanceInventoryScope={setRebalanceInventoryScope}
                   rebalanceLookbackDays={rebalanceLookbackDays}

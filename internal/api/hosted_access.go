@@ -737,7 +737,8 @@ func isHostedQuotaIndustryProjectComputePath(path string) bool {
 		strings.HasSuffix(path, "/plan") ||
 		strings.HasSuffix(path, "/materials/rebalance") ||
 		strings.HasSuffix(path, "/materials/recalc-remaining") ||
-		strings.HasSuffix(path, "/blueprints/sync")
+		strings.HasSuffix(path, "/blueprints/sync") ||
+		strings.HasSuffix(path, "/jobs/resplit")
 }
 
 // isHostedQuotaStockpileScanPath matches /api/auth/stockpiles/{numericID}/scan.

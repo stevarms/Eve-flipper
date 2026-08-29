@@ -15,6 +15,7 @@ import {
   taskConstraintRecord,
   type IndustryTaskDependencyBoard,
   type TaskBlockLevel,
+  type TaskBlockStatus,
 } from "./industryHelpers";
 
 /**
@@ -27,6 +28,20 @@ import {
  * industry window asks for — blueprint, activity, runs, ME/TE, decryptor,
  * facility — each with a copy button so nothing has to be retyped.
  */
+
+// Two genuinely different states, and conflating them is how the card ends
+// up lying: either there is something to install right now, or there isn't
+// but jobs are still cooking in EVE.
+type NextAction =
+  | {
+      kind: "task";
+      task: IndustryTaskRecord;
+      block: TaskBlockStatus;
+      stepIndex: number;
+      totalSteps: number;
+      doneSteps: number;
+    }
+  | { kind: "none"; inFlight: number; doneSteps: number; totalSteps: number };
 
 interface OpsNextActionCardProps {
   ledgerSnapshot: IndustryProjectSnapshot | null;
@@ -98,38 +113,53 @@ export function OpsNextActionCard({
   updatingLedgerTaskId,
   updatingLedgerTasksBulk,
 }: OpsNextActionCardProps) {
-  const picked = useMemo(() => {
+  const picked = useMemo((): NextAction | null => {
     if (!ledgerSnapshot) return null;
     const ordered = sortOperationsTasks(ledgerSnapshot.tasks, taskDependencyBoard.depth_by_task);
-    const outstanding = ordered.filter((tk) => tk.status !== "completed" && tk.status !== "cancelled");
-    if (outstanding.length === 0) return null;
+    const finished = (tk: IndustryTaskRecord) => tk.status === "completed" || tk.status === "cancelled";
+    // "active" means the job is installed and running in EVE — hours of wall
+    // clock away from needing attention. It is outstanding but it is NOT the
+    // next thing to install, so it can't be the card's candidate: otherwise
+    // hitting "Started it" leaves the card parked on the job you just queued,
+    // which is useless when you're filling slots across nine characters.
+    const installable = ordered.filter((tk) => !finished(tk) && tk.status !== "active");
+    const doneSteps = ordered.filter(finished).length;
+    const totalSteps = ordered.length;
+    if (installable.length === 0) {
+      // Everything left is already running. Distinguish that from a genuinely
+      // finished project — claiming "nothing left to build" while nine jobs
+      // are in the oven would be a lie.
+      return { kind: "none", inFlight: totalSteps - doneSteps, doneSteps, totalSteps };
+    }
 
     const levelOf = (tk: IndustryTaskRecord): TaskBlockLevel =>
-      deriveTaskBlockStatus(tk.id, ledgerSnapshot, taskDependencyBoard.parent_by_task).level;
+      deriveTaskBlockStatus(tk.id, ledgerSnapshot, taskDependencyBoard.prereqs_by_task).level;
 
     // Prefer work that can actually start: fully-stocked first, then
     // partially-stocked (a partial build still makes progress), and only
     // then fall back to the head of the queue so the card never goes blank
-    // while there's outstanding work.
-    const byLevel = (want: TaskBlockLevel) => outstanding.find((tk) => levelOf(tk) === want);
-    const task = byLevel("ready") ?? byLevel("soft") ?? outstanding[0];
+    // while there's installable work.
+    const byLevel = (want: TaskBlockLevel) => installable.find((tk) => levelOf(tk) === want);
+    const task = byLevel("ready") ?? byLevel("soft") ?? installable[0];
     return {
+      kind: "task",
       task,
-      block: deriveTaskBlockStatus(task.id, ledgerSnapshot, taskDependencyBoard.parent_by_task),
+      block: deriveTaskBlockStatus(task.id, ledgerSnapshot, taskDependencyBoard.prereqs_by_task),
       stepIndex: ordered.findIndex((tk) => tk.id === task.id) + 1,
-      totalSteps: ordered.length,
-      doneSteps: ordered.length - outstanding.length,
+      totalSteps,
+      doneSteps,
     };
-  }, [ledgerSnapshot, taskDependencyBoard.depth_by_task, taskDependencyBoard.parent_by_task]);
+  }, [ledgerSnapshot, taskDependencyBoard.depth_by_task, taskDependencyBoard.prereqs_by_task]);
 
   // Jobs bound to the picked task. Auto-split turns one long task into
   // several install-sized jobs, and the card has to say how many separate
   // installs that is — "141 runs" is not something EVE lets you queue in
   // one go.
   const taskJobs = useMemo(() => {
-    if (!picked) return [];
+    if (picked?.kind !== "task") return [];
+    const taskID = picked.task.id;
     return (ledgerSnapshot?.jobs ?? []).filter(
-      (j) => j.task_id === picked.task.id && j.status !== "cancelled" && j.status !== "completed",
+      (j) => j.task_id === taskID && j.status !== "cancelled" && j.status !== "completed",
     );
   }, [ledgerSnapshot, picked]);
 
@@ -141,7 +171,19 @@ export function OpsNextActionCard({
 
   if (!ledgerSnapshot) return null;
 
-  if (!picked) {
+  if (!picked || picked.kind === "none") {
+    // Nothing installable. Either the project is genuinely done, or every
+    // remaining step is already running in EVE and there's simply nothing to
+    // queue until one of them pops.
+    const inFlight = picked?.inFlight ?? 0;
+    if (inFlight > 0) {
+      return (
+        <div className="mt-2 px-3 py-2 border border-sky-500/40 rounded-sm bg-sky-900/10 text-[12px] text-sky-300">
+          <span className="font-mono">{inFlight}</span> job{inFlight === 1 ? "" : "s"} in flight —
+          nothing new to install. Mark one complete when it pops and the next step appears here.
+        </div>
+      );
+    }
     return (
       <div className="mt-2 px-3 py-2 border border-emerald-500/40 rounded-sm bg-emerald-900/10 text-[12px] text-emerald-300">
         Every task in this project is complete. Nothing left to build.
@@ -183,7 +225,9 @@ export function OpsNextActionCard({
             border: "border-amber-500/50",
             bg: "bg-amber-900/10",
             text: "text-amber-300",
-            label: "PARTIAL — SHORT ON MATERIALS",
+            // An unfinished upstream step is the more useful headline when
+            // both apply — materials can be bought, a pending invention can't.
+            label: block.prereqPending > 0 ? "PARTIAL — PREREQ PENDING" : "PARTIAL — SHORT ON MATERIALS",
           }
         : level === "hard"
           ? { border: "border-red-500/50", bg: "bg-red-900/10", text: "text-red-300", label: "BLOCKED" }

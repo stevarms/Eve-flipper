@@ -1510,10 +1510,19 @@ func deriveIndustryJobsFromTaskRecords(tasks []industryPlanTaskRecord, queueStat
 	return out
 }
 
+// splitAndScheduleIndustryJobs cuts each job into install-sized chunks and
+// lays them across cfg.SlotCount slots.
+//
+// busySlots holds finish times of work already in flight, ascending — slots
+// that cannot take a new install until the running job delivers. A plan apply
+// passes nil (it is replacing everything anyway); a re-split passes the
+// running jobs, which is what stops it dating every new chunk at "now" while
+// nine characters still have jobs cooking.
 func splitAndScheduleIndustryJobs(
 	jobs []IndustryJobPlanInput,
 	cfg industrySchedulerConfig,
 	now time.Time,
+	busySlots []time.Time,
 	taskParents map[int64]int64,
 	taskPlannedEnd map[int64]time.Time,
 ) []IndustryJobPlanInput {
@@ -1564,6 +1573,14 @@ func splitAndScheduleIndustryJobs(
 	slots := make([]time.Time, cfg.SlotCount)
 	for i := range slots {
 		slots[i] = now
+	}
+	// Seed the soonest-freeing occupied slots. More in-flight jobs than
+	// configured slots means the real slot count is understated; the extras
+	// are ignored rather than inventing capacity that was never configured.
+	for i := 0; i < len(slots) && i < len(busySlots); i++ {
+		if busySlots[i].After(slots[i]) {
+			slots[i] = busySlots[i]
+		}
 	}
 	windowDays := cfg.WindowDays
 	if windowDays <= 0 {
@@ -2340,7 +2357,7 @@ func (d *DB) PreviewIndustryPlanForUser(userID string, projectID int64, patch In
 			jobsSplitFrom = len(jobsForPreview)
 		}
 		if len(jobsForPreview) > 0 {
-			jobsForPreview = splitAndScheduleIndustryJobs(jobsForPreview, schedulerCfg, nowTime, taskParents, taskPlannedEnd)
+			jobsForPreview = splitAndScheduleIndustryJobs(jobsForPreview, schedulerCfg, nowTime, nil, taskParents, taskPlannedEnd)
 			schedulerApplied = true
 		}
 	}
@@ -2628,7 +2645,7 @@ func (d *DB) ApplyIndustryPlanForUser(userID string, projectID int64, patch Indu
 			if err := loadIndustryTaskSchedulingMapsTx(tx, userID, projectID, taskParents, taskPlannedEnd); err != nil {
 				return IndustryPlanSummary{}, err
 			}
-			jobsForInsert = splitAndScheduleIndustryJobs(jobsForInsert, schedulerCfg, nowTime, taskParents, taskPlannedEnd)
+			jobsForInsert = splitAndScheduleIndustryJobs(jobsForInsert, schedulerCfg, nowTime, nil, taskParents, taskPlannedEnd)
 			schedulerApplied = true
 		}
 	}
