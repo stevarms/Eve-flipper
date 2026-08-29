@@ -300,6 +300,10 @@ type IndustryMaterialDiff struct {
 	BuyQty       int64  `json:"buy_qty"`
 	BuildQty     int64  `json:"build_qty"`
 	MissingQty   int64  `json:"missing_qty"`
+	// Packaged m3 for one unit, stamped by the API handler from the SDE on
+	// the way out. Not persisted — it is static reference data, not project
+	// state, so there is nothing to migrate or keep in sync.
+	UnitVolume float64 `json:"unit_volume,omitempty"`
 }
 
 type IndustryProjectSnapshot struct {

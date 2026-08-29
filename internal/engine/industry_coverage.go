@@ -36,6 +36,10 @@ type IndustryCoverageMaterialRow struct {
 	MissingQty   int64   `json:"missing_qty"`
 	CoveragePct  float64 `json:"coverage_pct"`
 	Status       string  `json:"status"`
+	// Packaged m3 for one unit. The engine leaves this at zero — it has no
+	// SDE — and the API handler fills it in on the way out, so the shopping
+	// list can total up what a haul to the build station actually needs.
+	UnitVolume float64 `json:"unit_volume,omitempty"`
 }
 
 type IndustryCoverageBlueprintRow struct {

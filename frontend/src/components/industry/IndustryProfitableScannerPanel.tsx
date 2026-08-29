@@ -20,7 +20,7 @@ import { EmptyState } from "../EmptyState";
 import { useGlobalToast } from "../Toast";
 import {
   commitBatchToProject,
-  defaultRunsForRow,
+  suggestRunsForRow,
   previewBatch,
   type BatchPreview,
   type RowCommitStatus,
@@ -439,12 +439,6 @@ export function IndustryProfitableScannerPanel({
   const [existingProjectID, setExistingProjectID] = useState<number>(0);
   const [projects, setProjects] = useState<IndustryProject[]>([]);
   const [projectsLoading, setProjectsLoading] = useState<boolean>(false);
-  // Market-share % of one day's aggressive-buy volume the auto-populated
-  // per-row runs target. 10% is the "one production run" ballpark that the
-  // scanner's flag heuristic also uses (INDUSTRY_MARKET_SHARE_CAP). The
-  // footer used to expose this as a knob but nobody could tell what it
-  // meant at a glance; if you want to nudge runs, you edit the Runs cell.
-  const marketSharePct = 10;
   const [rowCommitStatuses, setRowCommitStatuses] = useState<Map<string, RowCommitStatus>>(new Map());
   const [commitProgress, setCommitProgress] = useState<string>("");
   const [commitError, setCommitError] = useState<string | null>(null);
@@ -1174,12 +1168,12 @@ export function IndustryProfitableScannerPanel({
     });
   }, []);
 
-  // Auto-populate manualRunsByRowKey from defaultRunsForRow whenever the
-  // selection or the market-share % changes. Rows the user has manually
-  // edited (dirtyRunsByRowKey) are preserved; unset entries seed to the
-  // default; entries no longer selected are pruned so a stale runs value
+  // Auto-populate manualRunsByRowKey from suggestRunsForRow whenever the
+  // selection or the results change. Rows the user has manually edited
+  // (dirtyRunsByRowKey) are preserved; unset entries seed to the
+  // suggestion; entries no longer selected are pruned so a stale runs value
   // doesn't survive if the user re-checks the row later (it re-seeds from
-  // the current share %, which is what they'd expect).
+  // the current scan data, which is what they'd expect).
   useEffect(() => {
     if (!response) return;
     setManualRunsByRowKey((prev) => {
@@ -1197,7 +1191,7 @@ export function IndustryProfitableScannerPanel({
         if (dirtyRunsByRowKey.has(k)) continue;
         const row = response.rows.find((r) => rowKey(r) === k);
         if (!row) continue;
-        const value = defaultRunsForRow(row, marketSharePct, 1);
+        const value = suggestRunsForRow(row).runs;
         if (next.get(k) !== value) {
           next.set(k, value);
           changed = true;
@@ -1205,7 +1199,7 @@ export function IndustryProfitableScannerPanel({
       }
       return changed ? next : prev;
     });
-  }, [selectedIDs, marketSharePct, response, dirtyRunsByRowKey]);
+  }, [selectedIDs, response, dirtyRunsByRowKey]);
 
   // Load eligible projects when the user picks "append to existing" mode.
   // Runs once per (mode, non-empty selection) combo; caches list until mode
@@ -2241,6 +2235,12 @@ export function IndustryProfitableScannerPanel({
                     </th>
                     <SortableHeader sortKey="blueprint_name" align="left" label={t("industryScannerColBlueprint")} active={sortKey} dir={sortDir} onClick={toggleSort} />
                     <SortableHeader sortKey="product_name" align="left" label={t("industryScannerColProduct")} active={sortKey} dir={sortDir} onClick={toggleSort} />
+                    {/* Planned runs. Not sortable: the value is UI state (manualRunsByRowKey),
+                        not a field on the row, so there is nothing for the sort comparator
+                        over `response.rows` to read. */}
+                    <th className="px-2 py-1.5 text-right" title={t("industryScannerColPlannedTooltip")}>
+                      {t("industryScannerColPlanned")}
+                    </th>
                     <SortableHeader sortKey="owned_quantity" align="right" label={t("industryScannerColOwned")} active={sortKey} dir={sortDir} onClick={toggleSort} />
                     <SortableHeader sortKey="available_runs" align="right" label={t("industryScannerColRunsAvail")} active={sortKey} dir={sortDir} onClick={toggleSort} titleText={t("industryScannerColRunsAvailTooltip")} />
                     <SortableHeader sortKey="me" align="right" label={t("industryScannerColME")} active={sortKey} dir={sortDir} onClick={toggleSort} />
@@ -2445,9 +2445,15 @@ function CommitFooter({
               className="w-56 px-2 py-1 bg-eve-input border border-eve-border rounded-sm text-eve-text text-[11px]
                          focus:outline-none focus:border-eve-accent focus:ring-1 focus:ring-eve-accent/30 disabled:opacity-50"
             />
+            {/* Preset only — it does not touch this commit. It is stored on
+                the project and read back when Operations opens it, to seed
+                the scheduler knobs there. Hence "new project only": there is
+                nothing to set when appending to a project that already has
+                a strategy. */}
             <select
               value={strategy}
               disabled={submitting}
+              title={t("industryScannerStrategyTooltip")}
               onChange={(e) => onStrategyChange(e.target.value as CommitFooterProps["strategy"])}
               className="px-2 py-1 bg-eve-input border border-eve-border rounded-sm text-eve-text text-[11px]
                          focus:outline-none focus:border-eve-accent focus:ring-1 focus:ring-eve-accent/30 disabled:opacity-50"
@@ -2524,10 +2530,10 @@ interface ScannerRowProps {
    *  captures allStations, sharedPrefs, and pricing params so this row only
    *  needs to invoke it with the row itself. */
   onView: ((row: ProfitableScanRow) => void) | undefined;
-  /** Runs to build if this row is committed to a project. Suggested from
-   *  market volume × marketSharePct in the parent; the Runs cell is editable
-   *  when the row is checked so users can nudge it. Undefined = show the
-   *  suggested default from row's own defaultRunsForRow computation. */
+  /** Runs to build if this row is committed to a project. Seeded in the
+   *  parent from suggestRunsForRow; the Planned cell is editable when the
+   *  row is checked so users can nudge it. Undefined = show the row's own
+   *  suggestion. */
   batchRuns?: number;
   onBatchRunsChange?: (k: string, runs: number) => void;
   /** Live status while the batch commit is in flight. When present, the Flag
@@ -2551,6 +2557,13 @@ const ScannerRow = memo(function ScannerRow({ row, k, checked, onToggle, onView,
     ? `Invention: ${((row.invention_probability ?? 0) * 100).toFixed(1)}% × ${(row.expected_attempts ?? 0).toFixed(1)} attempts (cap ${capLabel})`
     : undefined;
   const isUnowned = row.owned === false;
+  // Same call the parent uses to seed manualRunsByRowKey, so the dimmed
+  // preview on an unselected row is exactly what ticking it will plan. The
+  // derivation rides along as the cell tooltip — a batch size you can't
+  // audit is a batch size you don't trust.
+  const suggestion = useMemo(() => suggestRunsForRow(row), [row]);
+  const suggestedRuns = suggestion.runs;
+  const plannedTitle = t("industryScannerColPlannedTooltip") + "\n\n" + suggestion.reason;
 
   const totalUnits = row.total_quantity ?? row.runs * (row.output_qty_per_run ?? 1);
   const matCost = row.total_material_cost ?? Math.max(0, row.optimal_build_cost - (row.total_job_cost ?? 0) - (row.invention_cost ?? 0));
@@ -2731,27 +2744,35 @@ const ScannerRow = memo(function ScannerRow({ row, k, checked, onToggle, onView,
         })()}
       </td>
       <td className="px-2 py-1 text-eve-dim">{row.product_name}</td>
-      <td className="px-2 py-1 text-right font-mono">{row.owned_quantity}</td>
-      <td className="px-2 py-1 text-right font-mono text-eve-dim">
-        {/* When the row is selected for a batch commit, the Runs cell becomes
-            an editable "runs to build" input — dual meaning: unchecked shows
-            available runs on the BP, checked shows the plan runs the batch
-            will submit for this row. */}
+      {/* Planned runs lives in its own column. It used to share the Avail cell,
+          which meant selecting a row hid the one number you check the plan
+          against — how many runs the blueprint can actually cover. */}
+      <td className="px-2 py-1 text-right font-mono">
         {checked && onBatchRunsChange ? (
           <input
             type="number"
             min={1}
             max={100000}
-            value={batchRuns ?? defaultRunsForRow(row, 10, 1)}
+            value={batchRuns ?? suggestedRuns}
             onChange={(e) => {
               const n = Math.max(1, Math.min(100000, parseInt(e.target.value, 10) || 1));
               onBatchRunsChange(k, n);
             }}
             className="w-16 px-1 py-0 bg-eve-input border border-eve-border rounded-sm text-right text-eve-text text-[11px] font-mono
                        focus:outline-none focus:border-eve-accent focus:ring-1 focus:ring-eve-accent/30"
-            title="Runs to build in this batch (editable while row is selected)"
+            title={plannedTitle}
           />
-        ) : row.is_bpo
+        ) : (
+          // Unselected rows preview what ticking the box would plan, dimmed so
+          // it never reads as a committed number.
+          <span className="text-eve-dim/60" title={plannedTitle}>
+            {suggestedRuns.toLocaleString()}
+          </span>
+        )}
+      </td>
+      <td className="px-2 py-1 text-right font-mono">{row.owned_quantity}</td>
+      <td className="px-2 py-1 text-right font-mono text-eve-dim">
+        {row.is_bpo
           ? "∞"
           : row.owned === false
             ? "—"

@@ -31,6 +31,7 @@ import {
   effectiveInventionParams,
   type DecryptorKey,
 } from "@/lib/industryDecryptors";
+import { formatISK } from "@/lib/format";
 
 export interface ScannerAnalysisContext {
   systemName: string;
@@ -123,43 +124,142 @@ export interface CommitBatchResult {
 }
 
 /**
- * Suggests a per-row runs count from the row's 30-day market volume. Captures
- * `marketSharePct` of one day of aggressive-buy demand, then converts units
- * to runs via the BP's output-per-run.
- *
- * Rounding matches the natural granularity of T2 BPCs (10 runs):
- *   raw < 10   → round to nearest whole number
- *   raw ≥ 10   → round to nearest 10
- *
- * Availability cap: for owned BPCs, capped at the row's available_runs so we
- * never suggest more than the user's actual stock can cover.
- *
- * Falls back to `fallbackRuns` when the row has no volume history.
+ * How much ISK of build cost the batch may tie up, and how long you are
+ * willing to still be selling it. These two ceilings are what separate a
+ * bulk drone batch from a large-ticket module batch without hardcoding
+ * anything about drones or modules.
  */
-export function defaultRunsForRow(
+export interface RunsSuggestionPrefs {
+  /** Batch sizes you actually like to run, tried largest first. Multiples
+   *  of ten divide evenly across ten manufacturing / invention slots. */
+  tiers: number[];
+  /** Share of the product's daily aggressive-buy volume you expect to win. */
+  marketSharePct: number;
+  /** Longest you are willing to still be shifting one batch. */
+  maxFillDays: number;
+  /** Most ISK of build cost to have tied up in one batch. */
+  maxBatchCapitalISK: number;
+}
+
+export const DEFAULT_RUNS_PREFS: RunsSuggestionPrefs = {
+  tiers: [400, 200, 100],
+  marketSharePct: 10,
+  maxFillDays: 90,
+  maxBatchCapitalISK: 3_000_000_000,
+};
+
+/**
+ * Owned stock within this multiple of the target gets consumed whole rather
+ * than leaving a stub behind. 1.25 = "if finishing the copies costs me less
+ * than a quarter batch extra, finish them".
+ */
+const OWNED_STOCK_ABSORB = 1.25;
+
+export interface RunsSuggestion {
+  runs: number;
+  /** Line-per-constraint derivation, rendered into the Planned cell tooltip
+   *  so a surprising number is auditable instead of just wrong-looking. */
+  reason: string;
+}
+
+/**
+ * Suggests a per-row batch size.
+ *
+ * Three constraints, applied in order:
+ *
+ *   1. Demand — units the market will take off you within `maxFillDays` at
+ *      your share of the product's daily aggressive-buy volume. The veto:
+ *      no building 100 smartbombs when three sell a day.
+ *   2. Capital — ISK tied up in one batch. This is what pulls large-ticket
+ *      items down to a small batch; they hit the capital wall long before
+ *      the demand wall.
+ *   3. Preference — the largest of `tiers` that clears both. Below the
+ *      smallest tier we fall back to slot-friendly tens.
+ *
+ * Then the answer is snapped to whole blueprints. Inventing a ten-run BPC
+ * to use one run of it is how a hangar fills up with part-used copies, so
+ * blueprint granularity outranks the tier: 403 runs off 31 whole copies
+ * beats 400 runs off 30 copies and a stub.
+ */
+export function suggestRunsForRow(
   row: ProfitableScanRow,
-  marketSharePct: number,
-  fallbackRuns: number,
-): number {
-  const daily = row.product_daily_volume ?? 0;
+  prefs: RunsSuggestionPrefs = DEFAULT_RUNS_PREFS,
+): RunsSuggestion {
   const outputQty = row.output_qty_per_run && row.output_qty_per_run > 0 ? row.output_qty_per_run : 1;
   const isInvention = row.scan_mode === "t2_invention" || row.scan_mode === "t3_invention";
   const isOwnedBPC = (row.owned ?? true) && !row.is_bpo && !isInvention;
 
-  let suggestion: number;
+  // Runs on one invented BPC, decryptor included. Owned stock only reports
+  // a total across copies, so there is no per-copy step to respect there.
+  const decryptorKey: DecryptorKey =
+    row.best_decryptor_key && row.best_decryptor_key in DECRYPTORS
+      ? (row.best_decryptor_key as DecryptorKey)
+      : "none";
+  const bpcStep = isInvention
+    ? Math.max(1, effectiveInventionParams(decryptorKey, row.output_bpc_runs).outputRuns)
+    : 1;
+
+  const daily = row.product_daily_volume ?? 0;
+  const share = Math.max(0.001, prefs.marketSharePct / 100);
+  const costPerRun = row.runs > 0 && row.optimal_build_cost > 0 ? row.optimal_build_cost / row.runs : 0;
+  const tiers = prefs.tiers.filter((t) => t > 0).sort((a, b) => b - a);
+  const smallestTier = tiers.length > 0 ? tiers[tiers.length - 1] : 1;
+  const lines: string[] = [];
+
+  let target: number;
   if (daily <= 0) {
-    suggestion = Math.max(1, fallbackRuns);
+    // No 30d history. Guessing a batch size off nothing is worse than
+    // planning one blueprint and letting the row's risk flag argue.
+    target = bpcStep;
+    lines.push("No 30d volume signal — planning one blueprint's worth");
   } else {
-    const shareFraction = Math.max(0.001, marketSharePct / 100);
-    const unitsTarget = daily * shareFraction;
-    const rawRuns = unitsTarget / outputQty;
-    suggestion = rawRuns < 10 ? Math.max(1, Math.round(rawRuns)) : Math.max(10, Math.round(rawRuns / 10) * 10);
+    const demandRuns = (daily * share * prefs.maxFillDays) / outputQty;
+    lines.push(
+      `Demand: ${Math.round(daily).toLocaleString()}/day × ${prefs.marketSharePct}% × ${prefs.maxFillDays}d = ` +
+        `${Math.floor(demandRuns).toLocaleString()} runs`,
+    );
+    const capitalRuns = costPerRun > 0 ? prefs.maxBatchCapitalISK / costPerRun : Number.POSITIVE_INFINITY;
+    if (Number.isFinite(capitalRuns)) {
+      lines.push(
+        `Capital: ${formatISK(prefs.maxBatchCapitalISK)} ÷ ${formatISK(costPerRun)}/run = ` +
+          `${Math.floor(capitalRuns).toLocaleString()} runs`,
+      );
+    }
+    const ceiling = Math.min(demandRuns, capitalRuns);
+    const tier = tiers.find((t) => t <= ceiling);
+    if (tier !== undefined) {
+      target = tier;
+      lines.push(`Batch: ${tier} — largest preferred size that fits`);
+    } else {
+      target = ceiling >= 10 ? Math.floor(ceiling / 10) * 10 : Math.max(1, Math.round(ceiling));
+      lines.push(`Batch: ${target.toLocaleString()} — below the smallest preferred size (${smallestTier})`);
+    }
   }
 
-  if (isOwnedBPC && row.available_runs > 0 && suggestion > row.available_runs) {
-    suggestion = row.available_runs;
+  if (bpcStep > 1) {
+    const copies = Math.max(1, Math.round(target / bpcStep));
+    target = copies * bpcStep;
+    lines.push(`Blueprints: ${copies} × ${bpcStep}-run BPC = ${target.toLocaleString()} runs`);
   }
-  return Math.max(1, suggestion);
+
+  if (isOwnedBPC && row.available_runs > 0) {
+    if (row.available_runs <= target) {
+      target = row.available_runs;
+      lines.push(`Stock: capped at your ${row.available_runs.toLocaleString()} available runs`);
+    } else if (row.available_runs <= target * OWNED_STOCK_ABSORB) {
+      target = row.available_runs;
+      lines.push(`Stock: rounded up to ${row.available_runs.toLocaleString()} to use the copies up`);
+    }
+  }
+
+  const runs = Math.max(1, Math.round(target));
+  if (daily > 0) {
+    const units = runs * outputQty;
+    const fillDays = units / (daily * share);
+    lines.push(`≈ ${Math.round(fillDays).toLocaleString()}d to sell ${units.toLocaleString()} units at your share`);
+  }
+
+  return { runs, reason: lines.join("\n") };
 }
 
 /** Build the analyzer request body from a scanner row + shared context. */

@@ -522,6 +522,7 @@ export function materialDiffToCoverageRows(
       missing_qty: missing,
       coverage_pct: coveragePct,
       status,
+      unit_volume: m.unit_volume,
     };
   });
 }

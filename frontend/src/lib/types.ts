@@ -2837,6 +2837,9 @@ export interface IndustryMaterialDiff {
   buy_qty: number;
   build_qty: number;
   missing_qty: number;
+  /** Packaged m³ per unit from the SDE, stamped by the snapshot handler.
+   *  Not persisted — static reference data resolved at read time. */
+  unit_volume?: number;
 }
 
 export interface IndustryProjectSnapshot {
@@ -2869,6 +2872,10 @@ export interface IndustryCoverageMaterialRow {
   missing_qty: number;
   coverage_pct: number;
   status: "covered" | "partial" | "missing" | string;
+  /** Packaged m³ per unit, stamped from the SDE by the API on the way out
+   *  (both the coverage endpoint and the project snapshot). Absent or zero
+   *  when the SDE has no volume for the type. */
+  unit_volume?: number;
 }
 
 export interface IndustryCoverageBlueprintRow {

@@ -6226,7 +6226,17 @@ func (s *Server) handleAuthIndustryProjectSnapshot(w http.ResponseWriter, r *htt
 		writeError(w, 500, "failed to get industry project snapshot")
 		return
 	}
+	s.stampMaterialDiffVolumes(snapshot.MaterialDiff)
 	writeJSON(w, snapshot)
+}
+
+// stampMaterialDiffVolumes fills in per-unit packaged volume from the SDE.
+// Volume is static reference data rather than project state, so it is
+// resolved at read time instead of being persisted with the plan.
+func (s *Server) stampMaterialDiffVolumes(diffs []db.IndustryMaterialDiff) {
+	for i := range diffs {
+		diffs[i].UnitVolume = s.packagedVolumeForExecution(diffs[i].TypeID, 0)
+	}
 }
 
 func (s *Server) handleAuthDeleteIndustryProject(w http.ResponseWriter, r *http.Request) {
@@ -7492,6 +7502,9 @@ func (s *Server) handleAuthIndustryCoverage(w http.ResponseWriter, r *http.Reque
 	}
 
 	coverage := engine.ComputeIndustryCoverage(req.Materials, req.Blueprints, assetsByType, blueprintStock)
+	for i := range coverage.Materials {
+		coverage.Materials[i].UnitVolume = s.packagedVolumeForExecution(coverage.Materials[i].TypeID, 0)
+	}
 	for _, msg := range extraWarnings {
 		coverage.Warnings = append(coverage.Warnings, msg)
 	}
