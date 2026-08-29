@@ -33,12 +33,33 @@ import { PricingHubPicker } from "./PricingHubPicker";
 import { getStructureRigs } from "@/lib/api";
 import type { StructureRig } from "@/lib/types";
 import type { JobSplitLimits } from "@/lib/industryPlanPatch";
+import {
+  calcIndustryFlag,
+  calcRowScore,
+  INDUSTRY_MARKET_SHARE_CAP,
+  computeScoreBands,
+  scoreBandFor,
+  buildScoreTooltip,
+  type RowScore,
+  type ScoreBands,
+} from "@/lib/industryRowScore";
+import {
+  getAuthIndustryFavorites,
+  addAuthIndustryFavorite,
+  deleteAuthIndustryFavorite,
+} from "@/lib/api";
 
+// How many rows the "Select top N" button ticks. Fifteen is roughly what
+// fits across ten manufacturing slots with a couple of multi-job items.
+const TOP_PICK_COUNT = 15;
 const SCANNER_PERSIST_KEY = "industry-scanner";
 const PARAMS_LS_KEY = "eve-settings:industry-scanner";
 // Keep transient scan results (rows + selection + sort + search) in
 // sessionStorage so the user doesn't lose them when they switch jobs tabs.
-const SCAN_STATE_SS_KEY = "eve-flipper:scanner-state";
+// Versioned: the persisted blob carries sortKey, and "isk_per_hour" is a
+// legitimate user choice that cannot be told apart from a stale pre-Score
+// default. Bumping the key drops one cached scan once, and Score defaults.
+const SCAN_STATE_SS_KEY = "eve-flipper:scanner-state:v2";
 
 type SortKey =
   | "selected"
@@ -56,7 +77,8 @@ type SortKey =
   | "optimal_build_cost"
   | "manufacturing_time"
   | "unit_ask_price"
-  | "flag_score";
+  | "flag_score"
+  | "score";
 
 type SortDir = "asc" | "desc";
 
@@ -166,124 +188,6 @@ function savePersistedParams(p: PersistedParams) {
   }
 }
 
-// Buildability flag heuristic. Mirrors the calcConfidence pattern in
-// ScanResultsTable.tsx: start at 100, subtract for each risk signal, and
-// map the final score into High/Medium/Low with a hover-hint listing the
-// specific reasons. All inputs come off the row — the market-share cap
-// (0.10) matches internal/api/industry_blueprint_scan.go
-// profitableScanMarketShare, and fillTimeDays is derived the same way the
-// engine derives sellable from producible.
-const INDUSTRY_MARKET_SHARE_CAP = 0.1;
-export interface IndustryFlag {
-  score: number;
-  label: "high" | "medium" | "low" | "unknown";
-  color: string;
-  reasons: string[];
-  fillTimeDays: number | null;
-  sellable30d: number | null;
-}
-export function calcIndustryFlag(row: ProfitableScanRow): IndustryFlag {
-  const totalUnits = row.total_quantity ?? row.runs * (row.output_qty_per_run ?? 1);
-  const daily = row.product_daily_volume ?? 0;
-  const askDepth = row.ask_depth_units ?? 0;
-  const askOrders = row.ask_orders_count ?? 0;
-  const unitAsk = row.unit_ask_price ?? 0;
-  const avg30d = row.regional_avg_price_30d ?? 0;
-
-  const share = daily * 30 * INDUSTRY_MARKET_SHARE_CAP;
-  const sellable30d = share > 0 ? Math.min(totalUnits, share) : null;
-  // "Days to move THIS batch at your realistic share." A run of 128 units
-  // against 3/30d of share = ~1280 days. The single most useful reality
-  // check for a scanner row and the primary driver of the flag score.
-  const fillTimeDays = daily > 0 && totalUnits > 0
-    ? totalUnits / (daily * INDUSTRY_MARKET_SHARE_CAP)
-    : null;
-
-  let score = 100;
-  const reasons: string[] = [];
-
-  if (fillTimeDays === null) {
-    if (avg30d <= 0) {
-      score -= 20;
-      reasons.push("no 30d history — flying blind on demand");
-    } else {
-      score -= 10;
-      reasons.push("no volume signal");
-    }
-  } else if (fillTimeDays > 365) {
-    score -= 40;
-    reasons.push(`fill time ~${Math.round(fillTimeDays)}d — batch would sit unsold for over a year`);
-  } else if (fillTimeDays > 90) {
-    score -= 30;
-    reasons.push(`fill time ~${Math.round(fillTimeDays)}d — heavy inventory drag`);
-  } else if (fillTimeDays > 30) {
-    score -= 15;
-    reasons.push(`fill time ~${Math.round(fillTimeDays)}d — slow mover`);
-  } else if (fillTimeDays > 14) {
-    score -= 5;
-    reasons.push(`fill time ~${Math.round(fillTimeDays)}d — moderate`);
-  }
-
-  if (daily > 0 && daily < 1) {
-    score -= 10;
-    reasons.push(`sub-daily churn (${daily.toFixed(2)}/day)`);
-  }
-
-  if (totalUnits > 0 && askDepth >= totalUnits * 5) {
-    score -= 15;
-    reasons.push(`ask depth ${askDepth.toLocaleString()} units — ${(askDepth / Math.max(1, totalUnits)).toFixed(1)}× your run`);
-  }
-  if (askOrders >= 20) {
-    score -= 10;
-    reasons.push(`crowded book — ${askOrders} sellers ahead of you`);
-  }
-
-  if (unitAsk > 0 && avg30d > 0 && unitAsk >= avg30d * 1.2) {
-    const ratio = unitAsk / avg30d;
-    score -= 15;
-    reasons.push(`ask ${ratio.toFixed(1)}× the 30d average — price won't hold`);
-  }
-
-  // Profitability guardrails. The market-side penalties above answer "can I
-  // sell what I build?" — but a row can still be pathological (Zealot BPC:
-  // profits fine at velocity, loses money per unit). These stop the pill
-  // from showing OK on a build that would burn ISK regardless of market fit.
-  if (row.profit < 0) {
-    score -= 40;
-    reasons.push(`build unprofitable — loss ${row.profit.toLocaleString(undefined, { maximumFractionDigits: 0 })} ISK per full BP`);
-  } else if (row.profit_percent >= 0 && row.profit_percent < 2) {
-    // Positive but thin — sits inside the noise of fees, price drift, and
-    // taxes. Not fatal, but shouldn't get a green pill on its own.
-    score -= 15;
-    reasons.push(`margin ${row.profit_percent.toFixed(1)}% — inside the noise floor`);
-  }
-  if (row.period_margin !== undefined && row.period_margin < 0) {
-    // 30d ROI negative means even the market-share-capped realistic view
-    // loses money — orthogonal to per-run profit and worth calling out
-    // separately (an item can be per-run positive but 30d negative if
-    // idle-capital drag on unsellable inventory outweighs realized profit).
-    score -= 25;
-    reasons.push(`30d ROI ${row.period_margin.toFixed(1)}% — market saturation eats the run`);
-  }
-
-  score = Math.max(0, Math.min(100, score));
-  let label: IndustryFlag["label"];
-  let color: string;
-  if (fillTimeDays === null && avg30d <= 0) {
-    label = "unknown";
-    color = "text-slate-300 border-slate-500/60 bg-slate-800/40";
-  } else if (score >= 75) {
-    label = "high";
-    color = "text-green-300 border-green-500/60 bg-green-900/20";
-  } else if (score >= 45) {
-    label = "medium";
-    color = "text-yellow-300 border-yellow-500/60 bg-yellow-900/20";
-  } else {
-    label = "low";
-    color = "text-red-300 border-red-500/60 bg-red-900/20";
-  }
-  return { score, label, color, reasons, fillTimeDays, sellable30d };
-}
 
 export interface ScannerAnalysisHandoff {
   productTypeID: number;
@@ -386,8 +290,11 @@ export function IndustryProfitableScannerPanel({
     () => initialScanState?.response ?? null,
   );
   const [error, setError] = useState<string | null>(null);
+  // Score is the default: ISK/h ranks a row with no reference to whether
+  // anyone buys the thing, which puts moon-priced illiquid rows on top —
+  // the exact opposite of "click the top 15 and build them".
   const [sortKey, setSortKey] = useState<SortKey>(
-    () => initialScanState?.sortKey ?? "isk_per_hour",
+    () => initialScanState?.sortKey ?? "score",
   );
   const [sortDir, setSortDir] = useState<SortDir>(
     () => initialScanState?.sortDir ?? "desc",
@@ -407,6 +314,7 @@ export function IndustryProfitableScannerPanel({
     "optimal_build_cost",
     "manufacturing_time",
     "flag_score",
+    "score",
   ];
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -424,6 +332,73 @@ export function IndustryProfitableScannerPanel({
   // gets one distinct key per row.
   const rowKey = (row: ProfitableScanRow) =>
     `${row.blueprint_type_id}-${row.is_bpo ? "bpo" : "bpc"}-${row.scan_mode ?? "t1_mfg"}-${row.product_type_id}`;
+
+  // Starred rows, persisted server-side so a proven earner survives a cache
+  // clear and follows the user between the desktop app and the web build.
+  // Keyed exactly like rowKey: one BPO fans out to several invention
+  // products, and starring Warrior II must not star Hobgoblin II.
+  const [favoriteKeys, setFavoriteKeys] = useState<Set<string>>(() => new Set());
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
+  // Flipped off when the favourites API is unreachable (not signed in, or a
+  // build without the endpoint) so the star column stops offering something
+  // that cannot work.
+  const [favoritesAvailable, setFavoritesAvailable] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    getAuthIndustryFavorites()
+      .then((favs) => {
+        if (cancelled) return;
+        setFavoriteKeys(new Set(favs.map((f) => `${f.blueprint_type_id}-${f.is_bpo ? "bpo" : "bpc"}-${f.scan_mode}-${f.product_type_id}`)));
+      })
+      .catch(() => {
+        if (!cancelled) setFavoritesAvailable(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const toggleFavorite = useCallback(
+    async (row: ProfitableScanRow) => {
+      const k = rowKey(row);
+      const wasFavorite = favoriteKeys.has(k);
+      // Optimistic — a star has to feel instant. Rolled back below if the
+      // write fails, so the UI never claims a favourite the server rejected.
+      setFavoriteKeys((prev) => {
+        const next = new Set(prev);
+        if (wasFavorite) next.delete(k);
+        else next.add(k);
+        return next;
+      });
+      const key = {
+        blueprint_type_id: row.blueprint_type_id,
+        product_type_id: row.product_type_id,
+        scan_mode: row.scan_mode ?? "t1_mfg",
+      };
+      try {
+        const favs = wasFavorite
+          ? await deleteAuthIndustryFavorite(key)
+          : await addAuthIndustryFavorite({
+              ...key,
+              is_bpo: row.is_bpo,
+              blueprint_name: row.blueprint_name,
+              product_name: row.product_name,
+            });
+        setFavoriteKeys(new Set(favs.map((f) => `${f.blueprint_type_id}-${f.is_bpo ? "bpo" : "bpc"}-${f.scan_mode}-${f.product_type_id}`)));
+      } catch (e) {
+        setFavoriteKeys((prev) => {
+          const next = new Set(prev);
+          if (wasFavorite) next.add(k);
+          else next.delete(k);
+          return next;
+        });
+        addToast(e instanceof Error ? e.message : String(e), "error", 3000);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [favoriteKeys, addToast],
+  );
   // Batch-commit state — the inline replacement for the deleted
   // AddBlueprintsToProjectModal. Everything here corresponds one-to-one with
   // the modal's local state, promoted up so the sticky footer + editable
@@ -898,6 +873,17 @@ export function IndustryProfitableScannerPanel({
     await runScan(req, t("industryScannerRefreshingPrices"));
   }, [response, buildBaseScanRequest, runScan, t]);
 
+  // Risk-adjusted ISK/day per row. Computed once per scan rather than per
+  // render — calcRowScore walks the batch suggestion, so it is not free.
+  // Null for rows with no 30d trade history: they render "—" and sort last.
+  const scoreByKey = useMemo(() => {
+    const m = new Map<string, RowScore | null>();
+    if (!response) return m;
+    for (const r of response.rows) m.set(rowKey(r), calcRowScore(r));
+    return m;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [response]);
+
   const sortedRows = useMemo(() => {
     if (!response) return [];
     // Apply filters client-side so threshold tweaks are instant. The scan
@@ -909,6 +895,7 @@ export function IndustryProfitableScannerPanel({
       if (mode === "t2_invention" && !params.showT2Rows) return false;
       if (mode === "reaction" && !params.showReactionRows) return false;
       if (mode === "t1_mfg" && !params.showT1Rows) return false;
+      if (favoritesOnly && !favoriteKeys.has(rowKey(r))) return false;
       if (params.ownedFilter === "owned" && !r.owned) return false;
       if (params.ownedFilter === "unowned" && r.owned) return false;
       if (params.minISKPerHour != null && r.isk_per_hour < params.minISKPerHour) return false;
@@ -943,7 +930,32 @@ export function IndustryProfitableScannerPanel({
       }
       return true;
     });
+    // Starred rows float to the top of whatever sort is active — the point
+    // of a favourite is that you don't have to go looking for it. Stable
+    // within each bucket, so the active sort still orders both halves.
+    const pinFavorites = (list: ProfitableScanRow[]) => {
+      if (favoriteKeys.size === 0 || favoritesOnly) return list;
+      const pinned: ProfitableScanRow[] = [];
+      const rest: ProfitableScanRow[] = [];
+      for (const r of list) (favoriteKeys.has(rowKey(r)) ? pinned : rest).push(r);
+      return pinned.concat(rest);
+    };
     const mul = sortDir === "asc" ? 1 : -1;
+    if (sortKey === "score") {
+      // Unscored rows (no 30d trade history) sink to the bottom in BOTH
+      // directions rather than topping the ascending sort — there is nothing
+      // to rank them on, and guessing is what made ISK/h untrustworthy.
+      rows.sort((a, b) => {
+        const av = scoreByKey.get(rowKey(a));
+        const bv = scoreByKey.get(rowKey(b));
+        if (!av && !bv) return b.isk_per_hour - a.isk_per_hour;
+        if (!av) return 1;
+        if (!bv) return -1;
+        if (av.score !== bv.score) return mul * (av.score - bv.score);
+        return b.isk_per_hour - a.isk_per_hour;
+      });
+      return pinFavorites(rows);
+    }
     if (sortKey === "selected") {
       rows.sort((a, b) => {
         const av = selectedIDs.has(rowKey(a)) ? 1 : 0;
@@ -952,7 +964,7 @@ export function IndustryProfitableScannerPanel({
         // Stable secondary sort: keep ISK/h-desc within each selection bucket.
         return b.isk_per_hour - a.isk_per_hour;
       });
-      return rows;
+      return pinFavorites(rows);
     }
     if (sortKey === "flag_score") {
       // Flag score is derived per-row from market/velocity/competition
@@ -967,7 +979,7 @@ export function IndustryProfitableScannerPanel({
         if (av !== bv) return mul * (av - bv);
         return b.isk_per_hour - a.isk_per_hour;
       });
-      return rows;
+      return pinFavorites(rows);
     }
     rows.sort((a, b) => {
       const av = a[sortKey];
@@ -985,8 +997,40 @@ export function IndustryProfitableScannerPanel({
       if (bNum === undefined) return -1;
       return mul * (aNum - bNum);
     });
-    return rows;
-  }, [response, sortKey, sortDir, selectedIDs, params.minISKPerHour, params.minProfit, params.minMarginPct, params.flagFilter, params.showT1Rows, params.showT2Rows, params.showT3Rows, params.showReactionRows, params.ownedFilter, searchQuery]);
+    return pinFavorites(rows);
+  }, [response, sortKey, sortDir, selectedIDs, scoreByKey, favoriteKeys, favoritesOnly, params.minISKPerHour, params.minProfit, params.minMarginPct, params.flagFilter, params.showT1Rows, params.showT2Rows, params.showT3Rows, params.showReactionRows, params.ownedFilter, searchQuery]);
+
+  // Band cutoffs come from the current result set, not an absolute ISK
+  // threshold: what counts as a good row depends on what else you could
+  // build with the same ten slots.
+  const scoreBands: ScoreBands | null = useMemo(() => {
+    const vals: number[] = [];
+    for (const r of sortedRows) {
+      const sc = scoreByKey.get(rowKey(r));
+      if (sc) vals.push(sc.score);
+    }
+    return computeScoreBands(vals);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sortedRows, scoreByKey]);
+
+  const handleSelectTopScored = useCallback(() => {
+    // Deliberately works on score order and ignores favourite pinning: this
+    // button's entire job is "give me the best rows", and a pile of stars
+    // must not quietly hijack it. Adds to the current selection rather than
+    // replacing it, so nothing already ticked is silently dropped.
+    const ranked = sortedRows
+      .map((r) => ({ k: rowKey(r), sc: scoreByKey.get(rowKey(r)) }))
+      .filter((e): e is { k: string; sc: RowScore } => e.sc != null)
+      .sort((a, b) => b.sc.score - a.sc.score)
+      .slice(0, TOP_PICK_COUNT);
+    if (ranked.length === 0) return;
+    setSelectedIDs((prev) => {
+      const next = new Set(prev);
+      for (const e of ranked) next.add(e.k);
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sortedRows, scoreByKey]);
 
   const handleExportCsv = useCallback(() => {
     // Export the CURRENTLY VISIBLE rows (sortedRows applies search + filters
@@ -2177,12 +2221,38 @@ export function IndustryProfitableScannerPanel({
                   );
                 })}
               </div>
+              {favoritesAvailable && (
+                <button
+                  type="button"
+                  onClick={() => setFavoritesOnly((v) => !v)}
+                  title={t("industryScannerFavoritesChipTooltip")}
+                  className={`px-2 py-0.5 text-[10px] rounded-sm border transition-colors ${
+                    favoritesOnly
+                      ? "border-amber-400/60 text-amber-300 bg-amber-400/10"
+                      : "border-eve-border text-eve-dim hover:text-eve-text"
+                  }`}
+                >
+                  {t("industryScannerFavoritesChip")}
+                  {favoriteKeys.size > 0 ? ` (${favoriteKeys.size})` : ""}
+                </button>
+              )}
               <span className="text-[11px] text-eve-dim">
                 {t("industryScannerSelectedSummary")
                   .replace("{count}", String(selectedIDs.size))
                   .replace("{capital}", formatISK(selectionTotals.capital))
                   .replace("{profit}", formatISK(selectionTotals.profit))}
               </span>
+              <button
+                type="button"
+                onClick={handleSelectTopScored}
+                disabled={sortedRows.length === 0}
+                title={t("industryScannerSelectTopTooltip", { count: TOP_PICK_COUNT })}
+                className="px-2 py-1 text-[11px] rounded-sm border border-eve-accent/40 text-eve-accent
+                           hover:bg-eve-accent/10 disabled:opacity-40 disabled:cursor-not-allowed
+                           transition-colors"
+              >
+                {t("industryScannerSelectTop", { count: TOP_PICK_COUNT })}
+              </button>
               <button
                 type="button"
                 onClick={handleExportCsv}
@@ -2213,6 +2283,9 @@ export function IndustryProfitableScannerPanel({
               <table className="w-full text-xs">
                 <thead className="bg-eve-dark/60 text-eve-dim">
                   <tr>
+                    {favoritesAvailable && (
+                      <th className="px-1 py-1.5 text-center w-6" aria-label={t("industryScannerFavoritesChip")} />
+                    )}
                     <th className="px-2 py-1.5 text-left w-14">
                       <div className="flex items-center gap-1">
                         <input
@@ -2245,6 +2318,7 @@ export function IndustryProfitableScannerPanel({
                     <SortableHeader sortKey="available_runs" align="right" label={t("industryScannerColRunsAvail")} active={sortKey} dir={sortDir} onClick={toggleSort} titleText={t("industryScannerColRunsAvailTooltip")} />
                     <SortableHeader sortKey="me" align="right" label={t("industryScannerColME")} active={sortKey} dir={sortDir} onClick={toggleSort} />
                     <SortableHeader sortKey="te" align="right" label={t("industryScannerColTE")} active={sortKey} dir={sortDir} onClick={toggleSort} />
+                    <SortableHeader sortKey="score" align="right" label={t("industryScannerColScore")} active={sortKey} dir={sortDir} onClick={toggleSort} titleText={t("industryScannerColScoreTooltip")} />
                     <SortableHeader sortKey="flag_score" align="center" label={t("industryScannerColFlag")} active={sortKey} dir={sortDir} onClick={toggleSort} titleText={t("industryScannerColFlagTooltip")} />
                     <SortableHeader
                       sortKey="unit_ask_price"
@@ -2278,6 +2352,10 @@ export function IndustryProfitableScannerPanel({
                         batchRuns={manualRunsByRowKey.get(k)}
                         onBatchRunsChange={handleRunsChange}
                         commitStatus={rowCommitStatuses.get(k)}
+                        score={scoreByKey.get(k) ?? null}
+                        scoreBands={scoreBands}
+                        favorite={favoriteKeys.has(k)}
+                        onToggleFavorite={favoritesAvailable ? toggleFavorite : undefined}
                       />
                     );
                   })}
@@ -2540,9 +2618,20 @@ interface ScannerRowProps {
    *  pill is replaced with an "Analyzing / Done / Failed" pill so commit
    *  progress is legible per-row without a separate progress log. */
   commitStatus?: RowCommitStatus;
+  /** Risk-adjusted ISK/day of the batch this row would commit, or null when
+   *  the product has no 30d trade history. Computed in the parent so the
+   *  sort and the cell can never disagree. */
+  score: RowScore | null;
+  /** Band cutoffs across the current result set, for the tooltip's verdict
+   *  word. Null when nothing in the result set is scored. */
+  scoreBands: ScoreBands | null;
+  favorite: boolean;
+  /** Undefined when the favourites API is unreachable — the star column is
+   *  then not rendered at all rather than offering a dead control. */
+  onToggleFavorite?: (row: ProfitableScanRow) => void;
 }
 
-const ScannerRow = memo(function ScannerRow({ row, k, checked, onToggle, onView, batchRuns, onBatchRunsChange, commitStatus }: ScannerRowProps) {
+const ScannerRow = memo(function ScannerRow({ row, k, checked, onToggle, onView, batchRuns, onBatchRunsChange, commitStatus, score, scoreBands, favorite, onToggleFavorite }: ScannerRowProps) {
   const { t } = useI18n();
 
   const hours = row.manufacturing_time / 3600;
@@ -2664,10 +2753,38 @@ const ScannerRow = memo(function ScannerRow({ row, k, checked, onToggle, onView,
     ? `${flagLabelText} · Score ${flag.score}/100\n\n${flag.reasons.map((r) => `• ${r}`).join("\n")}`
     : `${flagLabelText} · Score ${flag.score}/100\n\nNo risk factors detected.`;
 
+  // Score cell. The tooltip leads with a plain-English verdict — its job is
+  // to justify a rank, not to dump a derivation — and only then shows the
+  // arithmetic. Unscored rows say why there is no number instead of
+  // pretending to one.
+  const scoreBand = score ? scoreBandFor(score.score, scoreBands) : null;
+  const scoreTooltip = score && scoreBand
+    ? buildScoreTooltip(score, scoreBand, t)
+    : t("industryScannerScoreNoHistory");
+  const scoreTone =
+    scoreBand === "strong" ? "text-emerald-300" :
+    scoreBand === "solid" ? "text-eve-text" :
+    scoreBand === "thin" ? "text-eve-dim" :
+    scoreBand === "weak" ? "text-red-300/80" : "text-eve-dim/50";
+
   return (
     <tr
       className={`border-t border-eve-border/30 hover:bg-eve-accent/5 ${checked ? "bg-eve-accent/10" : ""} ${isUnowned ? "opacity-60" : ""}`}
     >
+      {onToggleFavorite && (
+        <td className="px-1 py-1 text-center">
+          <button
+            type="button"
+            onClick={() => onToggleFavorite(row)}
+            title={favorite ? t("industryScannerFavoriteRemove") : t("industryScannerFavoriteAdd")}
+            className={`text-[13px] leading-none transition-colors ${
+              favorite ? "text-amber-300" : "text-eve-dim/40 hover:text-amber-300/70"
+            }`}
+          >
+            {favorite ? "★" : "☆"}
+          </button>
+        </td>
+      )}
       <td className="px-2 py-1">
         <input
           type="checkbox"
@@ -2782,6 +2899,12 @@ const ScannerRow = memo(function ScannerRow({ row, k, checked, onToggle, onView,
       </td>
       <td className="px-2 py-1 text-right font-mono">{row.me}</td>
       <td className="px-2 py-1 text-right font-mono">{row.te}</td>
+      <td
+        className={`px-2 py-1 text-right font-mono cursor-help ${scoreTone}`}
+        title={scoreTooltip}
+      >
+        {score ? formatISK(score.score) : "—"}
+      </td>
       <td className="px-2 py-1 text-center">
         {commitStatus ? (
           // During a batch commit the flag cell temporarily becomes a status

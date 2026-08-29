@@ -695,6 +695,7 @@ func TestHostedQuotaFeatureMappingClassifiesAllPostAPIRoutes(t *testing.T) {
 		"/api/auth/paper-trades/reconcile":           "paper-trade CRUD",
 		"/api/auth/achievements/seen":                "achievement state",
 		"/api/auth/industry/projects":                "industry project CRUD",
+		"/api/auth/industry/favorites":               "industry favorites CRUD",
 		"/api/auth/stockpiles":                       "stockpile CRUD",
 		"/api/auth/stockpiles/resolve":               "stockpile name resolution (SDE lookup, no ESI)",
 		"/api/auth/stockpiles/{id}/items":            "stockpile item upsert",

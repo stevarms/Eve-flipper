@@ -36,6 +36,7 @@ import type {
   IndustryPlanSchedulerInput,
   IndustryJobResplitSummary,
   IndustryProject,
+  IndustryBlueprintFavorite,
   IndustryProjectSnapshot,
   IndustryProjectStatus,
   IndustryTaskRecord,
@@ -1156,6 +1157,47 @@ export async function getAuthIndustryProjects(params?: {
     projects: Array.isArray(data.projects) ? data.projects : [],
     count: Number.isFinite(data.count) ? data.count : 0,
   };
+}
+
+// ---- Discover scanner favorites -------------------------------------------
+// Persisted server-side rather than in localStorage so a proven earner
+// survives a cache clear and follows the user between the desktop app and
+// the web build. Every call returns the full list, so the caller can just
+// replace its state instead of reconciling.
+
+export async function getAuthIndustryFavorites(): Promise<IndustryBlueprintFavorite[]> {
+  const res = await apiFetch(`${BASE}/api/auth/industry/favorites`);
+  const data = await handleResponse<IndustryBlueprintFavorite[]>(res);
+  return Array.isArray(data) ? data : [];
+}
+
+export async function addAuthIndustryFavorite(
+  fav: Omit<IndustryBlueprintFavorite, "added_at">,
+): Promise<IndustryBlueprintFavorite[]> {
+  const res = await apiFetch(`${BASE}/api/auth/industry/favorites`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(fav),
+  });
+  const data = await handleResponse<IndustryBlueprintFavorite[]>(res);
+  return Array.isArray(data) ? data : [];
+}
+
+export async function deleteAuthIndustryFavorite(key: {
+  blueprint_type_id: number;
+  product_type_id: number;
+  scan_mode: string;
+}): Promise<IndustryBlueprintFavorite[]> {
+  const qp = new URLSearchParams({
+    blueprint_type_id: String(key.blueprint_type_id),
+    product_type_id: String(key.product_type_id),
+    scan_mode: key.scan_mode,
+  });
+  const res = await apiFetch(`${BASE}/api/auth/industry/favorites?${qp.toString()}`, {
+    method: "DELETE",
+  });
+  const data = await handleResponse<IndustryBlueprintFavorite[]>(res);
+  return Array.isArray(data) ? data : [];
 }
 
 export interface IndustryProjectCreatePayload {

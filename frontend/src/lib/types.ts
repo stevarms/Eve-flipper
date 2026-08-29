@@ -2494,6 +2494,34 @@ export interface ProfitableScanRow {
    *  this price (not the best sell order) as the revenue basis so the
    *  30d projection stays grounded in what the market actually pays. */
   regional_avg_price_30d?: number;
+  /** Same volume-weighted traded average over the last 7 days only. Against
+   *  regional_avg_price_30d it is a direction: a build takes one to two weeks
+   *  to deliver, so an item whose last week traded well under its month
+   *  average will not pay the 30d price by the time the batch lands.
+   *  Undefined or 0 when the product did not trade in the last 7 days, which
+   *  is not the same as a flat price. */
+  regional_avg_price_7d?: number;
+  /** Per-unit profit computed against regional_avg_price_30d instead of
+   *  the current best ask: the traded average run through the same sales
+   *  tax + broker multiplier, minus per-unit build cost. This is the
+   *  grounded counterpart to `profit` and the basis of the Score column
+   *  — ranking on `profit` would inherit every moon-price outlier.
+   *  Undefined/zero when the product has no 30d trade history; negative
+   *  when it trades below build cost. */
+  unit_profit_30d?: number;
+}
+
+/** One starred row in the Discover scanner. Identity is
+ *  (blueprint, product, scan mode) rather than just the blueprint, because
+ *  one BPO fans out to several invention products and each is its own row. */
+export interface IndustryBlueprintFavorite {
+  blueprint_type_id: number;
+  product_type_id: number;
+  scan_mode: string;
+  is_bpo: boolean;
+  blueprint_name: string;
+  product_name: string;
+  added_at: string;
 }
 
 export interface ProfitableScanStats {

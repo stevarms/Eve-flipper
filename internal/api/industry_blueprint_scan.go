@@ -449,6 +449,14 @@ var profitableScanWorkers = func() int {
 // averages) and comfortably longer than typical T2 build times.
 const profitableScanPeriodDays = 30
 
+// profitableScanTrendDays is the short window compared against
+// profitableScanPeriodDays to tell which way a product's price is moving.
+// The 30d average is deliberately stable, which also means it lags: a price
+// that started sliding two weeks ago still reads healthy in it. Seven days is
+// short enough to catch that and long enough that a single quiet day does not
+// invent a crash.
+const profitableScanTrendDays = 7
+
 // profitableScanMarketShare is the share of aggressive-buy volume a single
 // builder is assumed to capture when computing PeriodProfit / PeriodMargin.
 // Full-market (1.0) would model "you sell 100% of what changes hands in
@@ -724,6 +732,24 @@ type profitableScanRow struct {
 	// order book is dominated by outliers. Zero when there's no trade
 	// history for the type in the pricing region.
 	RegionalAvgPrice30d float64 `json:"regional_avg_price_30d"`
+	// RegionalAvgPrice7d is the same volume-weighted traded average over the
+	// last 7 days only. On its own it means little; against
+	// RegionalAvgPrice30d it is a direction. A build takes one to two weeks
+	// to deliver, so an item whose last week traded well under its month
+	// average will not pay the 30d price by the time the batch hits the
+	// market — the "price crashed mid-build" failure. Zero when the product
+	// did not trade at all in the last 7 days, which is not the same as a
+	// flat price and must not be read as one.
+	RegionalAvgPrice7d float64 `json:"regional_avg_price_7d"`
+	// UnitProfit30d is per-unit profit computed against
+	// RegionalAvgPrice30d rather than the current best ask: the traded
+	// average run through the same sales-tax + broker multiplier, minus
+	// per-unit build cost. It is the grounded counterpart to Profit,
+	// and the number PeriodProfit is built from. Surfaced so the
+	// frontend can rank rows on money the market has actually paid
+	// instead of on a lone bait ask. Zero when there's no 30d trade
+	// history; can be negative when the item trades below build cost.
+	UnitProfit30d float64 `json:"unit_profit_30d"`
 }
 
 type profitableScanStats struct {
@@ -1916,6 +1942,7 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 
 				if len(entries) > 0 {
 					cutoff := time.Now().UTC().AddDate(0, 0, -profitableScanPeriodDays).Format("2006-01-02")
+					recentCutoff := time.Now().UTC().AddDate(0, 0, -profitableScanTrendDays).Format("2006-01-02")
 					// Estimate the aggressive-buy fraction of daily volume using
 					// the day's price position: how far up between low and high
 					// the day's average traded. Average near the high → trades
@@ -1936,6 +1963,12 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 					var volumeSum int64
 					var totalTradedVolume int64
 					var totalTradedValue float64
+					// Same VWAP over the trailing week, accumulated in the
+					// same pass. The 30d average says what the item is worth;
+					// the pair says which way it is going, which is what
+					// matters when the batch takes a week or two to deliver.
+					var recentTradedVolume int64
+					var recentTradedValue float64
 					for _, e := range entries {
 						if e.Date < cutoff {
 							continue
@@ -1954,11 +1987,18 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 						if e.Volume > 0 && e.Average > 0 {
 							totalTradedVolume += e.Volume
 							totalTradedValue += e.Average * float64(e.Volume)
+							if e.Date >= recentCutoff {
+								recentTradedVolume += e.Volume
+								recentTradedValue += e.Average * float64(e.Volume)
+							}
 						}
 					}
 					row.ProductDailyVolume = volumeSum / int64(profitableScanPeriodDays)
 					if totalTradedVolume > 0 {
 						row.RegionalAvgPrice30d = totalTradedValue / float64(totalTradedVolume)
+					}
+					if recentTradedVolume > 0 {
+						row.RegionalAvgPrice7d = recentTradedValue / float64(recentTradedVolume)
 					}
 
 					totalQty := int32(1)
@@ -1998,6 +2038,7 @@ func (s *Server) handleAuthIndustryProfitableScan(w http.ResponseWriter, r *http
 					} else {
 						profitPerUnitRealistic = result.Profit / float64(totalQty)
 					}
+					row.UnitProfit30d = profitPerUnitRealistic
 					row.PeriodProfit = profitPerUnitRealistic * float64(sellable)
 					if producible > 0 && costPerUnit > 0 {
 						totalCapital := costPerUnit * float64(producible)

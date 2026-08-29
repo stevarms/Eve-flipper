@@ -1824,6 +1824,38 @@ func (d *DB) migrate() error {
 		logger.Info("DB", "Applied migration v42 (industry task expected-value tracking)")
 	}
 
+	if version < 43 {
+		// Build favorites for the Discover scanner. Starred rows pin to the
+		// top of a fresh scan so a proven earner never has to be re-found by
+		// eye. Deliberately NOT the watchlist table: that one is keyed by
+		// product type_id and carries price-alert thresholds — "warn me about
+		// this price" is a different intent from "I build this".
+		//
+		// The primary key mirrors the frontend's row key. One BPO fans out to
+		// several invention products, so the product and scan mode have to be
+		// part of the identity: starring Warrior II must not star Hobgoblin II
+		// off the same blueprint.
+		if _, err := d.sql.Exec(`
+			CREATE TABLE IF NOT EXISTS industry_blueprint_favorites (
+				user_id           TEXT    NOT NULL,
+				blueprint_type_id INTEGER NOT NULL,
+				product_type_id   INTEGER NOT NULL,
+				scan_mode         TEXT    NOT NULL,
+				is_bpo            INTEGER NOT NULL DEFAULT 0,
+				blueprint_name    TEXT    NOT NULL DEFAULT '',
+				product_name      TEXT    NOT NULL DEFAULT '',
+				added_at          TEXT    NOT NULL,
+				PRIMARY KEY (user_id, blueprint_type_id, product_type_id, scan_mode)
+			);
+			CREATE INDEX IF NOT EXISTS idx_industry_favorites_user
+				ON industry_blueprint_favorites(user_id, added_at DESC);
+			INSERT OR IGNORE INTO schema_version (version) VALUES (43);
+		`); err != nil {
+			return fmt.Errorf("migration v43: %w", err)
+		}
+		logger.Info("DB", "Applied migration v43 (industry blueprint favorites)")
+	}
+
 	return nil
 }
 
