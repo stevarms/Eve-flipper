@@ -257,6 +257,11 @@ export const ru = {
     contractFiltersHint: "Настройки защиты от скама",
 
     // Tabs
+    // Station Trade tabbed filters (UI overhaul phase 1)
+    stationFiltersGeneral: "Общие",
+    stationFiltersProfit: "Прибыль",
+    stationFiltersFees: "Комиссии",
+
     // Workspace rail (UI overhaul phase 1)
     wsTrade: "Торговля",
     wsIndustry: "Производство",

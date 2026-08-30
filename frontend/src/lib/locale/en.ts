@@ -257,6 +257,11 @@ export const en = {
     routeSecurityCustom: "Custom",
 
     // Tabs
+    // Station Trade tabbed filters (UI overhaul phase 1)
+    stationFiltersGeneral: "General",
+    stationFiltersProfit: "Profit",
+    stationFiltersFees: "Fees",
+
     // Workspace rail (UI overhaul phase 1)
     wsTrade: "Trade",
     wsIndustry: "Industry",

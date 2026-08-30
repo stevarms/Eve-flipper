@@ -52,6 +52,7 @@ import {
   type StationTradingSettings,
 } from "@/lib/presets";
 import { TaxProfileEditor } from "./TaxProfileEditor";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { getStationsWhenReady } from "@/lib/stationLookup";
 
 type SortKey = keyof StationTrade;
@@ -2548,16 +2549,21 @@ export function StationTrading({
             />
           }
         >
-          <div className="space-y-3">
-            <div className="grid grid-cols-1 xl:grid-cols-12 gap-3">
-              <section className={`${settingsSectionClass} xl:col-span-8 p-3`}>
-                <PanelSectionHeader
-                  icon="⌁"
-                  title={t("system")}
-                  subtitle={t("stationSelect")}
-                />
+          {/* Tabbed filters (UI overhaul phase 1).
+              These twelve fields used to be stacked in one wall that took
+              two-thirds of the first screen, above an empty table. Grouped
+              into four tabs, three or four fields show at a time and the
+              results start near the top of the viewport. */}
+          <Tabs defaultValue="general" className="space-y-2">
+            <TabsList>
+              <TabsTrigger value="general">{t("stationFiltersGeneral")}</TabsTrigger>
+              <TabsTrigger value="profit">{t("stationFiltersProfit")}</TabsTrigger>
+              <TabsTrigger value="fees">{t("stationFiltersFees")}</TabsTrigger>
+              <TabsTrigger value="advanced">{t("advancedFilters")}</TabsTrigger>
+            </TabsList>
 
-                <div className="flex flex-wrap items-center gap-1 mt-2">
+            <TabsContent value="general" className={`${settingsSectionClass} p-3`}>
+                <div className="flex flex-wrap items-center gap-1">
                   <span className="text-[10px] uppercase tracking-wider text-eve-dim mr-1">
                     {t("tradeHubs")}
                   </span>
@@ -2677,7 +2683,11 @@ export function StationTrading({
                       max={50}
                     />
                   </SettingsField>
+                </div>
+            </TabsContent>
 
+            <TabsContent value="profit" className={`${settingsSectionClass} p-3`}>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-3 gap-y-3">
                   <SettingsField label={t("minMargin")}>
                     <SettingsNumberInput
                       value={minMargin}
@@ -2719,9 +2729,9 @@ export function StationTrading({
                     />
                   </SettingsField>
                 </div>
-              </section>
+            </TabsContent>
 
-              <section className={`${settingsSectionClass} xl:col-span-4 p-3`}>
+            <TabsContent value="fees" className={`${settingsSectionClass} p-3`}>
                 <TaxProfileEditor
                   value={params}
                   onChange={(profile) => onChange?.({ ...params, ...profile })}
@@ -2840,11 +2850,10 @@ export function StationTrading({
                   </div>
                 )}
                 </div>
-              </section>
-            </div>
+            </TabsContent>
 
             {showAdvancedControls && (
-            <section className={`${settingsSectionClass} p-3`}>
+            <TabsContent value="advanced" className={`${settingsSectionClass} p-3`}>
               <button
                 type="button"
                 onClick={() => setShowAdvanced((prev) => !prev)}
@@ -2989,9 +2998,9 @@ export function StationTrading({
                   </div>
                 </div>
               )}
-            </section>
+            </TabsContent>
             )}
-          </div>
+          </Tabs>
 
           {/* Scan button inside settings */}
           <div className="mt-3 pt-3 border-t border-eve-border/30 flex items-center justify-between gap-3">
