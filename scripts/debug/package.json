@@ -1,0 +1,9 @@
+{
+  "name": "eve-flipper-debug",
+  "private": true,
+  "type": "module",
+  "description": "Playwright-over-CDP helpers for driving the running Eve Flipper UI (screenshots, element measurements, responsive sweep). Not shipped; not part of the frontend build.",
+  "dependencies": {
+    "playwright-core": "^1.48.0"
+  }
+}
