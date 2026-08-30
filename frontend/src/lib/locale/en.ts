@@ -1635,6 +1635,8 @@ export const en = {
     ordersColExpiry: "Expires",
     ordersOpenMarketHint:
       "Open this item's market window in the running EVE client and copy the suggested price to the clipboard (uses the ESI open-window scope). Requires the client to be running and logged in on the same character.",
+    ordersCopyNameHint:
+      "Copy the item name to the clipboard. Backup for when 🎮 doesn't open the market window — paste it into the in-game market search.",
     ordersPillLabel: "Orders",
     ordersPillAria: "Open Orders tab",
     ordersPillTooltip:

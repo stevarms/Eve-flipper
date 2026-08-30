@@ -401,6 +401,7 @@ export function Orders({ isLoggedIn }: Props) {
                   formatIsk={formatIsk}
                   t={t}
                   onOpenMarket={openMarketForType}
+                  addToast={addToast}
                 />
               ))}
             </tbody>
@@ -466,11 +467,13 @@ function OrderRow({
   formatIsk,
   t,
   onOpenMarket,
+  addToast,
 }: {
   row: OrderDeskOrder;
   formatIsk: (v: number) => string;
   t: (key: TranslationKey, params?: Record<string, string | number>) => string;
   onOpenMarket: (typeID: number) => void;
+  addToast: (text: string, type?: "success" | "error" | "info", duration?: number) => number;
 }) {
   const atTop = row.position === 1;
   const priceCls = atTop ? "text-eve-dim font-mono" : "text-eve-accent font-mono";
@@ -487,6 +490,14 @@ function OrderRow({
       void navigator.clipboard.writeText(row.suggested_price.toFixed(2));
     }
     onOpenMarket(row.type_id);
+  };
+  // Fallback for when 🎮 silently fails (some hosts don't deliver the
+  // UI command): copy the item name so the user can paste it into the
+  // in-game market search.
+  const copyName = () => {
+    if (!row.type_name) return;
+    void navigator.clipboard.writeText(row.type_name);
+    addToast(t("copied"), "success", 1400);
   };
   const badgeClass =
     row.recommendation === "cancel"
@@ -522,6 +533,17 @@ function OrderRow({
             className="w-4 h-4"
           />
           <span className="truncate">{row.type_name || `Type #${row.type_id}`}</span>
+          {row.type_name && (
+            <button
+              type="button"
+              onClick={copyName}
+              className="ml-auto shrink-0 text-[10px] px-1 py-0.5 rounded-sm border border-eve-border text-eve-dim hover:text-eve-accent hover:border-eve-accent transition-colors"
+              title={t("ordersCopyNameHint")}
+              aria-label={t("ordersCopyNameHint")}
+            >
+              📋
+            </button>
+          )}
         </div>
       </td>
       <td className="px-2 py-1 text-eve-dim max-w-[200px] truncate" title={row.location_name}>

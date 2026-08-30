@@ -1631,6 +1631,8 @@ export const ru = {
     ordersColExpiry: "Expires",
     ordersOpenMarketHint:
       "Открыть окно маркета в EVE клиенте и скопировать рекомендованную цену в буфер обмена (ESI open-window scope). Требует запущенного клиента с тем же персонажем.",
+    ordersCopyNameHint:
+      "Скопировать название предмета в буфер обмена. Резерв, если 🎮 не открыл окно маркета — вставьте название в поиск маркета в клиенте.",
     ordersPillLabel: "Ордера",
     ordersPillAria: "Открыть Orders",
     ordersPillTooltip:
