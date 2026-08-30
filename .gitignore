@@ -14,9 +14,6 @@
 # Local clone of GitHub wiki (for editing wiki from repo)
 wiki-repo/
 
-# Old docs/wiki markdown dump + local notes (do not track in repo)
-docs/
-
 # Local marketing landing (work in progress, do not track yet)
 landing/
 
@@ -26,7 +23,10 @@ landing/
 /data/wiki-rag/
 /tmp/wiki-rag/
 /internal/api/data/wiki-rag/
-/scripts
+
+# Dev tooling deps (the scripts themselves ARE tracked)
+scripts/**/node_modules/
+
 # SQLite database files
 flipper.db
 flipper.db-shm
