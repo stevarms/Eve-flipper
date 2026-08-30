@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
   "repo": "stevarms/Eve-flipper",
-  "generated_at": "2026-08-30T04:57:26.759Z",
-  "latest_release": "v1.9.4",
+  "generated_at": "2026-08-30T14:10:26.199Z",
+  "latest_release": "v1.9.5",
   "total_downloads": 1866,
   "current_github_total": 8,
-  "active_asset_count": 66,
+  "active_asset_count": 69,
   "archived_asset_count": 326,
   "clone_stats": {
     "window": "14d",
@@ -88,6 +88,48 @@
     "available": true
   },
   "assets": [
+    {
+      "id": "536685110",
+      "name": "eve-flipper-desktop-windows-amd64.exe",
+      "tag_name": "v1.9.5",
+      "release_id": "379300972",
+      "state": "active",
+      "download_count": 0,
+      "github_download_count": 0,
+      "browser_download_url": "https://github.com/stevarms/Eve-flipper/releases/download/v1.9.5/eve-flipper-desktop-windows-amd64.exe",
+      "created_at": "2026-08-30T14:10:13Z",
+      "updated_at": "2026-08-30T14:10:14Z",
+      "first_seen_at": "2026-08-30T14:10:26.199Z",
+      "last_seen_at": "2026-08-30T14:10:26.199Z"
+    },
+    {
+      "id": "536685111",
+      "name": "eve-flipper-web-windows-amd64.exe",
+      "tag_name": "v1.9.5",
+      "release_id": "379300972",
+      "state": "active",
+      "download_count": 0,
+      "github_download_count": 0,
+      "browser_download_url": "https://github.com/stevarms/Eve-flipper/releases/download/v1.9.5/eve-flipper-web-windows-amd64.exe",
+      "created_at": "2026-08-30T14:10:13Z",
+      "updated_at": "2026-08-30T14:10:15Z",
+      "first_seen_at": "2026-08-30T14:10:26.199Z",
+      "last_seen_at": "2026-08-30T14:10:26.199Z"
+    },
+    {
+      "id": "536685109",
+      "name": "SHA256SUMS.txt",
+      "tag_name": "v1.9.5",
+      "release_id": "379300972",
+      "state": "active",
+      "download_count": 0,
+      "github_download_count": 0,
+      "browser_download_url": "https://github.com/stevarms/Eve-flipper/releases/download/v1.9.5/SHA256SUMS.txt",
+      "created_at": "2026-08-30T14:10:13Z",
+      "updated_at": "2026-08-30T14:10:14Z",
+      "first_seen_at": "2026-08-30T14:10:26.199Z",
+      "last_seen_at": "2026-08-30T14:10:26.199Z"
+    },
     {
       "id": "536166412",
       "name": "eve-flipper-desktop-windows-amd64.exe",
