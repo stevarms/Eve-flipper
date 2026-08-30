@@ -14,12 +14,12 @@ Two runtime flavors built from the same backend:
 
 ```bash
 # Backend dev loop (frontend must be built first because main.go embeds frontend/dist/*)
-corepack pnpm -C frontend install --frozen-lockfile
-corepack pnpm -C frontend run build
+pnpm -C frontend install --frozen-lockfile
+pnpm -C frontend run build
 go run .
 
-# Frontend dev with HMR (proxies API to a separately-running `go run .`)
-corepack pnpm -C frontend run dev          # vite on :5173
+# Frontend dev with HMR (proxies /api and /auth to a separately-running `go run .`)
+pnpm -C frontend run dev                   # vite on :1420 (strictPort)
 
 # Tests
 go test ./...                              # full Go suite
@@ -37,6 +37,13 @@ corepack pnpm -C frontend run build
 PowerShell equivalents live in `make.ps1` (`.\make.ps1 build`, `.\make.ps1 wails`, etc.). Unix make targets in `Makefile` (`make build`, `make test`, `make cross`).
 
 **Race detector requires cgo** (`CGO_ENABLED=1` + a C toolchain). `go test -race` will refuse to run otherwise.
+
+**Don't prefix pnpm with `corepack`.** `frontend/package.json` pins
+`pnpm@11.1.2`. Under `corepack`, pnpm refuses to self-switch versions, prints
+`[ERROR] This project is configured to use 11.1.2 of pnpm` — and **still exits
+0**, so the install silently does nothing and the next command fails on a
+missing `node_modules`. Invoke `pnpm` directly so it switches itself, or run
+`corepack prepare pnpm@11.1.2 --activate` once.
 
 ## Architecture
 

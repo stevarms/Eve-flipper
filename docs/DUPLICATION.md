@@ -8,10 +8,10 @@ are re-implemented across files — especially where copies have already drifted
 
 The five highest-value consolidation opportunities, ranked by drift/bug risk:
 
-1. **Frontend ISK formatters** — 12+ local `formatIsk`/`formatISK` copies in
-   parallel with `lib/format.ts`, at least 4 with a real negative-value bug
-   (`CharacterPopup.tsx:271-283` explicitly documents fixing it; the other
-   copies never got the fix). See Cluster 1.
+1. ~~**Frontend ISK formatters**~~ — **RESOLVED** (UI overhaul phase 0).
+   Ten local copies now delegate to a parameterised `formatIsk` in
+   `lib/format.ts`; the negative-value bug is fixed everywhere and the
+   highest tier is unified at `T`. See Cluster 1.
 2. **Engine fee-multiplier drift in `industry.go`** — `analyzeIndustry`
    computes the sell-side multiplier as `(1 - salesTax) * (1 - broker)` instead
    of the canonical `1 - (broker + tax)/100` used by `tradeFeeMultipliers`,
@@ -37,7 +37,27 @@ The five highest-value consolidation opportunities, ranked by drift/bug risk:
 
 ---
 
-## Cluster 1: Frontend ISK formatting (highest priority)
+## Cluster 1: Frontend ISK formatting — RESOLVED
+
+> **Status: fixed in the UI overhaul, phase 0.**
+>
+> `lib/format.ts` now exports `formatIsk(value, locale?, opts?)` and
+> `formatIskSigned`, with `maxTier` / `space` / `decimals` / `signed` options.
+> Every local copy was reduced to a thin wrapper holding only its presentation
+> config — one algorithm, per-surface formatting, small diffs.
+>
+> What changed for users:
+> - The negative-value bug is gone in ExecutionPlannerPopup, RouteBuilder,
+>   RouteSafetyModal and StationTradingExecutionCalculator.
+> - Highest tier unified at `T`, so CharacterPopup no longer renders "2000B"
+>   for a figure the Trade Journal shows as "2T".
+> - `RouteBuilder.formatISKFull` no longer hardcodes `en-US`.
+> - Trailing zeros are dropped ("1.2 B" not "1.20B"), matching the canonical
+>   `formatISK`. Intended convergence, but visible.
+>
+> Pinned by `frontend/src/lib/format.test.ts`.
+>
+> The audit below is retained as the record of what was wrong.
 
 **Instances:**
 - `frontend/src/lib/format.ts:11` — canonical `formatISK(value, locale?)`. Uses

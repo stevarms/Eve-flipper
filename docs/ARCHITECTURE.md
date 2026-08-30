@@ -1340,6 +1340,14 @@ per-tab state survives switches.
 
 ### 7c. Subdirectories
 
+- **`components/ui/`** — shadcn-**shaped** primitives (`Button`, `Badge`,
+  `Input`, `Tooltip`, `Tabs`, `Sheet`), hand-written rather than generated
+  by `shadcn init`, because the CLI would install a third colour
+  vocabulary that fights the faction palettes. Bound to the semantic
+  tokens in `index.css`. Read `components/ui/README.md` before adding
+  one. `Sheet` is the row-detail drawer — tier 2 of the three-tier
+  disclosure rule in `UI_DESIGN_SYSTEM.md`.
+
 - **`components/industry/`** — the IndustryTab subtree. Big panels:
   `IndustryAnalysisResultsPanel`, `IndustryDependencyBoard`,
   `IndustryJobsGuidePanel`, `IndustryJobsLedgerPanel`,
@@ -1381,6 +1389,21 @@ per-tab state survives switches.
   `PlexTab.tsx`.
 
 ### 7c-lib. `lib/`
+
+- **`format.ts`** — the one ISK/number formatter. `formatIsk(value,
+  locale?, opts?)` takes `maxTier` / `space` / `decimals` / `signed`;
+  `formatIskSigned` adds a `+` prefix. **Do not write a local
+  `formatIsk`** — ten of those existed before the UI overhaul and four
+  had a sign bug (see `DUPLICATION.md` cluster 1, resolved). Surfaces
+  that need different presentation pass options, they don't re-implement.
+  Pinned by `format.test.ts`.
+
+- **`eveImages.ts`** — every `images.evetech.net` URL. `typeIconUrl`,
+  `blueprintIconUrl`, `characterPortraitUrl`, `corporationLogoUrl`,
+  `allianceLogoUrl`, plus `securityTone` / `formatSecurity` for EVE's
+  canonical security-status ramp. **Gotcha:** blueprint types do not
+  serve `/icon` (HTTP 400) — they serve `/bp` and `/bpc`. `GET
+  /types/{id}/` lists a type's available variants.
 
 - **`api.ts`** — every API call. Uses `apiFetch` which adds an
   `X-EveFlipper-UID` header + `credentials: "include"` (desktop user id
