@@ -10,22 +10,34 @@ Persistent state: everything the app writes lives under `/data` — mount one vo
 
 ---
 
-## 1. Register a second ESI callback URL
+## 1. ESI SSO for a non-localhost host
 
 Release builds bake `http://localhost:13370/api/auth/callback` in as the default
-callback, which only works when you launch the app on the same machine you're
-browsing from. For a server install you need the SSO redirect to come back to
-the host name you actually type in your browser bar.
+callback, which only works when you browse the app from the same machine that
+runs it. For a server install the SSO redirect must come back to the host you
+actually type in your browser bar — and CCP enforces two hard rules that make
+this fiddlier than it sounds:
 
-On <https://developers.eveonline.com/> open your Eve Flipper application and add
-a second callback URL alongside the existing localhost one — for example:
+- **One callback URL per ESI application** (single-line field on
+  <https://developers.eveonline.com/>).
+- **`http://` is only accepted for the literal string `localhost`.** Any other
+  host — LAN IPs, mDNS names, real hostnames — must use `https://`.
 
-```
-http://unraid.local:13370/api/auth/callback
-```
+The clean way to run both a local dev build and a server install without
+constantly swapping callback URLs is **two separate ESI applications**:
 
-Use whatever hostname/IP you'll access the app through. HTTPS variants belong
-here too if you later put the app behind a reverse proxy.
+| App                | Callback URL                                                |
+|--------------------|-------------------------------------------------------------|
+| Dev (localhost)    | `http://localhost:13370/api/auth/callback`                  |
+| Server / Unraid    | `https://<host-you-reach-the-app-at>/api/auth/callback`     |
+
+Create the second application on developers.eveonline.com, then set
+`ESI_CLIENT_ID`, `ESI_CLIENT_SECRET`, and `ESI_CALLBACK_URL` env vars on the
+container to that application's values. Because it must be HTTPS, front the
+container with a reverse proxy that terminates TLS (SWAG, Nginx Proxy Manager,
+Caddy on Unraid; or Cloudflare Tunnel if you're fine with routing through
+their edge). A self-signed cert works if you're OK clicking through the
+browser warning once — CCP only compares the URL string, not the cert chain.
 
 ---
 
