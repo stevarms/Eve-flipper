@@ -63,7 +63,9 @@ type ContractColumnDef = {
   numeric: boolean;
 };
 
-const CONTRACT_COLUMN_PREFS_STORAGE_KEY = "eve-contract-columns:v1";
+/* v1 -> v2 for the UI overhaul: an existing v1 entry would mask the new
+   decide-tier default. Not migrated; the column picker restores anything. */
+const CONTRACT_COLUMN_PREFS_STORAGE_KEY = "eve-contract-columns:v2";
 
 function contractColumnDefaultWidthPx(width: string): number {
   const exact = width.match(/w-\[(\d+)px\]/)?.[1];
@@ -99,6 +101,53 @@ const baseColumnDefs: ContractColumnDef[] = [
   { key: "ProfitPerJump", labelKey: "colContractPPJ", width: "min-w-[110px]", numeric: true },
   { key: "Jumps", labelKey: "colContractJumps", width: "min-w-[60px]", numeric: true },
 ];
+
+/**
+ * Decide-tier columns for contract arbitrage, in reading order. See
+ * docs/UI_DESIGN_SYSTEM.md. Everything else stays one click away in the
+ * column picker.
+ *
+ * The decision here is: what do I make, what does it cost me, what's the
+ * return, can I actually sell it, and how long is my ISK tied up.
+ */
+const CONTRACT_DECIDE_COLUMNS: readonly SortKey[] = [
+  "Title",
+  "ExpectedProfit",
+  "Price",
+  "MarginPercent",
+  "SellConfidence",
+  "EstLiquidationDays",
+];
+
+/** Decide columns first, then everything else. */
+const CONTRACT_DECIDE_ORDER: SortKey[] = [
+  ...CONTRACT_DECIDE_COLUMNS,
+  ...baseColumnDefs.map((col) => col.key).filter((key) => !CONTRACT_DECIDE_COLUMNS.includes(key)),
+];
+
+/* Columns whose sign carries the decision — green when they earn, red when
+   they don't. Every other numeric stays neutral so these stand out; before
+   the overhaul every numeric cell was accent-orange and the colour said
+   nothing. */
+const CONTRACT_PROFIT_COLUMNS: ReadonlySet<string> = new Set([
+  "ExpectedProfit",
+  "Profit",
+  "ProfitPerJump",
+]);
+const CONTRACT_RATIO_COLUMNS: ReadonlySet<string> = new Set(["MarginPercent"]);
+
+function contractCellToneClass(col: ContractColumnDef, row: ContractResult): string {
+  if (!col.numeric) return "text-eve-text";
+  if (CONTRACT_PROFIT_COLUMNS.has(col.key) || CONTRACT_RATIO_COLUMNS.has(col.key)) {
+    const raw = (row as unknown as Record<string, unknown>)[col.key];
+    const n = typeof raw === "number" ? raw : Number.NaN;
+    if (Number.isFinite(n)) {
+      const weight = CONTRACT_PROFIT_COLUMNS.has(col.key) ? "font-semibold " : "";
+      return `font-num tnum ${weight}${n > 0 ? "text-profit" : n < 0 ? "text-loss" : "text-fg-secondary"}`;
+    }
+  }
+  return "font-num tnum text-fg-secondary";
+}
 
 function rowKey(row: ContractResult) {
   return `contract-${row.ContractID}`;
@@ -232,8 +281,15 @@ export function ContractResultsTable({
   const [cacheRebooting, setCacheRebooting] = useState(false);
   const [resolvedTitles, setResolvedTitles] = useState<Record<number, string>>({});
   const [showColumnPanel, setShowColumnPanel] = useState(false);
-  const [columnOrder, setColumnOrder] = useState<SortKey[]>(() => baseColumnDefs.map((col) => col.key));
-  const [hiddenColumns, setHiddenColumns] = useState<Set<SortKey>>(new Set());
+  // Initialised to the decide tier, so the default is correct before any
+  // effect runs. The load effect below overrides it only when the user has a
+  // saved preference.
+  const [columnOrder, setColumnOrder] = useState<SortKey[]>(() => CONTRACT_DECIDE_ORDER);
+  const [hiddenColumns, setHiddenColumns] = useState<Set<SortKey>>(
+    () => new Set(CONTRACT_DECIDE_ORDER.filter((key) => !CONTRACT_DECIDE_COLUMNS.includes(key))),
+  );
+  /** Set by any user column action; gates persistence. */
+  const columnsUserTouchedRef = useRef(false);
   const [columnWidths, setColumnWidths] = useState<Partial<Record<SortKey, number>>>({});
   const [pinnedColumns, setPinnedColumns] = useState<Set<SortKey>>(new Set());
   const [draggedColumnKey, setDraggedColumnKey] = useState<SortKey | null>(null);
@@ -329,6 +385,10 @@ export function ContractResultsTable({
   }, []);
 
   useEffect(() => {
+    // Persist only after a real user change, so `raw === null` reliably means
+    // "never configured" and the decide-tier default is not masked by a write
+    // this component made on mount.
+    if (!columnsUserTouchedRef.current) return;
     try {
       localStorage.setItem(
         CONTRACT_COLUMN_PREFS_STORAGE_KEY,
@@ -393,6 +453,7 @@ export function ContractResultsTable({
   }, [columnDefs]);
 
   const setColumnWidth = useCallback((key: SortKey, widthPx: number) => {
+    columnsUserTouchedRef.current = true;
     setColumnWidths((prev) => ({
       ...prev,
       [key]: Math.max(44, Math.min(520, Math.round(widthPx))),
@@ -400,13 +461,18 @@ export function ContractResultsTable({
   }, []);
 
   const resetColumns = useCallback(() => {
-    setColumnOrder(baseColumnDefs.map((col) => col.key));
-    setHiddenColumns(new Set());
+    columnsUserTouchedRef.current = true;
+    // "Reset" restores the decide tier, not every column.
+    setColumnOrder(CONTRACT_DECIDE_ORDER);
+    setHiddenColumns(
+      new Set(CONTRACT_DECIDE_ORDER.filter((key) => !CONTRACT_DECIDE_COLUMNS.includes(key))),
+    );
     setColumnWidths({});
     setPinnedColumns(new Set());
   }, []);
 
   const toggleColumnVisibility = useCallback((key: SortKey, visible: boolean) => {
+    columnsUserTouchedRef.current = true;
     setHiddenColumns((prev) => {
       const next = new Set(prev);
       if (visible) next.delete(key);
@@ -416,6 +482,7 @@ export function ContractResultsTable({
   }, [columnDefs.length]);
 
   const toggleColumnPin = useCallback((key: SortKey) => {
+    columnsUserTouchedRef.current = true;
     setPinnedColumns((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
@@ -425,6 +492,7 @@ export function ContractResultsTable({
   }, []);
 
   const moveColumn = useCallback((key: SortKey, delta: -1 | 1) => {
+    columnsUserTouchedRef.current = true;
     setColumnOrder((prev) => {
       const next = [...prev];
       const idx = next.indexOf(key);
@@ -439,6 +507,7 @@ export function ContractResultsTable({
 
   const dropColumn = useCallback((fromKey: SortKey, toKey: SortKey) => {
     if (fromKey === toKey) return;
+    columnsUserTouchedRef.current = true;
     setColumnOrder((prev) => {
       const next = [...prev];
       const from = next.indexOf(fromKey);
@@ -1007,7 +1076,10 @@ export function ContractResultsTable({
             <div className="flex-1" />
             <button
               type="button"
-              onClick={() => setHiddenColumns(new Set())}
+              onClick={() => {
+                columnsUserTouchedRef.current = true;
+                setHiddenColumns(new Set());
+              }}
               className="border border-eve-border px-2 py-0.5 text-[10px] uppercase tracking-wider text-eve-dim hover:text-eve-text"
             >
               Show all
@@ -1144,12 +1216,12 @@ export function ContractResultsTable({
                     className={`px-3 py-1.5 truncate ${
                       col.pinned ? "sticky z-10 bg-inherit shadow-[4px_0_0_rgba(0,0,0,0.25)]" : ""
                     } ${
-                      col.numeric ? "text-eve-accent font-mono" : "text-eve-text"
+                      contractCellToneClass(col, row)
                     }`}
                   >
                     {col.key === "Title" ? (
                       <div className="flex items-center gap-1.5 min-w-0">
-                        <span className="truncate">{formatCell(col, row)}</span>
+                        <span className="truncate font-ui text-fg">{formatCell(col, row)}</span>
                         {row.HasContraband && (
                           <span
                             title={`Contraband item(s) in contract${row.ContrabandQty ? `: ${row.ContrabandQty.toLocaleString()} units` : ""}. Check hauling route before accepting.`}

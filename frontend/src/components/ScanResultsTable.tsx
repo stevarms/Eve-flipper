@@ -27,6 +27,7 @@ import {
   type RouteSafetyFilter,
 } from "@/lib/scanResultsLogic";
 import { normalizeColumnPrefs } from "@/lib/tablePrefs";
+import { typeIconUrl } from "@/lib/eveImages";
 import {
   addToWatchlist,
   clearStationTradeStates,
@@ -60,7 +61,10 @@ const GROUP_PAGE_SIZE = 50; // rows shown per group before "Show all" button
 // Module-level cache: type IDs whose icon failed to load (avoid repeated 404s)
 const failedIconIds = new Set<number>();
 const CACHE_TTL_FALLBACK_MS = 20 * 60 * 1000;
-const COLUMN_PREFS_STORAGE_PREFIX = "eve-scan-columns:v1:";
+/* v1 -> v2 for the UI overhaul: the point of the change is the new
+   decide-tier default, and an existing v1 entry would mask it entirely.
+   Not migrated; the column picker restores anything you want back. */
+const COLUMN_PREFS_STORAGE_PREFIX = "eve-scan-columns:v2:";
 const ITEM_GROUPING_STORAGE_KEY = "eve-radius-group-by-item:v1";
 
 type SortKey = keyof FlipResult;
@@ -531,6 +535,80 @@ const regionEveGuruColumnDefs: ColumnDef[] = [
     tooltipKey: "colTradeScoreHint",
   },
 ];
+
+/**
+ * Decide-tier columns — the only ones visible with no saved preference.
+ * See docs/UI_DESIGN_SYSTEM.md. Everything else stays one click away in the
+ * column picker; nothing is removed.
+ *
+ * The base profile is a HAULING decision, so it leads with what you make,
+ * then your return, then the two things that decide whether the trip is
+ * worth it (cargo efficiency and distance), then whether the item actually
+ * trades. Note there is no capital column in this profile — unlike Station
+ * Trade, capital is only derivable here (BuyPrice x UnitsToBuy).
+ *
+ * The EveGuru region profile mirrors Station Trade directly, because it has
+ * the same shape of data.
+ */
+/* Ordered, not just a set: the primary metric must be the leftmost data
+   column, and declaration order in the column-def arrays does not match the
+   reading order we want. */
+const DECIDE_COLUMNS: Record<"default" | "region_eveguru", readonly SortKey[]> = {
+  default: [
+    "TypeName",
+    "RealProfit",
+    "MarginPercent",
+    "IskPerM3",
+    "TotalJumps",
+    "DailyVolume",
+  ],
+  region_eveguru: [
+    "TypeName",
+    "DayPeriodProfit",
+    "DayCapitalRequired",
+    "DayROIPeriod",
+    "DayTargetDOS",
+    "DayIskPerM3Jump",
+  ],
+};
+
+/** Decide columns first (in the order above), then everything else. */
+function decideFirstOrder(defaultOrder: SortKey[], profile: "default" | "region_eveguru"): SortKey[] {
+  const decide = DECIDE_COLUMNS[profile].filter((key) => defaultOrder.includes(key));
+  return [...decide, ...defaultOrder.filter((key) => !decide.includes(key))];
+}
+
+/* Columns whose sign carries the decision. Green when they earn, red when
+   they don't; every other numeric stays neutral so these stand out. Before
+   the overhaul every numeric cell was accent-orange, which meant the colour
+   told you nothing. */
+const PROFIT_COLUMNS: ReadonlySet<string> = new Set([
+  "RealProfit",
+  "TotalProfit",
+  "ExpectedProfit",
+  "ProfitPerJump",
+  "DailyProfit",
+  "DayNowProfit",
+  "DayPeriodProfit",
+]);
+const RATIO_COLUMNS: ReadonlySet<string> = new Set([
+  "MarginPercent",
+  "DayROINow",
+  "DayROIPeriod",
+]);
+
+function scanCellToneClass(col: { key: string; numeric?: boolean }, row: FlipResult): string {
+  if (!col.numeric) return "text-eve-text";
+  if (PROFIT_COLUMNS.has(col.key) || RATIO_COLUMNS.has(col.key)) {
+    const raw = (row as unknown as Record<string, unknown>)[col.key];
+    const n = typeof raw === "number" ? raw : Number.NaN;
+    if (Number.isFinite(n)) {
+      const weight = PROFIT_COLUMNS.has(col.key) ? "font-semibold " : "";
+      return `font-num tnum ${weight}${n > 0 ? "text-profit" : n < 0 ? "text-loss" : "text-fg-secondary"}`;
+    }
+  }
+  return "font-num tnum text-fg-secondary";
+}
 
 function buildColumnDefs(
   showRegions: boolean,
@@ -1075,6 +1153,8 @@ export function ScanResultsTable({
     allColumnDefs.map((col) => col.key),
   );
   const [hiddenColumns, setHiddenColumns] = useState<Set<SortKey>>(new Set());
+  /** Set by any user column action; gates persistence. See the save effect. */
+  const columnsUserTouchedRef = useRef(false);
   const [columnWidths, setColumnWidths] = useState<Partial<Record<SortKey, number>>>({});
   const [pinnedColumns, setPinnedColumns] = useState<Set<SortKey>>(new Set());
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
@@ -1329,15 +1409,29 @@ export function ScanResultsTable({
     } catch {
       raw = null;
     }
-    const prefs = normalizeColumnPrefs<SortKey>(raw, defaultOrder);
+    const decide = DECIDE_COLUMNS[columnProfile];
+    const prefs = normalizeColumnPrefs<SortKey>(
+      raw,
+      decideFirstOrder(defaultOrder, columnProfile),
+      defaultOrder.filter((key) => !decide.includes(key)),
+    );
     setColumnOrder(prefs.order);
     setHiddenColumns(prefs.hidden);
     setColumnWidths(prefs.widths);
     setPinnedColumns(prefs.pinned);
-  }, [columnPrefsKey, allColumnDefs]);
+  }, [columnPrefsKey, allColumnDefs, columnProfile]);
 
   useEffect(() => {
     if (columnOrder.length === 0) return;
+    // Persist only once the user has actually changed something.
+    //
+    // The old `columnOrder.length` guard was not enough: the load effect
+    // re-runs whenever its deps change, and any write we made in between
+    // would be read back as a real preference — masking the decide-tier
+    // default with whatever transient state happened to be current. Writing
+    // nothing until there is a genuine preference removes the ordering
+    // question entirely: `raw === null` reliably means "never configured".
+    if (!columnsUserTouchedRef.current) return;
     try {
       localStorage.setItem(
         columnPrefsKey,
@@ -1383,6 +1477,7 @@ export function ScanResultsTable({
 
   const toggleColumnVisibility = useCallback(
     (key: SortKey, visible: boolean) => {
+      columnsUserTouchedRef.current = true;
       setHiddenColumns((prev) => {
         const next = new Set(prev);
         if (visible) {
@@ -1401,6 +1496,7 @@ export function ScanResultsTable({
   );
 
   const moveColumn = useCallback((key: SortKey, dir: -1 | 1) => {
+    columnsUserTouchedRef.current = true;
     setColumnOrder((prev) => {
       const idx = prev.indexOf(key);
       if (idx < 0) return prev;
@@ -1413,13 +1509,18 @@ export function ScanResultsTable({
   }, []);
 
   const resetColumns = useCallback(() => {
-    setColumnOrder(allColumnDefs.map((col) => col.key));
-    setHiddenColumns(new Set());
+    columnsUserTouchedRef.current = true;
+    const order = allColumnDefs.map((col) => col.key);
+    const decide = DECIDE_COLUMNS[columnProfile];
+    setColumnOrder(decideFirstOrder(order, columnProfile));
+    // "Reset" restores the decide tier, not every column.
+    setHiddenColumns(new Set(order.filter((key) => !decide.includes(key))));
     setColumnWidths({});
     setPinnedColumns(new Set());
-  }, [allColumnDefs]);
+  }, [allColumnDefs, columnProfile]);
 
   const setColumnWidth = useCallback((key: SortKey, widthPx: number) => {
+    columnsUserTouchedRef.current = true;
     setColumnWidths((prev) => ({
       ...prev,
       [key]: Math.max(44, Math.min(520, Math.round(widthPx))),
@@ -1427,6 +1528,7 @@ export function ScanResultsTable({
   }, []);
 
   const toggleColumnPin = useCallback((key: SortKey) => {
+    columnsUserTouchedRef.current = true;
     setPinnedColumns((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
@@ -2911,7 +3013,10 @@ export function ScanResultsTable({
               <span className="text-eve-dim">{t("columnsPanelTitle")}</span>
               <button
                 type="button"
-                onClick={() => setHiddenColumns(new Set())}
+                onClick={() => {
+                  columnsUserTouchedRef.current = true;
+                  setHiddenColumns(new Set());
+                }}
                 className="px-2 py-0.5 rounded-sm border border-eve-border/60 hover:border-eve-accent/50 hover:text-eve-accent transition-colors"
               >
                 {t("columnsShowAll")}
@@ -3936,21 +4041,23 @@ const DataRow = memo(
           <td
             key={col.key}
             style={columnWidthStyle(col, col.pinned ? pinnedLeftByKey.get(col.key) : undefined)}
-            className={`px-3 ${compactMode ? "py-1" : "py-1.5"} ${col.width} ${col.key === "TypeName" ? "" : "truncate"} ${col.numeric ? "text-eve-accent font-mono" : "text-eve-text"} ${col.pinned ? "sticky z-10 bg-inherit shadow-[2px_0_0_rgba(230,149,0,0.12)]" : ""}`}
+            className={`px-3 ${compactMode ? "py-1" : "py-1.5"} ${col.width} ${col.key === "TypeName" ? "" : "truncate"} ${scanCellToneClass(col, ir.row)} ${col.pinned ? "sticky z-10 bg-inherit shadow-[2px_0_0_rgba(230,149,0,0.12)]" : ""}`}
           >
             {col.key === "TypeName" ? (
               <div className="flex items-center gap-1.5 min-w-0">
                 {ir.row.TypeID > 0 && !failedIconIds.has(ir.row.TypeID) && (
                   <img
-                    src={`https://images.evetech.net/types/${ir.row.TypeID}/icon?size=32`}
+                    src={typeIconUrl(ir.row.TypeID, "icon", 32)}
                     alt=""
-                    width={16}
-                    height={16}
-                    className="w-4 h-4 shrink-0 rounded-sm"
+                    aria-hidden="true"
+                    loading="lazy"
+                    width={18}
+                    height={18}
+                    className="w-[18px] h-[18px] shrink-0 rounded-sm"
                     onError={() => failedIconIds.add(ir.row.TypeID)}
                   />
                 )}
-                <span className="truncate">{ir.row.TypeName}</span>
+                <span className="truncate font-ui text-fg">{ir.row.TypeName}</span>
                 {ir.row.IsContraband && (
                   <span
                     title="Contraband item: hauling through empire space can be unsafe."

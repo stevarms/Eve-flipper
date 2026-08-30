@@ -5,15 +5,28 @@ export interface NormalizedColumnPrefs<T extends string> {
   pinned: Set<T>;
 }
 
+/**
+ * @param defaultHidden Columns hidden when there is NO saved preference —
+ *   the "decide tier" default from docs/UI_DESIGN_SYSTEM.md. A saved entry
+ *   replaces this wholesale, including an explicitly empty hidden list, so a
+ *   user who un-hides everything stays that way.
+ */
 export function normalizeColumnPrefs<T extends string>(
   raw: string | null,
   defaultOrder: T[],
+  defaultHidden?: Iterable<T>,
 ): NormalizedColumnPrefs<T> {
   const available = new Set<T>(defaultOrder);
   let order = defaultOrder;
   const hidden = new Set<T>();
   const widths: Partial<Record<T, number>> = {};
   const pinned = new Set<T>();
+
+  if (!raw && defaultHidden) {
+    for (const key of defaultHidden) {
+      if (available.has(key)) hidden.add(key);
+    }
+  }
 
   try {
     if (raw) {

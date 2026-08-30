@@ -30,6 +30,33 @@ describe("table preferences normalization", () => {
     expect([...prefs.pinned]).toEqual(["Jumps"]);
   });
 
+  /* The decide-tier default from the UI overhaul. It must apply ONLY when
+     there is no saved preference — a user who has explicitly un-hidden
+     everything must stay that way, which is why an empty saved `hidden`
+     still counts as a real preference. */
+  it("applies defaultHidden when nothing is stored", () => {
+    const prefs = normalizeColumnPrefs(null, [...defaults], ["Jumps"]);
+
+    expect([...prefs.hidden]).toEqual(["Jumps"]);
+    expect(prefs.order).toEqual(["Item", "Profit", "Jumps"]);
+  });
+
+  it("lets a stored preference override defaultHidden, including an empty one", () => {
+    const prefs = normalizeColumnPrefs(
+      JSON.stringify({ order: ["Item", "Profit", "Jumps"], hidden: [] }),
+      [...defaults],
+      ["Jumps"],
+    );
+
+    expect([...prefs.hidden]).toEqual([]);
+  });
+
+  it("ignores defaultHidden entries that are not real columns", () => {
+    const prefs = normalizeColumnPrefs(null, [...defaults], ["Jumps", "Nonsense"]);
+
+    expect([...prefs.hidden]).toEqual(["Jumps"]);
+  });
+
   it("keeps at least one column visible", () => {
     const prefs = normalizeColumnPrefs(
       JSON.stringify({
