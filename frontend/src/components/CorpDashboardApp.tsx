@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { getCorpDashboard } from "../lib/api";
 import { useI18n, type TranslationKey } from "../lib/i18n";
+import { formatIsk as formatIskLib } from "../lib/format";
 import type { CorpDashboard } from "../lib/types";
 import { OverviewSection } from "./corp-dashboard/OverviewSection";
 import { WalletsSection } from "./corp-dashboard/WalletsSection";
@@ -29,13 +30,13 @@ export function CorpDashboardApp() {
       .finally(() => setLoading(false));
   }, [mode]);
 
-  const formatIsk = (value: number) => {
-    if (Math.abs(value) >= 1e12) return `${(value / 1e12).toFixed(2)}T`;
-    if (Math.abs(value) >= 1e9) return `${(value / 1e9).toFixed(2)}B`;
-    if (Math.abs(value) >= 1e6) return `${(value / 1e6).toFixed(2)}M`;
-    if (Math.abs(value) >= 1e3) return `${(value / 1e3).toFixed(1)}K`;
-    return value.toFixed(0);
-  };
+  /** Local presentation of the shared formatter (lib/format.ts). */
+  const formatIsk = (value: number) =>
+    formatIskLib(value, undefined, {
+      maxTier: "T",
+      space: false,
+      decimals: { t: 2, b: 2, m: 2, k: 1, unit: 0 },
+    });
 
   if (loading) {
     return (

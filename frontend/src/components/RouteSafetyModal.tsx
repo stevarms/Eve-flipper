@@ -1,6 +1,7 @@
 import { Fragment, useState, useEffect } from "react";
 import type { SystemDanger, KillSummary } from "@/lib/types";
 import { getGankCheckDetail } from "@/lib/api";
+import { formatIsk } from "@/lib/format";
 import { Modal } from "./Modal";
 
 interface Props {
@@ -8,11 +9,13 @@ interface Props {
   onClose: () => void;
 }
 
+/** Local presentation of the shared formatter (lib/format.ts). */
 function formatISK(v: number): string {
-  if (v >= 1e9) return `${(v / 1e9).toFixed(1)}B`;
-  if (v >= 1e6) return `${(v / 1e6).toFixed(0)}M`;
-  if (v >= 1e3) return `${(v / 1e3).toFixed(0)}K`;
-  return v.toFixed(0);
+  return formatIsk(v, undefined, {
+    maxTier: "T",
+    space: false,
+    decimals: { t: 1, b: 1, m: 0, k: 0, unit: 0 },
+  });
 }
 
 function formatTime(iso: string): string {

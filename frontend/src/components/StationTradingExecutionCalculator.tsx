@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { Modal } from "./Modal";
 import { getExecutionPlan } from "../lib/api";
 import { useI18n, type TranslationKey } from "../lib/i18n";
+import { formatIsk } from "../lib/format";
 import type { ExecutionPlanResult, DepthLevel } from "../lib/types";
 
 export interface StationTradingExecutionCalculatorProps {
@@ -28,11 +29,13 @@ export interface StationTradingExecutionCalculatorProps {
   impactDays?: number;
 }
 
+/** Local presentation of the shared formatter (lib/format.ts). */
 function formatISK(value: number): string {
-  if (value >= 1e9) return `${(value / 1e9).toFixed(2)}B`;
-  if (value >= 1e6) return `${(value / 1e6).toFixed(2)}M`;
-  if (value >= 1e3) return `${(value / 1e3).toFixed(1)}K`;
-  return value.toFixed(0);
+  return formatIsk(value, undefined, {
+    maxTier: "T",
+    space: false,
+    decimals: { t: 2, b: 2, m: 2, k: 1, unit: 0 },
+  });
 }
 
 /** Block: effective price to place one side (buy or sell) at this station */

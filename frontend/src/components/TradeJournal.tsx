@@ -18,6 +18,7 @@ import {
 } from "../lib/api";
 import type { AuthCharacter } from "../lib/types";
 import { useI18n, type TranslationKey } from "../lib/i18n";
+import { formatIsk as formatIskLib, formatIskSigned as formatIskSignedLib } from "../lib/format";
 import { PnLChart } from "./journal/PnLPrimitives";
 
 // TradeJournal.tsx — main-tab realization of the Eve-Tycoon-style profit
@@ -51,18 +52,19 @@ interface DailyEntryLike {
 const DEFAULT_PERIOD: PeriodPreset = 30;
 const FIFO_STORAGE_KEY = "trade_journal.fifo_mode";
 
+/** Local presentation of the shared formatter (lib/format.ts). */
+const ISK_FMT = {
+  maxTier: "T",
+  space: false,
+  decimals: { t: 2, b: 2, m: 2, k: 1, unit: 0 },
+} as const;
+
 function formatIsk(v: number): string {
-  const abs = Math.abs(v);
-  if (abs >= 1e12) return `${(v / 1e12).toFixed(2)}T`;
-  if (abs >= 1e9) return `${(v / 1e9).toFixed(2)}B`;
-  if (abs >= 1e6) return `${(v / 1e6).toFixed(2)}M`;
-  if (abs >= 1e3) return `${(v / 1e3).toFixed(1)}K`;
-  return v.toFixed(0);
+  return formatIskLib(v, undefined, ISK_FMT);
 }
 
 function formatIskSigned(v: number): string {
-  const sign = v >= 0 ? "+" : "";
-  return `${sign}${formatIsk(v)}`;
+  return formatIskSignedLib(v, undefined, ISK_FMT);
 }
 
 function humanTimeSince(iso: string | undefined): string {

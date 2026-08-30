@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getJournalSummary, type JournalTotals } from "../lib/api";
 import { useI18n } from "../lib/i18n";
+import { formatIskSigned as formatIskSignedLib } from "../lib/format";
 
 // ProfitPill — always-visible 30d P&L chip in the app's top bar. Clicking
 // it takes the user to the Trade Journal tab; the pill exists so the
@@ -17,17 +18,14 @@ interface Props {
   refreshKey?: number;
 }
 
-function formatIsk(v: number): string {
-  const abs = Math.abs(v);
-  if (abs >= 1e12) return `${(v / 1e12).toFixed(2)}T`;
-  if (abs >= 1e9) return `${(v / 1e9).toFixed(2)}B`;
-  if (abs >= 1e6) return `${(v / 1e6).toFixed(1)}M`;
-  if (abs >= 1e3) return `${(v / 1e3).toFixed(0)}K`;
-  return v.toFixed(0);
-}
-
+/** Local presentation of the shared formatter (lib/format.ts).
+ *  Tighter decimals than elsewhere — this renders in a narrow header pill. */
 function formatIskSigned(v: number): string {
-  return `${v >= 0 ? "+" : ""}${formatIsk(v)}`;
+  return formatIskSignedLib(v, undefined, {
+    maxTier: "T",
+    space: false,
+    decimals: { t: 2, b: 2, m: 1, k: 0, unit: 0 },
+  });
 }
 
 export function ProfitPill({ isLoggedIn, onOpen, refreshKey }: Props) {

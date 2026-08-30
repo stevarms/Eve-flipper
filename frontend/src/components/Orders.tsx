@@ -6,6 +6,7 @@ import type {
   OrderDeskResponse,
 } from "../lib/types";
 import { useI18n, type TranslationKey } from "../lib/i18n";
+import { formatIsk as formatIskLib } from "../lib/format";
 import { useGlobalToast } from "./Toast";
 import { handleEveUIError } from "../lib/handleEveUIError";
 
@@ -31,13 +32,13 @@ const PRIORITY_BY_ACTION: Record<string, number> = {
   hold: 0,
 };
 
+/** Local presentation of the shared formatter (lib/format.ts). */
 function formatIsk(v: number): string {
-  const abs = Math.abs(v);
-  if (abs >= 1e12) return `${(v / 1e12).toFixed(2)}T`;
-  if (abs >= 1e9) return `${(v / 1e9).toFixed(2)}B`;
-  if (abs >= 1e6) return `${(v / 1e6).toFixed(2)}M`;
-  if (abs >= 1e3) return `${(v / 1e3).toFixed(1)}K`;
-  return v.toFixed(0);
+  return formatIskLib(v, undefined, {
+    maxTier: "T",
+    space: false,
+    decimals: { t: 2, b: 2, m: 2, k: 1, unit: 0 },
+  });
 }
 
 export function Orders({ isLoggedIn }: Props) {

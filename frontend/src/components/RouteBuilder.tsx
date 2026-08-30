@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { findRoutes, setWaypointInGame } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
+import { formatIsk, formatISKFull as formatISKFullLib } from "@/lib/format";
 import type { FlipResult, RouteResult, RouteHop, ScanParams } from "@/lib/types";
 import { TradeExecutionAutopilotPopup } from "./TradeExecutionAutopilotPopup";
 import { useGlobalToast } from "./Toast";
@@ -53,16 +54,18 @@ interface Props {
   isLoggedIn?: boolean;
 }
 
+/** Local presentation of the shared formatter (lib/format.ts). */
 function formatISK(v: number): string {
-  if (v >= 1e9) return (v / 1e9).toFixed(1) + "B";
-  if (v >= 1e6) return (v / 1e6).toFixed(1) + "M";
-  if (v >= 1e3) return (v / 1e3).toFixed(1) + "K";
-  return v.toFixed(0);
+  return formatIsk(v, undefined, {
+    maxTier: "T",
+    space: false,
+    decimals: { t: 1, b: 1, m: 1, k: 1, unit: 0 },
+  });
 }
 
-function formatISKFull(v: number): string {
-  return v.toLocaleString("en-US", { maximumFractionDigits: 0 });
-}
+/** Was hardcoded to en-US, so ru users saw en-US grouping here and ru-RU
+ *  grouping everywhere else. The shared helper is locale-aware. */
+const formatISKFull = formatISKFullLib;
 
 function formatDays(v?: number): string {
   const days = Number(v ?? 0);

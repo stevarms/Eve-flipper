@@ -10,6 +10,7 @@ import {
   type CharacterScope,
 } from "../lib/api";
 import { useI18n } from "../lib/i18n";
+import { formatIsk as formatIskLib } from "../lib/format";
 import { trackClientTelemetry } from "../lib/telemetry";
 import type { AuthCharacter, CharacterInfo, CharacterRoles, HostedAccessStatus, SecurityVaultStatus } from "../lib/types";
 import { CombinedOrdersTab } from "./character-popup/CombinedOrdersTab";
@@ -268,19 +269,21 @@ export function CharacterPopup({
     });
   }, []);
 
-  const formatIsk = (value: number) => {
-    // Compare on the magnitude, not the signed value — otherwise a negative
-    // amount fails every `value >= 1eN` gate and falls through to the raw-
-    // digit branch. The Wallet ledger's "Other net" and "Unrealized" cards
-    // are the two that regularly swing negative (P&L / mark-to-market),
-    // so they were the ones showing up as e.g. "-123456789" instead of
-    // "-123.46M". Sign is preserved by dividing the signed value.
-    const abs = Math.abs(value);
-    if (abs >= 1e9) return `${(value / 1e9).toFixed(2)}B`;
-    if (abs >= 1e6) return `${(value / 1e6).toFixed(2)}M`;
-    if (abs >= 1e3) return `${(value / 1e3).toFixed(1)}K`;
-    return value.toFixed(0);
-  };
+  /** Local presentation of the shared formatter (lib/format.ts).
+   *
+   *  This copy was the one that had the negative-value fix; that handling now
+   *  lives in formatIsk itself, so the Wallet ledger's "Other net" and
+   *  "Unrealized" cards keep rendering "-123.46M" rather than raw digits —
+   *  and so does every other surface, which previously did not.
+   *
+   *  maxTier is now T rather than B: this popup used to render a 2T figure as
+   *  "2000B" while the Trade Journal showed "2T" for the same number. */
+  const formatIsk = (value: number) =>
+    formatIskLib(value, undefined, {
+      maxTier: "T",
+      space: false,
+      decimals: { t: 2, b: 2, m: 2, k: 1, unit: 0 },
+    });
 
   const formatNumber = (value: number) => value.toLocaleString();
 
