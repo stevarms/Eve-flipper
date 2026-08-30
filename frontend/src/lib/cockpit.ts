@@ -269,6 +269,105 @@ export const MAIN_TAB_META: Record<MainTabId, { labelKey: TranslationKey; fallba
   demand: { labelKey: "tabDemand", fallback: "War", group: "tools" },
 };
 
+/* ------------------------------------------------------------------
+   Workspaces (UI overhaul, phase 1)
+
+   Eleven flat top-level tabs read as a grab-bag and cost a full
+   horizontal band of vertical space on every screen. They now group into
+   five workspaces on a left icon rail; the tabs within a workspace become
+   a secondary row that only appears when that workspace has more than
+   one member.
+
+   MAIN_TAB_IDS is unchanged — this is a grouping over it, so existing
+   preferences (mainTabOrder, hiddenMainTabs, tabLayouts) keep working.
+   ------------------------------------------------------------------ */
+
+export const WORKSPACE_IDS = ["trade", "industry", "assets", "journal", "intel"] as const;
+export type WorkspaceId = (typeof WORKSPACE_IDS)[number];
+
+export interface WorkspaceMeta {
+  labelKey: TranslationKey;
+  fallback: string;
+  /** lucide-react icon name, resolved in components/shell/WorkspaceRail.tsx */
+  icon: "TrendingUp" | "Factory" | "Package" | "BookOpen" | "Radar";
+  tabs: MainTabId[];
+}
+
+export const WORKSPACE_META: Record<WorkspaceId, WorkspaceMeta> = {
+  trade: {
+    labelKey: "wsTrade",
+    fallback: "Trade",
+    icon: "TrendingUp",
+    tabs: ["radius", "region", "station", "contracts"],
+  },
+  industry: {
+    labelKey: "wsIndustry",
+    fallback: "Industry",
+    icon: "Factory",
+    tabs: ["industry", "pi_factory"],
+  },
+  assets: {
+    labelKey: "wsAssets",
+    fallback: "Assets",
+    icon: "Package",
+    tabs: ["orders", "price_audit"],
+  },
+  journal: {
+    labelKey: "wsJournal",
+    fallback: "Journal",
+    icon: "BookOpen",
+    tabs: ["trade_journal"],
+  },
+  intel: {
+    labelKey: "wsIntel",
+    fallback: "Intel",
+    icon: "Radar",
+    tabs: ["route", "demand"],
+  },
+};
+
+/** Which workspace owns a tab. Every MainTabId appears in exactly one. */
+export function workspaceForTab(tab: MainTabId): WorkspaceId {
+  for (const ws of WORKSPACE_IDS) {
+    if (WORKSPACE_META[ws].tabs.includes(tab)) return ws;
+  }
+  return "trade";
+}
+
+/**
+ * Tabs of a workspace that the user hasn't hidden, in their preferred order.
+ * Returns [] when the whole workspace is hidden, so the rail can skip it.
+ */
+export function visibleTabsForWorkspace(
+  preferences: CockpitPreferences,
+  workspace: WorkspaceId,
+): MainTabId[] {
+  const visible = getVisibleMainTabs(preferences);
+  const owned = WORKSPACE_META[workspace].tabs;
+  // Order by the user's mainTabOrder, not by the literal above.
+  return visible.filter((tab) => owned.includes(tab));
+}
+
+/** Workspaces that have at least one visible tab. */
+export function visibleWorkspaces(preferences: CockpitPreferences): WorkspaceId[] {
+  return WORKSPACE_IDS.filter((ws) => visibleTabsForWorkspace(preferences, ws).length > 0);
+}
+
+/**
+ * Tabs whose React tree must stay mounted when you navigate away, because
+ * they hold unsaved state that lives nowhere else.
+ *
+ * `industry` is here because IndustryTab's visual plan builder keeps
+ * planDraftTasks/Jobs/Materials in local React state and does NOT persist
+ * them until "Apply" is pressed — unmounting would silently discard an
+ * in-progress plan. Every other tab either lifts its results into App.tsx
+ * or restores them from local/sessionStorage.
+ *
+ * This is a temporary concession: phase 3 moves the Industry drafts into
+ * persisted state, after which this set should be emptied.
+ */
+export const KEEP_ALIVE_TABS: ReadonlySet<MainTabId> = new Set<MainTabId>(["industry"]);
+
 export const COCKPIT_QUICK_ACTIONS: CockpitQuickAction[] = [
   "watchlist",
   "history",

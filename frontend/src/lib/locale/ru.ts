@@ -257,6 +257,13 @@ export const ru = {
     contractFiltersHint: "Настройки защиты от скама",
 
     // Tabs
+    // Workspace rail (UI overhaul phase 1)
+    wsTrade: "Торговля",
+    wsIndustry: "Производство",
+    wsAssets: "Активы",
+    wsJournal: "Журнал",
+    wsIntel: "Разведка",
+
     tabRadius: "Радиус Трейд",
     tabRegion: "Регионал Трейд",
     tabContracts: "Контракт Трейд",

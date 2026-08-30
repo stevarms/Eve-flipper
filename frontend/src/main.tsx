@@ -5,6 +5,7 @@ import { ThemeProvider } from "./lib/useTheme";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ToastProvider } from "./components/Toast";
 import { AchievementsProvider } from "./components/achievements";
+import { TooltipProvider } from "./components/ui/tooltip";
 import { installDomSafetyGuards } from "./lib/domSafety";
 import App from "./App";
 import { CorpDashboardApp } from "./components/CorpDashboardApp";
@@ -19,7 +20,11 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
       <I18nProvider>
         <ErrorBoundary>
           <ToastProvider>
-            <AchievementsProvider>{isCorpRoute ? <CorpDashboardApp /> : <App />}</AchievementsProvider>
+            <TooltipProvider delayDuration={300} skipDelayDuration={300}>
+              <AchievementsProvider>
+                {isCorpRoute ? <CorpDashboardApp /> : <App />}
+              </AchievementsProvider>
+            </TooltipProvider>
           </ToastProvider>
         </ErrorBoundary>
       </I18nProvider>

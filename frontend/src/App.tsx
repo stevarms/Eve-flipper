@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ClipboardList, Coffee, Search } from "lucide-react";
 import { useKeyboardShortcuts } from "./lib/useKeyboardShortcuts";
 import { StatusBar } from "./components/StatusBar";
@@ -78,11 +78,17 @@ import {
   sanitizeCockpitPreferences,
   saveCockpitPreferences as saveCockpitPreferencesLocal,
   trackCockpitActivity,
+  visibleTabsForWorkspace,
+  visibleWorkspaces,
+  workspaceForTab,
+  KEEP_ALIVE_TABS,
   type CockpitQuickAction,
   type CockpitLoadout,
   type CockpitPreferences,
   type MainTabId,
+  type WorkspaceId,
 } from "./lib/cockpit";
+import { WorkspaceRail, WorkspaceTabs } from "./components/shell/WorkspaceRail";
 import type {
   ContractResult,
   FlipResult,
@@ -425,6 +431,27 @@ function App() {
       /* ignore */
     }
   }, []);
+
+  /* --- Workspace navigation (UI overhaul phase 1) -------------------
+     The workspace is derived from the active tab rather than being its own
+     piece of state. That keeps every existing `setTab(...)` call site
+     working — command palette, quick actions, the header pills — without
+     any of them needing to know workspaces exist. */
+  const railWorkspaces = useMemo(() => visibleWorkspaces(cockpitPreferences), [cockpitPreferences]);
+  const activeWorkspace = useMemo(() => workspaceForTab(tab), [tab]);
+  const workspaceTabs = useMemo(
+    () => visibleTabsForWorkspace(cockpitPreferences, activeWorkspace),
+    [cockpitPreferences, activeWorkspace],
+  );
+
+  /** Selecting a workspace opens its first visible tab. */
+  const handleSelectWorkspace = useCallback(
+    (workspace: WorkspaceId) => {
+      const tabs = visibleTabsForWorkspace(cockpitPreferences, workspace);
+      if (tabs.length > 0) setTab(tabs[0]);
+    },
+    [cockpitPreferences, setTab],
+  );
   const {
     authStatus,
     loginPolling,
@@ -2263,66 +2290,47 @@ function App() {
 
       {/* Industry doesn't use global params - has its own settings panel */}
 
-      {/* Tabs */}
-      <div className="flex-1 flex flex-col min-h-0 bg-eve-panel border border-eve-border rounded-sm">
-        <div className="flex items-stretch border-b border-eve-border">
-          <div className="flex-1 min-w-0 overflow-x-auto scrollbar-thin snap-x snap-mandatory sm:snap-none">
-            <div
-              className="flex items-center min-w-max"
-              role="tablist"
-              aria-label="Scan modes"
-            >
-              {visibleMainTabs.map((tabID, index) => {
-                const prev = visibleMainTabs[index - 1];
-                const needsSeparator = prev && MAIN_TAB_META[prev].group !== MAIN_TAB_META[tabID].group;
-                const meta = MAIN_TAB_META[tabID];
-                return (
-                  <Fragment key={tabID}>
-                    {needsSeparator && (
-                      <div
-                        className="h-6 w-px bg-eve-border mx-1 flex-shrink-0"
-                        aria-hidden="true"
-                      />
-                    )}
-                    <TabButton
-                      active={tab === tabID}
-                      onClick={() => setTab(tabID)}
-                      label={t(meta.labelKey) || meta.fallback}
-                    />
-                  </Fragment>
-                );
-              })}
-              <div className="w-2 sm:w-4 shrink-0" />
-            </div>
-          </div>
+      {/* Workspace rail + active workspace */}
+      <div className="flex-1 flex min-h-0 bg-eve-panel border border-eve-border rounded-sm overflow-hidden">
+        <WorkspaceRail
+          workspaces={railWorkspaces}
+          active={activeWorkspace}
+          onSelect={handleSelectWorkspace}
+        />
 
-          {tab !== "route" &&
+        <div className="flex-1 flex flex-col min-w-0 min-h-0">
+        <WorkspaceTabs
+          tabs={workspaceTabs}
+          active={tab}
+          onSelect={setTab}
+          label={(tabID) => t(MAIN_TAB_META[tabID].labelKey) || MAIN_TAB_META[tabID].fallback}
+          actions={
+            tab !== "route" &&
             tab !== "station" &&
             tab !== "industry" &&
-            tab !== "demand" && (
-              <div className="shrink-0 border-l border-eve-border px-1.5 sm:px-2 py-1 flex items-center">
-                <button
-                  data-scan-button
-                  onClick={handleScan}
-                  disabled={
-                    tab === "region"
-                      ? !params.target_market_system?.trim()
-                      : !params.system_name
-                  }
-                  title="Ctrl+S"
-                  className={`px-3 sm:px-4 py-1.5 rounded-sm text-[10px] sm:text-xs font-semibold uppercase tracking-wider transition-all
-                  ${
-                    scanning
-                      ? "bg-eve-error/80 text-white hover:bg-eve-error"
-                      : "bg-eve-accent text-eve-dark hover:bg-eve-accent-hover shadow-eve-glow"
-                  }
-                  disabled:bg-eve-input disabled:text-eve-dim disabled:cursor-not-allowed disabled:shadow-none`}
-                >
-                  {scanning ? t("stop") : t("scan")}
-                </button>
-              </div>
-            )}
-        </div>
+            tab !== "demand" ? (
+              <button
+                data-scan-button
+                onClick={handleScan}
+                disabled={
+                  tab === "region"
+                    ? !params.target_market_system?.trim()
+                    : !params.system_name
+                }
+                title="Ctrl+S"
+                className={`px-4 py-1.5 rounded-sm font-ui text-t-caption font-semibold uppercase tracking-wider transition-all
+                ${
+                  scanning
+                    ? "bg-eve-error/80 text-white hover:bg-eve-error"
+                    : "bg-eve-accent text-eve-dark hover:bg-eve-accent-hover shadow-eve-glow"
+                }
+                disabled:bg-eve-input disabled:text-eve-dim disabled:cursor-not-allowed disabled:shadow-none`}
+              >
+                {scanning ? t("stop") : t("scan")}
+              </button>
+            ) : null
+          }
+        />
 
         {/* Results — all tabs stay mounted to preserve state */}
         {(tab === "radius" ||
@@ -2506,7 +2514,11 @@ function App() {
               isLoggedIn={authStatus.logged_in}
             />
           </TabPanel>
-          <TabPanel active={tab === "industry"}>
+          {/* keepAlive: IndustryTab's visual plan builder holds
+              planDraftTasks/Jobs/Materials in local state that is not
+              persisted until "Apply", so unmounting would discard an
+              in-progress plan. See KEEP_ALIVE_TABS in lib/cockpit.ts. */}
+          <TabPanel active={tab === "industry"} keepAlive={KEEP_ALIVE_TABS.has("industry")}>
             <IndustryTab isLoggedIn={authStatus.logged_in} />
           </TabPanel>
           <TabPanel active={tab === "demand"}>
@@ -2523,6 +2535,7 @@ function App() {
               }}
             />
           </TabPanel>
+        </div>
         </div>
       </div>
 
@@ -3016,34 +3029,6 @@ function App() {
         </div>
       )}
     </>
-  );
-}
-
-function TabButton({
-  active,
-  onClick,
-  label,
-}: {
-  active: boolean;
-  onClick: () => void;
-  label: string;
-}) {
-  return (
-    <button
-      role="tab"
-      aria-selected={active}
-      onClick={onClick}
-      className={`px-2.5 py-2 sm:px-4 sm:py-2.5 text-[10px] sm:text-xs font-medium uppercase tracking-wider transition-colors relative whitespace-nowrap snap-center shrink-0
-        ${active ? "text-eve-accent" : "text-eve-dim hover:text-eve-text"}`}
-    >
-      {label}
-      {active && (
-        <div
-          className="absolute bottom-0 left-0 right-0 h-[2px] bg-eve-accent"
-          aria-hidden="true"
-        />
-      )}
-    </button>
   );
 }
 

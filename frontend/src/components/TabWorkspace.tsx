@@ -1,8 +1,18 @@
-import type { ReactNode } from "react";
+import { useRef, type ReactNode } from "react";
 
 interface TabPanelProps {
   active: boolean;
   children: ReactNode;
+  /**
+   * Keep the subtree mounted (hidden) after the first visit instead of
+   * unmounting it on navigate-away.
+   *
+   * Only for tabs holding unsaved state that lives nowhere else — see
+   * KEEP_ALIVE_TABS in lib/cockpit.ts. Every keep-alive tab is DOM the
+   * browser pays for on every frame forever, which is exactly what made
+   * the pre-overhaul app render 44,773 elements at once.
+   */
+  keepAlive?: boolean;
 }
 
 interface TabActionBarProps {
@@ -11,12 +21,21 @@ interface TabActionBarProps {
   className?: string;
 }
 
-export function TabPanel({ active, children }: TabPanelProps) {
-  return (
-    <div className={`flex-1 min-h-0 flex flex-col overflow-hidden ${active ? "" : "hidden"}`}>
-      {children}
-    </div>
-  );
+export function TabPanel({ active, children, keepAlive = false }: TabPanelProps) {
+  // Lazy: never build a tab's DOM until it is first opened. On a cold start
+  // this means one tab exists instead of eleven.
+  const hasBeenActive = useRef(active);
+  if (active) hasBeenActive.current = true;
+
+  if (!active) {
+    // Unmount unless the tab explicitly opted out. This is the fix for the
+    // pre-overhaul behaviour, where every tab stayed mounted behind a CSS
+    // `hidden` class and the browser laid out all of them on every frame.
+    if (!keepAlive || !hasBeenActive.current) return null;
+    return <div className="hidden">{children}</div>;
+  }
+
+  return <div className="flex-1 min-h-0 flex flex-col overflow-hidden">{children}</div>;
 }
 
 export function TabActionBar({ children, tone = "default", className = "" }: TabActionBarProps) {

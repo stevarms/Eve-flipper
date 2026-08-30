@@ -257,6 +257,13 @@ export const en = {
     routeSecurityCustom: "Custom",
 
     // Tabs
+    // Workspace rail (UI overhaul phase 1)
+    wsTrade: "Trade",
+    wsIndustry: "Industry",
+    wsAssets: "Assets",
+    wsJournal: "Journal",
+    wsIntel: "Intel",
+
     tabRadius: "Radius Trade",
     tabRegion: "Regional Trade",
     tabContracts: "Contract Trade",
