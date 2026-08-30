@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { KeyRound, Lock, RotateCcw, ShieldCheck } from "lucide-react";
 import { Modal } from "./Modal";
 import { resetSecurityVault, setupSecurityVault, unlockSecurityVault } from "../lib/api";
+import { browserEsiUiDisabled, setBrowserEsiUiDisabled } from "../lib/browserEsiUi";
 import { trackClientTelemetry } from "../lib/telemetry";
 import type { AuthStatus, SecurityVaultStatus } from "../lib/types";
 
@@ -39,6 +40,12 @@ const text = {
   done: "Vault is ready.",
   protectedFields: "Protected local fields",
   analyticsNote: "Market prices, dates and numeric aggregates remain queryable so charts and portfolio analytics keep working.",
+  browserEsiTitle: "In-game 🎮 buttons",
+  browserEsiBody:
+    "The 🎮 buttons that open a market, waypoint, or contract in your game client need ESI to see the game's IP. By default the browser makes those calls itself so it works even when EVE Flipper runs on a remote box. Your access token is briefly held in browser memory for the click (the refresh token stays on the server).",
+  browserEsiOptOutLabel: "Don't expose ESI tokens to my browser (local installs only)",
+  browserEsiOptOutHint:
+    "If checked, 🎮 buttons will use the server-side path. Works when the server shares a public IP with your game client (typical local install); does not work for remote Docker deployments.",
 };
 
 function shouldShowVaultModal(status?: SecurityVaultStatus): boolean {
@@ -56,6 +63,12 @@ export function SecurityVaultModal({ authStatus, onRefresh, onLogin }: SecurityV
   const [showReset, setShowReset] = useState(false);
   const [setupDone, setSetupDone] = useState(false);
   const [dismissed, setDismissed] = useState(false);
+  const [browserEsiDisabled, setBrowserEsiDisabledState] = useState(browserEsiUiDisabled());
+
+  const toggleBrowserEsi = (next: boolean) => {
+    setBrowserEsiUiDisabled(next);
+    setBrowserEsiDisabledState(next);
+  };
 
   const lockedPrivate = Boolean(vault?.private_unlock_required);
   const migrationRequired = Boolean(vault?.security_migration_required);
@@ -341,6 +354,23 @@ export function SecurityVaultModal({ authStatus, onRefresh, onLogin }: SecurityV
         )}
 
         {message && <div className="border border-eve-border bg-eve-bg px-4 py-3 text-eve-dim">{message}</div>}
+
+        <div className="border border-eve-border bg-eve-panel/70 p-4">
+          <h4 className="text-sm font-semibold uppercase tracking-wider text-eve-accent">{text.browserEsiTitle}</h4>
+          <p className="mt-2 text-eve-dim">{text.browserEsiBody}</p>
+          <label className="mt-3 flex items-start gap-2 text-eve-text">
+            <input
+              type="checkbox"
+              className="mt-1 h-4 w-4 accent-eve-accent"
+              checked={browserEsiDisabled}
+              onChange={(e) => toggleBrowserEsi(e.target.checked)}
+            />
+            <span>
+              <span className="block">{text.browserEsiOptOutLabel}</span>
+              <span className="mt-1 block text-xs text-eve-dim">{text.browserEsiOptOutHint}</span>
+            </span>
+          </label>
+        </div>
       </div>
     </Modal>
   );

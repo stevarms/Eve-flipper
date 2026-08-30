@@ -86,6 +86,12 @@ import type {
   StockpileScanResult,
 } from "./types";
 import type { CockpitLoadout, CockpitPreferences } from "./cockpit";
+import {
+  browserEsiUiDisabled,
+  openContractViaBrowser,
+  openMarketViaBrowser,
+  setWaypointViaBrowser,
+} from "./browserEsiUi";
 
 const BASE = import.meta.env.VITE_API_URL || "";
 
@@ -2932,8 +2938,15 @@ export async function piFactoryPlan(params: {
 }
 
 // --- UI Operations (in-game actions) ---
+//
+// These call CCP's esi-ui.* endpoints. By default we call them from the
+// browser (matching the game client's IP), because server-side calls from
+// a remote Docker host return 204 but never deliver the window. If the
+// browser path fails (network, CORS, missing token) or the user opts out
+// via SecurityVaultModal, we fall through to the legacy server-side POST
+// which still works for local installs. See lib/browserEsiUi.ts.
 
-export async function openMarketInGame(typeID: number): Promise<void> {
+async function openMarketServer(typeID: number): Promise<void> {
   const res = await apiFetch(`${BASE}/api/ui/open-market`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -2945,7 +2958,28 @@ export async function openMarketInGame(typeID: number): Promise<void> {
   }
 }
 
-export async function setWaypointInGame(solarSystemID: number, clearOther = true, addToBeginning = false): Promise<void> {
+export async function openMarketInGame(typeID: number): Promise<void> {
+  if (browserEsiUiDisabled()) {
+    await openMarketServer(typeID);
+    return;
+  }
+  try {
+    await openMarketViaBrowser(typeID);
+  } catch (err) {
+    // Auth-shaped failures aren't recoverable via the server path (same
+    // token store, same session) — surface them directly so the user sees
+    // the real reason.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (isBrowserEsiAuthError(msg)) throw err;
+    await openMarketServer(typeID);
+  }
+}
+
+async function setWaypointServer(
+  solarSystemID: number,
+  clearOther: boolean,
+  addToBeginning: boolean,
+): Promise<void> {
   const res = await apiFetch(`${BASE}/api/ui/set-waypoint`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -2961,7 +2995,25 @@ export async function setWaypointInGame(solarSystemID: number, clearOther = true
   }
 }
 
-export async function openContractInGame(contractID: number): Promise<void> {
+export async function setWaypointInGame(
+  solarSystemID: number,
+  clearOther = true,
+  addToBeginning = false,
+): Promise<void> {
+  if (browserEsiUiDisabled()) {
+    await setWaypointServer(solarSystemID, clearOther, addToBeginning);
+    return;
+  }
+  try {
+    await setWaypointViaBrowser(solarSystemID, clearOther, addToBeginning);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (isBrowserEsiAuthError(msg)) throw err;
+    await setWaypointServer(solarSystemID, clearOther, addToBeginning);
+  }
+}
+
+async function openContractServer(contractID: number): Promise<void> {
   const res = await apiFetch(`${BASE}/api/ui/open-contract`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -2971,6 +3023,36 @@ export async function openContractInGame(contractID: number): Promise<void> {
     const err = await res.json().catch(() => ({ error: "Unknown error" }));
     throw new Error(err.error || "Failed to open contract window");
   }
+}
+
+export async function openContractInGame(contractID: number): Promise<void> {
+  if (browserEsiUiDisabled()) {
+    await openContractServer(contractID);
+    return;
+  }
+  try {
+    await openContractViaBrowser(contractID);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (isBrowserEsiAuthError(msg)) throw err;
+    await openContractServer(contractID);
+  }
+}
+
+function isBrowserEsiAuthError(message: string): boolean {
+  // Errors that indicate the user genuinely isn't in a state to make ESI
+  // calls (not logged in, no valid token). Falling back to the server
+  // path would just fail the same way with less useful text.
+  return (
+    message === "not_logged_in" ||
+    message === "character_not_logged_in" ||
+    message === "refresh_failed" ||
+    message === "token_expired" ||
+    message === "esi_401" ||
+    message === "esi_403" ||
+    message === "token_fetch_failed_401" ||
+    message === "token_fetch_failed_403"
+  );
 }
 
 export async function getContractDetails(contractID: number): Promise<ContractDetails> {

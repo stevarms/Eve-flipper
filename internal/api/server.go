@@ -1004,6 +1004,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/ui/open-market", s.handleUIOpenMarket)
 	mux.HandleFunc("POST /api/ui/set-waypoint", s.handleUISetWaypoint)
 	mux.HandleFunc("POST /api/ui/open-contract", s.handleUIOpenContract)
+	// Browser-side ESI-UI token endpoint. Returns a short-lived ESI access
+	// token so the frontend can call CCP's esi-ui.* endpoints directly
+	// from the user's browser (matching source IP to the game client's).
+	mux.HandleFunc("GET /api/auth/esi-token", s.handleAuthESIToken)
 	// Contracts
 	mux.HandleFunc("GET /api/contracts/{contract_id}/items", s.handleGetContractItems)
 	// Item intelligence
