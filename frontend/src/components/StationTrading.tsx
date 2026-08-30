@@ -53,6 +53,8 @@ import {
 } from "@/lib/presets";
 import { TaxProfileEditor } from "./TaxProfileEditor";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { StationRowDrawer } from "./station/StationRowDrawer";
+import { typeIconUrl } from "@/lib/eveImages";
 import { getStationsWhenReady } from "@/lib/stationLookup";
 
 type SortKey = keyof StationTrade;
@@ -138,13 +140,53 @@ type StationColumnDef = {
   numeric: boolean;
 };
 
+/**
+ * Column order matters: the first six are the "decide" tier and are the only
+ * ones visible by default (see STATION_DEFAULT_VISIBLE below).
+ *
+ * The pre-overhaul grid opened with all twenty at uniform visual weight, led
+ * by CTS / DS / S2B-per-day / D.O.S. / SDS — three of which have no hint text
+ * anywhere in the locale. Reading a row meant parsing twenty numbers with no
+ * primary metric among them.
+ *
+ * Everything still exists and every column is one click away in "Columns";
+ * this changes what you see FIRST, not what you can see.
+ */
 const baseStationColumnDefs: StationColumnDef[] = [
+  // --- Decide tier: what you need to rank an opportunity ---------------
   {
     key: "TypeName",
     labelKey: "colItem",
-    width: "min-w-[150px]",
+    width: "min-w-[190px]",
     numeric: false,
   },
+  {
+    key: "DailyProfit",
+    labelKey: "colDailyProfit",
+    width: "min-w-[100px]",
+    numeric: true,
+  },
+  {
+    key: "CapitalRequired",
+    labelKey: "colCapitalRequired",
+    width: "min-w-[100px]",
+    numeric: true,
+  },
+  {
+    key: "MarginPercent",
+    labelKey: "colMargin",
+    width: "min-w-[70px]",
+    numeric: true,
+  },
+  {
+    key: "BuyOrderCount",
+    labelKey: "colCompetingBuys",
+    width: "min-w-[70px]",
+    numeric: true,
+  },
+  { key: "DOS", labelKey: "colDOS", width: "min-w-[60px]", numeric: true },
+
+  // --- Everything else: hidden by default, one click away --------------
   {
     key: "StationName",
     labelKey: "colStationName",
@@ -166,12 +208,6 @@ const baseStationColumnDefs: StationColumnDef[] = [
     numeric: true,
   },
   {
-    key: "BuyOrderCount",
-    labelKey: "colCompetingBuys",
-    width: "min-w-[70px]",
-    numeric: true,
-  },
-  {
     key: "BuyPrice",
     labelKey: "colStationBuyPrice",
     width: "min-w-[90px]",
@@ -187,12 +223,6 @@ const baseStationColumnDefs: StationColumnDef[] = [
     key: "ProfitPerUnit",
     labelKey: "colProfitPerUnit",
     width: "min-w-[90px]",
-    numeric: true,
-  },
-  {
-    key: "MarginPercent",
-    labelKey: "colMargin",
-    width: "min-w-[70px]",
     numeric: true,
   },
   {
@@ -219,14 +249,7 @@ const baseStationColumnDefs: StationColumnDef[] = [
     width: "min-w-[90px]",
     numeric: true,
   },
-  { key: "DOS", labelKey: "colDOS", width: "min-w-[60px]", numeric: true },
   { key: "SDS", labelKey: "colSDS", width: "min-w-[50px]", numeric: true },
-  {
-    key: "DailyProfit",
-    labelKey: "colDailyProfit",
-    width: "min-w-[100px]",
-    numeric: true,
-  },
   {
     key: "ExpectedPnL",
     labelKey: "colExpectedPnL",
@@ -235,11 +258,20 @@ const baseStationColumnDefs: StationColumnDef[] = [
   },
 ];
 
+/** The decide tier — visible on a first run. */
+const STATION_DEFAULT_VISIBLE: ReadonlySet<SortKey> = new Set<SortKey>(
+  baseStationColumnDefs.slice(0, 6).map((col) => col.key),
+);
+
 // Sentinel value for "All stations"
 const ALL_STATIONS_ID = 0;
 const PLAYER_STRUCTURE_ID_MIN = 1_000_000_000_000;
 const STATION_PAGE_SIZE = 100;
-const STATION_COLUMN_PREFS_STORAGE_KEY = "eve-station-columns:v1";
+/* Bumped v1 -> v2 for the UI overhaul. The point of the change is the new
+   six-column default, and anyone who has used the app already has a saved v1
+   entry that would mask it entirely. v1 is intentionally not migrated; the
+   "Columns" control restores anything you want back. */
+const STATION_COLUMN_PREFS_STORAGE_KEY = "eve-station-columns:v2";
 const OPERATOR_PANEL_STORAGE_KEY = "station.operator_panel_width";
 const OPERATOR_PANEL_COLLAPSED_KEY = "station.operator_panel_collapsed";
 const OPERATOR_PANEL_MIN = 28;
@@ -724,12 +756,19 @@ export function StationTrading({
   );
 
   // Sort
-  const [sortKey, setSortKey] = useState<SortKey>("CTS");
+  // Sort by the primary metric, not by CTS — which is a bare three-letter
+  // acronym with no hint text anywhere in the locale, and was previously
+  // both the default sort and the leftmost number in the grid.
+  const [sortKey, setSortKey] = useState<SortKey>("DailyProfit");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [page, setPage] = useState(0);
   const [showColumnPanel, setShowColumnPanel] = useState(false);
   const [stationColumnOrder, setStationColumnOrder] = useState<SortKey[]>(() => baseStationColumnDefs.map((col) => col.key));
   const [stationHiddenColumns, setStationHiddenColumns] = useState<Set<SortKey>>(new Set());
+  /** Gate on the column-prefs save effect — see the load/save pair below. */
+  const columnPrefsHydratedRef = useRef(false);
+  /** Row whose detail drawer is open (tier 2 of the disclosure rule). */
+  const [detailRow, setDetailRow] = useState<StationTrade | null>(null);
   const [stationColumnWidths, setStationColumnWidths] = useState<Partial<Record<SortKey, number>>>({});
   const [stationPinnedColumns, setStationPinnedColumns] = useState<Set<SortKey>>(new Set());
 
@@ -834,13 +873,19 @@ export function StationTrading({
   useEffect(() => {
     const available = new Set(baseStationColumnDefs.map((col) => col.key));
     const defaultOrder = baseStationColumnDefs.map((col) => col.key);
-    const nextHidden = new Set<SortKey>();
+    // Default: only the decide tier. Anything the user later un-hides is
+    // persisted below and wins on the next load.
+    const nextHidden = new Set<SortKey>(
+      defaultOrder.filter((key) => !STATION_DEFAULT_VISIBLE.has(key)),
+    );
     const nextPinned = new Set<SortKey>();
     const nextWidths: Partial<Record<SortKey, number>> = {};
     let nextOrder = defaultOrder;
     try {
       const raw = localStorage.getItem(STATION_COLUMN_PREFS_STORAGE_KEY);
       if (raw) {
+        // A saved entry fully replaces the default, including the hidden set.
+        nextHidden.clear();
         const parsed = JSON.parse(raw) as { order?: string[]; hidden?: string[]; widths?: Record<string, number>; pinned?: string[] };
         if (Array.isArray(parsed.order)) {
           const saved = parsed.order.filter((key): key is SortKey => available.has(key as SortKey));
@@ -869,6 +914,21 @@ export function StationTrading({
   }, []);
 
   useEffect(() => {
+    // Skip the mount pass.
+    //
+    // The load effect above runs first, but only *schedules* its state
+    // updates — this effect still closes over the INITIAL (empty) hidden set
+    // on that same pass. Persisting it wrote `hidden: []` over the
+    // freshly-computed defaults, which then loaded back as "nothing hidden"
+    // forever, so the six-column default silently never applied on any
+    // machine that had opened the tab once.
+    //
+    // Skipping the first invocation means the first write happens on the
+    // re-render *after* hydration, with the real values.
+    if (!columnPrefsHydratedRef.current) {
+      columnPrefsHydratedRef.current = true;
+      return;
+    }
     try {
       localStorage.setItem(
         STATION_COLUMN_PREFS_STORAGE_KEY,
@@ -921,7 +981,14 @@ export function StationTrading({
 
   const resetStationColumns = useCallback(() => {
     setStationColumnOrder(baseStationColumnDefs.map((col) => col.key));
-    setStationHiddenColumns(new Set());
+    // "Reset" means back to the six-column decide tier, not back to all 20.
+    setStationHiddenColumns(
+      new Set(
+        baseStationColumnDefs
+          .map((col) => col.key)
+          .filter((key) => !STATION_DEFAULT_VISIBLE.has(key)),
+      ),
+    );
     setStationColumnWidths({});
     setStationPinnedColumns(new Set());
   }, []);
@@ -3709,6 +3776,15 @@ export function StationTrading({
                     e.preventDefault();
                     setContextMenu({ x: e.clientX, y: e.clientY, row });
                   }}
+                  onClick={(e) => {
+                    // Rows carry checkboxes, in-game buttons and links. Only
+                    // open the detail drawer for clicks on inert cell space,
+                    // and never swallow a text selection.
+                    const el = e.target as HTMLElement;
+                    if (el.closest("button, a, input, select, textarea, [role='button']")) return;
+                    if (window.getSelection()?.toString()) return;
+                    setDetailRow(row);
+                  }}
                 >
                   {showOperatorColumns && (
                     <td className="w-8 px-1 py-1 text-center">
@@ -3854,14 +3930,43 @@ export function StationTrading({
                           ? `font-mono font-bold ${getDSColor(row.DS ?? 0)}`
                           : col.key === "SDS"
                             ? `font-mono ${getSDSColor(row.SDS)}`
-                            : col.numeric
-                              ? "text-eve-accent font-mono"
-                              : "text-eve-text"
+                            : /* Semantic colour: the primary metric and ROI are
+                                 green when they earn and red when they don't.
+                                 Everything else numeric stays neutral so the
+                                 two that carry the decision stand out. */
+                              col.key === "DailyProfit"
+                              ? `font-num tnum font-semibold ${
+                                  stationDailyProfit(row) > 0 ? "text-profit" : "text-loss"
+                                }`
+                              : col.key === "MarginPercent"
+                                ? `font-num tnum ${
+                                    (row.MarginPercent ?? 0) > 0 ? "text-profit" : "text-loss"
+                                  }`
+                                : col.numeric
+                                  ? "font-num tnum text-fg-secondary"
+                                  : "text-eve-text"
                     }`}
                   >
                     {col.key === "TypeName" ? (
-                      <div className="flex items-center gap-1">
-                        <span className="truncate">{formatCell(col, row)}</span>
+                      <div className="flex items-center gap-1.5">
+                        {/* EVE's own art. Instantly recognisable in a way a
+                            truncated name is not, and free — CCP's CDN. */}
+                        <img
+                          src={typeIconUrl(row.TypeID, "icon", 32)}
+                          alt=""
+                          aria-hidden="true"
+                          loading="lazy"
+                          width={20}
+                          height={20}
+                          className="h-5 w-5 shrink-0 rounded-[2px]"
+                          onError={(e) => {
+                            // Blueprints and a few other types 400 on /icon.
+                            e.currentTarget.style.visibility = "hidden";
+                          }}
+                        />
+                        <span className="truncate font-ui text-t-emphasis text-fg">
+                          {formatCell(col, row)}
+                        </span>
                         {row.IsContraband && (
                           <span
                             title="Contraband item: hauling through empire space can be unsafe."
@@ -4537,6 +4642,11 @@ export function StationTrading({
           disabled={scanning}
         />
       )}
+      <StationRowDrawer
+        row={detailRow}
+        onClose={() => setDetailRow(null)}
+        dailyProfit={stationDailyProfit}
+      />
     </div>
   );
 }
