@@ -105,6 +105,23 @@ three fields visible at a time, collapsed after the first scan.
 *"11,735 items hidden: under 5 trades or 10 units a day, or no real order on one
 side of the book. Their profit could not be realised."* Teach while filtering.
 
+### Worked example — Station Trade
+
+The first tab taken through all three tiers, verified against a live Jita 4-4
+scan (1,500 opportunities):
+
+| | Before | After |
+|---|---|---|
+| Grid columns | 20, h-scrolling, uniform weight | **6**, no h-scroll |
+| Leads with | `CTS` (no hint text anywhere) | `DAILY PROFIT`, coloured, default sort |
+| Filters | 12 fields stacked, ⅔ of the screen | 4 tabs, 3–4 fields at a time |
+| Table header at 1600×1000 | y≈600 | y≈428 |
+| DOM, 100-row page | 3,165 elements | **1,610** |
+| Rows visible | ~13 | ~20 |
+
+Nothing was removed. The other fourteen columns are in the drawer *and* still
+available in the grid via **Columns**.
+
 ---
 
 ## 5. EVE-native flavour

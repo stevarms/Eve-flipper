@@ -1257,12 +1257,41 @@ React 19 + TypeScript 5 + Vite + Tailwind SPA.
 `main.tsx` mounts `<App />` inside an `I18nProvider` (§7c) and an
 `AchievementsProvider`.
 
-### 7a. Tabs
+### 7a. Workspaces and tabs
 
-The visible tabs come from `MAIN_TAB_IDS` in `lib/cockpit.ts` (line 7),
-filtered by `getVisibleMainTabs(cockpitPreferences)`. `App.tsx` renders
-each `TabPanel active={tab === "..."}` — **all tabs stay mounted** so
-per-tab state survives switches.
+Navigation is a **left icon rail of five workspaces**
+(`components/shell/WorkspaceRail.tsx`), with the tabs inside the active
+workspace as a secondary row that appears only when there is more than
+one. `WORKSPACE_META` in `lib/cockpit.ts` maps workspaces to tabs:
+
+| Workspace | Tabs |
+|---|---|
+| Trade | `radius`, `region`, `station`, `contracts` |
+| Industry | `industry`, `pi_factory` |
+| Assets | `orders`, `price_audit` |
+| Journal | `trade_journal` |
+| Intel | `route`, `demand` |
+
+This is a **grouping over** `MAIN_TAB_IDS`, not a replacement, so saved
+preferences (`mainTabOrder`, `hiddenMainTabs`, `tabLayouts`) still apply.
+The active workspace is *derived* from the active tab
+(`workspaceForTab`), so every existing `setTab(...)` call site — command
+palette, quick actions, header pills — works unchanged.
+
+**Tabs unmount when you navigate away.** `TabPanel` is lazy (a tab's DOM
+is never built until first opened) and unmounts on leave. It previously
+rendered all eleven tabs and hid the inactive ones with a CSS `hidden`
+class — "hidden" is not "absent", so the browser laid all of them out on
+every frame. That measured **44,773 elements / 1,539 rows** in a real
+session, with Chrome needing over two minutes to rasterize one frame.
+After the change, a Station Trade scan of 100 rows peaks at **1,610
+elements** and returns to ~300 on navigate; no workspace exceeds ~400.
+`scripts/debug/dom-accumulate.mjs` is the instrument.
+
+The one exception is `KEEP_ALIVE_TABS` (currently just `industry`), whose
+plan builder holds unsaved drafts in local state — see §7d. Note even a
+keep-alive tab costs nothing until first visited. Phase 3 should persist
+those drafts and empty the set.
 
 | tab id | Label key (fallback) | Component |
 |---|---|---|
