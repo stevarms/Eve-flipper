@@ -1630,7 +1630,7 @@ export const ru = {
     ordersColEta: "ETA",
     ordersColExpiry: "Expires",
     ordersOpenMarketHint:
-      "Открыть окно маркета в EVE клиенте (ESI open-window scope). Требует запущенного клиента с тем же персонажем.",
+      "Открыть окно маркета в EVE клиенте и скопировать рекомендованную цену в буфер обмена (ESI open-window scope). Требует запущенного клиента с тем же персонажем.",
     ordersPillLabel: "Ордера",
     ordersPillAria: "Открыть Orders",
     ordersPillTooltip:

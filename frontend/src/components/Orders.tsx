@@ -474,9 +474,19 @@ function OrderRow({
 }) {
   const atTop = row.position === 1;
   const priceCls = atTop ? "text-eve-dim font-mono" : "text-eve-accent font-mono";
+  const hasCopyablePrice = row.book_available && row.suggested_price > 0 && !atTop;
   const copy = () => {
-    if (!row.book_available || row.suggested_price <= 0 || atTop) return;
+    if (!hasCopyablePrice) return;
     void navigator.clipboard.writeText(row.suggested_price.toFixed(2));
+  };
+  // Opening the market window is almost always paired with pasting the
+  // suggested price into the modify-order dialog. Copy the price at the
+  // same time so the user doesn't need a second click on 📋.
+  const openMarketAndCopyPrice = () => {
+    if (hasCopyablePrice) {
+      void navigator.clipboard.writeText(row.suggested_price.toFixed(2));
+    }
+    onOpenMarket(row.type_id);
   };
   const badgeClass =
     row.recommendation === "cancel"
@@ -556,7 +566,7 @@ function OrderRow({
             )}
             <button
               type="button"
-              onClick={() => onOpenMarket(row.type_id)}
+              onClick={openMarketAndCopyPrice}
               className="text-[10px] px-1 py-0.5 rounded-sm border border-eve-border text-eve-dim hover:text-eve-accent hover:border-eve-accent transition-colors"
               title={t("ordersOpenMarketHint")}
               aria-label={t("ordersOpenMarketHint")}
