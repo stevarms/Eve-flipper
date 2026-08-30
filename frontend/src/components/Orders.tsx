@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { getAuthStatus, getOrderDesk } from "../lib/api";
+import { getAuthStatus, getOrderDesk, openMarketInGame } from "../lib/api";
 import type {
   AuthCharacter,
   OrderDeskOrder,
@@ -519,6 +519,21 @@ function OrderRow({
                 📋
               </button>
             )}
+            <button
+              type="button"
+              onClick={() => {
+                void openMarketInGame(row.type_id).catch(() => {
+                  // Silent — ESI open-window fails when the client isn't
+                  // running / user isn't logged in in-game. Users will
+                  // notice the game didn't respond and re-check EVE.
+                });
+              }}
+              className="text-[10px] px-1 py-0.5 rounded-sm border border-eve-border text-eve-dim hover:text-eve-accent hover:border-eve-accent transition-colors"
+              title={t("ordersOpenMarketHint")}
+              aria-label={t("ordersOpenMarketHint")}
+            >
+              🎮
+            </button>
           </div>
         ) : (
           <span className="text-eve-dim">—</span>

@@ -1629,6 +1629,8 @@ export const ru = {
     ordersColPosition: "Pos",
     ordersColEta: "ETA",
     ordersColExpiry: "Expires",
+    ordersOpenMarketHint:
+      "Открыть окно маркета в EVE клиенте (ESI open-window scope). Требует запущенного клиента с тем же персонажем.",
     ordersPillLabel: "Ордера",
     ordersPillAria: "Открыть Orders",
     ordersPillTooltip:

@@ -1633,6 +1633,8 @@ export const en = {
     ordersColPosition: "Pos",
     ordersColEta: "ETA",
     ordersColExpiry: "Expires",
+    ordersOpenMarketHint:
+      "Open this item's market window in the running EVE client (uses the ESI open-window scope). Requires the client to be running and logged in on the same character.",
     ordersPillLabel: "Orders",
     ordersPillAria: "Open Orders tab",
     ordersPillTooltip:
