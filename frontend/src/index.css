@@ -343,6 +343,97 @@
 }
 
 /* ===================================================================
+   Semantic design tokens  (UI overhaul — phase 0)
+
+   Layered ON TOP of the palette blocks above; nothing here overrides an
+   existing --eve-* var, so every pre-existing utility class keeps working.
+
+   Rules of the road:
+     - Colour must MEAN something. Green is profit, red is loss, amber is
+       caution, blue is information. Never decorative.
+     - Surfaces alias the active palette, so faction themes still drive the
+       chrome while semantics stay constant across all six.
+     - Numbers use --font-num (tabular figures); everything else uses
+       --font-ui. Mono is for digits, not for prose.
+   =================================================================== */
+
+:root {
+  /* --- Semantic state -------------------------------------------- */
+  --sem-profit: 74 222 128;
+  --sem-profit-dim: 34 150 84;
+  --sem-loss: 248 113 113;
+  --sem-loss-dim: 176 62 62;
+  --sem-warn: 251 191 36;
+  --sem-warn-dim: 180 130 20;
+  --sem-info: 96 165 250;
+  --sem-info-dim: 56 110 180;
+  --sem-neutral: 148 163 184;
+
+  /* --- Text ramp --------------------------------------------------
+     Primary is deliberately brighter than the legacy --eve-text (192) so
+     headings and key figures can actually out-rank body copy. */
+  --text-primary: 232 234 237;
+  --text-secondary: 168 174 182;
+  --text-tertiary: 118 124 132;
+
+  /* --- Surface ramp (follows the active faction palette) ---------- */
+  --surface-0: var(--eve-dark);
+  --surface-1: var(--eve-panel);
+  --surface-2: var(--eve-panel-hover);
+  --surface-3: var(--eve-input);
+
+  /* --- EVE security-status ramp (canonical in-client colours) ----- */
+  --sec-high: 47 239 239;   /* 1.0 – 0.8 */
+  --sec-mid: 239 239 0;     /* 0.7 – 0.5 */
+  --sec-low: 240 80 0;      /* 0.4 – 0.1 */
+  --sec-null: 240 0 48;     /* 0.0 and below */
+
+  /* --- Typography -------------------------------------------------
+     Segoe UI on Windows: proportional, already installed, zero network. */
+  --font-ui: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-num: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, Monaco,
+    monospace;
+
+  /* --- Row density (bound to CockpitDensity in lib/cockpit.ts) ----- */
+  --row-h: 34px;
+}
+
+[data-density="compact"] { --row-h: 28px; }
+[data-density="dense"] { --row-h: 24px; }
+
+/* Light mode: re-tune the ramps that assume a dark ground. */
+[data-mode="light"] {
+  --sem-profit: 21 128 61;
+  --sem-profit-dim: 34 150 84;
+  --sem-loss: 185 28 28;
+  --sem-loss-dim: 176 62 62;
+  --sem-warn: 161 98 7;
+  --sem-warn-dim: 180 130 20;
+  --sem-info: 29 78 216;
+  --sem-info-dim: 56 110 180;
+  --sem-neutral: 100 116 139;
+
+  --text-primary: 24 26 28;
+  --text-secondary: 71 78 86;
+  --text-tertiary: 124 132 140;
+
+  --sec-high: 14 116 144;
+  --sec-mid: 161 98 7;
+  --sec-low: 194 65 12;
+  --sec-null: 190 18 60;
+}
+
+/* Tabular figures for every numeric surface. Without this, columns of ISK
+   values visually jitter because glyph advance widths differ. */
+.tnum,
+[data-numeric="true"] {
+  font-family: var(--font-num);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* ===================================================================
    Base layer
    =================================================================== */
 
