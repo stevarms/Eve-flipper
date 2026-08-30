@@ -72,10 +72,11 @@ Release packages are published as two runtime families:
 ### Docker (Linux server)
 
 A Linux container image is published to GHCR alongside each release
-(`ghcr.io/<owner>/eve-flipper:latest`) for self-hosting the backend on Unraid,
-a NAS, or a spare Linux box. Mount one volume at `/data` for persistence and
-set `ESI_CALLBACK_URL` to match the hostname you'll access the app through —
-full instructions in [docs/DOCKER.md](docs/DOCKER.md).
+(`ghcr.io/stevarms/eve-flipper:latest`) for self-hosting the backend on Unraid,
+a NAS, or a spare Linux box. Unraid users can paste the prefilled template
+`https://raw.githubusercontent.com/stevarms/Eve-flipper/master/unraid/eve-flipper.xml`
+into Add Container → Template for a one-URL install. Full instructions,
+compose file, and backup notes in [DOCKER.md](DOCKER.md).
 
 ## Main Modules
 

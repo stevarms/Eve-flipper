@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>eve-flipper</Name>
+  <Repository>ghcr.io/stevarms/eve-flipper:latest</Repository>
+  <Registry>https://github.com/stevarms/Eve-flipper/pkgs/container/eve-flipper</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/stevarms/Eve-flipper/issues</Support>
+  <Project>https://github.com/stevarms/Eve-flipper</Project>
+  <Overview>EVE Online market intelligence, station trading, industry planning, and portfolio tooling. Local-first: talks to ESI directly from your Unraid server and stores everything under /data. Access the UI in a browser at http://[IP]:[PORT:13370] once running. First launch downloads the Static Data Export (~50 MB) &#8212; expect a couple of minutes before the scanner is ready.
+
+Before first login, register a second callback URL on developers.eveonline.com for your Eve Flipper application &#8212; for example http://unraid.local:13370/api/auth/callback &#8212; and match it in the ESI Callback URL field below. See https://github.com/stevarms/Eve-flipper/blob/master/DOCKER.md for full instructions.</Overview>
+  <Category>Tools: Productivity:</Category>
+  <WebUI>http://[IP]:[PORT:13370]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/stevarms/Eve-flipper/master/unraid/eve-flipper.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/stevarms/Eve-flipper/master/assets/logo.svg</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+  <Config Name="WebUI Port" Target="13370" Default="13370" Mode="tcp" Description="Port to reach the Eve Flipper UI on. Change if 13370 is already taken on your host." Type="Port" Display="always" Required="true" Mask="false">13370</Config>
+  <Config Name="Data" Target="/data" Default="/mnt/user/appdata/eve-flipper" Mode="rw" Description="Persistent storage for the SQLite database (flipper.db), the Static Data Export cache (data/sde/), and the session vault key (.config/EveFlipper/vault_machine.key). Back this up to preserve character logins and history." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/eve-flipper</Config>
+  <Config Name="ESI Callback URL" Target="ESI_CALLBACK_URL" Default="http://unraid.local:13370/api/auth/callback" Mode="" Description="Where EVE SSO redirects after login. MUST match a callback URL registered on developers.eveonline.com for your Eve Flipper ESI application. Use the hostname/IP you actually browse to (e.g. http://unraid.local:13370/api/auth/callback or http://192.168.1.50:13370/api/auth/callback)." Type="Variable" Display="always" Required="true" Mask="false">http://unraid.local:13370/api/auth/callback</Config>
+</Container>
