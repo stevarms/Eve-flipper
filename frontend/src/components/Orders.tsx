@@ -6,6 +6,8 @@ import type {
   OrderDeskResponse,
 } from "../lib/types";
 import { useI18n, type TranslationKey } from "../lib/i18n";
+import { useGlobalToast } from "./Toast";
+import { handleEveUIError } from "../lib/handleEveUIError";
 
 // Orders.tsx — first-class main-tab replacement for the buried
 // character-popup Order Desk. Aggregates active orders across every
@@ -40,6 +42,7 @@ function formatIsk(v: number): string {
 
 export function Orders({ isLoggedIn }: Props) {
   const { t } = useI18n();
+  const { addToast } = useGlobalToast();
   const [data, setData] = useState<OrderDeskResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -163,6 +166,30 @@ export function Orders({ isLoggedIn }: Props) {
       setSortDir(k === "priority" || k === "notional" ? "desc" : "asc");
     }
   };
+
+  // openMarketForType mirrors the pattern used by CombinedOrdersTab /
+  // StationTrading / ScanResultsTable — surface both success ("Opened in
+  // game") and failure (401 re-login / generic error) as toasts so the
+  // user gets real feedback. Previously this button silently swallowed
+  // errors, which made ESI 401s / token issues invisible.
+  const openMarketForType = useCallback(
+    async (typeID: number) => {
+      if (!typeID) return;
+      try {
+        await openMarketInGame(typeID);
+        addToast(t("actionSuccess"), "success", 2000);
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        const { messageKey, duration } = handleEveUIError({ message });
+        if (messageKey === "actionFailed") {
+          addToast(t(messageKey, { error: message || "Unknown error" }), "error", duration);
+        } else {
+          addToast(t(messageKey), "error", duration);
+        }
+      }
+    },
+    [addToast, t],
+  );
 
   if (!isLoggedIn) {
     return (
@@ -368,7 +395,13 @@ export function Orders({ isLoggedIn }: Props) {
             </thead>
             <tbody>
               {filteredRows.map((r) => (
-                <OrderRow key={r.order_id} row={r} formatIsk={formatIsk} t={t} />
+                <OrderRow
+                  key={r.order_id}
+                  row={r}
+                  formatIsk={formatIsk}
+                  t={t}
+                  onOpenMarket={openMarketForType}
+                />
               ))}
             </tbody>
           </table>
@@ -432,10 +465,12 @@ function OrderRow({
   row,
   formatIsk,
   t,
+  onOpenMarket,
 }: {
   row: OrderDeskOrder;
   formatIsk: (v: number) => string;
   t: (key: TranslationKey, params?: Record<string, string | number>) => string;
+  onOpenMarket: (typeID: number) => void;
 }) {
   const atTop = row.position === 1;
   const priceCls = atTop ? "text-eve-dim font-mono" : "text-eve-accent font-mono";
@@ -521,13 +556,7 @@ function OrderRow({
             )}
             <button
               type="button"
-              onClick={() => {
-                void openMarketInGame(row.type_id).catch(() => {
-                  // Silent — ESI open-window fails when the client isn't
-                  // running / user isn't logged in in-game. Users will
-                  // notice the game didn't respond and re-check EVE.
-                });
-              }}
+              onClick={() => onOpenMarket(row.type_id)}
               className="text-[10px] px-1 py-0.5 rounded-sm border border-eve-border text-eve-dim hover:text-eve-accent hover:border-eve-accent transition-colors"
               title={t("ordersOpenMarketHint")}
               aria-label={t("ordersOpenMarketHint")}
