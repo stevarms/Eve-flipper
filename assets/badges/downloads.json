@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
   "repo": "stevarms/Eve-flipper",
-  "generated_at": "2026-08-29T22:53:25.669Z",
-  "latest_release": "v1.12.0",
-  "total_downloads": 1865,
-  "current_github_total": 7,
-  "active_asset_count": 57,
+  "generated_at": "2026-08-30T03:18:25.355Z",
+  "latest_release": "v1.9.2",
+  "total_downloads": 1866,
+  "current_github_total": 8,
+  "active_asset_count": 60,
   "archived_asset_count": 323,
   "clone_stats": {
     "window": "14d",
@@ -88,6 +88,48 @@
     "available": true
   },
   "assets": [
+    {
+      "id": "536085344",
+      "name": "eve-flipper-desktop-windows-amd64.exe",
+      "tag_name": "v1.9.2",
+      "release_id": "379168418",
+      "state": "active",
+      "download_count": 0,
+      "github_download_count": 0,
+      "browser_download_url": "https://github.com/stevarms/Eve-flipper/releases/download/v1.9.2/eve-flipper-desktop-windows-amd64.exe",
+      "created_at": "2026-08-30T03:18:15Z",
+      "updated_at": "2026-08-30T03:18:16Z",
+      "first_seen_at": "2026-08-30T03:18:25.355Z",
+      "last_seen_at": "2026-08-30T03:18:25.355Z"
+    },
+    {
+      "id": "536085345",
+      "name": "eve-flipper-web-windows-amd64.exe",
+      "tag_name": "v1.9.2",
+      "release_id": "379168418",
+      "state": "active",
+      "download_count": 0,
+      "github_download_count": 0,
+      "browser_download_url": "https://github.com/stevarms/Eve-flipper/releases/download/v1.9.2/eve-flipper-web-windows-amd64.exe",
+      "created_at": "2026-08-30T03:18:15Z",
+      "updated_at": "2026-08-30T03:18:16Z",
+      "first_seen_at": "2026-08-30T03:18:25.355Z",
+      "last_seen_at": "2026-08-30T03:18:25.355Z"
+    },
+    {
+      "id": "536085351",
+      "name": "SHA256SUMS.txt",
+      "tag_name": "v1.9.2",
+      "release_id": "379168418",
+      "state": "active",
+      "download_count": 0,
+      "github_download_count": 0,
+      "browser_download_url": "https://github.com/stevarms/Eve-flipper/releases/download/v1.9.2/SHA256SUMS.txt",
+      "created_at": "2026-08-30T03:18:15Z",
+      "updated_at": "2026-08-30T03:18:15Z",
+      "first_seen_at": "2026-08-30T03:18:25.355Z",
+      "last_seen_at": "2026-08-30T03:18:25.355Z"
+    },
     {
       "id": "531081557",
       "name": "eve-flipper-desktop-windows-amd64.exe",
@@ -5064,13 +5106,13 @@
       "tag_name": "v1.12.0",
       "release_id": "379123054",
       "state": "active",
-      "download_count": 0,
-      "github_download_count": 0,
+      "download_count": 1,
+      "github_download_count": 1,
       "browser_download_url": "https://github.com/stevarms/Eve-flipper/releases/download/v1.12.0/eve-flipper-desktop-windows-amd64.exe",
       "created_at": "2026-08-29T22:53:14Z",
       "updated_at": "2026-08-29T22:53:15Z",
       "first_seen_at": "2026-08-29T22:53:25.669Z",
-      "last_seen_at": "2026-08-29T22:53:25.669Z"
+      "last_seen_at": "2026-08-30T03:18:25.355Z"
     },
     {
       "id": "535837117",
