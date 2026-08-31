@@ -54,7 +54,7 @@ import {
 import { TaxProfileEditor } from "./TaxProfileEditor";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StationRowDrawer } from "./station/StationRowDrawer";
-import { typeIconUrl } from "@/lib/eveImages";
+import { TypeIcon } from "@/components/ui/TypeIcon";
 import { getStationsWhenReady } from "@/lib/stationLookup";
 
 type SortKey = keyof StationTrade;
@@ -3951,19 +3951,7 @@ export function StationTrading({
                       <div className="flex items-center gap-1.5">
                         {/* EVE's own art. Instantly recognisable in a way a
                             truncated name is not, and free — CCP's CDN. */}
-                        <img
-                          src={typeIconUrl(row.TypeID, "icon", 32)}
-                          alt=""
-                          aria-hidden="true"
-                          loading="lazy"
-                          width={20}
-                          height={20}
-                          className="h-5 w-5 shrink-0 rounded-[2px]"
-                          onError={(e) => {
-                            // Blueprints and a few other types 400 on /icon.
-                            e.currentTarget.style.visibility = "hidden";
-                          }}
-                        />
+                        <TypeIcon typeId={row.TypeID} categoryId={row.CategoryID} size={20} />
                         <span className="truncate font-ui text-t-emphasis text-fg">
                           {formatCell(col, row)}
                         </span>

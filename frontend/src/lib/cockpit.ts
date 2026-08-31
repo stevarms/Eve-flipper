@@ -5,6 +5,7 @@ import type { CustomPalette, FontSize, ThemeMode } from "./useTheme";
 export const COCKPIT_STORAGE_KEY = "eve-flipper-cockpit:v1";
 
 export const MAIN_TAB_IDS = [
+  "home",
   "radius",
   "region",
   "contracts",
@@ -256,6 +257,7 @@ export const COCKPIT_MARKETPLACE_URL =
   "https://raw.githubusercontent.com/ilyaux/eve-flipper-cockpit-marketplace/main/marketplace.json";
 
 export const MAIN_TAB_META: Record<MainTabId, { labelKey: TranslationKey; fallback: string; group: "scan" | "tools" }> = {
+  home: { labelKey: "tabHome", fallback: "Today", group: "tools" },
   radius: { labelKey: "tabRadius", fallback: "Flipper", group: "scan" },
   region: { labelKey: "tabRegion", fallback: "Regional Trade", group: "scan" },
   contracts: { labelKey: "tabContracts", fallback: "Contracts", group: "scan" },
@@ -282,18 +284,24 @@ export const MAIN_TAB_META: Record<MainTabId, { labelKey: TranslationKey; fallba
    preferences (mainTabOrder, hiddenMainTabs, tabLayouts) keep working.
    ------------------------------------------------------------------ */
 
-export const WORKSPACE_IDS = ["trade", "industry", "assets", "journal", "intel"] as const;
+export const WORKSPACE_IDS = ["home", "trade", "industry", "assets", "journal", "intel"] as const;
 export type WorkspaceId = (typeof WORKSPACE_IDS)[number];
 
 export interface WorkspaceMeta {
   labelKey: TranslationKey;
   fallback: string;
   /** lucide-react icon name, resolved in components/shell/WorkspaceRail.tsx */
-  icon: "TrendingUp" | "Factory" | "Package" | "BookOpen" | "Radar";
+  icon: "ListChecks" | "TrendingUp" | "Factory" | "Package" | "BookOpen" | "Radar";
   tabs: MainTabId[];
 }
 
 export const WORKSPACE_META: Record<WorkspaceId, WorkspaceMeta> = {
+  home: {
+    labelKey: "wsHome",
+    fallback: "Today",
+    icon: "ListChecks",
+    tabs: ["home"],
+  },
   trade: {
     labelKey: "wsTrade",
     fallback: "Trade",

@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../lib/i18n";
+import type { MainTabId } from "../lib/cockpit";
 
-type TabKey = "radius" | "region" | "contracts" | "station" | "orders" | "price_audit" | "pi_factory" | "route" | "industry" | "trade_journal" | "demand";
+/** Was a hand-maintained copy of the tab union, which silently went stale
+ *  whenever MAIN_TAB_IDS changed. Aliased so it cannot drift again. */
+type TabKey = MainTabId;
 
 interface CommandItem {
   id: string;

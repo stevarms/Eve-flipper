@@ -262,6 +262,33 @@ export const ru = {
     stationFiltersProfit: "Прибыль",
     stationFiltersFees: "Комиссии",
 
+    // Home / Today workspace
+    wsHome: "Сегодня",
+    tabHome: "Сегодня",
+    homeTitle: "Сегодня",
+    homeRoutineTitle: "Распорядок на сегодня",
+    homeRoutineHint:
+      "Короткий проход по порядку — сначала проверьте текущие ордера, потом добавляйте новые.",
+    homeStepReprice: "Переоценить ордеров: {n}",
+    homeStepCancel: "Отменить мёртвых ордеров: {n}",
+    homeStepAdd: "Добавить buy-ордера — кандидатов ниже: {n}",
+    homeStepList: "Выставить sell-ордера",
+    homeStepNothing: "Делать нечего — все ордера конкурентны",
+    homeBuySheet: "Buy-ордера · добавить и переоценить",
+    homeSellSheet: "Sell-ордера · переоценить",
+    homeNoScan: "Сканов станции ещё нет",
+    homeNoScanHint: "Запустите скан Station Trade — список покупок заполнится из него.",
+    homeScanAge: "из скана Station Trade · {age}",
+    homeCopyPrice: "Копировать цену",
+    homeCopiedPrice: "Цена скопирована",
+    homeCapitalInOrders: "Капитал в ордерах",
+    homeOpenOrders: "Активных ордеров",
+    homeNeedsReprice: "Нужна переоценка",
+    homeNeedsCancel: "Нужна отмена",
+    homeLoginPrompt: "Войдите через EVE, чтобы увидеть ордера и распорядок на сегодня.",
+    homeOpenOrdersTab: "Открыть Orders",
+    homeOpenStationTab: "Открыть Station Trade",
+
     // Workspace rail (UI overhaul phase 1)
     wsTrade: "Торговля",
     wsIndustry: "Производство",

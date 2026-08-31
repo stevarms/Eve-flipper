@@ -262,6 +262,33 @@ export const en = {
     stationFiltersProfit: "Profit",
     stationFiltersFees: "Fees",
 
+    // Home / Today workspace
+    wsHome: "Today",
+    tabHome: "Today",
+    homeTitle: "Today",
+    homeRoutineTitle: "Today's routine",
+    homeRoutineHint:
+      "A short, ordered pass — check what you already have on the market before adding anything new.",
+    homeStepReprice: "Reprice {n} outbid orders",
+    homeStepCancel: "Cancel {n} dead orders",
+    homeStepAdd: "Add buy orders — {n} candidates below",
+    homeStepList: "List sell orders",
+    homeStepNothing: "Nothing to do — your orders are all competitive",
+    homeBuySheet: "Buy orders · adds & repricings",
+    homeSellSheet: "Sell orders · reprice these",
+    homeNoScan: "No station scan yet",
+    homeNoScanHint: "Run a Station Trade scan and today's buy sheet fills in from it.",
+    homeScanAge: "from your Station Trade scan · {age}",
+    homeCopyPrice: "Copy price",
+    homeCopiedPrice: "Price copied",
+    homeCapitalInOrders: "Capital in orders",
+    homeOpenOrders: "Open orders",
+    homeNeedsReprice: "Needs reprice",
+    homeNeedsCancel: "Needs cancel",
+    homeLoginPrompt: "Log in with an EVE character to see your orders and today's routine.",
+    homeOpenOrdersTab: "Open Orders",
+    homeOpenStationTab: "Open Station Trade",
+
     // Workspace rail (UI overhaul phase 1)
     wsTrade: "Trade",
     wsIndustry: "Industry",

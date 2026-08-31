@@ -27,7 +27,7 @@ import {
   type RouteSafetyFilter,
 } from "@/lib/scanResultsLogic";
 import { normalizeColumnPrefs } from "@/lib/tablePrefs";
-import { typeIconUrl } from "@/lib/eveImages";
+import { TypeIcon } from "@/components/ui/TypeIcon";
 import {
   addToWatchlist,
   clearStationTradeStates,
@@ -58,8 +58,6 @@ import { useAchievements } from "./achievements";
 const PAGE_SIZE = 100;
 const GROUP_PAGE_SIZE = 50; // rows shown per group before "Show all" button
 
-// Module-level cache: type IDs whose icon failed to load (avoid repeated 404s)
-const failedIconIds = new Set<number>();
 const CACHE_TTL_FALLBACK_MS = 20 * 60 * 1000;
 /* v1 -> v2 for the UI overhaul: the point of the change is the new
    decide-tier default, and an existing v1 entry would mask it entirely.
@@ -4045,18 +4043,7 @@ const DataRow = memo(
           >
             {col.key === "TypeName" ? (
               <div className="flex items-center gap-1.5 min-w-0">
-                {ir.row.TypeID > 0 && !failedIconIds.has(ir.row.TypeID) && (
-                  <img
-                    src={typeIconUrl(ir.row.TypeID, "icon", 32)}
-                    alt=""
-                    aria-hidden="true"
-                    loading="lazy"
-                    width={18}
-                    height={18}
-                    className="w-[18px] h-[18px] shrink-0 rounded-sm"
-                    onError={() => failedIconIds.add(ir.row.TypeID)}
-                  />
-                )}
+                <TypeIcon typeId={ir.row.TypeID} />
                 <span className="truncate font-ui text-fg">{ir.row.TypeName}</span>
                 {ir.row.IsContraband && (
                   <span

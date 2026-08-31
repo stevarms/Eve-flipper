@@ -49,6 +49,23 @@ export function blueprintIconUrl(typeId: number, isCopy: boolean, size: IconSize
   return typeIconUrl(typeId, isCopy ? "bpc" : "bp", size);
 }
 
+/** EVE inventory category 9 is Blueprint. */
+export const CATEGORY_BLUEPRINT = 9;
+
+/**
+ * Pick the right art variant from a row's SDE category when the caller has
+ * a mixed list and does not otherwise know what it is holding.
+ *
+ * Without this, blueprints in a mixed grid render as a broken image: they do
+ * not serve `/icon`. Category 9 rows fall back to `bp` (original) because a
+ * market row carries no copy flag — the BPO/BPC distinction only exists for
+ * blueprints you own, which is the Industry scanner's case, and that has
+ * `is_bpo` so it should call blueprintIconUrl directly.
+ */
+export function artForCategory(categoryId?: number): TypeArt {
+  return categoryId === CATEGORY_BLUEPRINT ? "bp" : "icon";
+}
+
 export function characterPortraitUrl(characterId: number, size: IconSize = 32): string {
   return `${BASE}/characters/${characterId}/portrait?size=${size}`;
 }

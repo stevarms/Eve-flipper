@@ -1,4 +1,12 @@
-import { BookOpen, Factory, Package, Radar, TrendingUp, type LucideIcon } from "lucide-react";
+import {
+  BookOpen,
+  Factory,
+  ListChecks,
+  Package,
+  Radar,
+  TrendingUp,
+  type LucideIcon,
+} from "lucide-react";
 import {
   WORKSPACE_META,
   type MainTabId,
@@ -21,6 +29,7 @@ import { cn } from "@/lib/utils";
  */
 
 const ICONS: Record<WorkspaceMeta["icon"], LucideIcon> = {
+  ListChecks,
   TrendingUp,
   Factory,
   Package,

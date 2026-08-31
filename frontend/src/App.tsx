@@ -89,6 +89,7 @@ import {
   type WorkspaceId,
 } from "./lib/cockpit";
 import { WorkspaceRail, WorkspaceTabs } from "./components/shell/WorkspaceRail";
+import { HomeWorkspace } from "./components/home/HomeWorkspace";
 import type {
   ContractResult,
   FlipResult,
@@ -421,7 +422,9 @@ function App() {
     } catch {
       /* ignore */
     }
-    return "radius";
+    // Only the cold-start fallback — a saved tab above always wins, so this
+    // does not move anyone who already has a habit.
+    return "home";
   });
   const setTab = useCallback((t: Tab) => {
     setTabRaw(t);
@@ -2305,10 +2308,11 @@ function App() {
           onSelect={setTab}
           label={(tabID) => t(MAIN_TAB_META[tabID].labelKey) || MAIN_TAB_META[tabID].fallback}
           actions={
-            tab !== "route" &&
-            tab !== "station" &&
-            tab !== "industry" &&
-            tab !== "demand" ? (
+            /* Only the tabs that actually consume the global scan. This used
+               to be an exclusion list, which meant Orders, Price Audit, PI
+               Factory and Trade Journal all showed a Scan button that ran a
+               radius/region scan they do not display. */
+            tab === "radius" || tab === "region" || tab === "contracts" ? (
               <button
                 data-scan-button
                 onClick={handleScan}
@@ -2349,6 +2353,9 @@ function App() {
         )}
 
         <div className={tabWorkspaceClass}>
+          <TabPanel active={tab === "home"}>
+            <HomeWorkspace isLoggedIn={authStatus.logged_in} onNavigate={setTab} />
+          </TabPanel>
           <TabPanel active={tab === "radius"}>
               {tab === "radius" && showTabActionBars && (
               <TabActionBar>
