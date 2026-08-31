@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getOrderDesk } from "../lib/api";
 import type { OrderDeskSummary } from "../lib/types";
+import { loadOrdersPrefs } from "../lib/ordersPrefs";
 import { useI18n } from "../lib/i18n";
 
 // OrdersPill — always-visible chip in the app's top bar showing how many
@@ -28,28 +29,45 @@ export function OrdersPill({ isLoggedIn, onOpen, refreshKey }: Props) {
     };
   }, []);
 
-  const load = useCallback(async () => {
-    if (!isLoggedIn) {
-      setSummary(null);
-      return;
-    }
-    setLoading(true);
-    try {
-      const resp = await getOrderDesk({ characterId: "all" });
-      if (mountedRef.current) setSummary(resp.summary);
-    } catch {
-      // Silent — the pill is optional UI; errors shouldn't disrupt.
-    } finally {
-      if (mountedRef.current) setLoading(false);
-    }
-  }, [isLoggedIn]);
+  const lastLoadedAtRef = useRef(0);
+
+  const load = useCallback(
+    async (force = false) => {
+      if (!isLoggedIn) {
+        setSummary(null);
+        return;
+      }
+      setLoading(true);
+      try {
+        const resp = await getOrderDesk({ characterId: "all", force });
+        lastLoadedAtRef.current = Date.now();
+        if (mountedRef.current) setSummary(resp.summary);
+      } catch {
+        // Silent — the pill is optional UI; errors shouldn't disrupt.
+      } finally {
+        if (mountedRef.current) setLoading(false);
+      }
+    },
+    [isLoggedIn],
+  );
 
   useEffect(() => {
-    void load();
+    void load(refreshKey != null && refreshKey > 0);
   }, [load, refreshKey]);
 
+  // The pill lives in the top bar and is therefore mounted even while the
+  // Orders tab is open, so an unguarded focus listener here doubled the cost
+  // of every alt-tab back from EVE. It reuses the Orders tab's own refresh
+  // interval; with auto-refresh switched off it still falls back to a slow
+  // poll, because a badge that silently stops counting is worse than a stale
+  // one.
   useEffect(() => {
-    const onFocus = () => void load();
+    const onFocus = () => {
+      const { refreshMinutes } = loadOrdersPrefs();
+      const gapMs = (refreshMinutes > 0 ? refreshMinutes : 10) * 60_000;
+      if (Date.now() - lastLoadedAtRef.current < gapMs) return;
+      void load();
+    };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, [load]);
