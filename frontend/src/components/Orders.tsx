@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getAuthStatus, getOrderDesk, openMarketInGame } from "../lib/api";
+import type { CharacterMarketFees } from "../lib/api";
 import type {
   AuthCharacter,
   OrderDeskOrder,
   OrderDeskResponse,
 } from "../lib/types";
+import { useEsiFeeImport } from "../lib/useEsiFeeImport";
 import {
   defaultDirForSortKey,
   loadOrdersPrefs,
@@ -118,8 +120,14 @@ export function Orders({ isLoggedIn }: Props) {
   const [lastLoadedAt, setLastLoadedAt] = useState<number>(0);
   const [now, setNow] = useState<number>(() => Date.now());
 
+  const [feesReady, setFeesReady] = useState(false);
+  const [feeSource, setFeeSource] = useState<string | null>(null);
+
   const lastLoadedAtRef = useRef(0);
   const startedRef = useRef(false);
+  const feesRequestedRef = useRef(false);
+
+  const { importFees, loading: importingFees } = useEsiFeeImport();
 
   const refreshMs = prefs.refreshMinutes * 60_000;
 
@@ -137,6 +145,30 @@ export function Orders({ isLoggedIn }: Props) {
       .then((s) => setAuthCharacters(s.characters ?? []))
       .catch(() => setAuthCharacters([]));
   }, [isLoggedIn]);
+
+  const applyFees = useCallback((fees: CharacterMarketFees) => {
+    setSalesTax(Number(fees.suggested_sales_tax_percent.toFixed(2)));
+    setBrokerFee(Number(fees.suggested_broker_fee_percent.toFixed(2)));
+    setFeeSource(fees.character_name || null);
+  }, []);
+
+  // Fees come from the active character's Accounting and Broker Relations
+  // levels rather than a guess, since they decide every suggested price and
+  // the unprofitable-relist warning. The order desk waits for them: it is the
+  // most expensive call in the app and running it twice — once on placeholder
+  // numbers, once on the real ones — is exactly what this tab was fixed to
+  // stop doing. No success toast on arrival; opening a tab is not an event.
+  useEffect(() => {
+    if (!isLoggedIn || feesRequestedRef.current) return;
+    feesRequestedRef.current = true;
+    void importFees(applyFees, { successToast: false }).finally(() =>
+      setFeesReady(true),
+    );
+  }, [isLoggedIn, importFees, applyFees]);
+
+  const resyncFees = useCallback(() => {
+    void importFees(applyFees);
+  }, [importFees, applyFees]);
 
   const load = useCallback(
     async (force = false) => {
@@ -173,8 +205,11 @@ export function Orders({ isLoggedIn }: Props) {
     if (!isLoggedIn) {
       setData(null);
       startedRef.current = false;
+      feesRequestedRef.current = false;
+      setFeesReady(false);
       return;
     }
+    if (!feesReady) return;
     if (!startedRef.current) {
       startedRef.current = true;
       void load();
@@ -182,7 +217,7 @@ export function Orders({ isLoggedIn }: Props) {
     }
     const id = setTimeout(() => void load(true), FEE_DEBOUNCE_MS);
     return () => clearTimeout(id);
-  }, [load, isLoggedIn]);
+  }, [load, isLoggedIn, feesReady]);
 
   // Scheduled refresh. Off is a real choice — during a long repricing pass
   // the last thing wanted is the table changing underfoot.
@@ -295,7 +330,10 @@ export function Orders({ isLoggedIn }: Props) {
   // Only the very first load is allowed to replace the table. Every later
   // one leaves the rows in place: waiting three seconds between repricing
   // two orders was the single worst thing about this tab.
-  const firstLoad = loading && !data;
+  const firstLoad = (loading || !feesReady) && !data;
+  const feeTitle = feeSource
+    ? t("ordersFeesFromEsi", { char: feeSource })
+    : t("ordersFeesNoEsi");
   const ageMs = lastLoadedAt > 0 ? Math.max(0, now - lastLoadedAt) : 0;
   const updatedLabel =
     lastLoadedAt === 0
@@ -327,7 +365,7 @@ export function Orders({ isLoggedIn }: Props) {
           ))}
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <label className="text-[11px] text-eve-dim">
+          <label className="text-[11px] text-eve-dim" title={feeTitle}>
             {t("ordersSalesTax")}
             <input
               type="number"
@@ -339,7 +377,7 @@ export function Orders({ isLoggedIn }: Props) {
               className="ml-1 w-16 bg-eve-dark border border-eve-border rounded-sm px-1 py-0.5 text-eve-text"
             />
           </label>
-          <label className="text-[11px] text-eve-dim">
+          <label className="text-[11px] text-eve-dim" title={feeTitle}>
             {t("ordersBrokerFee")}
             <input
               type="number"
@@ -351,6 +389,16 @@ export function Orders({ isLoggedIn }: Props) {
               className="ml-1 w-16 bg-eve-dark border border-eve-border rounded-sm px-1 py-0.5 text-eve-text"
             />
           </label>
+          <button
+            type="button"
+            onClick={resyncFees}
+            disabled={importingFees}
+            title={t("ordersFeesResyncHint")}
+            aria-label={t("ordersFeesResyncHint")}
+            className="px-1.5 py-0.5 text-[11px] rounded-sm border border-eve-border text-eve-dim hover:text-eve-accent hover:border-eve-accent disabled:opacity-50 transition-colors"
+          >
+            {importingFees ? "…" : "↻"}
+          </button>
           <label className="text-[11px] text-eve-dim" title={t("ordersAutoRefreshHint")}>
             {t("ordersAutoRefresh")}
             <select

@@ -1645,6 +1645,11 @@ export const ru = {
     ordersAutoRefreshMinutes: "{n} мин",
     ordersUpdatedAgo: "обновлено {ago} назад",
     ordersUpdatedJustNow: "обновлено только что",
+    ordersFeesFromEsi:
+      "Взято из навыков Accounting и Broker Relations персонажа {char}. Можно перебить вручную на эту сессию.",
+    ordersFeesNoEsi:
+      "Не удалось прочитать навыки из ESI — это значения по умолчанию, а не ваши реальные ставки. Исправьте вручную или нажмите ↻.",
+    ordersFeesResyncHint: "Перечитать налог с продаж и брокерскую комиссию из навыков ESI.",
     ordersOpenMarketHint:
       "Открыть окно маркета в EVE клиенте и скопировать рекомендованную цену в буфер обмена (ESI open-window scope). Требует запущенного клиента с тем же персонажем.",
     ordersCopyNameHint:

@@ -1649,6 +1649,11 @@ export const en = {
     ordersAutoRefreshMinutes: "{n} min",
     ordersUpdatedAgo: "updated {ago} ago",
     ordersUpdatedJustNow: "updated just now",
+    ordersFeesFromEsi:
+      "Loaded from {char}'s Accounting and Broker Relations skill levels. Edit to override for this session.",
+    ordersFeesNoEsi:
+      "Could not read your skill levels from ESI, so these are defaults rather than your real rates. Edit them, or press ↻ to try again.",
+    ordersFeesResyncHint: "Re-read sales tax and broker fee from ESI skill levels.",
     ordersOpenMarketHint:
       "Open this item's market window in the running EVE client and copy the suggested price to the clipboard (uses the ESI open-window scope). Requires the client to be running and logged in on the same character.",
     ordersCopyNameHint:
