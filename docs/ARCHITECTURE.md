@@ -1323,8 +1323,6 @@ those drafts and empty the set.
   tax-profile editor, optional `StationAIAssistant`.
 - `RouteBuilder.tsx` — multi-region route optimizer.
 - `WarTracker.tsx` — demand/war heat-map (zKillboard-derived).
-- `RegionalDayTraderTable.tsx` — legacy EveGuru-style regional grid;
-  kept for old regional payload shapes.
 - `PriceAudit.tsx` — item-level price comparison across a station.
 - `PIFactory.tsx` — planetary-industry factory planner.
 - `TradeJournal.tsx` — Eve-Tycoon-style profit tracker: wallet-scoped

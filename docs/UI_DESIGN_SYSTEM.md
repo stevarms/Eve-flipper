@@ -122,6 +122,25 @@ scan (1,500 opportunities):
 Nothing was removed. The other fourteen columns are in the drawer *and* still
 available in the grid via **Columns**.
 
+### Rolled out
+
+| Grid | Columns before → after | DOM, 100-row page |
+|---|---|---|
+| Station Trade | 20 → **6** | 3,165 → 1,610 |
+| Radius / Regional | 35 → **6** | 5,299 → 2,105 |
+| Contracts | 16 → **6** | — |
+
+Decide columns are **ordered**, not merely a set — the primary metric must be
+the leftmost data column, and declaration order in the column-def arrays does
+not match reading order.
+
+**Persistence rule:** a table must not write column preferences until the user
+actually changes a column. Both scan tables originally wrote on mount, which
+clobbered the computed default; `raw === null` has to reliably mean "never
+configured". `normalizeColumnPrefs(raw, order, defaultHidden)` applies the
+default only when nothing is stored, and an explicitly empty saved `hidden`
+counts as a real preference so un-hiding everything sticks.
+
 ---
 
 ## 5. EVE-native flavour
