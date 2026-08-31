@@ -31,6 +31,7 @@ import { MaterialsPreviewPanel } from "./MaterialsPreviewPanel";
 import { StructureRigPicker, computeRigTotals } from "./StructureRigPicker";
 import { PricingHubPicker } from "./PricingHubPicker";
 import { getStructureRigs } from "@/lib/api";
+import { blueprintIconUrl } from "@/lib/eveImages";
 import type { StructureRig } from "@/lib/types";
 import type { JobSplitLimits } from "@/lib/industryPlanPatch";
 import {
@@ -2793,6 +2794,23 @@ const ScannerRow = memo(function ScannerRow({ row, k, checked, onToggle, onView,
         />
       </td>
       <td className="px-2 py-1 font-medium text-eve-text" title={inventionTooltip}>
+        {/* EVE's own blueprint art. Blueprint types do NOT serve /icon (they
+            400) — they serve /bp and /bpc, which are visually distinct in
+            the client. That distinction is what separates the BPO and BPC
+            rows for the same product, which otherwise appear as duplicate
+            rows carrying identical economics. */}
+        <img
+          src={blueprintIconUrl(row.blueprint_type_id, !row.is_bpo, 64)}
+          alt=""
+          aria-hidden="true"
+          loading="lazy"
+          width={18}
+          height={18}
+          className="mr-1.5 inline-block h-[18px] w-[18px] shrink-0 rounded-[2px] align-text-bottom"
+          onError={(e) => {
+            e.currentTarget.style.visibility = "hidden";
+          }}
+        />
         {isInvention ? (
           <span>
             <span className="text-eve-dim">

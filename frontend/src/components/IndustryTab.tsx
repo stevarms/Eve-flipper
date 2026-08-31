@@ -2524,56 +2524,64 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     // visible even when a tab's inner content scrolls. Only the wrapper
     // below the nav takes overflow-y-auto.
     <div className="flex-1 flex flex-col min-h-0">
-      <div className="shrink-0 m-2 mb-0">
-        <div className="inline-flex rounded-sm border border-eve-border overflow-hidden">
+      {/* One nav band, not two. The Discover source picker used to sit in a
+          second row below this one (and inside the scroll container, so it
+          scrolled away); it now rides on the right of this same row and
+          stays pinned. Styled to match the workspace tab row in the shell
+          rather than as a third distinct pill-group idiom. */}
+      <div className="shrink-0 flex items-stretch justify-between gap-3 border-b border-eve-border px-2">
+        <div className="flex items-center gap-0.5" role="tablist">
           {industryTabDefs.map((def) => (
             <button
               key={def.id}
               type="button"
+              role="tab"
+              aria-selected={industryTab === def.id}
               onClick={() => setIndustryTab(def.id)}
-              className={`px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition-colors ${
+              className={`relative -mb-px h-8 whitespace-nowrap rounded-t-sm px-3 font-ui text-t-body font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-eve-accent ${
                 industryTab === def.id
-                  ? "bg-eve-accent/20 text-eve-accent"
-                  : "bg-eve-panel text-eve-dim hover:text-eve-text"
+                  ? "border-b-2 border-eve-accent text-fg"
+                  : "text-fg-tertiary hover:text-fg-secondary"
               }`}
             >
               {t(def.labelKey)}
             </button>
           ))}
         </div>
+
+        {industryTab === "discover" && (
+          <div className="flex shrink-0 items-center py-1">
+            <div className="inline-flex overflow-hidden rounded-sm border border-eve-border">
+              <button
+                type="button"
+                onClick={() => setDiscoverSource("scan")}
+                className={`px-2.5 py-1 font-ui text-t-caption font-medium transition-colors ${
+                  discoverSource === "scan"
+                    ? "bg-eve-accent/15 text-eve-accent"
+                    : "bg-eve-panel text-fg-tertiary hover:text-fg-secondary"
+                }`}
+              >
+                {t("industryDiscoverSourceScan")}
+              </button>
+              <button
+                type="button"
+                onClick={() => setDiscoverSource("search")}
+                className={`px-2.5 py-1 font-ui text-t-caption font-medium transition-colors ${
+                  discoverSource === "search"
+                    ? "bg-eve-accent/15 text-eve-accent"
+                    : "bg-eve-panel text-fg-tertiary hover:text-fg-secondary"
+                }`}
+              >
+                {t("industryDiscoverSourceSearch")}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto eve-scrollbar">
 
-      {/* Discover has an item-source sub-picker (Search one item vs Scan
-          owned BPs) — appears only when Discover is the active top-level tab. */}
-      {industryTab === "discover" && (
-        <div className="shrink-0 m-2 mt-1 mb-0">
-          <div className="inline-flex rounded-sm border border-eve-border overflow-hidden">
-            <button
-              type="button"
-              onClick={() => setDiscoverSource("scan")}
-              className={`px-3 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors ${
-                discoverSource === "scan"
-                  ? "bg-eve-accent/15 text-eve-accent"
-                  : "bg-eve-panel text-eve-dim hover:text-eve-text"
-              }`}
-            >
-              {t("industryDiscoverSourceScan")}
-            </button>
-            <button
-              type="button"
-              onClick={() => setDiscoverSource("search")}
-              className={`px-3 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors ${
-                discoverSource === "search"
-                  ? "bg-eve-accent/15 text-eve-accent"
-                  : "bg-eve-panel text-eve-dim hover:text-eve-text"
-              }`}
-            >
-              {t("industryDiscoverSourceSearch")}
-            </button>
-          </div>
-        </div>
-      )}
+      {/* The Discover source picker (Scan owned BPs / Search one item) now
+          lives in the nav band above, so it no longer costs a row here. */}
 
       {industryTab === "discover" && discoverSource === "scan" && (
         <Suspense fallback={<div className="m-2 text-xs text-eve-dim">Loading scanner...</div>}>
