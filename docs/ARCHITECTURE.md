@@ -1266,6 +1266,7 @@ one. `WORKSPACE_META` in `lib/cockpit.ts` maps workspaces to tabs:
 
 | Workspace | Tabs |
 |---|---|
+| Today | `home` |
 | Trade | `radius`, `region`, `station`, `contracts` |
 | Industry | `industry`, `pi_factory` |
 | Assets | `orders`, `price_audit` |
@@ -1367,8 +1368,13 @@ those drafts and empty the set.
 
 ### 7c. Subdirectories
 
+- **`components/home/`** — `HomeWorkspace`, the "Today" work order. Reads
+  the order desk plus your **last** Station Trade scan out of scan
+  history; it never runs a scan itself, so the screen is instant and
+  scanning stays an explicit action on the Trade workspace. No dedicated
+  endpoints — everything it shows already existed.
 - **`components/ui/`** — shadcn-**shaped** primitives (`Button`, `Badge`,
-  `Input`, `Tooltip`, `Tabs`, `Sheet`), hand-written rather than generated
+  `Input`, `Tooltip`, `Tabs`, `Sheet`, `TypeIcon`), hand-written rather than generated
   by `shadcn init`, because the CLI would install a third colour
   vocabulary that fights the faction palettes. Bound to the semantic
   tokens in `index.css`. Read `components/ui/README.md` before adding

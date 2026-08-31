@@ -149,7 +149,8 @@ Use CCP's own art. `lib/eveImages.ts` is the only place that builds these URLs.
 
 | Helper | Use |
 |---|---|
-| `typeIconUrl(typeId, art?, size?)` | Inventory icon for any type |
+| `<TypeIcon typeId categoryId? />` | **Use this in grids.** Blueprints 400 on `/icon`, and `CategoryID` is optional on the wire *and not persisted in scan history* — so the category alone cannot be trusted. TypeIcon uses it when present and otherwise retries `/bp` once before hiding. |
+| `typeIconUrl(typeId, art?, size?)` | Raw URL, when you know the variant |
 | `blueprintIconUrl(typeId, isCopy)` | **Blueprints do not serve `/icon`** — they 400. They serve `/bp` (original) and `/bpc` (copy). Using the right one is what separates the BPO/BPC row pairs in the Industry scanner that otherwise look like duplicates with identical economics. |
 | `characterPortraitUrl` / `corporationLogoUrl` / `allianceLogoUrl` | Entity art |
 | `securityTone` / `formatSecurity` | EVE's security-status ramp and 1-decimal display |
