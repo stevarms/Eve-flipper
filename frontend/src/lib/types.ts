@@ -1946,8 +1946,17 @@ export interface StationAIHistoryMessage {
   content: string;
 }
 
+export type StationAIProvider =
+  | "openrouter"
+  | "ollama"
+  | "lmstudio"
+  | "unsloth"
+  | "openai_compatible";
+
 export interface StationAIChatRequest {
-  provider: "openrouter";
+  provider: StationAIProvider;
+  /** OpenAI-compatible `/v1` root for local providers. Ignored for OpenRouter. */
+  base_url?: string;
   api_key: string;
   model: string;
   planner_model?: string;
@@ -1987,6 +1996,18 @@ export interface StationAIUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+}
+
+export interface StationAIModelsRequest {
+  provider: StationAIProvider;
+  base_url?: string;
+  api_key?: string;
+}
+
+export interface StationAIModelsResponse {
+  provider: string;
+  base_url: string;
+  models: string[];
 }
 
 export type StationAIStreamMessage =

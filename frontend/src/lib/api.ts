@@ -64,6 +64,8 @@ import type {
   SolarSystemInfo,
   StationAIChatRequest,
   StationAIChatResponse,
+  StationAIModelsRequest,
+  StationAIModelsResponse,
   StationAIStreamMessage,
   StationCacheMeta,
   StationCommandResponse,
@@ -1736,6 +1738,22 @@ export async function stationAIChat(
     body: JSON.stringify(payload),
   });
   return handleResponse<StationAIChatResponse>(res);
+}
+
+export async function listStationAIModels(
+  payload: StationAIModelsRequest,
+): Promise<StationAIModelsResponse> {
+  const res = await apiFetch(`${BASE}/api/auth/station/ai/models`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await handleResponse<StationAIModelsResponse>(res);
+  return {
+    provider: data.provider ?? payload.provider,
+    base_url: data.base_url ?? "",
+    models: Array.isArray(data.models) ? data.models : [],
+  };
 }
 
 export async function stationAIChatStream(

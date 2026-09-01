@@ -655,8 +655,44 @@ Currently classified as `"scans"`: `/api/scan`, `/api/scan/multi-region`,
 
 `"station_ai"`: `/api/auth/station/ai/chat` and
 `/api/auth/station/ai/chat/stream`.
+`/api/auth/station/ai/models` is deliberately unmetered — it only lists
+what a provider is serving and runs no inference.
 
 Everything else is unmetered (`("", false)`).
+
+### Station AI providers (`station_ai_provider.go`)
+
+Ivy AI talks to OpenRouter or to an OpenAI-compatible server the user runs
+themselves (Ollama, LM Studio, Unsloth Studio / vLLM). All of them speak the
+same `POST {base}/chat/completions` and `GET {base}/models`, so the chat,
+planner and SSE-streaming code paths are shared; only the endpoint, the auth
+header and two OpenRouter quirks differ.
+
+`stationAIProviderSpecs` is the table. `stationAIResolveProviderTarget`
+turns a `(provider, base_url, api_key)` triple into a validated
+`stationAIProviderTarget` — every request handler resolves one and threads it
+into `stationAIPlannerPass`, `stationAIProviderChatOnce` and the streaming
+handler. Per-provider behaviour it encodes:
+
+- **API key** — required for OpenRouter, optional for local providers
+  (forwarded only when the user actually set one).
+- **Attribution headers** — `HTTP-Referer` / `X-Title` go to OpenRouter only.
+- **`stream_options.include_usage`** — OpenRouter only; some local servers
+  reject the whole request over an unknown field, so local streams fall back
+  to the token estimates.
+- **Timeouts** — local inference gets 12 min for chat and 3 min for the
+  planner, against 90 s / 35 s for OpenRouter.
+
+**The base URL is user input that the backend then dials, so it is validated
+as an SSRF boundary, not just parsed.** `stationAINormalizeBaseURL` rejects
+non-http(s) schemes, embedded credentials, and query/fragment components;
+`stationAIValidateLocalHost` then requires the host to be loopback,
+`host.docker.internal`, or resolve to RFC1918/ULA addresses — *every*
+resolved IP, which is what defeats DNS rebinding. Link-local
+(`169.254.0.0/16`, `fe80::/10`) is rejected explicitly because that is where
+cloud instance-metadata lives. On `EVEFLIPPER_HOSTED=true` local providers
+are refused outright unless the operator sets
+`STATION_AI_ALLOW_LOCAL_PROVIDERS=1`.
 
 ### NDJSON streaming and `writeMu`
 

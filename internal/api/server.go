@@ -277,6 +277,7 @@ type stationAIHistoryMessage struct {
 
 type stationAIChatRequestPayload struct {
 	Provider      string                    `json:"provider"`
+	BaseURL       string                    `json:"base_url"`
 	APIKey        string                    `json:"api_key"`
 	Model         string                    `json:"model"`
 	PlannerModel  string                    `json:"planner_model"`
@@ -996,6 +997,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auth/station/command", s.handleAuthStationCommand)
 	mux.HandleFunc("POST /api/auth/station/ai/chat", s.handleAuthStationAIChat)
 	mux.HandleFunc("POST /api/auth/station/ai/chat/stream", s.handleAuthStationAIChatStream)
+	mux.HandleFunc("POST /api/auth/station/ai/models", s.handleAuthStationAIModels)
 	mux.HandleFunc("GET /api/auth/ledger", s.handleAuthLedger)
 	mux.HandleFunc("GET /api/auth/portfolio", s.handleAuthPortfolio)
 	mux.HandleFunc("GET /api/auth/portfolio/optimize", s.handleAuthPortfolioOptimize)
@@ -9014,11 +9016,14 @@ func normalizeStationAIChatRequest(req *stationAIChatRequestPayload) (bool, bool
 	if req.Provider == "" {
 		req.Provider = "openrouter"
 	}
-	if req.Provider != "openrouter" {
+	spec, specOK := stationAIProviderSpecByID(req.Provider)
+	if !specOK {
 		return false, false, nil, "unsupported ai provider"
 	}
+	req.BaseURL = strings.TrimSpace(req.BaseURL)
 	req.APIKey = strings.TrimSpace(req.APIKey)
-	if req.APIKey == "" {
+	// Local providers (Ollama, LM Studio, ...) usually accept any key, or none at all.
+	if spec.RequiresAPIKey && req.APIKey == "" {
 		return false, false, nil, "api_key is required"
 	}
 	req.Model = strings.TrimSpace(req.Model)
@@ -9564,7 +9569,11 @@ func stationAIPipelineMeta(req stationAIChatRequestPayload, plan stationAIPlanne
 	}
 }
 
-func (s *Server) stationAIResolvePlan(ctx context.Context, req stationAIChatRequestPayload) (stationAIPlannerPlan, bool, []string) {
+func (s *Server) stationAIResolvePlan(
+	ctx context.Context,
+	req stationAIChatRequestPayload,
+	target stationAIProviderTarget,
+) (stationAIPlannerPlan, bool, []string) {
 	intent := detectStationAIIntent(req.UserMessage, req.History)
 	plan := stationAIDefaultPlannerPlan(intent)
 	if stationAINeedsWikiContext(intent, req.UserMessage) {
@@ -9577,11 +9586,16 @@ func (s *Server) stationAIResolvePlan(ctx context.Context, req stationAIChatRequ
 	if !plannerEnabled {
 		return plan, false, nil
 	}
-	planned, warnings := s.stationAIPlannerPass(ctx, req, plan)
+	planned, warnings := s.stationAIPlannerPass(ctx, req, target, plan)
 	return planned, true, warnings
 }
 
-func (s *Server) stationAIPlannerPass(ctx context.Context, req stationAIChatRequestPayload, fallback stationAIPlannerPlan) (stationAIPlannerPlan, []string) {
+func (s *Server) stationAIPlannerPass(
+	ctx context.Context,
+	req stationAIChatRequestPayload,
+	target stationAIProviderTarget,
+	fallback stationAIPlannerPlan,
+) (stationAIPlannerPlan, []string) {
 	model := stationAIResolvePlannerModel(req)
 
 	payload := map[string]interface{}{
@@ -9610,18 +9624,15 @@ func (s *Server) stationAIPlannerPass(ctx context.Context, req stationAIChatRequ
 	httpReq, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
-		"https://openrouter.ai/api/v1/chat/completions",
+		target.ChatURL,
 		bytes.NewReader(body),
 	)
 	if err != nil {
 		return fallback, []string{"planner: failed to create planner request"}
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+req.APIKey)
-	httpReq.Header.Set("HTTP-Referer", "http://localhost:1420")
-	httpReq.Header.Set("X-Title", "EVE Flipper Station AI Planner")
+	stationAIApplyProviderHeaders(httpReq, target, "EVE Flipper Station AI Planner")
 
-	client := &http.Client{Timeout: 35 * time.Second}
+	client := &http.Client{Timeout: target.PlannerTimeout}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return fallback, []string{"planner unavailable, using fallback intent routing"}
@@ -10049,9 +10060,10 @@ func readBodyWithLimit(r io.Reader, maxBytes int64) ([]byte, error) {
 	return body, nil
 }
 
-func (s *Server) stationAIOpenRouterChatOnce(
+func (s *Server) stationAIProviderChatOnce(
 	ctx context.Context,
 	req stationAIChatRequestPayload,
+	target stationAIProviderTarget,
 	messages []map[string]string,
 ) (stationAIProviderReply, error) {
 	payload := map[string]interface{}{
@@ -10068,18 +10080,15 @@ func (s *Server) stationAIOpenRouterChatOnce(
 	httpReq, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
-		"https://openrouter.ai/api/v1/chat/completions",
+		target.ChatURL,
 		bytes.NewReader(body),
 	)
 	if err != nil {
 		return stationAIProviderReply{}, fmt.Errorf("failed to create ai request: %w", err)
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+req.APIKey)
-	httpReq.Header.Set("HTTP-Referer", "http://localhost:1420")
-	httpReq.Header.Set("X-Title", "EVE Flipper Station AI")
+	stationAIApplyProviderHeaders(httpReq, target, "EVE Flipper Station AI")
 
-	client := &http.Client{Timeout: 90 * time.Second}
+	client := &http.Client{Timeout: target.ChatTimeout}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return stationAIProviderReply{}, fmt.Errorf("ai provider request failed: %w", err)
@@ -10148,8 +10157,13 @@ func (s *Server) handleAuthStationAIChat(w http.ResponseWriter, r *http.Request)
 		writeError(w, 400, validationErr)
 		return
 	}
+	target, providerErr := s.stationAIResolveProviderTarget(req.Provider, req.BaseURL, req.APIKey)
+	if providerErr != "" {
+		writeError(w, 400, providerErr)
+		return
+	}
 
-	plan, plannerEnabled, plannerWarnings := s.stationAIResolvePlan(r.Context(), req)
+	plan, plannerEnabled, plannerWarnings := s.stationAIResolvePlan(r.Context(), req, target)
 	warnings = append(warnings, plannerWarnings...)
 	intent := plan.Intent
 	useWiki := enableWiki && intent != stationAIIntentSmallTalk
@@ -10262,7 +10276,7 @@ func (s *Server) handleAuthStationAIChat(w http.ResponseWriter, r *http.Request)
 	}
 	messages := buildStationAIMessages(systemPrompt, req.History, userPrompt)
 
-	reply, err := s.stationAIOpenRouterChatOnce(r.Context(), req, messages)
+	reply, err := s.stationAIProviderChatOnce(r.Context(), req, target, messages)
 	if err != nil {
 		writeError(w, 502, err.Error())
 		return
@@ -10276,7 +10290,7 @@ func (s *Server) handleAuthStationAIChat(w http.ResponseWriter, r *http.Request)
 			map[string]string{"role": "assistant", "content": reply.Answer},
 			map[string]string{"role": "user", "content": stationAIRetryCorrectionPrompt(req.Locale, issue)},
 		)
-		retryReply, retryErr := s.stationAIOpenRouterChatOnce(r.Context(), req, retryMessages)
+		retryReply, retryErr := s.stationAIProviderChatOnce(r.Context(), req, target, retryMessages)
 		if retryErr != nil {
 			warnings = append(warnings, "retry failed: "+retryErr.Error())
 		} else if validRetry, retryIssue := stationAIValidateAnswer(retryReply.Answer, intent); validRetry {
@@ -11050,7 +11064,12 @@ func (s *Server) handleAuthStationAIChatStream(w http.ResponseWriter, r *http.Re
 		writeErr(validationErr)
 		return
 	}
-	plan, plannerEnabled, plannerWarnings := s.stationAIResolvePlan(r.Context(), req)
+	target, providerErr := s.stationAIResolveProviderTarget(req.Provider, req.BaseURL, req.APIKey)
+	if providerErr != "" {
+		writeErr(providerErr)
+		return
+	}
+	plan, plannerEnabled, plannerWarnings := s.stationAIResolvePlan(r.Context(), req, target)
 	warnings = append(warnings, plannerWarnings...)
 	intent := plan.Intent
 	useWiki := enableWiki && intent != stationAIIntentSmallTalk
@@ -11077,14 +11096,14 @@ func (s *Server) handleAuthStationAIChatStream(w http.ResponseWriter, r *http.Re
 
 	prepareMsg := "Preparing context..."
 	plannerMsg := "Planner pass complete"
-	sendMsg := "Sending request to OpenRouter..."
+	sendMsg := "Sending request to " + stationAIProviderLabel(target) + "..."
 	streamMsg := "Streaming model output..."
 	retryMsg := "Final answer failed validation, retrying..."
 	doneMsg := "Done"
 	if req.Locale == "ru" {
 		prepareMsg = "Подготавливаю контекст..."
 		plannerMsg = "Планировщик определил режим ответа"
-		sendMsg = "Отправляю запрос в OpenRouter..."
+		sendMsg = "Отправляю запрос в " + stationAIProviderLabel(target) + "..."
 		streamMsg = "Получаю ответ модели..."
 		retryMsg = "Финальный ответ не прошел валидацию, выполняю retry..."
 		doneMsg = "Готово"
@@ -11220,10 +11239,12 @@ func (s *Server) handleAuthStationAIChatStream(w http.ResponseWriter, r *http.Re
 		"temperature": req.Temperature,
 		"max_tokens":  req.MaxTokens,
 		"stream":      true,
-		"stream_options": map[string]bool{
-			"include_usage": true,
-		},
-		"messages": messages,
+		"messages":    messages,
+	}
+	// Not every OpenAI-compatible server accepts stream_options; some reject the whole
+	// request over it. Local providers fall back to the token estimates instead.
+	if target.Spec.SendStreamUsage {
+		payload["stream_options"] = map[string]bool{"include_usage": true}
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -11234,17 +11255,14 @@ func (s *Server) handleAuthStationAIChatStream(w http.ResponseWriter, r *http.Re
 	httpReq, err := http.NewRequestWithContext(
 		r.Context(),
 		http.MethodPost,
-		"https://openrouter.ai/api/v1/chat/completions",
+		target.ChatURL,
 		bytes.NewReader(body),
 	)
 	if err != nil {
 		writeErr("failed to create ai request")
 		return
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+req.APIKey)
-	httpReq.Header.Set("HTTP-Referer", "http://localhost:1420")
-	httpReq.Header.Set("X-Title", "EVE Flipper Station AI")
+	stationAIApplyProviderHeaders(httpReq, target, "EVE Flipper Station AI")
 
 	client := &http.Client{Timeout: stationAIStreamHTTPTimeout}
 	resp, err := client.Do(httpReq)
@@ -11437,7 +11455,7 @@ func (s *Server) handleAuthStationAIChatStream(w http.ResponseWriter, r *http.Re
 			map[string]string{"role": "assistant", "content": answer},
 			map[string]string{"role": "user", "content": stationAIRetryCorrectionPrompt(req.Locale, issue)},
 		)
-		retryReply, retryErr := s.stationAIOpenRouterChatOnce(r.Context(), req, retryMessages)
+		retryReply, retryErr := s.stationAIProviderChatOnce(r.Context(), req, target, retryMessages)
 		if retryErr != nil {
 			warnings = append(warnings, "retry failed: "+retryErr.Error())
 		} else if validRetry, retryIssue := stationAIValidateAnswer(retryReply.Answer, intent); validRetry {

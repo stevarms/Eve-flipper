@@ -156,6 +156,15 @@ sequence for you — click **Update**.
   if you front the container with a reverse proxy on a different origin.
 - **Multi-user / metered mode (`EVEFLIPPER_HOSTED=1`) is not covered here.** The
   image behaves identically to the desktop binary — no quotas, no LLM gating.
+- **Local Ivy AI models: `127.0.0.1` is the container, not your host.** If you
+  point Ivy AI at Ollama or LM Studio running on the Docker host, use
+  `http://host.docker.internal:11434/v1` (add
+  `--add-host=host.docker.internal:host-gateway` on plain Docker; Unraid's
+  bridge already resolves it) or the host's LAN IP, e.g.
+  `http://192.168.1.10:11434/v1`. Ollama also has to listen beyond loopback for
+  this to work — set `OLLAMA_HOST=0.0.0.0` on the host. Only loopback,
+  RFC1918/ULA and `host.docker.internal` addresses are accepted; public hosts
+  and link-local metadata addresses are refused.
 - **No TLS built in.** LAN plain HTTP is fine for a home server; for external
   access, front the container with a reverse proxy (SWAG / Nginx Proxy Manager /
   Caddy) that terminates HTTPS and forwards to `13370`, then register the HTTPS
