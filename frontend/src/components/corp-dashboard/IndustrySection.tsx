@@ -3,6 +3,7 @@ import { getCorpIndustryJobs } from "../../lib/api";
 import { type TranslationKey } from "../../lib/i18n";
 import type { CorpDashboard, CorpIndustryJob } from "../../lib/types";
 import { BarChart, CsvExportButton, DateRangeSelector, KpiCard } from "./shared";
+import { LoadingBlock } from "@/components/ui/LoadingBlock";
 export function IndustrySection({
   dashboard,
   mode,
@@ -122,9 +123,7 @@ export function IndustrySection({
       <div className="bg-eve-panel border border-eve-border rounded-sm p-4">
         <div className="text-[10px] text-eve-dim uppercase tracking-wider mb-3">{t("corpIndustry")} ({filtered.length})</div>
         {loading ? (
-          <div className="flex items-center justify-center py-8 text-eve-dim text-xs">
-            <span className="inline-block w-4 h-4 border-2 border-eve-accent/40 border-t-eve-accent rounded-full animate-spin mr-2" />
-          </div>
+          <LoadingBlock />
         ) : (
           <div className="border border-eve-border rounded-sm overflow-hidden max-h-[500px] overflow-y-auto">
             <table className="w-full text-xs">

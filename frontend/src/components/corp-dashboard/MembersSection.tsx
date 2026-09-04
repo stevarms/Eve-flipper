@@ -3,6 +3,7 @@ import { getCorpMembers } from "../../lib/api";
 import { type TranslationKey } from "../../lib/i18n";
 import type { CorpDashboard, CorpMember } from "../../lib/types";
 import { KpiCard, TopContributorsTable } from "./shared";
+import { LoadingBlock } from "@/components/ui/LoadingBlock";
 export function MembersSection({
   dashboard,
   mode,
@@ -146,10 +147,7 @@ export function MembersSection({
           />
         </div>
         {membersLoading ? (
-          <div className="flex items-center justify-center py-8 text-eve-dim text-xs">
-            <span className="inline-block w-4 h-4 border-2 border-eve-accent/40 border-t-eve-accent rounded-full animate-spin mr-2" />
-            Loading members...
-          </div>
+          <LoadingBlock label={t("corpMembersLoading")} />
         ) : (
           <div className="border border-eve-border rounded-sm overflow-hidden max-h-[500px] overflow-y-auto">
             <table className="w-full text-xs">

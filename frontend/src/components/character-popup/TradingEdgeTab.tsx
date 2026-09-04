@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { getTradingEdgeSummary } from "../../lib/api";
 import type { TradingEdgeRow, TradingEdgeSummary } from "../../lib/types";
 import { StatCard } from "./shared";
+import { useI18n } from "../../lib/i18n";
+import { LoadingBlock } from "@/components/ui/LoadingBlock";
 
 interface TradingEdgeTabProps {
   enabled: boolean;
@@ -26,6 +28,7 @@ const labelText: Record<string, string> = {
 };
 
 export function TradingEdgeTab({ enabled, onToggleEnabled, formatIsk }: TradingEdgeTabProps) {
+  const { t } = useI18n();
   const [data, setData] = useState<TradingEdgeSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -72,10 +75,7 @@ export function TradingEdgeTab({ enabled, onToggleEnabled, formatIsk }: TradingE
 
   if (loading && !data) {
     return (
-      <div className="flex items-center justify-center h-full text-eve-dim text-xs">
-        <span className="inline-block w-4 h-4 border-2 border-eve-accent/40 border-t-eve-accent rounded-full animate-spin mr-2" />
-        Loading Trading Edge...
-      </div>
+      <LoadingBlock label={t("tradingEdgeLoading")} fill />
     );
   }
 

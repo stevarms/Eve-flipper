@@ -3,6 +3,7 @@ import { getPortfolioOptimization, type CharacterScope, type OptimizerResult } f
 import { type TranslationKey, useI18n } from "../../lib/i18n";
 import type { AllocationSuggestion, AssetStats, OptimizerDiagnostic, PortfolioCapital, PortfolioPositionRisk } from "../../lib/types";
 import { StatCard } from "./shared";
+import { LoadingBlock } from "@/components/ui/LoadingBlock";
 type OptPeriod = 30 | 90 | 180;
 
 interface OptimizerTabProps {
@@ -28,10 +29,7 @@ export function OptimizerTab({ formatIsk, characterScope, t }: OptimizerTabProps
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-full text-eve-dim text-xs">
-        <span className="inline-block w-4 h-4 border-2 border-eve-accent/40 border-t-eve-accent rounded-full animate-spin mr-2" />
-        {t("optLoading")}
-      </div>
+      <LoadingBlock label={t("optLoading")} fill />
     );
   }
 

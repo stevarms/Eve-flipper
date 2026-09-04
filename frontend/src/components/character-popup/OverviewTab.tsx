@@ -1,6 +1,7 @@
 import { type TranslationKey } from "../../lib/i18n";
 import type { CharacterInfo, CharacterOrder, CharacterRoles, SecurityVaultStatus } from "../../lib/types";
 import { StatCard } from "./shared";
+import { LoadingBlock } from "@/components/ui/LoadingBlock";
 
 function vaultChip(vault?: SecurityVaultStatus) {
   const base = "inline-flex items-center gap-1.5 shrink-0 rounded-sm border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider";
@@ -145,10 +146,11 @@ export function OverviewTab({
               <div>
                 <div className="text-sm font-medium text-eve-text">{t("corpDashboard")}</div>
                 {corpRolesLoading ? (
-                  <div className="flex items-center gap-1.5 text-xs text-eve-dim">
-                    <span className="inline-block w-3 h-3 border-2 border-eve-accent/40 border-t-eve-accent rounded-full animate-spin" />
-                    {t("corpRolesChecking")}
-                  </div>
+                  <LoadingBlock
+                    label={t("corpRolesChecking")}
+                    size="sm"
+                    className="justify-start py-0"
+                  />
                 ) : corpRoles?.is_director ? (
                   <div className="flex items-center gap-1.5 text-xs">
                     <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400" />

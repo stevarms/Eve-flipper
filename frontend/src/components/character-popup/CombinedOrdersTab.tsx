@@ -5,6 +5,7 @@ import type { CharacterOrder, HistoricalOrder, OrderDeskResponse, UndercutStatus
 import { handleEveUIError } from "../../lib/handleEveUIError";
 import { useGlobalToast } from "../Toast";
 import { FilterBtn, StatCard } from "./shared";
+import { LoadingBlock } from "@/components/ui/LoadingBlock";
 interface CombinedOrdersTabProps {
   characterScope: CharacterScope;
   orders: CharacterOrder[];
@@ -275,10 +276,7 @@ function ActiveOrdersWithDeskTab({ characterScope, orders, formatIsk, t }: Activ
           )}
 
           {deskLoading && !deskData && (
-            <div className="flex items-center justify-center py-4 text-eve-dim text-xs">
-              <span className="inline-block w-4 h-4 border-2 border-eve-accent/40 border-t-eve-accent rounded-full animate-spin mr-2" />
-              {t("loading")}...
-            </div>
+            <LoadingBlock label={`${t("loading")}…`} className="py-4" />
           )}
 
           {deskData?.summary && (
@@ -533,10 +531,11 @@ function UndercutPanel({
 }) {
   if (loading && !uc) {
     return (
-      <div className="px-4 py-3 bg-eve-dark/60 border-t border-eve-border/30 text-eve-dim text-xs flex items-center gap-2">
-        <span className="inline-block w-3 h-3 border-2 border-eve-accent/40 border-t-eve-accent rounded-full animate-spin" />
-        {t("undercutLoading")}
-      </div>
+      <LoadingBlock
+        label={t("undercutLoading")}
+        size="sm"
+        className="justify-start border-t border-eve-border/30 bg-eve-dark/60 px-4 py-3"
+      />
     );
   }
 

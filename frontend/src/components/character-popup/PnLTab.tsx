@@ -11,6 +11,7 @@ import {
   PnLStationsTable,
   SlotEfficiencyTable,
 } from "../journal/PnLPrimitives";
+import { LoadingBlock } from "@/components/ui/LoadingBlock";
 type PnLPeriod = 7 | 30 | 90 | 180;
 
 interface PnLTabProps {
@@ -41,10 +42,7 @@ export function PnLTab({ formatIsk, characterScope, t }: PnLTabProps) {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-full text-eve-dim text-xs">
-        <span className="inline-block w-4 h-4 border-2 border-eve-accent/40 border-t-eve-accent rounded-full animate-spin mr-2" />
-        {t("loading")}...
-      </div>
+      <LoadingBlock label={`${t("loading")}…`} fill />
     );
   }
 

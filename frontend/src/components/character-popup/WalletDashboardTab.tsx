@@ -9,6 +9,7 @@ import type {
   EveLedgerInventoryItem,
 } from "../../lib/types";
 import { StatCard } from "./shared";
+import { LoadingBlock } from "@/components/ui/LoadingBlock";
 
 type LedgerWindow = 30 | 90 | 180 | 365;
 type LedgerPeriod = "daily" | "weekly" | "monthly";
@@ -101,10 +102,7 @@ export function WalletDashboardTab({ characterScope, formatIsk, t, onOpenPaperTr
 
   if (loading && !data) {
     return (
-      <div className="flex items-center justify-center h-full text-eve-dim text-xs">
-        <span className="inline-block w-4 h-4 border-2 border-eve-accent/40 border-t-eve-accent rounded-full animate-spin mr-2" />
-        {t("loading")}...
-      </div>
+      <LoadingBlock label={`${t("loading")}…`} fill />
     );
   }
 

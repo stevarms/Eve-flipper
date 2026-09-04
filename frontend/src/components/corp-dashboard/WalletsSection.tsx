@@ -2,6 +2,7 @@ import { useState } from "react";
 import { getCorpJournal } from "../../lib/api";
 import { type TranslationKey } from "../../lib/i18n";
 import type { CorpJournalEntry, CorpWalletDivision } from "../../lib/types";
+import { LoadingBlock } from "@/components/ui/LoadingBlock";
 export function WalletsSection({
   wallets,
   mode,
@@ -69,10 +70,7 @@ export function WalletsSection({
               {isExpanded && (
                 <div className="bg-eve-dark/60 border border-eve-border border-t-0 rounded-b-sm p-3">
                   {journalLoading ? (
-                    <div className="flex items-center justify-center py-4 text-eve-dim text-xs">
-                      <span className="inline-block w-4 h-4 border-2 border-eve-accent/40 border-t-eve-accent rounded-full animate-spin mr-2" />
-                      Loading journal...
-                    </div>
+                    <LoadingBlock label={t("corpJournalLoading")} className="py-4" />
                   ) : journal.length === 0 ? (
                     <div className="text-center text-eve-dim text-xs py-4">No journal entries</div>
                   ) : (

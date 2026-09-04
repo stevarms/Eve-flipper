@@ -10,6 +10,7 @@ import { IndustrySection } from "./corp-dashboard/IndustrySection";
 import { MiningSection } from "./corp-dashboard/MiningSection";
 import { MarketSection } from "./corp-dashboard/MarketSection";
 import type { CorpTab } from "./corp-dashboard/types";
+import { LoadingBlock } from "@/components/ui/LoadingBlock";
 
 export function CorpDashboardApp() {
   const { t } = useI18n();
@@ -41,10 +42,7 @@ export function CorpDashboardApp() {
   if (loading) {
     return (
       <div className="min-h-screen bg-eve-bg flex items-center justify-center">
-        <div className="flex flex-col items-center gap-3">
-          <span className="inline-block w-8 h-8 border-3 border-eve-accent/40 border-t-eve-accent rounded-full animate-spin" />
-          <span className="text-eve-dim text-sm">{t("corpLoading")}</span>
-        </div>
+        <LoadingBlock label={t("corpLoading")} size="lg" layout="column" />
       </div>
     );
   }
