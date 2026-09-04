@@ -1637,7 +1637,19 @@ export const en = {
     ordersColValueHint:
       "Price × quantity remaining — what this order is worth on the market right now. Sort by it to reprice the orders that matter most first.",
     ordersColValueNet: "{isk} ISK after fees · {qty} remaining",
-    ordersSortHint: "Click to sort by this column; click again to reverse.",
+    ordersSortHint:
+      "Click to sort by this column; click again to reverse. Shift-click to add it as a second or third sort — Item then Action groups the rows that need work inside each item.",
+    ordersSortStackLabel: "Sorted by",
+    ordersSortStackHint: "shift-click a header to add a layer",
+    ordersSortRemoveLayer: "Remove this sort layer",
+    ordersTargetEta: "Target ETA",
+    ordersTargetEtaHint:
+      "How long an order is allowed to take before the desk calls it slow. Also sets the depth cutoff: an order with more than half this much depth ahead of it is reported as buried rather than on track.",
+    ordersEtaBreakdown:
+      "Regional volume {regional}/day counts both sides of the market. About {side}% of it is your side, and {station}% of that trades at this station, so roughly {perDay}/day flows past your order ({basis}). {queue}d to clear the depth ahead of you, {total}d in total.",
+    ordersEtaUnknownHint: "No price history for this item, so there is nothing to estimate from.",
+    ordersFlowBasisWeekday: "shaped by day of week",
+    ordersFlowBasisFlat: "flat weekly average — not enough history to shape by day",
     ordersSectionSell: "Sell orders",
     ordersSectionBuy: "Buy orders",
     ordersSectionSummary: "{count} orders · {isk} ISK",

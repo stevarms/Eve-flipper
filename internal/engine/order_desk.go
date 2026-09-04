@@ -1,11 +1,36 @@
 package engine
 
 import (
+	"fmt"
 	"math"
 	"sort"
 	"time"
 
 	"eve-flipper/internal/esi"
+)
+
+// Fill-model tuning. These describe how much of a region's reported trade
+// volume we believe actually drains one side of one station's book, and
+// over what horizon that belief is worth holding.
+const (
+	// Level comes from the trailing week so the estimate tracks current
+	// activity; shape comes from a longer window so a single odd weekend
+	// cannot define the profile.
+	orderDeskFlowBaseDays  = 7
+	orderDeskDowWeeks      = 8
+	orderDeskDowMinSamples = 4
+
+	// Depth priced further than this from the region best is not competing
+	// for today's flow, so it does not count toward a station's share of it.
+	orderDeskCompetitiveBand = 0.05
+
+	// A one-number estimator should never claim a side takes all the flow.
+	orderDeskMinSideShare = 0.10
+	orderDeskMaxSideShare = 0.90
+
+	// Past this the answer is "not at this price", and a precise figure
+	// would be false precision.
+	orderDeskETACapDays = 90
 )
 
 // OrderDeskHistoryKey identifies (region, type) history buckets.
@@ -73,11 +98,27 @@ type OrderDeskOrder struct {
 	AvgDailyVolume      float64 `json:"avg_daily_volume"`
 	EstimatedFillPerDay float64 `json:"estimated_fill_per_day"`
 	ETADays             float64 `json:"eta_days"` // -1 = unknown
-	IssuedAt            string  `json:"issued_at"`
-	ExpiresAt           string  `json:"expires_at"`
-	DaysToExpire        int     `json:"days_to_expire"` // -1 if unknown
-	Recommendation      string  `json:"recommendation"` // hold | reprice | cancel
-	Reason              string  `json:"reason"`
+
+	// Fill-model transparency. AvgDailyVolume above is the raw blended
+	// region-wide volume ESI reports — every trade, both sides, every
+	// station. EstimatedFillPerDay is what we actually believe flows
+	// through *this* side of the book at *this* station, and is the number
+	// the ETA is built from. The two shares are the factors between them,
+	// surfaced so the Orders tab can show its working instead of asserting
+	// a figure the user has no way to check.
+	SellSideShare    float64 `json:"sell_side_share"`
+	StationFlowShare float64 `json:"station_flow_share"`
+	// Days before this order is even at the front of the queue. The
+	// static-queue assumption behind ETADays is only credible over a short
+	// horizon, so this is what the "buried" recommendation keys on.
+	DaysToClearQueue float64 `json:"days_to_clear_queue"`
+	FlowBasis        string  `json:"flow_basis"` // weekday | flat | none
+	ETACapped        bool    `json:"eta_capped,omitempty"`
+	IssuedAt         string  `json:"issued_at"`
+	ExpiresAt        string  `json:"expires_at"`
+	DaysToExpire     int     `json:"days_to_expire"` // -1 if unknown
+	Recommendation   string  `json:"recommendation"` // hold | reprice | cancel
+	Reason           string  `json:"reason"`
 
 	// Owner tags stamped by the api-layer aggregator when scope=all so the
 	// multi-character Orders tab can group / filter by owning character.
@@ -155,9 +196,19 @@ func ComputeOrderDesk(
 		isBuy      bool
 	}
 	book := make(map[bookKey][]esi.MarketOrder)
+	// Same orders indexed region-wide, so a row can weigh its own station
+	// against the whole region without rescanning the book per row.
+	type regionSideKey struct {
+		regionID int32
+		typeID   int32
+		isBuy    bool
+	}
+	regionSide := make(map[regionSideKey][]esi.MarketOrder)
 	for _, o := range regionOrders {
 		k := bookKey{locationID: o.LocationID, typeID: o.TypeID, isBuy: o.IsBuyOrder}
 		book[k] = append(book[k], o)
+		rk := regionSideKey{regionID: o.RegionID, typeID: o.TypeID, isBuy: o.IsBuyOrder}
+		regionSide[rk] = append(regionSide[rk], o)
 	}
 
 	etaKnown := make([]float64, 0, len(playerOrders))
@@ -334,10 +385,58 @@ func ComputeOrderDesk(
 			}
 		}
 
-		row.AvgDailyVolume = orderDeskAvgDailyVolume(historyByKey[hk], 7)
-		row.EstimatedFillPerDay = row.AvgDailyVolume
-		if row.EstimatedFillPerDay > 0 && row.VolumeRemain > 0 {
-			row.ETADays = (float64(row.QueueAheadQty) + float64(row.VolumeRemain)) / row.EstimatedFillPerDay
+		// Turn the one blended number ESI gives us into a flow that could
+		// plausibly reach this order: the right side of the book, at the
+		// right station, shaped by the day of the week.
+		entries := historyByKey[hk]
+		row.AvgDailyVolume = orderDeskAvgDailyVolume(entries, orderDeskFlowBaseDays)
+		row.SellSideShare = 0.5
+		row.StationFlowShare = 1
+		row.FlowBasis = "none"
+
+		if row.BookAvailable {
+			stationAsk := orderDeskBestPrice(book[bookKey{locationID: po.LocationID, typeID: po.TypeID, isBuy: false}], false)
+			stationBid := orderDeskBestPrice(book[bookKey{locationID: po.LocationID, typeID: po.TypeID, isBuy: true}], true)
+			row.SellSideShare = orderDeskSellSideShare(
+				stationBid, stationAsk, orderDeskRecentAvgPrice(entries, orderDeskFlowBaseDays))
+			row.StationFlowShare = orderDeskStationShare(
+				regionSide[regionSideKey{regionID: po.RegionID, typeID: po.TypeID, isBuy: po.IsBuyOrder}],
+				po.LocationID, po.IsBuyOrder)
+		}
+
+		// A sell order only drains on the volume that lifted sell orders;
+		// a buy order only on the rest.
+		sideShare := row.SellSideShare
+		if po.IsBuyOrder {
+			sideShare = 1 - row.SellSideShare
+		}
+		baseFlow := row.AvgDailyVolume * sideShare * row.StationFlowShare
+
+		if baseFlow > 0 && row.VolumeRemain > 0 {
+			dow, weekdayShape := orderDeskDowProfile(entries, orderDeskDowWeeks)
+			if weekdayShape {
+				row.FlowBasis = "weekday"
+			} else {
+				row.FlowBasis = "flat"
+			}
+
+			// One cumulative walk, not two additions: a queue that clears on
+			// Friday puts your own units into Saturday's volume rather than
+			// into an averaged day that exists nowhere on the calendar.
+			row.DaysToClearQueue, _ = orderDeskWalkDays(float64(row.QueueAheadQty), baseFlow, dow, now)
+			units := float64(row.QueueAheadQty) + float64(row.VolumeRemain)
+			eta, capped := orderDeskWalkDays(units, baseFlow, dow, now)
+			row.ETADays = eta
+			row.ETACapped = capped
+
+			// Report the flow the ETA actually implies, averaged across the
+			// horizon it covers, so the figure shown and the figure used
+			// cannot drift apart.
+			if eta > 0 {
+				row.EstimatedFillPerDay = units / eta
+			} else {
+				row.EstimatedFillPerDay = baseFlow
+			}
 			etaKnown = append(etaKnown, row.ETADays)
 		}
 
@@ -404,12 +503,14 @@ func orderDeskBetterPrice(isBuy bool, a, b float64) bool {
 	return a < b
 }
 
-func orderDeskAvgDailyVolume(entries []esi.HistoryEntry, days int) float64 {
-	if len(entries) == 0 || days <= 0 {
-		return 0
-	}
+// orderDeskVolumeByDate collapses history into date -> volume, plus the
+// earliest and latest dates present. Days with no trades are simply absent
+// from ESI history, so callers index this map by calendar date and let the
+// zero value carry the quiet days — but only inside [earliest, latest],
+// outside which an absent date means "no data" rather than "no trades".
+func orderDeskVolumeByDate(entries []esi.HistoryEntry) (map[string]float64, string, string) {
 	volByDate := make(map[string]float64, len(entries))
-	latestDate := ""
+	earliestDate, latestDate := "", ""
 	for _, e := range entries {
 		if e.Date == "" {
 			continue
@@ -417,10 +518,21 @@ func orderDeskAvgDailyVolume(entries []esi.HistoryEntry, days int) float64 {
 		if e.Date > latestDate {
 			latestDate = e.Date
 		}
+		if earliestDate == "" || e.Date < earliestDate {
+			earliestDate = e.Date
+		}
 		if e.Volume > 0 {
 			volByDate[e.Date] += float64(e.Volume)
 		}
 	}
+	return volByDate, earliestDate, latestDate
+}
+
+func orderDeskAvgDailyVolume(entries []esi.HistoryEntry, days int) float64 {
+	if len(entries) == 0 || days <= 0 {
+		return 0
+	}
+	volByDate, _, latestDate := orderDeskVolumeByDate(entries)
 	if latestDate == "" {
 		return 0
 	}
@@ -434,6 +546,216 @@ func orderDeskAvgDailyVolume(entries []esi.HistoryEntry, days int) float64 {
 		total += volByDate[d]
 	}
 	return total / float64(days)
+}
+
+// orderDeskRecentAvgPrice is the volume-weighted mean trade price over the
+// last `days` of history. Volume-weighted rather than a plain mean so one
+// quiet day at an odd price cannot drag it.
+func orderDeskRecentAvgPrice(entries []esi.HistoryEntry, days int) float64 {
+	if len(entries) == 0 || days <= 0 {
+		return 0
+	}
+	_, _, latestDate := orderDeskVolumeByDate(entries)
+	if latestDate == "" {
+		return 0
+	}
+	end, err := time.Parse("2006-01-02", latestDate)
+	if err != nil {
+		return 0
+	}
+	cutoff := end.AddDate(0, 0, -(days - 1)).Format("2006-01-02")
+	var weighted, weight float64
+	for _, e := range entries {
+		if e.Date < cutoff || e.Date > latestDate || e.Volume <= 0 || e.Average <= 0 {
+			continue
+		}
+		weighted += e.Average * float64(e.Volume)
+		weight += float64(e.Volume)
+	}
+	if weight <= 0 {
+		return 0
+	}
+	return weighted / weight
+}
+
+// orderDeskBestPrice returns the best price on one side of a book — lowest
+// for sells, highest for buys — ignoring empty and non-positive orders.
+func orderDeskBestPrice(orders []esi.MarketOrder, isBuy bool) float64 {
+	best := 0.0
+	for _, o := range orders {
+		if o.Price <= 0 || o.VolumeRemain <= 0 {
+			continue
+		}
+		if best == 0 || orderDeskBetterPrice(isBuy, o.Price, best) {
+			best = o.Price
+		}
+	}
+	return best
+}
+
+// orderDeskSellSideShare estimates what fraction of traded volume executed
+// against sell orders. ESI reports one blended figure per day, but only the
+// trades that lifted a sell order drain a sell queue — counting the rest is
+// why the desk used to promise fills that never came.
+//
+// Where the volume-weighted average trade price sits inside the current
+// spread is the tell: near the ask means buyers were lifting sell orders,
+// near the bid means sellers were hitting buy orders. Falls back to an even
+// split whenever the spread is degenerate or the average sits outside it —
+// a stale book, or a price that has moved since the history was written.
+func orderDeskSellSideShare(bestBid, bestAsk, avgPrice float64) float64 {
+	if bestBid <= 0 || bestAsk <= 0 || avgPrice <= 0 || bestAsk <= bestBid {
+		return 0.5
+	}
+	if avgPrice < bestBid || avgPrice > bestAsk {
+		return 0.5
+	}
+	share := (avgPrice - bestBid) / (bestAsk - bestBid)
+	return math.Min(orderDeskMaxSideShare, math.Max(orderDeskMinSideShare, share))
+}
+
+// orderDeskStationShare approximates how much of a region's flow for one
+// side of one item passes through a single station, using that station's
+// share of competitively-priced depth as the proxy.
+//
+// Depth further than orderDeskCompetitiveBand from the region best is not
+// competing for today's trades, so a hopeful dumper parked in a backwater
+// cannot claim a share of flow it will never see. If that band turns out to
+// be empty on either side of the ratio the unbanded share is used instead,
+// which is imprecise but never zero — and a zero here would silently read
+// as "no liquidity data" downstream.
+func orderDeskStationShare(orders []esi.MarketOrder, locationID int64, isBuy bool) float64 {
+	if len(orders) == 0 {
+		return 1
+	}
+	best := orderDeskBestPrice(orders, isBuy)
+
+	var bandRegion, bandStation, allRegion, allStation float64
+	for _, o := range orders {
+		if o.Price <= 0 || o.VolumeRemain <= 0 {
+			continue
+		}
+		qty := float64(o.VolumeRemain)
+		allRegion += qty
+		if o.LocationID == locationID {
+			allStation += qty
+		}
+		if best <= 0 {
+			continue
+		}
+		offset := (o.Price - best) / best
+		if isBuy {
+			offset = (best - o.Price) / best
+		}
+		if offset > orderDeskCompetitiveBand {
+			continue
+		}
+		bandRegion += qty
+		if o.LocationID == locationID {
+			bandStation += qty
+		}
+	}
+
+	if bandRegion > 0 && bandStation > 0 {
+		return bandStation / bandRegion
+	}
+	if allRegion > 0 && allStation > 0 {
+		return allStation / allRegion
+	}
+	return 1
+}
+
+// orderDeskDowProfile derives seven multipliers, Sunday-indexed and
+// averaging 1.0, describing how volume distributes across the week. EVE's
+// market is markedly heavier Friday through Sunday, so a flat weekly mean
+// answers "how much trades on an average day" when the question is "how
+// much trades over the next three days, starting today".
+//
+// Only the shape comes from this window — the level still comes from the
+// trailing week — and it reports false when any weekday is too sparse to
+// characterise, rather than inventing a shape out of two data points.
+func orderDeskDowProfile(entries []esi.HistoryEntry, weeks int) ([7]float64, bool) {
+	flat := [7]float64{1, 1, 1, 1, 1, 1, 1}
+	if len(entries) == 0 || weeks <= 0 {
+		return flat, false
+	}
+	volByDate, earliestDate, latestDate := orderDeskVolumeByDate(entries)
+	if latestDate == "" || earliestDate == "" {
+		return flat, false
+	}
+	end, err := time.Parse("2006-01-02", latestDate)
+	if err != nil {
+		return flat, false
+	}
+	start, err := time.Parse("2006-01-02", earliestDate)
+	if err != nil {
+		return flat, false
+	}
+
+	// Count only days the history actually covers. Walking the full window
+	// regardless would turn one observation per weekday into eight
+	// "samples" of mostly-imaginary zeroes and sail straight past the
+	// sparsity guard below.
+	var sum [7]float64
+	var count [7]int
+	for i := 0; i < weeks*7; i++ {
+		d := end.AddDate(0, 0, -i)
+		if d.Before(start) {
+			break
+		}
+		wd := int(d.Weekday())
+		sum[wd] += volByDate[d.Format("2006-01-02")]
+		count[wd]++
+	}
+
+	var mean [7]float64
+	var total float64
+	for i := 0; i < 7; i++ {
+		if count[i] < orderDeskDowMinSamples {
+			return flat, false
+		}
+		mean[i] = sum[i] / float64(count[i])
+		total += mean[i]
+	}
+	if total <= 0 {
+		return flat, false
+	}
+
+	overall := total / 7
+	var out [7]float64
+	for i := 0; i < 7; i++ {
+		out[i] = mean[i] / overall
+	}
+	return out, true
+}
+
+// orderDeskWalkDays steps forward from `from`, consuming each day's expected
+// flow until `units` are covered, and returns how many fractional days that
+// took plus whether it hit the cap. Walking the calendar rather than
+// dividing by an average is the whole point of the weekday profile: listing
+// on a Thursday and listing on a Sunday night are different questions.
+func orderDeskWalkDays(units, baseFlow float64, dow [7]float64, from time.Time) (float64, bool) {
+	if units <= 0 {
+		return 0, false
+	}
+	if baseFlow <= 0 {
+		return float64(orderDeskETACapDays), true
+	}
+	elapsed := 0.0
+	remaining := units
+	for i := 0; i < orderDeskETACapDays; i++ {
+		flow := baseFlow * dow[int(from.AddDate(0, 0, i).Weekday())]
+		if flow <= 0 {
+			elapsed++
+			continue
+		}
+		if remaining <= flow {
+			return elapsed + remaining/flow, false
+		}
+		remaining -= flow
+		elapsed++
+	}
+	return float64(orderDeskETACapDays), true
 }
 
 func orderDeskRecommendation(row OrderDeskOrder, opt OrderDeskOptions) (string, string) {
@@ -454,6 +776,14 @@ func orderDeskRecommendation(row OrderDeskOrder, opt OrderDeskOptions) (string, 
 
 	if row.Position > 1 && row.DaysToExpire >= 0 && row.DaysToExpire <= opt.WarnExpiryDays {
 		return "reprice", "undercut near expiry"
+	}
+
+	// Depth ahead is only worth waiting out over a short horizon. Past
+	// that, the static-queue assumption behind the ETA stops being
+	// credible — competitors relist under you faster than a deep queue
+	// drains — so the desk stops claiming the order is on track.
+	if row.Position > 1 && row.DaysToClearQueue > opt.TargetETADays/2 {
+		return "reprice", fmt.Sprintf("buried: %.1fd of depth ahead", row.DaysToClearQueue)
 	}
 
 	if row.Position > 1 && row.ETADays > opt.TargetETADays {

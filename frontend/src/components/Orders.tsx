@@ -8,14 +8,16 @@ import type {
 } from "../lib/types";
 import { useEsiFeeImport } from "../lib/useEsiFeeImport";
 import {
-  defaultDirForSortKey,
+  applySortClick,
   loadOrdersPrefs,
   saveOrdersPrefs,
   ORDERS_REFRESH_CHOICES,
+  ORDERS_TARGET_ETA_MAX_DAYS,
+  ORDERS_TARGET_ETA_MIN_DAYS,
   type OrdersActionFilter,
   type OrdersPrefs,
-  type OrdersSortDir,
   type OrdersSortKey,
+  type OrdersSortLayer,
 } from "../lib/ordersPrefs";
 import { useI18n, type TranslationKey } from "../lib/i18n";
 import { useGlobalToast } from "./Toast";
@@ -47,6 +49,19 @@ const PRIORITY_BY_ACTION: Record<string, number> = {
   cancel: 3,
   reprice: 2,
   hold: 0,
+};
+
+/** Header label for each sortable column, reused by the chip strip so a
+ *  chip and its column can never drift apart. */
+const SORT_LABEL_KEY: Record<OrdersSortKey, TranslationKey> = {
+  owner: "ordersColOwner",
+  type: "colItem",
+  station: "ordersColStation",
+  priority: "ordersColAction",
+  current: "ordersColCurrent",
+  notional: "ordersColValue",
+  eta: "ordersColEta",
+  expiry: "ordersColExpiry",
 };
 
 /** Columns rendered per row. Group header rows span all of them. */
@@ -92,14 +107,18 @@ function compareBy(a: OrderDeskOrder, b: OrderDeskOrder, key: OrdersSortKey): nu
   }
 }
 
+/** Walks the sort stack, first column that separates the two rows decides.
+ *  "Item, then Action" is the case this exists for: alphabetical to line up
+ *  with the in-game window, with the actionable rows grouped inside each. */
 function sortOrders(
   rows: OrderDeskOrder[],
-  key: OrdersSortKey,
-  dir: OrdersSortDir,
+  sort: readonly OrdersSortLayer[],
 ): OrderDeskOrder[] {
   return rows.slice().sort((a, b) => {
-    const cmp = compareBy(a, b, key);
-    if (cmp !== 0) return dir === "asc" ? cmp : -cmp;
+    for (const layer of sort) {
+      const cmp = compareBy(a, b, layer.key);
+      if (cmp !== 0) return layer.dir === "asc" ? cmp : -cmp;
+    }
     // Ties always break alphabetically, never by direction. "Value, highest
     // first" then reads down the page in a stable, findable order.
     return (a.type_name || "").localeCompare(b.type_name || "");
@@ -182,6 +201,7 @@ export function Orders({ isLoggedIn }: Props) {
         const resp = await getOrderDesk({
           salesTax,
           brokerFee,
+          targetEtaDays: prefs.targetEtaDays,
           characterId: "all",
           force,
         });
@@ -195,12 +215,12 @@ export function Orders({ isLoggedIn }: Props) {
         setLoading(false);
       }
     },
-    [isLoggedIn, salesTax, brokerFee],
+    [isLoggedIn, salesTax, brokerFee, prefs.targetEtaDays],
   );
 
-  // First load is immediate; later reruns are only ever caused by a fee edit,
-  // so they are debounced. `load` changes identity when a fee changes, which
-  // is what re-arms the timer on each keystroke.
+  // First load is immediate; later reruns are only ever caused by a fee or
+  // target edit, so they are debounced. `load` changes identity when one of
+  // those changes, which is what re-arms the timer on each keystroke.
   useEffect(() => {
     if (!isLoggedIn) {
       setData(null);
@@ -276,23 +296,27 @@ export function Orders({ isLoggedIn }: Props) {
   // Sorted per side rather than globally, so an A→Z sort really does line up
   // with the in-game list one section at a time.
   const sellRows = useMemo(
-    () => sortOrders(filteredRows.filter((r) => !r.is_buy_order), prefs.sortKey, prefs.sortDir),
-    [filteredRows, prefs.sortKey, prefs.sortDir],
+    () => sortOrders(filteredRows.filter((r) => !r.is_buy_order), prefs.sort),
+    [filteredRows, prefs.sort],
   );
   const buyRows = useMemo(
-    () => sortOrders(filteredRows.filter((r) => r.is_buy_order), prefs.sortKey, prefs.sortDir),
-    [filteredRows, prefs.sortKey, prefs.sortDir],
+    () => sortOrders(filteredRows.filter((r) => r.is_buy_order), prefs.sort),
+    [filteredRows, prefs.sort],
   );
 
   const toggleSort = useCallback(
-    (k: OrdersSortKey) => {
-      if (prefs.sortKey === k) {
-        updatePrefs({ sortDir: prefs.sortDir === "asc" ? "desc" : "asc" });
-      } else {
-        updatePrefs({ sortKey: k, sortDir: defaultDirForSortKey(k) });
-      }
+    (k: OrdersSortKey, additive: boolean) => {
+      updatePrefs({ sort: applySortClick(prefs.sort, k, additive) });
     },
-    [prefs.sortKey, prefs.sortDir, updatePrefs],
+    [prefs.sort, updatePrefs],
+  );
+
+  const removeSortLayer = useCallback(
+    (k: OrdersSortKey) => {
+      const next = prefs.sort.filter((layer) => layer.key !== k);
+      if (next.length > 0) updatePrefs({ sort: next });
+    },
+    [prefs.sort, updatePrefs],
   );
 
   // openMarketForType mirrors the pattern used by CombinedOrdersTab /
@@ -386,6 +410,27 @@ export function Orders({ isLoggedIn }: Props) {
               step={0.1}
               value={brokerFee}
               onChange={(e) => setBrokerFee(parseFloat(e.target.value) || 0)}
+              className="ml-1 w-16 bg-eve-dark border border-eve-border rounded-sm px-1 py-0.5 text-eve-text"
+            />
+          </label>
+          <label className="text-[11px] text-eve-dim" title={t("ordersTargetEtaHint")}>
+            {t("ordersTargetEta")}
+            <input
+              type="number"
+              min={ORDERS_TARGET_ETA_MIN_DAYS}
+              max={ORDERS_TARGET_ETA_MAX_DAYS}
+              step={0.5}
+              value={prefs.targetEtaDays}
+              onChange={(e) => {
+                const v = parseFloat(e.target.value);
+                if (!Number.isFinite(v)) return;
+                updatePrefs({
+                  targetEtaDays: Math.min(
+                    ORDERS_TARGET_ETA_MAX_DAYS,
+                    Math.max(ORDERS_TARGET_ETA_MIN_DAYS, v),
+                  ),
+                });
+              }}
               className="ml-1 w-16 bg-eve-dark border border-eve-border rounded-sm px-1 py-0.5 text-eve-text"
             />
           </label>
@@ -504,6 +549,41 @@ export function Orders({ isLoggedIn }: Props) {
         </div>
       )}
 
+      {/* Sort stack. Shift-clicking headers is not discoverable on its own,
+          so the layers are shown and removable here. Only worth showing
+          alongside the headers it describes. */}
+      {!firstLoad && data && data.orders.length > 0 && (
+        <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
+          <span className="text-eve-dim uppercase tracking-wider">
+            {t("ordersSortStackLabel")}
+          </span>
+          {prefs.sort.map((layer, i) => (
+            <span
+              key={layer.key}
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-sm border border-eve-border bg-eve-panel text-eve-text"
+            >
+              {/* The ordinal is redundant on a single-layer sort, but the
+                  chip is also the thing that teaches the feature exists. */}
+              <span className="text-eve-dim tabular-nums">{i + 1}</span>
+              {t(SORT_LABEL_KEY[layer.key])}
+              <span className="text-eve-accent">{layer.dir === "asc" ? "▲" : "▼"}</span>
+              {prefs.sort.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() => removeSortLayer(layer.key)}
+                  title={t("ordersSortRemoveLayer")}
+                  aria-label={t("ordersSortRemoveLayer")}
+                  className="text-eve-dim hover:text-eve-error"
+                >
+                  ×
+                </button>
+              )}
+            </span>
+          ))}
+          <span className="text-eve-dim/60">{t("ordersSortStackHint")}</span>
+        </div>
+      )}
+
       {/* Table */}
       <div className="flex-1 min-h-0 overflow-auto border border-eve-border rounded-sm bg-eve-panel">
         {firstLoad && (
@@ -526,7 +606,7 @@ export function Orders({ isLoggedIn }: Props) {
                 <SortableTH
                   label={t("ordersColOwner")}
                   k="owner"
-                  cur={prefs}
+                  sort={prefs.sort}
                   onClick={toggleSort}
                   hint={t("ordersSortHint")}
                   align="left"
@@ -534,7 +614,7 @@ export function Orders({ isLoggedIn }: Props) {
                 <SortableTH
                   label={t("colItem")}
                   k="type"
-                  cur={prefs}
+                  sort={prefs.sort}
                   onClick={toggleSort}
                   hint={t("ordersSortHint")}
                   align="left"
@@ -542,7 +622,7 @@ export function Orders({ isLoggedIn }: Props) {
                 <SortableTH
                   label={t("ordersColStation")}
                   k="station"
-                  cur={prefs}
+                  sort={prefs.sort}
                   onClick={toggleSort}
                   hint={t("ordersSortHint")}
                   align="left"
@@ -550,7 +630,7 @@ export function Orders({ isLoggedIn }: Props) {
                 <SortableTH
                   label={t("ordersColAction")}
                   k="priority"
-                  cur={prefs}
+                  sort={prefs.sort}
                   onClick={toggleSort}
                   hint={t("ordersSortHint")}
                   align="left"
@@ -558,7 +638,7 @@ export function Orders({ isLoggedIn }: Props) {
                 <SortableTH
                   label={t("ordersColCurrent")}
                   k="current"
-                  cur={prefs}
+                  sort={prefs.sort}
                   onClick={toggleSort}
                   hint={t("ordersSortHint")}
                   align="right"
@@ -570,7 +650,7 @@ export function Orders({ isLoggedIn }: Props) {
                 <SortableTH
                   label={t("ordersColValue")}
                   k="notional"
-                  cur={prefs}
+                  sort={prefs.sort}
                   onClick={toggleSort}
                   hint={t("ordersColValueHint")}
                   align="right"
@@ -579,7 +659,7 @@ export function Orders({ isLoggedIn }: Props) {
                 <SortableTH
                   label={t("ordersColEta")}
                   k="eta"
-                  cur={prefs}
+                  sort={prefs.sort}
                   onClick={toggleSort}
                   hint={t("ordersSortHint")}
                   align="right"
@@ -587,7 +667,7 @@ export function Orders({ isLoggedIn }: Props) {
                 <SortableTH
                   label={t("ordersColExpiry")}
                   k="expiry"
-                  cur={prefs}
+                  sort={prefs.sort}
                   onClick={toggleSort}
                   hint={t("ordersSortHint")}
                   align="right"
@@ -723,32 +803,66 @@ function KPITile({
 function SortableTH({
   label,
   k,
-  cur,
+  sort,
   onClick,
   hint,
   align,
 }: {
   label: string;
   k: OrdersSortKey;
-  cur: Pick<OrdersPrefs, "sortKey" | "sortDir">;
-  onClick: (k: OrdersSortKey) => void;
+  sort: readonly OrdersSortLayer[];
+  onClick: (k: OrdersSortKey, additive: boolean) => void;
   hint: string;
   align: "left" | "right";
 }) {
-  const active = cur.sortKey === k;
+  const index = sort.findIndex((layer) => layer.key === k);
+  const layer = index >= 0 ? sort[index] : null;
   return (
     <th
       className={`px-2 py-1.5 ${align === "right" ? "text-right" : "text-left"} cursor-pointer hover:text-eve-text select-none`}
-      onClick={() => onClick(k)}
+      onClick={(e) => onClick(k, e.shiftKey)}
       title={hint}
-      aria-sort={active ? (cur.sortDir === "asc" ? "ascending" : "descending") : "none"}
+      aria-sort={layer ? (layer.dir === "asc" ? "ascending" : "descending") : "none"}
     >
       {label}
-      <span className={`ml-1 ${active ? "text-eve-accent" : "text-eve-dim/40"}`}>
-        {active ? (cur.sortDir === "asc" ? "▲" : "▼") : "⇅"}
+      <span className={`ml-1 ${layer ? "text-eve-accent" : "text-eve-dim/40"}`}>
+        {layer ? (layer.dir === "asc" ? "▲" : "▼") : "⇅"}
       </span>
+      {/* Which layer this is only means anything when there is more than
+          one; a lone "1" on every table would just be noise. */}
+      {layer && sort.length > 1 && (
+        <sup className="ml-0.5 text-eve-accent tabular-nums">{index + 1}</sup>
+      )}
     </th>
   );
+}
+
+/** Matches orderDeskETACapDays in internal/engine/order_desk.go. Past this
+ *  the walk stops rather than quoting a number nobody would act on. */
+const ORDERS_ETA_CAP_DAYS = 90;
+
+/** The ETA is four corrections deep by the time it reaches the table, and
+ *  the whole point of the rework was that the old single number could not be
+ *  argued with. Hovering shows the derivation so it can be checked against
+ *  the in-game book mid-reprice. */
+function etaBreakdown(row: OrderDeskOrder, t: Translate): string {
+  if (row.eta_days < 0) return t("ordersEtaUnknownHint");
+  // The history volume is blended across both sides; a buy order is filled
+  // by the half the sell share does not describe.
+  const sideShare = row.is_buy_order ? 1 - row.sell_side_share : row.sell_side_share;
+  const basis =
+    row.flow_basis === "weekday" ? t("ordersFlowBasisWeekday") : t("ordersFlowBasisFlat");
+  return t("ordersEtaBreakdown", {
+    regional: row.avg_daily_volume.toFixed(1),
+    side: Math.round(sideShare * 100),
+    station: Math.round(row.station_flow_share * 100),
+    perDay: row.estimated_fill_per_day.toFixed(1),
+    basis,
+    queue: row.days_to_clear_queue.toFixed(1),
+    total: row.eta_capped
+      ? `${ORDERS_ETA_CAP_DAYS}+`
+      : row.eta_days.toFixed(1),
+  });
 }
 
 function OrderRow({
@@ -898,8 +1012,15 @@ function OrderRow({
       <td className="px-2 py-1 text-right text-eve-dim font-mono">
         {row.book_available ? `${row.position}/${row.total_orders}` : "—"}
       </td>
-      <td className="px-2 py-1 text-right text-eve-dim font-mono">
-        {row.eta_days >= 0 ? `${row.eta_days.toFixed(1)}d` : "—"}
+      <td
+        className="px-2 py-1 text-right text-eve-dim font-mono"
+        title={etaBreakdown(row, t)}
+      >
+        {row.eta_days < 0
+          ? "—"
+          : row.eta_capped
+            ? `${ORDERS_ETA_CAP_DAYS}d+`
+            : `${row.eta_days.toFixed(1)}d`}
       </td>
       <td className="px-2 py-1 text-right text-eve-dim font-mono">
         {row.days_to_expire >= 0 ? `${row.days_to_expire}d` : "—"}

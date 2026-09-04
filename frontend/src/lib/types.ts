@@ -1739,9 +1739,25 @@ export interface OrderDeskOrder {
   undercut_pct: number;
   queue_ahead_qty: number;
   top_price_qty: number;
+  /** Raw blended ESI daily volume: both sides of the book, whole region. */
   avg_daily_volume: number;
+  /** Fraction of that volume estimated to have executed against sell orders,
+   *  0.10–0.90, or 0.50 when the spread cannot support an estimate. */
+  sell_side_share: number;
+  /** Fraction of the region's competitively-priced depth sitting at this
+   *  station, used as the proxy for how much flow passes through it. */
+  station_flow_share: number;
+  /** avg_daily_volume narrowed by the two shares above and averaged over the
+   *  ETA horizon — the flow that could actually reach this order. */
   estimated_fill_per_day: number;
+  /** Days before the depth ahead clears and this order starts filling. */
+  days_to_clear_queue: number;
+  /** "weekday" when a day-of-week shape was applied, "flat" when history was
+   *  too sparse for one, "none" when there is no flow estimate at all. */
+  flow_basis: "weekday" | "flat" | "none" | string;
   eta_days: number;
+  /** eta_days hit the 90-day ceiling; the real figure is unbounded. */
+  eta_capped?: boolean;
   issued_at: string;
   expires_at: string;
   days_to_expire: number;

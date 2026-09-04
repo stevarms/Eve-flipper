@@ -27,9 +27,9 @@ func TestComputeOrderDesk_QueueEtaAndReprice(t *testing.T) {
 		},
 	}
 	regional := []esi.MarketOrder{
-		{OrderID: 2001, TypeID: 34, LocationID: 60003760, Price: 99, VolumeRemain: 5, IsBuyOrder: false},
-		{OrderID: 1001, TypeID: 34, LocationID: 60003760, Price: 100, VolumeRemain: 10, IsBuyOrder: false},
-		{OrderID: 2002, TypeID: 34, LocationID: 60003760, Price: 101, VolumeRemain: 30, IsBuyOrder: false},
+		{OrderID: 2001, TypeID: 34, RegionID: 10000002, LocationID: 60003760, Price: 99, VolumeRemain: 5, IsBuyOrder: false},
+		{OrderID: 1001, TypeID: 34, RegionID: 10000002, LocationID: 60003760, Price: 100, VolumeRemain: 10, IsBuyOrder: false},
+		{OrderID: 2002, TypeID: 34, RegionID: 10000002, LocationID: 60003760, Price: 101, VolumeRemain: 30, IsBuyOrder: false},
 	}
 	history := map[OrderDeskHistoryKey][]esi.HistoryEntry{
 		NewOrderDeskHistoryKey(10000002, 34): {
@@ -60,8 +60,26 @@ func TestComputeOrderDesk_QueueEtaAndReprice(t *testing.T) {
 	if row.QueueAheadQty != 5 {
 		t.Fatalf("queue_ahead_qty = %d, want 5", row.QueueAheadQty)
 	}
-	if math.Abs(row.ETADays-1.5) > 1e-6 {
-		t.Fatalf("eta_days = %v, want 1.5", row.ETADays)
+	// 10/day blended, halved to 5/day because no bid is visible and the
+	// even-split fallback applies, all of it at this station: 5 ahead of us
+	// takes a day, our own 10 takes two more.
+	if math.Abs(row.SellSideShare-0.5) > 1e-9 {
+		t.Fatalf("sell_side_share = %v, want 0.5 fallback", row.SellSideShare)
+	}
+	if math.Abs(row.StationFlowShare-1.0) > 1e-9 {
+		t.Fatalf("station_flow_share = %v, want 1", row.StationFlowShare)
+	}
+	if row.FlowBasis != "flat" {
+		t.Fatalf("flow_basis = %q, want flat (one week of history)", row.FlowBasis)
+	}
+	if math.Abs(row.DaysToClearQueue-1.0) > 1e-6 {
+		t.Fatalf("days_to_clear_queue = %v, want 1", row.DaysToClearQueue)
+	}
+	if math.Abs(row.ETADays-3.0) > 1e-6 {
+		t.Fatalf("eta_days = %v, want 3", row.ETADays)
+	}
+	if row.ETACapped {
+		t.Fatalf("eta_capped = true, want false")
 	}
 	if row.Recommendation != "reprice" {
 		t.Fatalf("recommendation = %q, want reprice", row.Recommendation)
