@@ -1,9 +1,8 @@
-import type { ReactNode } from "react";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Badge } from "@/components/ui/badge";
+import { DetailGroup as Group, DetailRow as Row } from "@/components/ui/DetailList";
 import { formatISK, formatMargin, formatNumber } from "@/lib/format";
-import { typeIconUrl } from "@/lib/eveImages";
-import { cn } from "@/lib/utils";
+import { TypeIcon } from "@/components/ui/TypeIcon";
 import type { StationTrade } from "@/lib/types";
 
 /**
@@ -16,49 +15,6 @@ import type { StationTrade } from "@/lib/types";
  * grid used to lead with (CTS, D.O.S., SDS) have no hint text anywhere in
  * the locale.
  */
-
-function Row({
-  label,
-  value,
-  hint,
-  tone,
-}: {
-  label: string;
-  value: ReactNode;
-  hint?: string;
-  tone?: "profit" | "loss" | "warn" | "muted";
-}) {
-  return (
-    <div className="flex items-baseline justify-between gap-3 py-1">
-      <dt className="font-ui text-t-cell text-fg-tertiary" title={hint}>
-        {label}
-      </dt>
-      <dd
-        className={cn(
-          "font-num tnum text-t-cell text-right",
-          tone === "profit" && "text-profit",
-          tone === "loss" && "text-loss",
-          tone === "warn" && "text-warn",
-          tone === "muted" && "text-fg-tertiary",
-          !tone && "text-fg-secondary",
-        )}
-      >
-        {value}
-      </dd>
-    </div>
-  );
-}
-
-function Group({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <section className="mb-4">
-      <h3 className="mb-1 border-b border-eve-border pb-1 font-ui text-t-caption font-semibold uppercase tracking-wide text-fg-tertiary">
-        {title}
-      </h3>
-      <dl>{children}</dl>
-    </section>
-  );
-}
 
 const isk = (n: number | undefined) =>
   n != null && Number.isFinite(n) ? formatISK(n) : "—";
@@ -87,17 +43,7 @@ export function StationRowDrawer({ row, onClose, dailyProfit }: StationRowDrawer
         width="w-[560px]"
         title={
           <span className="flex items-center gap-2">
-            <img
-              src={typeIconUrl(row.TypeID, "icon", 64)}
-              alt=""
-              aria-hidden="true"
-              width={24}
-              height={24}
-              className="h-6 w-6 shrink-0 rounded-[2px]"
-              onError={(e) => {
-                e.currentTarget.style.visibility = "hidden";
-              }}
-            />
+            <TypeIcon typeId={row.TypeID} categoryId={row.CategoryID} size={24} />
             <span className="truncate">{row.TypeName}</span>
           </span>
         }

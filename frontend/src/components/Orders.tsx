@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ExternalLink } from "lucide-react";
 import { getAuthStatus, getOrderDesk, openMarketInGame } from "../lib/api";
 import type {
   AuthCharacter,
@@ -9,14 +10,28 @@ import { useI18n, type TranslationKey } from "../lib/i18n";
 import { formatIsk as formatIskLib } from "../lib/format";
 import { useGlobalToast } from "./Toast";
 import { handleEveUIError } from "../lib/handleEveUIError";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { CopyPrice } from "@/components/ui/CopyPrice";
+import { EmptyState } from "@/components/EmptyState";
+import { Input } from "@/components/ui/input";
+import { TypeIcon } from "@/components/ui/TypeIcon";
+import { OrderRowDrawer, recommendationTone } from "@/components/orders/OrderRowDrawer";
+import { cn } from "@/lib/utils";
 
 // Orders.tsx — first-class main-tab replacement for the buried
 // character-popup Order Desk. Aggregates active orders across every
 // authorized character with the same per-order recommendations
 // (hold / reprice / cancel) plus legal 4-sig-fig suggested prices from
-// the item 1/2/3 chain. Renders one row per order with an action badge,
-// copy-to-clipboard for the target price, and a ⚠ warning when the
-// broker relist fee would eat the theoretical gain.
+// the item 1/2/3 chain.
+//
+// Six columns, per the three-tier disclosure rule (docs/UI_DESIGN_SYSTEM.md
+// §4). The grid answers only "which orders do I touch, and what do I type
+// into EVE"; the other five columns it used to carry — owner, station, side,
+// best price, expiry — plus the queue and relist-fee arithmetic that was
+// never in the grid at all now live in the row drawer. Side and station are
+// still visible at a glance because they moved *into* the item cell rather
+// than off the screen.
 
 interface Props {
   isLoggedIn: boolean;
@@ -25,6 +40,17 @@ interface Props {
 type ActionFilter = "all" | "needs_action" | "hold";
 type SortKey = "priority" | "eta" | "expiry" | "notional" | "type";
 type SortDir = "asc" | "desc";
+
+/** Sorts reachable from the toolbar. Three also have a clickable header. */
+const SORT_KEYS: readonly SortKey[] = ["priority", "type", "eta", "expiry", "notional"];
+
+const SORT_LABEL_KEYS: Record<SortKey, TranslationKey> = {
+  priority: "ordersColAction",
+  type: "colItem",
+  eta: "ordersColEta",
+  expiry: "ordersColExpiry",
+  notional: "ordersKpiNotional",
+};
 
 const PRIORITY_BY_ACTION: Record<string, number> = {
   cancel: 3,
@@ -42,7 +68,7 @@ function formatIsk(v: number): string {
 }
 
 export function Orders({ isLoggedIn }: Props) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const { addToast } = useGlobalToast();
   const [data, setData] = useState<OrderDeskResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -54,6 +80,7 @@ export function Orders({ isLoggedIn }: Props) {
   const [sortKey, setSortKey] = useState<SortKey>("priority");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [authCharacters, setAuthCharacters] = useState<AuthCharacter[]>([]);
+  const [inspected, setInspected] = useState<OrderDeskOrder | null>(null);
 
   useEffect(() => {
     if (!isLoggedIn) return;
@@ -159,14 +186,17 @@ export function Orders({ isLoggedIn }: Props) {
     return rows;
   }, [data, characterFilter, actionFilter, sortKey, sortDir]);
 
-  const toggleSort = (k: SortKey) => {
-    if (sortKey === k) setSortDir(sortDir === "asc" ? "desc" : "asc");
-    else {
-      setSortKey(k);
-      // Priority + notional feel natural high-to-low; ETA + expiry low-to-high.
-      setSortDir(k === "priority" || k === "notional" ? "desc" : "asc");
-    }
-  };
+  const applySort = useCallback((k: SortKey) => {
+    setSortKey((cur) => {
+      if (cur === k) {
+        setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+      } else {
+        // Priority + notional feel natural high-to-low; ETA + expiry low-to-high.
+        setSortDir(k === "priority" || k === "notional" ? "desc" : "asc");
+      }
+      return k;
+    });
+  }, []);
 
   // openMarketForType mirrors the pattern used by CombinedOrdersTab /
   // StationTrading / ScanResultsTable — surface both success ("Opened in
@@ -194,73 +224,88 @@ export function Orders({ isLoggedIn }: Props) {
 
   if (!isLoggedIn) {
     return (
-      <div className="flex flex-col items-center justify-center h-full text-eve-dim text-sm space-y-2">
+      <div className="flex h-full flex-col items-center justify-center space-y-2 font-ui text-t-body text-fg-tertiary">
         <div>{t("ordersNoAuth")}</div>
       </div>
     );
   }
 
+  const multiCharacter = authCharacters.length > 1;
+
   return (
-    <div className="flex flex-col h-full space-y-3 p-3">
-      {/* Header */}
+    <div className="flex h-full flex-col space-y-3 p-3">
+      {/* Toolbar */}
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-xs text-eve-dim uppercase tracking-wider">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-ui text-t-caption uppercase tracking-wide text-fg-tertiary">
             {t("ordersActionFilterLabel")}
           </span>
           {(["all", "needs_action", "hold"] as ActionFilter[]).map((a) => (
             <button
               key={a}
               onClick={() => setActionFilter(a)}
-              className={`px-2.5 py-1 text-[11px] rounded-sm border transition-colors ${
+              className={cn(
+                "rounded-sm border px-2.5 py-1 font-ui text-t-caption transition-colors",
                 actionFilter === a
-                  ? "bg-eve-accent/20 border-eve-accent text-eve-accent"
-                  : "bg-eve-panel border-eve-border text-eve-dim hover:text-eve-text hover:border-eve-accent/50"
-              }`}
+                  ? "border-eve-accent bg-eve-accent/20 text-eve-accent"
+                  : "border-eve-border bg-surface-2 text-fg-tertiary hover:border-eve-accent/50 hover:text-fg",
+              )}
             >
               {t(`ordersActionFilter_${a}` as TranslationKey)}
             </button>
           ))}
         </div>
         <div className="flex items-center gap-2">
-          <label className="text-[11px] text-eve-dim">
+          <label className="flex items-center gap-1 font-ui text-t-caption text-fg-tertiary">
+            {t("ordersSortLabel")}
+            <select
+              value={sortKey}
+              onChange={(e) => applySort(e.target.value as SortKey)}
+              className="rounded-sm border border-eve-border bg-surface-0 px-1 py-0.5 font-ui text-t-caption text-fg"
+            >
+              {SORT_KEYS.map((k) => (
+                <option key={k} value={k}>
+                  {t(SORT_LABEL_KEYS[k])}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex items-center gap-1 font-ui text-t-caption text-fg-tertiary">
             {t("ordersSalesTax")}
-            <input
+            <Input
+              numeric
               type="number"
               min={0}
               max={100}
               step={0.1}
               value={salesTax}
               onChange={(e) => setSalesTax(parseFloat(e.target.value) || 0)}
-              className="ml-1 w-16 bg-eve-dark border border-eve-border rounded-sm px-1 py-0.5 text-eve-text"
+              className="h-6 w-16 px-1 py-0.5"
             />
           </label>
-          <label className="text-[11px] text-eve-dim">
+          <label className="flex items-center gap-1 font-ui text-t-caption text-fg-tertiary">
             {t("ordersBrokerFee")}
-            <input
+            <Input
+              numeric
               type="number"
               min={0}
               max={100}
               step={0.1}
               value={brokerFee}
               onChange={(e) => setBrokerFee(parseFloat(e.target.value) || 0)}
-              className="ml-1 w-16 bg-eve-dark border border-eve-border rounded-sm px-1 py-0.5 text-eve-text"
+              className="h-6 w-16 px-1 py-0.5"
             />
           </label>
-          <button
-            onClick={() => void load()}
-            disabled={loading}
-            className="px-3 py-1 text-xs rounded-sm border border-eve-accent/60 bg-eve-accent/10 text-eve-accent hover:bg-eve-accent/20 disabled:opacity-50"
-          >
+          <Button size="sm" variant="outline" onClick={() => void load()} disabled={loading}>
             {loading ? t("ordersRefreshing") : t("ordersRefresh")}
-          </button>
+          </Button>
         </div>
       </div>
 
       {/* Character filter chips */}
-      {authCharacters.length > 1 && (
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <span className="text-[10px] text-eve-dim uppercase tracking-wider">
+      {multiCharacter && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="font-ui text-t-caption uppercase tracking-wide text-fg-tertiary">
             {t("ordersCharacterFilter")}
           </span>
           {authCharacters.map((c) => {
@@ -271,16 +316,17 @@ export function Orders({ isLoggedIn }: Props) {
                 key={c.character_id}
                 type="button"
                 onClick={() => toggleCharacter(c.character_id)}
-                className={`inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-sm border transition-colors ${
+                className={cn(
+                  "inline-flex items-center gap-1 rounded-sm border px-2 py-0.5 font-ui text-t-caption transition-colors",
                   active
                     ? "border-eve-accent/50 bg-eve-accent/10 text-eve-accent"
-                    : "border-eve-border/40 bg-eve-dark text-eve-dim opacity-60"
-                }`}
+                    : "border-eve-border/40 bg-surface-0 text-fg-tertiary opacity-60",
+                )}
               >
                 <img
                   src={`https://images.evetech.net/characters/${c.character_id}/portrait?size=32`}
                   alt=""
-                  className="w-4 h-4 rounded-full"
+                  className="h-4 w-4 rounded-full"
                 />
                 <span>{c.character_name}</span>
               </button>
@@ -289,7 +335,7 @@ export function Orders({ isLoggedIn }: Props) {
           {characterFilter.size > 0 && (
             <button
               onClick={() => setCharacterFilter(new Set())}
-              className="text-[10px] text-eve-accent hover:underline"
+              className="font-ui text-t-caption text-eve-accent hover:underline"
             >
               {t("ordersCharacterFilterClear")}
             </button>
@@ -298,14 +344,14 @@ export function Orders({ isLoggedIn }: Props) {
       )}
 
       {error && (
-        <div className="rounded-sm border border-red-500/50 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+        <div className="rounded-sm border border-loss/50 bg-loss/10 px-3 py-2 font-ui text-t-cell text-loss">
           {error}
         </div>
       )}
 
       {/* KPI strip */}
       {data && (
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
           <KPITile
             label={t("ordersKpiTotal")}
             value={String(data.summary.total_orders)}
@@ -313,12 +359,12 @@ export function Orders({ isLoggedIn }: Props) {
           <KPITile
             label={t("ordersKpiReprice")}
             value={String(data.summary.needs_reprice)}
-            emphasis={data.summary.needs_reprice > 0}
+            tone={data.summary.needs_reprice > 0 ? "warn" : undefined}
           />
           <KPITile
             label={t("ordersKpiCancel")}
             value={String(data.summary.needs_cancel)}
-            emphasis={data.summary.needs_cancel > 0}
+            tone={data.summary.needs_cancel > 0 ? "loss" : undefined}
           />
           <KPITile
             label={t("ordersKpiNotional")}
@@ -336,60 +382,53 @@ export function Orders({ isLoggedIn }: Props) {
       )}
 
       {/* Table */}
-      <div className="flex-1 min-h-0 overflow-auto border border-eve-border rounded-sm bg-eve-panel">
+      <div className="min-h-0 flex-1 overflow-auto rounded-sm border border-eve-border bg-surface-1">
         {loading && (
-          <div className="p-4 text-center text-eve-dim text-xs">
+          <div className="p-4 text-center font-ui text-t-cell text-fg-tertiary">
             {t("ordersLoading")}
           </div>
         )}
         {!loading && filteredRows.length === 0 && (
-          <div className="p-4 text-center text-eve-dim text-xs">
-            {t("ordersEmpty")}
-          </div>
+          <EmptyState
+            reason={data && data.orders.length > 0 ? "filters_too_strict" : "no_orders"}
+            hints={data && data.orders.length > 0 ? [t("ordersEmpty")] : []}
+          />
         )}
         {!loading && filteredRows.length > 0 && (
-          <table className="w-full text-xs">
-            <thead className="bg-eve-dark sticky top-0 z-10">
-              <tr className="text-eve-dim">
-                <th className="px-2 py-1.5 text-left">{t("ordersColOwner")}</th>
+          <table className="w-full">
+            <thead className="sticky top-0 z-10 bg-surface-0">
+              <tr className="font-ui text-t-caption uppercase tracking-wide text-fg-tertiary">
                 <SortableTH
                   label={t("colItem")}
                   k="type"
                   curKey={sortKey}
                   curDir={sortDir}
-                  onClick={toggleSort}
+                  onClick={applySort}
                   align="left"
                 />
-                <th className="px-2 py-1.5 text-left">{t("ordersColStation")}</th>
-                <th className="px-2 py-1.5 text-left">{t("ordersColSide")}</th>
                 <SortableTH
                   label={t("ordersColAction")}
                   k="priority"
                   curKey={sortKey}
                   curDir={sortDir}
-                  onClick={toggleSort}
+                  onClick={applySort}
                   align="left"
                 />
-                <th className="px-2 py-1.5 text-right">{t("ordersColCurrent")}</th>
-                <th className="px-2 py-1.5 text-right">{t("ordersColBest")}</th>
-                <th className="px-2 py-1.5 text-right">
+                <th className="px-2 py-1.5 text-right font-medium">
+                  {t("ordersColCurrent")}
+                </th>
+                <th className="px-2 py-1.5 text-right font-medium">
                   {t("operatorSuggestedPriceCol")}
                 </th>
-                <th className="px-2 py-1.5 text-right">{t("ordersColPosition")}</th>
+                <th className="px-2 py-1.5 text-right font-medium">
+                  {t("ordersColPosition")}
+                </th>
                 <SortableTH
                   label={t("ordersColEta")}
                   k="eta"
                   curKey={sortKey}
                   curDir={sortDir}
-                  onClick={toggleSort}
-                  align="right"
-                />
-                <SortableTH
-                  label={t("ordersColExpiry")}
-                  k="expiry"
-                  curKey={sortKey}
-                  curDir={sortDir}
-                  onClick={toggleSort}
+                  onClick={applySort}
                   align="right"
                 />
               </tr>
@@ -401,13 +440,22 @@ export function Orders({ isLoggedIn }: Props) {
                   row={r}
                   formatIsk={formatIsk}
                   t={t}
+                  showOwner={multiCharacter}
                   onOpenMarket={openMarketForType}
+                  onInspect={setInspected}
                 />
               ))}
             </tbody>
           </table>
         )}
       </div>
+
+      <OrderRowDrawer
+        row={inspected}
+        onClose={() => setInspected(null)}
+        t={t}
+        locale={locale}
+      />
     </div>
   );
 }
@@ -415,19 +463,31 @@ export function Orders({ isLoggedIn }: Props) {
 function KPITile({
   label,
   value,
-  emphasis,
+  tone,
 }: {
   label: string;
   value: string;
-  emphasis?: boolean;
+  tone?: "warn" | "loss";
 }) {
   return (
     <div
-      className={`rounded-sm border ${emphasis ? "border-amber-500/50 bg-amber-500/5" : "border-eve-border bg-eve-panel"} p-2`}
+      className={cn(
+        "rounded-sm border p-2",
+        tone === "warn" && "border-warn/50 bg-warn/5",
+        tone === "loss" && "border-loss/50 bg-loss/5",
+        !tone && "border-eve-border bg-surface-1",
+      )}
     >
-      <div className="text-[10px] text-eve-dim uppercase tracking-wider">{label}</div>
+      <div className="font-ui text-t-caption uppercase tracking-wide text-fg-tertiary">
+        {label}
+      </div>
       <div
-        className={`font-mono ${emphasis ? "text-amber-400" : "text-eve-text"} text-lg font-semibold`}
+        className={cn(
+          "font-num tnum text-t-display font-semibold",
+          tone === "warn" && "text-warn",
+          tone === "loss" && "text-loss",
+          !tone && "text-fg",
+        )}
       >
         {value}
       </div>
@@ -453,7 +513,13 @@ function SortableTH<K extends string>({
   const active = curKey === k;
   return (
     <th
-      className={`px-2 py-1.5 text-${align} cursor-pointer hover:text-eve-text select-none`}
+      // Static class names, not `text-${align}` — Tailwind scans source text,
+      // so an interpolated utility is only in the bundle by accident.
+      className={cn(
+        "cursor-pointer select-none px-2 py-1.5 font-medium hover:text-fg",
+        align === "right" ? "text-right" : "text-left",
+      )}
+      aria-sort={active ? (curDir === "asc" ? "ascending" : "descending") : "none"}
       onClick={() => onClick(k)}
     >
       {label}
@@ -466,127 +532,123 @@ function OrderRow({
   row,
   formatIsk,
   t,
+  showOwner,
   onOpenMarket,
+  onInspect,
 }: {
   row: OrderDeskOrder;
   formatIsk: (v: number) => string;
   t: (key: TranslationKey, params?: Record<string, string | number>) => string;
+  /** Only worth a portrait when more than one character is authorized. */
+  showOwner: boolean;
   onOpenMarket: (typeID: number) => void;
+  onInspect: (row: OrderDeskOrder) => void;
 }) {
   const atTop = row.position === 1;
-  const priceCls = atTop ? "text-eve-dim font-mono" : "text-eve-accent font-mono";
   const hasCopyablePrice = row.book_available && row.suggested_price > 0 && !atTop;
-  const copy = () => {
-    if (!hasCopyablePrice) return;
-    void navigator.clipboard.writeText(row.suggested_price.toFixed(2));
-  };
   // Opening the market window is almost always paired with pasting the
   // suggested price into the modify-order dialog. Copy the price at the
-  // same time so the user doesn't need a second click on 📋.
-  const openMarketAndCopyPrice = () => {
+  // same time so the user doesn't need a second click.
+  const openMarketAndCopyPrice = (e: React.MouseEvent) => {
+    e.stopPropagation();
     if (hasCopyablePrice) {
       void navigator.clipboard.writeText(row.suggested_price.toFixed(2));
     }
     onOpenMarket(row.type_id);
   };
-  const badgeClass =
-    row.recommendation === "cancel"
-      ? "bg-red-500/20 text-red-400"
-      : row.recommendation === "reprice"
-        ? "bg-amber-500/20 text-amber-400"
-        : row.book_available
-          ? "bg-emerald-500/20 text-emerald-400"
-          : "bg-eve-dim/20 text-eve-dim";
   const sideLabel = row.is_buy_order ? t("charBuy") : t("charSell");
-  const sideClass = row.is_buy_order ? "text-eve-profit" : "text-eve-error";
+
   return (
-    <tr className="border-t border-eve-border/50 hover:bg-eve-accent/5">
-      <td className="px-2 py-1 text-eve-text">
-        {row.character_id ? (
-          <div className="flex items-center gap-1.5">
+    <tr
+      className="h-row cursor-pointer border-t border-eve-border/50 hover:bg-eve-accent/5"
+      onClick={(e) => {
+        // Don't hijack the copy / open-market buttons.
+        if ((e.target as HTMLElement).closest("button, a")) return;
+        onInspect(row);
+      }}
+    >
+      <td className="max-w-[320px] px-2 py-1">
+        <div className="flex items-center gap-1.5">
+          {showOwner && row.character_id ? (
             <img
               src={`https://images.evetech.net/characters/${row.character_id}/portrait?size=32`}
               alt=""
-              className="w-4 h-4 rounded-full"
+              title={row.character_name || `#${row.character_id}`}
+              className="h-4 w-4 shrink-0 rounded-full"
             />
-            <span className="text-[11px]">{row.character_name || `#${row.character_id}`}</span>
+          ) : null}
+          <TypeIcon typeId={row.type_id} size={18} />
+          <div className="min-w-0">
+            <div className="truncate font-ui text-t-body text-fg" title={row.type_name}>
+              {row.type_name || `Type #${row.type_id}`}
+            </div>
+            <div
+              className="truncate font-ui text-t-caption text-fg-tertiary"
+              title={row.location_name}
+            >
+              {sideLabel} · {row.location_name || `#${row.location_id}`}
+            </div>
           </div>
-        ) : (
-          <span className="text-eve-dim">—</span>
-        )}
-      </td>
-      <td className="px-2 py-1 text-eve-text max-w-[220px]" title={row.type_name}>
-        <div className="flex items-center gap-1.5">
-          <img
-            src={`https://images.evetech.net/types/${row.type_id}/icon?size=32`}
-            alt=""
-            className="w-4 h-4"
-          />
-          <span className="truncate">{row.type_name || `Type #${row.type_id}`}</span>
         </div>
       </td>
-      <td className="px-2 py-1 text-eve-dim max-w-[200px] truncate" title={row.location_name}>
-        {row.location_name || `#${row.location_id}`}
-      </td>
-      <td className={`px-2 py-1 ${sideClass}`}>{sideLabel}</td>
       <td className="px-2 py-1">
-        <span
-          className={`inline-flex px-1.5 py-0.5 rounded-sm text-[10px] font-medium uppercase tracking-wide ${badgeClass} cursor-help`}
+        <Badge
+          tone={recommendationTone(row.recommendation, row.book_available)}
+          className="cursor-help"
           title={row.reason}
         >
           {row.recommendation}
-        </span>
+        </Badge>
       </td>
-      <td className="px-2 py-1 text-right font-mono text-eve-text">{formatIsk(row.price)}</td>
-      <td className="px-2 py-1 text-right font-mono text-eve-dim">
-        {row.book_available && row.best_price > 0 ? formatIsk(row.best_price) : "—"}
+      <td className="px-2 py-1 text-right font-num tnum text-t-cell text-fg">
+        {formatIsk(row.price)}
       </td>
       <td className="px-2 py-1 text-right">
         {row.book_available && row.suggested_price > 0 ? (
-          <div className="inline-flex items-center gap-1.5 justify-end">
+          <div className="inline-flex items-center justify-end gap-1.5">
             {row.warn_unprofitable_relist && (
               <span
                 title={t("operatorUnprofitableRelistHint", {
                   fee: formatIsk(row.relist_fee_isk ?? 0),
                 })}
-                className="cursor-help text-yellow-400"
+                className="cursor-help text-warn"
               >
                 ⚠
               </span>
             )}
-            <span className={priceCls}>{formatIsk(row.suggested_price)}</span>
+            <span
+              className={cn(
+                "font-num tnum text-t-cell",
+                atTop ? "text-fg-tertiary" : "text-info",
+              )}
+            >
+              {formatIsk(row.suggested_price)}
+            </span>
             {!atTop && (
-              <button
-                type="button"
-                onClick={copy}
-                className="text-[10px] px-1 py-0.5 rounded-sm border border-eve-border text-eve-dim hover:text-eve-accent hover:border-eve-accent transition-colors"
-                title={t("operatorSuggestedPriceCopyHint")}
-              >
-                📋
-              </button>
+              <CopyPrice
+                value={row.suggested_price}
+                label={t("operatorSuggestedPriceCopyHint")}
+              />
             )}
             <button
               type="button"
               onClick={openMarketAndCopyPrice}
-              className="text-[10px] px-1 py-0.5 rounded-sm border border-eve-border text-eve-dim hover:text-eve-accent hover:border-eve-accent transition-colors"
+              className="inline-flex h-5 w-5 items-center justify-center rounded-sm text-fg-tertiary transition-colors hover:bg-surface-2 hover:text-fg"
               title={t("ordersOpenMarketHint")}
               aria-label={t("ordersOpenMarketHint")}
             >
-              🎮
+              <ExternalLink className="h-3.5 w-3.5" />
             </button>
           </div>
         ) : (
-          <span className="text-eve-dim">—</span>
+          <span className="text-fg-tertiary">—</span>
         )}
       </td>
-      <td className="px-2 py-1 text-right text-eve-dim font-mono">
+      <td className="px-2 py-1 text-right font-num tnum text-t-cell text-fg-secondary">
         {row.book_available ? `${row.position}/${row.total_orders}` : "—"}
       </td>
-      <td className="px-2 py-1 text-right text-eve-dim font-mono">
+      <td className="px-2 py-1 text-right font-num tnum text-t-cell text-fg-secondary">
         {row.eta_days >= 0 ? `${row.eta_days.toFixed(1)}d` : "—"}
-      </td>
-      <td className="px-2 py-1 text-right text-eve-dim font-mono">
-        {row.days_to_expire >= 0 ? `${row.days_to_expire}d` : "—"}
       </td>
     </tr>
   );

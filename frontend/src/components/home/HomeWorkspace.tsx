@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowRight, Check, Copy } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { ArrowRight, Check } from "lucide-react";
 import {
   getOrderDesk,
   getScanHistory,
@@ -7,8 +7,8 @@ import {
 } from "@/lib/api";
 import { formatISK, formatNumber } from "@/lib/format";
 import { TypeIcon } from "@/components/ui/TypeIcon";
+import { CopyPrice } from "@/components/ui/CopyPrice";
 import { useI18n } from "@/lib/i18n";
-import { useGlobalToast } from "@/components/Toast";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/EmptyState";
@@ -43,39 +43,6 @@ function relativeAge(iso: string): string {
   const hours = Math.round(mins / 60);
   if (hours < 24) return `${hours}h ago`;
   return `${Math.round(hours / 24)}d ago`;
-}
-
-/** Copy-to-clipboard button that confirms inline rather than via a toast. */
-function CopyPrice({ value, label }: { value: number; label: string }) {
-  const [copied, setCopied] = useState(false);
-  const { addToast } = useGlobalToast();
-
-  const copy = useCallback(async () => {
-    // EVE's price field wants a plain number, not a formatted one.
-    const plain = value.toFixed(2);
-    try {
-      await navigator.clipboard.writeText(plain);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1400);
-    } catch {
-      addToast("Clipboard unavailable", "error", 2500);
-    }
-  }, [value, addToast]);
-
-  return (
-    <button
-      type="button"
-      onClick={copy}
-      aria-label={label}
-      title={label}
-      className={cn(
-        "inline-flex h-5 w-5 items-center justify-center rounded-sm transition-colors",
-        copied ? "text-profit" : "text-fg-tertiary hover:bg-surface-2 hover:text-fg",
-      )}
-    >
-      {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-    </button>
-  );
 }
 
 function Kpi({ label, value, tone }: { label: string; value: string; tone?: "warn" | "loss" }) {
