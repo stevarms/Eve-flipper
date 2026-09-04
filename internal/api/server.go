@@ -9632,7 +9632,7 @@ func (s *Server) stationAIPlannerPass(
 	}
 	stationAIApplyProviderHeaders(httpReq, target, "EVE Flipper Station AI Planner")
 
-	client := &http.Client{Timeout: target.PlannerTimeout}
+	client := stationAIHTTPClient(target, target.PlannerTimeout)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return fallback, []string{"planner unavailable, using fallback intent routing"}
@@ -10088,7 +10088,7 @@ func (s *Server) stationAIProviderChatOnce(
 	}
 	stationAIApplyProviderHeaders(httpReq, target, "EVE Flipper Station AI")
 
-	client := &http.Client{Timeout: target.ChatTimeout}
+	client := stationAIHTTPClient(target, target.ChatTimeout)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return stationAIProviderReply{}, fmt.Errorf("ai provider request failed: %w", err)
@@ -11264,7 +11264,7 @@ func (s *Server) handleAuthStationAIChatStream(w http.ResponseWriter, r *http.Re
 	}
 	stationAIApplyProviderHeaders(httpReq, target, "EVE Flipper Station AI")
 
-	client := &http.Client{Timeout: stationAIStreamHTTPTimeout}
+	client := stationAIHTTPClient(target, stationAIStreamHTTPTimeout)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		writeErr("ai provider request failed: " + err.Error())

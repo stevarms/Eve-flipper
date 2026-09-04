@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -186,6 +187,81 @@ func isStationAIReachableLocalIP(ip net.IP) bool {
 	return ip.IsLoopback() || ip.IsPrivate()
 }
 
+// stationAIMaxRedirects is generous for an OpenAI-compatible endpoint, which should
+// not be redirecting at all, while still terminating a loop.
+const stationAIMaxRedirects = 5
+
+// stationAIDialTimeout bounds the connect phase separately from the overall request,
+// which for a local chat completion is measured in minutes.
+const stationAIDialTimeout = 10 * time.Second
+
+// stationAIHTTPClient builds the client every provider call goes through.
+//
+// stationAIValidateLocalHost checks the base URL at the moment it is accepted, which
+// leaves two gaps for a local target. A hostname can resolve to a private address for
+// that check and a public one by the time the connection is actually made; and a
+// cooperating server on a private address can answer 302 to anywhere it likes, which
+// the default client would follow. Both are closed here, where the address being
+// reached is finally known.
+func stationAIHTTPClient(target stationAIProviderTarget, timeout time.Duration) *http.Client {
+	client := &http.Client{Timeout: timeout}
+	if !target.Spec.Local {
+		// Remote providers run against a base URL pinned in the spec, never a
+		// client-supplied one, so there is nothing here to forge.
+		return client
+	}
+
+	dialer := &net.Dialer{Timeout: stationAIDialTimeout, KeepAlive: 30 * time.Second}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		conn, err := dialer.DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		// Whatever the name resolved to earlier, this is the peer we got. The
+		// Docker host alias is included deliberately: it is documented as
+		// resolving to a host-only address, so the check can only ever agree
+		// with that — and if it does not, refusing is the right answer.
+		ip := stationAIConnRemoteIP(conn)
+		if !isStationAIReachableLocalIP(ip) {
+			addrStr := "unknown address"
+			if remote := conn.RemoteAddr(); remote != nil {
+				addrStr = remote.String()
+			}
+			conn.Close()
+			return nil, fmt.Errorf("refusing to connect to non-local address %s", addrStr)
+		}
+		return conn, nil
+	}
+	client.Transport = transport
+
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= stationAIMaxRedirects {
+			return fmt.Errorf("too many redirects from local model provider")
+		}
+		if err := stationAIValidateLocalHost(req.URL.String()); err != nil {
+			return fmt.Errorf("refusing redirect to %s: %w", req.URL.Host, err)
+		}
+		return nil
+	}
+	return client
+}
+
+func stationAIConnRemoteIP(conn net.Conn) net.IP {
+	if conn == nil {
+		return nil
+	}
+	switch addr := conn.RemoteAddr().(type) {
+	case *net.TCPAddr:
+		return addr.IP
+	case *net.UDPAddr:
+		return addr.IP
+	case *net.IPAddr:
+		return addr.IP
+	}
+	return nil
+}
+
 func stationAILocalProvidersAllowed(s *Server) bool {
 	if s == nil || !s.isHostedDeployment() {
 		return true
@@ -296,7 +372,7 @@ func (s *Server) handleAuthStationAIModels(w http.ResponseWriter, r *http.Reques
 	}
 	stationAIApplyProviderHeaders(httpReq, target, "EVE Flipper Station AI Models")
 
-	client := &http.Client{Timeout: stationAIModelsTimeout}
+	client := stationAIHTTPClient(target, stationAIModelsTimeout)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "could not reach "+stationAIProviderLabel(target)+" at "+target.BaseURL)
