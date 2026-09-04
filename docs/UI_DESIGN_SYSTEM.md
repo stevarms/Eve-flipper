@@ -129,6 +129,17 @@ available in the grid via **Columns**.
 | Station Trade | 20 → **6** | 3,165 → 1,610 |
 | Radius / Regional | 35 → **6** | 5,299 → 2,105 |
 | Contracts | 16 → **6** | — |
+| Order desk (`Orders.tsx`) | 11 → **6** | — |
+
+Surfaces measured and found already conforming, so deliberately left alone:
+Price Audit (5 + 4 columns), Trade Journal (~8, and it already has a drawer),
+War Tracker (no tables at all).
+
+**Removing a column must not remove its sort.** The order desk dropped the
+Expiry and Notional headers; both sorts survive in a toolbar `<select>` that
+lists every sort key, while the three columns that stayed keep clickable
+headers. A sort that only existed as a table header is a feature deleted by
+accident.
 
 Decide columns are **ordered**, not merely a set — the primary metric must be
 the leftmost data column, and declaration order in the column-def arrays does
@@ -181,6 +192,26 @@ difference between 44k and <5k DOM nodes.
 Reuse before building: `lib/format.ts` (ISK/number formatting — the one true
 copy), `components/EmptyState.tsx` (i18n-aware, 7 canonical reasons),
 `components/PresetPicker.tsx`, `components/journal/PnLPrimitives.tsx`.
+
+Shared pieces the overhaul added, each hoisted the moment a second copy was
+about to exist:
+
+| Primitive | What it is, and the mistake it prevents |
+|---|---|
+| `ui/DetailList.tsx` — `DetailGroup` / `DetailRow` | The label/value pair every tier-2 drawer is made of. Both row drawers had grown a private `Row`/`Group`; they can no longer drift apart. |
+| `ui/CopyPrice.tsx` | Copies `value.toFixed(2)` — a **plain** number, because EVE's price field rejects "1.23 M". Confirms in place with a check mark rather than a toast (this is a per-row action repeated a dozen times a sitting), and stops propagation because rows are clickable. |
+| `ui/LoadingBlock.tsx` — `LoadingBlock` / `Spinner` | The one spinner. Replaced thirteen hand-copied blocks across twelve files, three of which had drifted to hardcoded English and one of which asked for `border-3` (Tailwind ships 0/1/2/4/8) and so rendered no ring at all. Carries `role="status"` / `aria-live="polite"` — a spinner is precisely what a screen-reader user cannot see. |
+
+**Empty is not the same as loading.** Roughly ten sites that looked like
+candidates for `EmptyState` turned out to be loading spinners; routing those
+through `EmptyState` would swap a live indicator for static text. Waiting →
+`LoadingBlock`. Finished with nothing to show → `EmptyState`.
+
+**Interpolated utility classes do not exist.** Tailwind scans source *text*, so
+`text-${align}` is in the bundle only by luck — some other file happened to
+mention `text-right` literally. Write the branch out: `align === "right" ?
+"text-right" : "text-left"`. The order desk shipped the interpolated form for
+months and got away with it; the corp dashboard's `border-3` did not.
 
 ---
 

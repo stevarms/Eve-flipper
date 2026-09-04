@@ -444,6 +444,42 @@ not real drift.
 
 ---
 
+## Cluster 12: The spinner block — RESOLVED
+
+Thirteen copies of the same markup across twelve files:
+
+```tsx
+<div className="flex items-center justify-center h-full text-eve-dim text-xs">
+  <span className="inline-block w-4 h-4 border-2 border-eve-accent/40 border-t-eve-accent rounded-full animate-spin mr-2" />
+  {t("loading")}...
+</div>
+```
+
+`CombinedOrdersTab` (×2), `OptimizerTab`, `OverviewTab`, `PnLTab`,
+`TradingEdgeTab`, `WalletDashboardTab`, `IndustrySection`, `MarketSection`,
+`MembersSection`, `MiningSection`, `WalletsSection`, `CorpDashboardApp`.
+
+Two real defects the copies had accumulated:
+
+- **Three had drifted to hardcoded English** — "Loading Trading Edge...",
+  "Loading members...", "Loading journal..." — invisible to the locale-parity
+  build gate because they were never keys at all.
+- **`CorpDashboardApp.tsx:45` asked for `border-3`**, a width Tailwind does not
+  ship (0/1/2/4/8) and which `tailwind.config.ts` does not extend. The corp
+  dashboard's full-page loading state rendered with no ring: nothing turning.
+
+All thirteen now go through `components/ui/LoadingBlock.tsx`, which also adds
+the `role="status"` / `aria-live="polite"` that none of the copies had.
+
+Left as genuinely different shapes, not copies: the spin-the-refresh-icon
+buttons (`CharacterPopup`, `PIPlanetsTab`), the SVG spinners in `EmptyState`
+and `SystemAutocomplete`, and the inverted `border-t-transparent` in-button
+ring in `IndustryTab`.
+
+**Priority:** resolved.
+
+---
+
 ## Not real duplication (audited and cleared)
 
 - **`writeJSON` / `writeError`** (`server.go:1297`) — already consolidated,

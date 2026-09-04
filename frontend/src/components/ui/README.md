@@ -39,3 +39,7 @@ Written when phase 1 (Station Trade) needed them — not speculatively.
 | `tooltip.tsx` | Radix; replaces native `title=` (invisible to screenshots) |
 | `tabs.tsx` | Radix; the tabbed-filter and workspace-view pattern |
 | `sheet.tsx` | Radix Dialog as a right-hand drawer — tier 2 of the disclosure rule |
+| `TypeIcon.tsx` | CCP type art with the blueprint `/bp` retry; use in every row that names an item |
+| `DetailList.tsx` | `DetailGroup` / `DetailRow` — the label/value pairs a drawer is made of |
+| `CopyPrice.tsx` | Copies a **plain** `toFixed(2)` (EVE's price field rejects formatted numbers); confirms in place, not via toast |
+| `LoadingBlock.tsx` | The one spinner. `role="status"`, three sizes, row/column/fill layouts |

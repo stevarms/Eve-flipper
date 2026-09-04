@@ -1374,12 +1374,23 @@ those drafts and empty the set.
   scanning stays an explicit action on the Trade workspace. No dedicated
   endpoints — everything it shows already existed.
 - **`components/ui/`** — shadcn-**shaped** primitives (`Button`, `Badge`,
-  `Input`, `Tooltip`, `Tabs`, `Sheet`, `TypeIcon`), hand-written rather than generated
+  `Input`, `Tooltip`, `Tabs`, `Sheet`, `TypeIcon`, `DetailList`,
+  `CopyPrice`, `LoadingBlock`), hand-written rather than generated
   by `shadcn init`, because the CLI would install a third colour
   vocabulary that fights the faction palettes. Bound to the semantic
   tokens in `index.css`. Read `components/ui/README.md` before adding
   one. `Sheet` is the row-detail drawer — tier 2 of the three-tier
-  disclosure rule in `UI_DESIGN_SYSTEM.md`.
+  disclosure rule in `UI_DESIGN_SYSTEM.md`; `DetailList` supplies the
+  `DetailGroup`/`DetailRow` pairs every drawer is built from, so the
+  drawers cannot drift apart. `LoadingBlock` is the single spinner
+  (thirteen hand-copied blocks across twelve files collapsed into it) and
+  is the only one that announces itself via `role="status"`.
+- **`components/orders/`** — `OrderRowDrawer`, tier 2 for the order desk.
+  Also the home of `recommendationTone`, imported by `Orders.tsx` so the
+  grid badge and the drawer badge cannot disagree about what "reprice"
+  looks like. `OrderRowDrawer.test.tsx` asserts the re-tiering promise
+  directly: every column the six-column grid gave up is still rendered
+  somewhere in the drawer.
 
 - **`components/industry/`** — the IndustryTab subtree. Big panels:
   `IndustryAnalysisResultsPanel`, `IndustryDependencyBoard`,
