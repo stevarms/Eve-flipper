@@ -480,6 +480,48 @@ ring in `IndustryTab`.
 
 ---
 
+## Cluster 13: `MarketMakingTab` vs `PlexTab` — RESOLVED
+
+502 lines of a second PLEX dashboard that no user has ever seen. `git log -S`
+puts its birth in `67b844d` — the same commit that added the PLEX+ dashboard —
+with its import already commented out at `App.tsx:22`. It was dead on arrival,
+and it then drifted for the whole life of the repo.
+
+Panel by panel it was a strict subset of `PlexTab`: global price card, spread
+table, order-book depth, injection tiers, the same `getPLEXDashboard()` call,
+the same `ArbitragePath` rows. Its 23 `mm*` locale keys were used nowhere else.
+
+Deleted rather than wired up — but three of its ideas were real, and moved
+into `PlexTab` instead of dying with it:
+
+- **Market-making vocabulary for spread plays.** "Cost / Revenue" is the wrong
+  frame for placing two orders; `SpreadRow` in `plex-tab/PlexMarketCards.tsx`
+  now reads Buy Order / Sell Order / Raw Spread.
+- **The market-making tips card**, now shown under the spread tab.
+- **Three keys found a home fixing real gaps** — `mmMarketBuyCost`,
+  `mmRequiresSP` and `mmAfterFees` replaced hardcoded English in
+  `PlexArbitrageModal.tsx`. The other eight orphans were pruned from both
+  locale files.
+
+Two live bugs in `PlexTab` surfaced only because the comparison forced a close
+read of it, and are fixed in the same change:
+
+- **The spread table was one column out of register.** Its header had five
+  `<th>` but it rendered rows with `ArbitrageRow`, which emits six `<td>` (the
+  second being PLEX-needed, always 0 for a spread). Every spread number sat
+  under the wrong label.
+- **"NES Arbitrage" was a lie for one of its rows.** The filter was
+  `type !== "spread"`, which swept in `market_process` — buy a Skill Extractor
+  *off the market*, extract, sell the Injector: no New Eden Store purchase, no
+  PLEX. The most accessible play on the screen was filed under the heading that
+  says you must spend real money. The matrix is now three tabs (NES / Market /
+  Spread) keyed off the engine's own path type, each with a one-line statement
+  of its model and a viable-count summary.
+
+**Priority:** resolved.
+
+---
+
 ## Not real duplication (audited and cleared)
 
 - **`writeJSON` / `writeError`** (`server.go:1297`) — already consolidated,

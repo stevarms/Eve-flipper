@@ -1269,7 +1269,7 @@ one. `WORKSPACE_META` in `lib/cockpit.ts` maps workspaces to tabs:
 | Today | `home` |
 | Trade | `radius`, `region`, `station`, `contracts` |
 | Industry | `industry`, `pi_factory` |
-| Assets | `orders`, `price_audit` |
+| Assets | `orders`, `price_audit`, `plex` |
 | Journal | `trade_journal` |
 | Intel | `route`, `demand` |
 
@@ -1302,14 +1302,24 @@ those drafts and empty the set.
 | `route` | `tabRoute` | `RouteBuilder` |
 | `station` | `tabStation` (Station Trading) | `StationTrading` |
 | `price_audit` | `tabPriceAudit` | `PriceAudit` |
+| `plex` | `tabPlex` | `PlexTab` |
 | `pi_factory` | `tabPIFactory` | `PIFactory` |
 | `industry` | `tabIndustry` | `IndustryTab` |
 | `trade_journal` | `tabTradeJournal` | `TradeJournal` |
 | `demand` | `tabDemand` (War) | `WarTracker` |
 
-`MarketMakingTab` is imported and commented out in `App.tsx:20`.
-`PlexTab` is embedded inside `CharacterPopup`, not a main tab.
-`CorpDashboardApp` is a separate SPA entry point.
+`MarketMakingTab` is gone — it was never reachable (born commented out in
+`67b844d`, the same commit that shipped the PLEX dashboard), and every
+one of its panels was a subset of `PlexTab`. Its two ideas that PLEX did
+*not* have — a market-making vocabulary for spread plays, and the tips
+card — were folded into the PLEX arbitrage matrix instead. See
+`docs/DUPLICATION.md` cluster 13.
+
+`PlexTab` was promoted out of `CharacterPopup` and is now the third
+Assets tab. It never needed a character: `isLoggedIn` defaults to
+`false` and the whole dashboard is public market data, so burying it in
+a character modal only hid it. `CorpDashboardApp` is a separate SPA
+entry point.
 
 ### 7b. Top-level components (one-liners)
 

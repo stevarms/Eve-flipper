@@ -26,9 +26,6 @@ import { TransactionsTab } from "./character-popup/TransactionsTab";
 import { TradingEdgeTab } from "./character-popup/TradingEdgeTab";
 import { WalletDashboardTab } from "./character-popup/WalletDashboardTab";
 import { AchievementLibraryPanel, useAchievements } from "./achievements";
-import { PlexTab } from "./PlexTab";
-import type { ScanParams } from "../lib/types";
-import type { TaxProfile } from "../lib/taxProfile";
 
 interface CharacterPopupProps {
   open: boolean;
@@ -39,8 +36,6 @@ interface CharacterPopupProps {
   onDeleteCharacter: (characterId: number) => Promise<void>;
   onAddCharacter: () => Promise<void>;
   onAuthRefresh: () => Promise<void>;
-  taxProfile: Partial<ScanParams>;
-  onTaxProfileChange: (profile: TaxProfile) => void;
   initialTab?: CharTab;
   onOpenPaperTradeJournal?: () => void;
   tradingEdgeEnabled?: boolean;
@@ -48,7 +43,7 @@ interface CharacterPopupProps {
   securityVault?: SecurityVaultStatus;
 }
 
-type CharTab = "overview" | "orders" | "transactions" | "ledger" | "industry" | "pi" | "pnl" | "edge" | "risk" | "optimizer" | "achievements" | "plex" | "access";
+type CharTab = "overview" | "orders" | "transactions" | "ledger" | "industry" | "pi" | "pnl" | "edge" | "risk" | "optimizer" | "achievements" | "access";
 const SCOPE_COLLAPSE_KEY = "eve-character-scope-collapsed";
 
 export function CharacterPopup({
@@ -60,8 +55,6 @@ export function CharacterPopup({
   onDeleteCharacter,
   onAddCharacter,
   onAuthRefresh,
-  taxProfile,
-  onTaxProfileChange,
   initialTab,
   onOpenPaperTradeJournal,
   tradingEdgeEnabled = true,
@@ -434,7 +427,6 @@ export function CharacterPopup({
                   : `${t("achievementsTitle")} (${achievementUnlockedCount})`
               }
             />
-            <TabBtn active={tab === "plex"} onClick={() => setTrackedTab("plex")} label="PLEX" />
             {hostedBillingEnabled && <TabBtn active={tab === "access"} onClick={() => setTrackedTab("access")} label="Access" />}
           </div>
           {/* Refresh button */}
@@ -452,23 +444,13 @@ export function CharacterPopup({
 
         {/* Content */}
         <div className="flex-1 overflow-auto p-4">
-          {loading && !data && tab !== "achievements" && tab !== "plex" && tab !== "access" && (
+          {loading && !data && tab !== "achievements" && tab !== "access" && (
             <div className="flex items-center justify-center h-full text-eve-dim">{t("loading")}...</div>
           )}
-          {error && !data && tab !== "achievements" && tab !== "plex" && tab !== "access" && (
+          {error && !data && tab !== "achievements" && tab !== "access" && (
             <div className="flex items-center justify-center h-full text-eve-error">{error}</div>
           )}
           {tab === "achievements" && <AchievementLibraryPanel />}
-          {tab === "plex" && (
-            <div className="h-full min-h-[520px]">
-              <PlexTab
-                isLoggedIn={selectedScope !== "all"}
-                activeCharacterId={selectedScope === "all" ? activeCharacterId : selectedScope}
-                taxProfile={taxProfile}
-                onTaxProfileChange={onTaxProfileChange}
-              />
-            </div>
-          )}
           {hostedBillingEnabled && tab === "access" && (
             <HostedAccessTab
               access={hostedAccess}
@@ -482,7 +464,7 @@ export function CharacterPopup({
               formatIsk={formatIsk}
             />
           )}
-          {tab !== "achievements" && tab !== "plex" && tab !== "access" && data && (
+          {tab !== "achievements" && tab !== "access" && data && (
             <>
               {tab === "overview" && (
                 <OverviewTab

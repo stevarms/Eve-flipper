@@ -10,6 +10,7 @@ import { RouteBuilder } from "./components/RouteBuilder";
 import { WatchlistTab } from "./components/WatchlistTab";
 import { StationTrading } from "./components/StationTrading";
 import { PriceAudit } from "./components/PriceAudit";
+import { PlexTab } from "./components/PlexTab";
 import { PIFactory } from "./components/PIFactory";
 import { TradeJournal } from "./components/TradeJournal";
 import { ProfitPill } from "./components/ProfitPill";
@@ -19,7 +20,6 @@ import { IndustryTab } from "./components/IndustryTab";
 import { WarTracker } from "./components/WarTracker";
 import { ItemIntelligenceModal } from "./components/ItemIntelligenceModal";
 import { TabActionBar, TabPanel, tabWorkspaceClass } from "./components/TabWorkspace";
-// import { MarketMakingTab } from "./components/MarketMakingTab";
 import { ScanHistory } from "./components/ScanHistory";
 import { CommandPalette } from "./components/CommandPalette";
 import { KeyboardShortcutsHelp } from "./components/KeyboardShortcutsHelp";
@@ -2504,6 +2504,14 @@ function App() {
           <TabPanel active={tab === "price_audit"}>
             <PriceAudit isLoggedIn={authStatus.logged_in} />
           </TabPanel>
+          <TabPanel active={tab === "plex"}>
+            <PlexTab
+              isLoggedIn={authStatus.logged_in}
+              activeCharacterId={authStatus.character_id}
+              taxProfile={params}
+              onTaxProfileChange={(profile) => setParams((prev) => ({ ...prev, ...profile }))}
+            />
+          </TabPanel>
           <TabPanel active={tab === "pi_factory"}>
             <PIFactory isLoggedIn={authStatus.logged_in} />
           </TabPanel>
@@ -2860,8 +2868,6 @@ function App() {
           onDeleteCharacter={handleDeleteCharacter}
           onAddCharacter={handleLogin}
           onAuthRefresh={refreshAuthStatus}
-          taxProfile={params}
-          onTaxProfileChange={(profile) => setParams((prev) => ({ ...prev, ...profile }))}
           initialTab={characterInitialTab}
           onOpenPaperTradeJournal={() => setShowPaperTradeJournal(true)}
           tradingEdgeEnabled={cockpitPreferences.tradingEdgeEnabled}

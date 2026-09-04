@@ -133,7 +133,15 @@ available in the grid via **Columns**.
 
 Surfaces measured and found already conforming, so deliberately left alone:
 Price Audit (5 + 4 columns), Trade Journal (~8, and it already has a drawer),
-War Tracker (no tables at all).
+War Tracker (no tables at all), and the PLEX arbitrage matrix (6 columns —
+what it needed was not fewer columns but honest *headings*: see
+`docs/DUPLICATION.md` cluster 13).
+
+**A tab is only as discoverable as where it is mounted.** PLEX was a full
+market dashboard rendered inside `CharacterPopup`, behind a login it does not
+require — public data, `isLoggedIn` defaulting to `false`. It is now the third
+Assets tab. Before adding a surface to a modal, check whether the modal is
+actually the thing that owns it.
 
 **Removing a column must not remove its sort.** The order desk dropped the
 Expiry and Notional headers; both sorts survive in a toolbar `<select>` that

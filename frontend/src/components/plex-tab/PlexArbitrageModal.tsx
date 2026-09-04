@@ -121,18 +121,18 @@ export function ArbitrageModal({ arb, onClose }: { arb: ArbitragePath; onClose: 
                 ) : (
                   <>
                     <div className="flex justify-between">
-                      <span className="text-eve-dim">PLEX needed</span>
+                      <span className="text-eve-dim">{t("plexArbPlexNeeded")}</span>
                       <span className="font-mono text-eve-text">{arb.plex_cost}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-eve-dim">{arb.type === "market_process" ? "Market cost" : "PLEX cost (market)"}</span>
+                      <span className="text-eve-dim">{arb.type === "market_process" ? t("mmMarketBuyCost") : t("plexArbPlexCostMarket")}</span>
                       <span className="font-mono text-eve-text">{formatISK(arb.cost_isk)}</span>
                     </div>
                   </>
                 )}
                 {(arb.type === "nes_process" || arb.type === "market_process") && (
                   <div className="flex justify-between">
-                    <span className="text-eve-dim">Requires char with</span>
+                    <span className="text-eve-dim">{t("mmRequiresSP")}</span>
                     <span className="font-mono text-eve-text">&ge; 5.5M SP</span>
                   </div>
                 )}
@@ -148,7 +148,7 @@ export function ArbitrageModal({ arb, onClose }: { arb: ArbitragePath; onClose: 
                   <span className="font-mono text-eve-text">{formatISK(arb.revenue_gross)}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-eve-dim">After tax + broker</span>
+                  <span className="text-eve-dim">{t("mmAfterFees")}</span>
                   <span className="font-mono text-eve-text">{formatISK(arb.revenue_isk)}</span>
                 </div>
               </div>

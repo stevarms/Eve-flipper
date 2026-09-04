@@ -133,7 +133,7 @@ export function ArbitrageRow({ arb, onClick }: { arb: ArbitragePath; onClick: ()
           <div className="flex items-center gap-1.5">
             <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${arb.no_data ? "bg-eve-warning" : arb.viable ? "bg-eve-success" : "bg-eve-error"}`} />
             <span className="text-eve-text hover:text-eve-accent transition-colors">{arb.name}</span>
-            {arb.no_data && <span className="text-[9px] text-eve-warning uppercase tracking-wider">no data</span>}
+            {arb.no_data && <span className="text-[9px] text-eve-warning uppercase tracking-wider">{t("plexNoDataShort")}</span>}
           </div>
           {!arb.no_data && arb.break_even_plex > 0 && (
             <span className={`text-[9px] ${beColor} ml-3`}>BE: {formatISK(arb.break_even_plex)}/PLEX</span>
@@ -157,6 +157,67 @@ export function ArbitrageRow({ arb, onClick }: { arb: ArbitragePath; onClick: ()
         {!arb.no_data && arb.est_minutes === 0 && arb.type === "spread" && (
           <div className="text-[9px] text-eve-dim italic">{t("plexPassive")}</div>
         )}
+      </td>
+    </tr>
+  );
+}
+
+/**
+ * A spread play reads differently from an arbitrage path, so it gets its own row.
+ *
+ * `ArbitrageRow` renders six cells, the second of which is PLEX-needed — always
+ * zero for a spread path, because these plays touch neither PLEX nor the NES.
+ * It was being used under a five-column spread header, which shifted the whole
+ * body one column left of its labels.
+ *
+ * The columns also change: "cost / revenue" is the wrong vocabulary for market
+ * making. What you want to see is the buy order you place, the sell order you
+ * place, and the raw gap between them before fees eat into it.
+ */
+export function SpreadRow({ arb, onClick }: { arb: ArbitragePath; onClick: () => void }) {
+  const { t } = useI18n();
+  const dim = arb.no_data ? "opacity-40" : arb.viable ? "" : "opacity-50";
+  const signed = (n: number) => `${n >= 0 ? "+" : ""}${formatISK(n)}`;
+
+  return (
+    <tr
+      className={`border-b border-eve-border/50 hover:bg-eve-panel/50 transition-colors cursor-pointer ${dim}`}
+      onClick={onClick}
+    >
+      <td className="py-2 px-2">
+        <div className="flex items-center gap-1.5">
+          <span
+            className={`w-1.5 h-1.5 rounded-full shrink-0 ${arb.no_data ? "bg-eve-warning" : arb.viable ? "bg-eve-success" : "bg-eve-error"}`}
+          />
+          {/* Every spread path is named "<Item> Spread (Market Make)"; inside a
+              table already titled Spread Trading, only the item is news. */}
+          <span className="text-eve-text font-medium hover:text-eve-accent transition-colors">
+            {arb.name.replace(" Spread (Market Make)", "")}
+          </span>
+          {arb.no_data && (
+            <span className="text-[9px] text-eve-warning uppercase tracking-wider">{t("plexNoDataShort")}</span>
+          )}
+        </div>
+      </td>
+      <td className="py-2 px-2 text-right font-mono text-eve-success">
+        {arb.no_data ? "—" : formatISK(arb.cost_isk)}
+      </td>
+      <td className="py-2 px-2 text-right font-mono text-eve-error">
+        {arb.no_data ? "—" : formatISK(arb.revenue_gross)}
+      </td>
+      <td className="py-2 px-2 text-right font-mono text-eve-text">
+        {arb.no_data ? "—" : formatISK(arb.revenue_gross - arb.cost_isk)}
+      </td>
+      <td
+        className={`py-2 px-2 text-right font-mono font-semibold ${arb.no_data ? "text-eve-dim" : arb.profit_isk >= 0 ? "text-eve-success" : "text-eve-error"}`}
+      >
+        {arb.no_data ? "—" : signed(arb.profit_isk)}
+      </td>
+      <td
+        className={`py-2 px-2 text-right font-mono font-semibold ${arb.no_data ? "text-eve-dim" : arb.roi >= 0 ? "text-eve-success" : "text-eve-error"}`}
+      >
+        <div>{arb.no_data ? "—" : `${arb.roi >= 0 ? "+" : ""}${arb.roi.toFixed(1)}%`}</div>
+        {!arb.no_data && <div className="text-[9px] text-eve-dim italic">{t("plexPassive")}</div>}
       </td>
     </tr>
   );

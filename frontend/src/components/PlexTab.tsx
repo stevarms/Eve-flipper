@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getCharacterInfo, getPLEXDashboard, type CharacterScope, type PLEXDashboardParams } from "../lib/api";
-import { useI18n } from "../lib/i18n";
+import { type TranslationKey, useI18n } from "../lib/i18n";
+import { formatISK } from "../lib/format";
 import { useTheme } from "../lib/useTheme";
 import type { PLEXDashboard, ArbitragePath, ScanParams } from "../lib/types";
 import { normalizeTaxProfile, type TaxProfile } from "../lib/taxProfile";
 import { usePlexAlerts, PlexAlertPanel } from "./PlexAlerts";
-import { SignalCard, GlobalPriceCard, ArbitrageRow, MarketDepthCard, InjectionTiersCard } from "./plex-tab/PlexMarketCards";
+import { SignalCard, GlobalPriceCard, ArbitrageRow, SpreadRow, MarketDepthCard, InjectionTiersCard } from "./plex-tab/PlexMarketCards";
 import { SPFarmCard } from "./plex-tab/SPFarmCard";
 import { ArbHistoryChart, PLEXChart } from "./plex-tab/PlexCharts";
 import { ArbitrageModal } from "./plex-tab/PlexArbitrageModal";
@@ -14,6 +15,80 @@ import { OmegaComparatorCard, CrossHubCard } from "./plex-tab/PlexAnalyticsCards
 type PlexSubTab = "market" | "spfarm" | "analytics";
 const SKILL_ACCOUNTING = 16622;
 const SKILL_BROKER_RELATIONS = 3446;
+
+/**
+ * The arbitrage matrix is three different businesses, not two.
+ *
+ * It used to be split "NES" vs "Spread", where NES was everything that was not
+ * a spread — which quietly filed `market_process` (buy a Skill Extractor off
+ * the *market*, extract, sell the Injector) under a heading that says you must
+ * spend real money at the New Eden Store. It is in fact the most accessible
+ * play on the screen: no NES purchase, no PLEX.
+ */
+type ArbTab = "nes" | "market" | "spread";
+const ARB_TABS: readonly ArbTab[] = ["nes", "market", "spread"];
+
+const ARB_TAB_LABEL: Record<ArbTab, TranslationKey> = {
+  nes: "plexArbTabNES",
+  market: "plexArbTabMarket",
+  spread: "plexArbTabSpread",
+};
+
+const ARB_TAB_HINT: Record<ArbTab, TranslationKey> = {
+  nes: "plexArbNESHint",
+  market: "mmMarketArbHint",
+  spread: "mmSpreadHint",
+};
+
+/** Which tab an engine path type belongs to. Unknown types fall to NES. */
+function arbTabFor(type: string): ArbTab {
+  if (type === "spread") return "spread";
+  if (type === "market_process") return "market";
+  return "nes";
+}
+
+/**
+ * Is anything here worth doing, and how much is on the table?
+ *
+ * Every path is listed whether viable or not — a dead path is information —
+ * so without this line you have to read six rows to learn there is nothing to
+ * do. Paths with no market data are excluded from the denominator: "0 / 4
+ * viable" reads as a bad market when it actually means a failed fetch.
+ */
+function ArbSummary({ paths }: { paths: ArbitragePath[] }) {
+  const { t } = useI18n();
+  const priced = paths.filter((p) => !p.no_data);
+  if (priced.length === 0) return null;
+
+  const viable = priced.filter((p) => p.viable);
+  const bestROI = Math.max(...priced.map((p) => p.roi));
+  const potential = viable.reduce((sum, p) => sum + p.profit_isk, 0);
+  const tone = viable.length > 0 ? "text-eve-success" : "text-eve-error";
+
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mb-2 text-[10px] text-eve-dim">
+      <span>
+        {t("mmViablePaths")}:{" "}
+        <span className={`font-mono font-semibold ${tone}`}>
+          {viable.length} / {priced.length}
+        </span>
+      </span>
+      <span>
+        {t("mmBestROI")}:{" "}
+        <span className={`font-mono font-semibold ${bestROI > 0 ? "text-eve-success" : "text-eve-error"}`}>
+          {bestROI > 0 ? "+" : ""}
+          {bestROI.toFixed(1)}%
+        </span>
+      </span>
+      {potential > 0 && (
+        <span>
+          {t("mmTotalPotential")}:{" "}
+          <span className="font-mono font-semibold text-eve-success">{formatISK(potential)}</span>
+        </span>
+      )}
+    </div>
+  );
+}
 
 interface PlexTabProps {
   isLoggedIn?: boolean;
@@ -111,7 +186,13 @@ export function PlexTab({ isLoggedIn = false, activeCharacterId, taxProfile, onT
   }, [autoRefresh, autoInterval, fetchData]);
 
   const [selectedArb, setSelectedArb] = useState<ArbitragePath | null>(null);
-  const [arbTab, setArbTab] = useState<"nes" | "spread">("nes");
+  const [arbTab, setArbTab] = useState<ArbTab>("nes");
+
+  const arbGroups = useMemo(() => {
+    const groups: Record<ArbTab, ArbitragePath[]> = { nes: [], market: [], spread: [] };
+    for (const arb of dashboard?.arbitrage ?? []) groups[arbTabFor(arb.type)].push(arb);
+    return groups;
+  }, [dashboard]);
   const [showAlerts, setShowAlerts] = useState(false);
   const [subTab, setSubTab] = useState<PlexSubTab>("market");
 
@@ -320,22 +401,44 @@ export function PlexTab({ isLoggedIn = false, activeCharacterId, taxProfile, onT
 
               {/* Arbitrage Matrix (full width) */}
               <div className="bg-eve-dark border border-eve-border rounded-sm p-3 shrink-0">
-                <div className="flex items-center gap-0 mb-2">
-                  <button
-                    onClick={() => setArbTab("nes")}
-                    className={`px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider border-b-2 transition-colors ${arbTab === "nes" ? "text-eve-accent border-eve-accent" : "text-eve-dim border-transparent hover:text-eve-text"}`}
-                  >
-                    {t("plexArbTabNES")}
-                  </button>
-                  <button
-                    onClick={() => setArbTab("spread")}
-                    className={`px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider border-b-2 transition-colors ${arbTab === "spread" ? "text-eve-accent border-eve-accent" : "text-eve-dim border-transparent hover:text-eve-text"}`}
-                  >
-                    {t("plexArbTabSpread")}
-                  </button>
+                <div className="flex items-center gap-0 mb-2 flex-wrap">
+                  {ARB_TABS.map((tab) => (
+                    <button
+                      key={tab}
+                      onClick={() => setArbTab(tab)}
+                      className={`px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider border-b-2 transition-colors ${arbTab === tab ? "text-eve-accent border-eve-accent" : "text-eve-dim border-transparent hover:text-eve-text"}`}
+                    >
+                      {t(ARB_TAB_LABEL[tab])}
+                      <span className="ml-1.5 font-normal opacity-60">{arbGroups[tab].length}</span>
+                    </button>
+                  ))}
                 </div>
+
+                {/* What this table is a model of, in one line. */}
+                <p className="text-[10px] text-eve-dim mb-2">{t(ARB_TAB_HINT[arbTab])}</p>
+
+                <ArbSummary paths={arbGroups[arbTab]} />
+
                 <div className="overflow-x-auto table-scroll-wrapper table-scroll-container">
-                  {arbTab === "nes" ? (
+                  {arbTab === "spread" ? (
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="text-eve-dim border-b border-eve-border">
+                          <th className="text-left py-1.5 px-2 font-medium">{t("mmItem")}</th>
+                          <th className="text-right py-1.5 px-2 font-medium">{t("mmBuyOrder")}</th>
+                          <th className="text-right py-1.5 px-2 font-medium">{t("mmSellOrder")}</th>
+                          <th className="text-right py-1.5 px-2 font-medium">{t("mmSpreadISK")}</th>
+                          <th className="text-right py-1.5 px-2 font-medium">{t("plexProfit")}</th>
+                          <th className="text-right py-1.5 px-2 font-medium">ROI</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {arbGroups.spread.map((arb, i) => (
+                          <SpreadRow key={`spread-${i}`} arb={arb} onClick={() => setSelectedArb(arb)} />
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
                     <table className="w-full text-xs">
                       <thead>
                         <tr className="text-eve-dim border-b border-eve-border">
@@ -348,30 +451,29 @@ export function PlexTab({ isLoggedIn = false, activeCharacterId, taxProfile, onT
                         </tr>
                       </thead>
                       <tbody>
-                        {dashboard.arbitrage.filter(a => a.type !== "spread").map((arb, i) => (
-                          <ArbitrageRow key={`nes-${i}`} arb={arb} onClick={() => setSelectedArb(arb)} />
-                        ))}
-                      </tbody>
-                    </table>
-                  ) : (
-                    <table className="w-full text-xs">
-                      <thead>
-                        <tr className="text-eve-dim border-b border-eve-border">
-                          <th className="text-left py-1.5 px-2 font-medium">{t("plexPath")}</th>
-                          <th className="text-right py-1.5 px-2 font-medium">{t("plexCost")}</th>
-                          <th className="text-right py-1.5 px-2 font-medium">{t("plexRevenue")}</th>
-                          <th className="text-right py-1.5 px-2 font-medium">{t("plexProfit")}</th>
-                          <th className="text-right py-1.5 px-2 font-medium">ROI</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {dashboard.arbitrage.filter(a => a.type === "spread").map((arb, i) => (
-                          <ArbitrageRow key={`spread-${i}`} arb={arb} onClick={() => setSelectedArb(arb)} />
+                        {arbGroups[arbTab].map((arb, i) => (
+                          <ArbitrageRow key={`${arbTab}-${i}`} arb={arb} onClick={() => setSelectedArb(arb)} />
                         ))}
                       </tbody>
                     </table>
                   )}
                 </div>
+
+                {arbTab === "spread" && (
+                  <div className="mt-3 border-t border-eve-border/30 pt-2.5">
+                    <h4 className="text-[10px] font-semibold text-eve-dim uppercase tracking-wider mb-1.5">
+                      {t("mmTipsTitle")}
+                    </h4>
+                    <div className="space-y-1 text-[11px] text-eve-dim leading-relaxed">
+                      <p>• {t("plexTipSpread1")}</p>
+                      <p>• {t("plexTipSpread2")}</p>
+                      <p>• {t("plexTipSpread3")}</p>
+                      <p>• {t("mmTip4")}</p>
+                      <p>• {t("mmTip5")}</p>
+                      <p>• {t("mmTip6")}</p>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Cross-Hub Arbitrage */}
