@@ -130,6 +130,7 @@ available in the grid via **Columns**.
 | Radius / Regional | 35 → **6** | 5,299 → 2,105 |
 | Contracts | 16 → **6** | — |
 | Order desk (`Orders.tsx`) | 11 → **6** | — |
+| Positions (`positions`, new) | built at **6** | — |
 
 Surfaces measured and found already conforming, so deliberately left alone:
 Price Audit (5 + 4 columns), Trade Journal (~8, and it already has a drawer),
@@ -142,6 +143,11 @@ market dashboard rendered inside `CharacterPopup`, behind a login it does not
 require — public data, `isLoggedIn` defaulting to `false`. It is now the third
 Assets tab. Before adding a surface to a modal, check whether the modal is
 actually the thing that owns it.
+
+The PLEX lesson generalised: nine more tools — Jobs, PI colonies, Transactions,
+Wallet, Risk, P&L, Optimizer, Edge, and the modal's order tab — were mounted in
+the same dialog and are now workspace tabs. A tool whose only entry point is a
+portrait click has no entry point.
 
 **Removing a column must not remove its sort.** The order desk dropped the
 Expiry and Notional headers; both sorts survive in a toolbar `<select>` that
@@ -159,6 +165,41 @@ clobbered the computed default; `raw === null` has to reliably mean "never
 configured". `normalizeColumnPrefs(raw, order, defaultHidden)` applies the
 default only when nothing is stored, and an explicitly empty saved `hidden`
 counts as a real preference so un-hiding everything sticks.
+
+### Worked example — Positions
+
+The first grid designed to the three tiers from the start rather than reduced
+into them. **The decide row answers one question: should I sell this today?**
+Every column is chosen against that question, and anything that fails the test
+goes to the drawer:
+
+| # | Column | Why it earns a decide slot |
+|---|---|---|
+| 1 | **Item** | Icon + name — what am I looking at |
+| 2 | **Qty** | Size of the position |
+| 3 | **Avg cost** | What it cost, per unit, FIFO |
+| 4 | **Now** | Best sell at the pricing hub — the other half of the comparison |
+| 5 | **Unrealized** | ISK, with % underneath, green/red — the answer itself |
+| 6 | **Age** | Days held; a stale position is a different decision to a fresh one |
+
+Plus a right-hand action, which is not a data column: **List**, or **Listed ×N**
+when the type is already on the book.
+
+Inspect tier (drawer): source (trade / manufacture / manual), the individual
+lots and their dates, target price, listed quantity and current order price, the
+fee breakdown, and edit/delete for manual entries.
+
+Two rules this example establishes:
+
+**Profit columns are net, or they are lies.** *Unrealized* subtracts broker fee
+and sales tax on the sell side, from the character's real fee profile
+(`character_market_fees.go`). A position that shows green before fees and red
+after would have the grid recommending a loss.
+
+**A hand-entered row is its own row.** A manual holding for a type that also has
+FIFO history is listed separately (source `manual`) rather than averaged into
+the derived one. Blending a guessed cost basis into a measured one corrupts the
+measured number, and the user can no longer tell which is which.
 
 ---
 

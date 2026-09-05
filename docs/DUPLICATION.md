@@ -35,6 +35,18 @@ The five highest-value consolidation opportunities, ranked by drift/bug risk:
    list (Jita, Amarr, Dodixie, Rens, Hek) with the same station IDs. See
    Cluster 5.
 
+Two more clusters were surfaced by the tab-promotion pass, which pulled nine
+tools out of the character modal and put them next to their main-tab
+counterparts — proximity made the overlaps obvious:
+
+6. ~~**Two order tabs**~~ — **RESOLVED**. `CombinedOrdersTab` (757 lines,
+   portrait-click only) is deleted; its history and undercut status moved into
+   the main-tab order desk. See Cluster 14.
+7. **`trade_journal` vs character-modal `PnLTab`** — two accounting surfaces
+   over one shared FIFO backend, now two tabs apart in the Journal workspace.
+   The duplicate open-positions table is gone; the surface merge is
+   deliberately deferred. See Cluster 15.
+
 ---
 
 ## Cluster 1: Frontend ISK formatting — RESOLVED
@@ -459,6 +471,9 @@ Thirteen copies of the same markup across twelve files:
 `TradingEdgeTab`, `WalletDashboardTab`, `IndustrySection`, `MarketSection`,
 `MembersSection`, `MiningSection`, `WalletsSection`, `CorpDashboardApp`.
 
+(`CombinedOrdersTab` has since been deleted outright — see Cluster 14 — so
+eleven of the thirteen sites remain, all on `LoadingBlock`.)
+
 Two real defects the copies had accumulated:
 
 - **Three had drifted to hardcoded English** — "Loading Trading Edge...",
@@ -522,6 +537,74 @@ read of it, and are fixed in the same change:
 
 ---
 
+## Cluster 14: Two order tabs — RESOLVED
+
+Two independent surfaces rendered the same character's market orders:
+`components/Orders.tsx` (the main-tab order desk) and
+`components/character-popup/CombinedOrdersTab.tsx` (757 lines, reachable only
+by clicking the portrait). Neither was a strict subset of the other, which is
+why both survived:
+
+| | `Orders.tsx` | `CombinedOrdersTab` |
+|---|---|---|
+| Active orders | yes | yes |
+| Order history | **no** | yes (`getOrderHistory`) |
+| Undercut status | **no** | yes (`getUndercuts`) |
+| Price ladder | no | yes (`book_levels`) |
+| Decide-tier grid + drawer | yes | no — 11 flat columns |
+
+The merge went in the direction of the *feature-poorer* file, because layout is
+cheaper to port than data plumbing: `Orders.tsx` had already been through the
+three-tier pass, so it gained history (`OrderHistoryPanel`) and undercut status,
+and `CombinedOrdersTab` was deleted.
+
+Column parity was checked field by field before deleting. Everything the modal
+grid showed was already in the desk grid or its row drawer except one thing —
+the **price ladder**, which needs `book_levels` from `getUndercuts`. That is now
+`BookLadder` inside `orders/OrderRowDrawer.tsx`, fed by a single
+`getUndercuts("all")` call fired lazily the first time a row is inspected and
+cached by `order_id`. A failed depth call renders no ladder and leaves the rest
+of the drawer — which comes from the desk payload — untouched.
+
+**Priority:** resolved.
+
+---
+
+## Cluster 15: `trade_journal` vs character-modal `PnLTab`
+
+Two accounting surfaces over the same ESI transaction history, built at
+different times for different questions, now sitting two tabs apart in the same
+Journal workspace:
+
+- `components/TradeJournalTab.tsx` + `components/journal/` — realised P&L by
+  type, with a drawer, backed by `loadTradeJournalResult` in
+  `internal/api/trade_journal.go`.
+- `components/character-popup/PnLTab.tsx` — portfolio-level P&L over time,
+  charts, backed by the same FIFO engine (`engine.JournalOpenPosition` and
+  friends in `internal/engine/portfolio_manufacturing.go`).
+
+The backend is *not* duplicated — both read the same FIFO derivation, which is
+why the numbers agree. The duplication is at the presentation layer: two
+headers, two scope pickers, two date-range controls, two ISK-formatting call
+sites, and until this pass **two open-positions tables**.
+
+That last one is the part already closed. `PnLOpenPositionsTable`
+(`journal/PnLPrimitives.tsx`) answered *what did I pay* with five ledger columns
+and no live price; the new Assets → Positions tab answers *should I sell this
+today*. Keeping both meant the same question got two different answers depending
+on which tab you opened, so the primitive was deleted and `PnLTab` now links to
+Positions.
+
+What remains is a genuine merge candidate — one Journal surface with realised
+and unrealised views — deliberately **not** attempted in the tab-promotion pass,
+because moving the mount point and rewriting the tool at the same time makes a
+near-mechanical diff unreviewable.
+
+**Priority:** medium. No drift risk today (shared backend); the cost is
+navigational — the user has to know which of two tabs holds the number.
+
+---
+
 ## Not real duplication (audited and cleared)
 
 - **`writeJSON` / `writeError`** (`server.go:1297`) — already consolidated,
@@ -534,6 +617,9 @@ read of it, and are fixed in the same change:
 - **`suggestedSalesTax` / `suggestedBrokerFee`** — single copy in
   `character_market_fees.go`. Formula appears exactly once.
 - **Character-popup subtree formatters** — thread `formatIsk` down as a
-  prop from CharacterPopup rather than each subtree redefining it. Good
-  pattern; kept out of Cluster 1.
+  prop rather than each subtree redefining it. Good pattern; kept out of
+  Cluster 1. Since the tab promotion the props come from
+  `character/CharacterScopeProvider.tsx` instead of `CharacterPopup`'s local
+  state, so the modal and the nine promoted workspace tabs share one set of
+  formatters and one `getCharacterInfo` fetch.
 - **`parseAuthScope` / `authSessionsForScope`** — see Cluster 6.

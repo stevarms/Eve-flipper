@@ -209,7 +209,7 @@ Just DTOs. `Config` (scan filters, tax profile, alert channels), `Stockpile`,
 ### `db/` — SQLite persistence
 
 Covered in §4. `DB` type in `db.go` wraps a single `*sql.DB` and hosts
-the migration runner (currently 41 numbered migrations). Every file in this
+the migration runner (currently 44 numbered migrations). Every file in this
 package is a thin table wrapper.
 
 ### `engine/` — pure calculators
@@ -712,6 +712,19 @@ this pattern.
 - **`character_market_fees.go`** — `handleAuthCharacterMarketFees`.
   Reads Accounting (16622) and Broker Relations (3446) skill levels,
   returns suggested tax/broker fees so the UI can auto-populate them.
+- **`positions.go`** — `handleAuthPositions`,
+  `handleAuthPositionSave`, `handleAuthPositionDelete` (Assets →
+  Positions). Joins FIFO open positions from
+  `loadTradeJournalResultFor` with manual rows from
+  `db.manual_positions`, live Jita 4-4 sell prices via
+  `fetchHubSellPrices`, and the character's own listed sell quantities.
+  Unrealized ISK is net of sell-side broker fee and sales tax. A manual
+  entry for a type that also has FIFO history stays a separate row so
+  cost bases are never averaged together. Manual rows load with no
+  session at all, so the tab is useful before SSO.
+- **`order_history.go`** — `handleAuthOrderHistory`. Closed orders for
+  the scope; exists so the Orders tab's History sub-tab does not have to
+  pull the whole `/api/auth/character` payload for one list.
 - **`cockpit.go`** — `handleGetCockpitPreferences`,
   `handlePutCockpitPreferences`, `handleGetCockpitLoadouts`,
   `handleCreateCockpitLoadout`, `handleUpdateCockpitLoadout`,
@@ -870,7 +883,7 @@ migrations. `Close()`, `SqlDB()`, `SetPrivacyCodec(codec PrivacyCodec)`.
 ### Migrations
 
 Runner in `db.go::migrate()`. Sequential integer versions read from
-`schema_version` (max-version-wins). Currently **41 migrations**, all
+`schema_version` (max-version-wins). Currently **44 migrations**, all
 guarded `if version < N { … INSERT OR IGNORE INTO schema_version (version)
 VALUES (N) }`. There is no down-migration path — this is forward-only.
 
@@ -918,6 +931,9 @@ The list, from the labels in the logger calls:
 | 39 | private wallet balance and SP metrics |
 | 40 | stockpile manager |
 | 41 | trade journal: corp wallet + industry job archive |
+| 42 | industry task expected-value tracking |
+| 43 | industry blueprint favorites |
+| 44 | manual positions (Assets → Positions hand-entered holdings) |
 
 (v9 is intentionally skipped; the ladder goes v8 → v10.)
 
@@ -1042,6 +1058,10 @@ The rest of the file provides granular per-row mutators
   `DeletePaperTradeForUser`).
 - `results.go` — scan-result persistence (flip / contract / station /
   route rows tied to a `scan_history` row).
+- `manual_positions.go` — hand-entered holdings behind Assets →
+  Positions (`manual_positions`, schema v44): list / upsert / delete per
+  user. Keyed on `db.DefaultUserID` when there is no SSO login, so the
+  tab works unauthenticated.
 - `stations.go` — 16-line file: `GetStation(locationID)` /
   `SetStation(locationID, name)` for the persistent L2 station-name
   cache used by `esi.Client`.
@@ -1267,10 +1287,10 @@ one. `WORKSPACE_META` in `lib/cockpit.ts` maps workspaces to tabs:
 | Workspace | Tabs |
 |---|---|
 | Today | `home` |
-| Trade | `radius`, `region`, `station`, `contracts` |
-| Industry | `industry`, `pi_factory` |
-| Assets | `orders`, `price_audit`, `plex` |
-| Journal | `trade_journal` |
+| Trade | `radius`, `region`, `station`, `contracts`, `orders`, `plex`, `optimizer`, `edge` |
+| Industry | `industry`, `pi_factory`, `jobs`, `pi_planets` |
+| Assets | `positions`, `stockpiles`, `price_audit` |
+| Journal | `trade_journal`, `pnl`, `transactions`, `wallet`, `risk` |
 | Intel | `route`, `demand` |
 
 This is a **grouping over** `MAIN_TAB_IDS`, not a replacement, so saved
@@ -1307,6 +1327,37 @@ those drafts and empty the set.
 | `industry` | `tabIndustry` | `IndustryTab` |
 | `trade_journal` | `tabTradeJournal` | `TradeJournal` |
 | `demand` | `tabDemand` (War) | `WarTracker` |
+| `orders` | `tabOrders` | `Orders` (Active / History sub-tabs) |
+| `positions` | `tabPositions` | `PositionsTab` |
+| `stockpiles` | `tabStockpiles` | `IndustryStockpilePanel` (lazy) |
+| `jobs` | `tabJobs` | `JobsWorkspaceTab` → `IndustryJobsTab` |
+| `pi_planets` | `tabPIPlanets` | `PIPlanetsWorkspaceTab` → `PIPlanetsTab` |
+| `pnl` | `tabPnL` | `PnLWorkspaceTab` → `PnLTab` |
+| `transactions` | `tabTransactions` | `TransactionsWorkspaceTab` → `TransactionsTab` |
+| `wallet` | `tabWallet` | `WalletWorkspaceTab` → `WalletDashboardTab` |
+| `risk` | `tabRisk` | `RiskWorkspaceTab` → `RiskTab` |
+| `optimizer` | `tabOptimizer` | `OptimizerWorkspaceTab` → `OptimizerTab` |
+| `edge` | `tabEdge` | `EdgeWorkspaceTab` → `TradingEdgeTab` |
+
+**Nine tools were promoted out of the character modal.** Orders,
+Transactions, Ledger (`wallet`), Industry Jobs, PI planets, P&L, Edge,
+Risk and Optimizer were 4,783 lines of working features whose only entry
+point was a portrait click followed by a tab strip inside a dialog. They
+are workspace tabs now. The tool components under
+`components/character-popup/` are unchanged; only their mount point
+moved. The thin wrappers live in
+`components/character/CharacterTools.tsx`, and the scope + one shared
+`getCharacterInfo()` fetch they all used to receive as props now come
+from `components/character/CharacterScopeProvider.tsx` (mounted in
+`App.tsx` above the workspace, scope persisted to `localStorage` under
+`eve-character-scope`). `CharacterToolFrame` carries the logged-out /
+loading / error chrome that used to be one guard in the modal.
+
+The dialog itself is now about the character: Overview, the
+add/remove/scope picker, Achievements and the hosted-access vault. The
+achievement events its tab strip used to fire (`ledger_opened`,
+`portfolio_opened`, `risk_opened`) fire from the promoted tabs on mount
+instead.
 
 `MarketMakingTab` is gone — it was never reachable (born commented out in
 `67b844d`, the same commit that shipped the PLEX dashboard), and every
@@ -1359,9 +1410,11 @@ entry point.
   `ProfitPill.tsx` (30-day P&L badge in header), `LanguageSwitcher.tsx`,
   `ThemeSwitcher.tsx`, `KeyboardShortcutsHelp.tsx`, `CommandPalette.tsx`
   (Ctrl+K).
-- `CharacterPopup.tsx` — big character workspace modal with tabs
-  overview / orders / transactions / ledger / industry / pi / pnl /
-  edge / risk / optimizer / achievements / plex / access.
+- `CharacterPopup.tsx` — the character dialog: Overview, the
+  add/remove/scope picker, Achievements and `access` (hosted vault). The
+  nine trading/industry/accounting tabs it used to carry are workspace
+  tabs now (§7a); it reads scope and `CharacterInfo` from
+  `CharacterScopeProvider` rather than owning them.
 - `PaperTradeJournalPopup.tsx`, `TradeExecutionAutopilotPopup.tsx`,
   `ExecutionPlannerPopup.tsx`, `ExecutionRevalidationReportModal.tsx`,
   `BatchBuilderPopup.tsx`, `BacktestPopup.tsx`,
@@ -1422,11 +1475,26 @@ entry point.
   `AchievementsProvider` (context + `useAchievements` hook +
   event-driven engine + toast popups + `AchievementLibraryPanel`),
   `index.ts` barrel.
-- **`components/character-popup/`** — one file per popup tab:
-  `OverviewTab`, `CombinedOrdersTab`, `IndustryJobsTab`,
+- **`components/character-popup/`** — the tool bodies. `OverviewTab` and
+  `HostedAccessTab` still render inside the dialog; `IndustryJobsTab`,
   `OptimizerTab`, `PIPlanetsTab`, `PnLTab`, `RiskTab`, `TradingEdgeTab`,
-  `TransactionsTab`, `WalletDashboardTab`, `HostedAccessTab`;
-  `TabButton` (shared between popup and main tab bar), `shared.tsx`.
+  `TransactionsTab` and `WalletDashboardTab` are mounted as workspace
+  tabs through `components/character/CharacterTools.tsx` and keep their
+  original prop signatures. `TabButton` (shared between dialog and main
+  tab bar), `shared.tsx`. `CombinedOrdersTab` is gone — the main Orders
+  tab absorbed it (see `components/orders/`).
+- **`components/character/`** — `CharacterScopeProvider` (scope +
+  lazy shared `getCharacterInfo` + the three formatters),
+  `CharacterScopePicker` (the scope pill in the tab strip's actions
+  slot), `CharacterToolFrame` (logged-out / loading / error chrome),
+  `CharacterTools` (the thin workspace-tab wrappers).
+- **`components/orders/`** — `OrderRowDrawer` (tier 2 for the desk,
+  including the `getUndercuts` price ladder) and `OrderHistoryPanel`
+  (closed orders, fed by `GET /api/auth/orders/history`).
+- **`components/positions/`** — `PositionRowDrawer` (lot source, cost,
+  fee breakdown, note, manual delete) and `AddHoldingSheet` (manual
+  entry, resolving names through the SDE-only stockpile resolver), both
+  mounted by `PositionsTab.tsx`.
 - **`components/corp-dashboard/`** — sections composed by
   `CorpDashboardApp`: `OverviewSection`, `WalletsSection`,
   `MembersSection`, `IndustrySection`, `MiningSection`,
@@ -1435,9 +1503,12 @@ entry point.
   DateRangeSelector) and `types.ts`.
 - **`components/journal/`** — `PnLPrimitives.tsx` exports
   `PnLChart`, `PnLItemsTable`, `PnLLedgerTable`,
-  `PnLOpenPositionsTable`, `PnLStationsTable`, `SlotEfficiencyTable`,
+  `PnLStationsTable`, `SlotEfficiencyTable`,
   shared between `TradeJournal.tsx` and `character-popup/PnLTab.tsx` so
-  the two surfaces render identical widgets.
+  the two surfaces render identical widgets. `PnLOpenPositionsTable` was
+  deleted: five ledger columns with no live price, no unrealized P&L and
+  no action answered "what did I pay", not "should I sell this today".
+  The P&L tab now links to Assets → Positions instead.
 - **`components/plex-tab/`** — `PlexAnalyticsCards`, `PlexArbitrageModal`,
   `PlexCharts`, `PlexMarketCards`, `SPFarmCard`, all mounted by
   `PlexTab.tsx`.
