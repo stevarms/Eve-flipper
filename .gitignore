@@ -93,3 +93,4 @@ security/
 # UI debug helpers (Playwright-over-CDP)
 .debug/
 .chrome-debug/
+.debug-server.log
