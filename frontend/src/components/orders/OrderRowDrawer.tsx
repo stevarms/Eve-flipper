@@ -4,7 +4,7 @@ import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { TypeIcon } from "@/components/ui/TypeIcon";
 import { formatISK, formatNumber } from "@/lib/format";
 import type { TranslationKey } from "@/lib/i18n";
-import type { OrderDeskOrder } from "@/lib/types";
+import type { BookLevel, OrderDeskOrder } from "@/lib/types";
 
 /**
  * Tier 2 for the order desk (docs/UI_DESIGN_SYSTEM.md §4).
@@ -13,6 +13,10 @@ import type { OrderDeskOrder } from "@/lib/types";
  * Everything that explains *why* — the fee arithmetic behind an unprofitable
  * relist, the queue ahead of you, the fill rate the ETA is derived from —
  * lives here. Eleven grid columns became six; none of the eleven was lost.
+ *
+ * The price ladder at the bottom is the one thing the old character-modal
+ * order tab had that the desk payload does not carry: it comes from
+ * getUndercuts(), fetched lazily by the tab the first time a row is inspected.
  */
 
 const isk = (n: number | undefined) =>
@@ -43,9 +47,19 @@ export interface OrderRowDrawerProps {
   onClose: () => void;
   t: (key: TranslationKey, params?: Record<string, string | number>) => string;
   locale: string;
+  /** Depth around this order's price, from getUndercuts(). */
+  bookLevels?: BookLevel[];
+  bookLevelsLoading?: boolean;
 }
 
-export function OrderRowDrawer({ row, onClose, t, locale }: OrderRowDrawerProps) {
+export function OrderRowDrawer({
+  row,
+  onClose,
+  t,
+  locale,
+  bookLevels,
+  bookLevelsLoading = false,
+}: OrderRowDrawerProps) {
   if (!row) return null;
 
   const side = row.is_buy_order ? t("charBuy") : t("charSell");
@@ -159,7 +173,84 @@ export function OrderRowDrawer({ row, onClose, t, locale }: OrderRowDrawerProps)
           <DetailRow label={t("ordersColStation")} value={row.location_name || `#${row.location_id}`} />
           <DetailRow label={t("ordersColOwner")} value={row.character_name || "—"} />
         </DetailGroup>
+
+        <BookLadder
+          levels={bookLevels}
+          loading={bookLevelsLoading}
+          isBuy={row.is_buy_order}
+          t={t}
+        />
       </SheetContent>
     </Sheet>
+  );
+}
+
+/**
+ * The queue you are standing in, drawn to scale. Bar length is volume relative
+ * to the deepest level shown; your own order is picked out in accent so you can
+ * see at a glance how far you are from the front.
+ */
+function BookLadder({
+  levels,
+  loading,
+  isBuy,
+  t,
+}: {
+  levels: BookLevel[] | undefined;
+  loading: boolean;
+  isBuy: boolean;
+  t: (key: TranslationKey, params?: Record<string, string | number>) => string;
+}) {
+  if (loading && !levels) {
+    return (
+      <DetailGroup title={t("undercutOrderBook")}>
+        <p className="px-1 py-1 font-ui text-t-cell text-fg-tertiary">{t("undercutLoading")}</p>
+      </DetailGroup>
+    );
+  }
+  if (!levels || levels.length === 0) return null;
+
+  const maxVolume = Math.max(...levels.map((l) => l.volume), 1);
+
+  return (
+    <DetailGroup title={t("undercutOrderBook")}>
+      <div className="space-y-0.5 py-1">
+        {levels.map((level, i) => (
+          <div key={`${level.price}-${i}`} className="flex h-5 items-center gap-2">
+            <div
+              className={
+                level.is_player
+                  ? "w-24 text-right font-num tnum text-t-cell text-eve-accent"
+                  : "w-24 text-right font-num tnum text-t-cell text-fg"
+              }
+            >
+              {isk(level.price)}
+            </div>
+            <div className="relative h-full flex-1 overflow-hidden rounded-sm bg-surface-2">
+              <div
+                className={
+                  level.is_player
+                    ? "absolute inset-y-0 left-0 rounded-sm bg-eve-accent/30"
+                    : isBuy
+                      ? "absolute inset-y-0 left-0 rounded-sm bg-profit/15"
+                      : "absolute inset-y-0 left-0 rounded-sm bg-loss/15"
+                }
+                style={{ width: `${(level.volume / maxVolume) * 100}%` }}
+              />
+              <div className="relative flex h-full items-center px-1.5">
+                <span className="font-num tnum text-t-caption text-fg-tertiary">
+                  {int(level.volume)}
+                </span>
+              </div>
+            </div>
+            {level.is_player && (
+              <span className="font-ui text-t-caption font-bold tracking-wider text-eve-accent">
+                {t("undercutYou")}
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+    </DetailGroup>
   );
 }

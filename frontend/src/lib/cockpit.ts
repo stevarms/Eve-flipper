@@ -18,6 +18,17 @@ export const MAIN_TAB_IDS = [
   "industry",
   "trade_journal",
   "demand",
+  // Promoted out of the character modal (see WORKSPACE_META below).
+  "positions",
+  "stockpiles",
+  "jobs",
+  "pi_planets",
+  "pnl",
+  "transactions",
+  "wallet",
+  "risk",
+  "optimizer",
+  "edge",
 ] as const;
 
 export type MainTabId = (typeof MAIN_TAB_IDS)[number];
@@ -271,6 +282,16 @@ export const MAIN_TAB_META: Record<MainTabId, { labelKey: TranslationKey; fallba
   industry: { labelKey: "tabIndustry", fallback: "Industry", group: "tools" },
   trade_journal: { labelKey: "tabTradeJournal", fallback: "Trade Journal", group: "tools" },
   demand: { labelKey: "tabDemand", fallback: "War", group: "tools" },
+  positions: { labelKey: "tabPositions", fallback: "Positions", group: "tools" },
+  stockpiles: { labelKey: "tabStockpiles", fallback: "Stockpiles", group: "tools" },
+  jobs: { labelKey: "tabJobs", fallback: "Jobs", group: "tools" },
+  pi_planets: { labelKey: "tabPIPlanets", fallback: "Planets", group: "tools" },
+  pnl: { labelKey: "tabPnL", fallback: "P&L", group: "tools" },
+  transactions: { labelKey: "tabTransactions", fallback: "Transactions", group: "tools" },
+  wallet: { labelKey: "tabWallet", fallback: "Wallet", group: "tools" },
+  risk: { labelKey: "tabRisk", fallback: "Risk", group: "tools" },
+  optimizer: { labelKey: "tabOptimizer", fallback: "Optimizer", group: "tools" },
+  edge: { labelKey: "tabEdge", fallback: "Edge", group: "tools" },
 };
 
 /* ------------------------------------------------------------------
@@ -308,25 +329,25 @@ export const WORKSPACE_META: Record<WorkspaceId, WorkspaceMeta> = {
     labelKey: "wsTrade",
     fallback: "Trade",
     icon: "TrendingUp",
-    tabs: ["radius", "region", "station", "contracts"],
+    tabs: ["radius", "region", "station", "contracts", "orders", "plex", "optimizer", "edge"],
   },
   industry: {
     labelKey: "wsIndustry",
     fallback: "Industry",
     icon: "Factory",
-    tabs: ["industry", "pi_factory"],
+    tabs: ["industry", "pi_factory", "jobs", "pi_planets"],
   },
   assets: {
     labelKey: "wsAssets",
     fallback: "Assets",
     icon: "Package",
-    tabs: ["orders", "price_audit", "plex"],
+    tabs: ["positions", "stockpiles", "price_audit"],
   },
   journal: {
     labelKey: "wsJournal",
     fallback: "Journal",
     icon: "BookOpen",
-    tabs: ["trade_journal"],
+    tabs: ["trade_journal", "pnl", "transactions", "wallet", "risk"],
   },
   intel: {
     labelKey: "wsIntel",
@@ -335,6 +356,23 @@ export const WORKSPACE_META: Record<WorkspaceId, WorkspaceMeta> = {
     tabs: ["route", "demand"],
   },
 };
+
+/**
+ * Tabs that read the shared character scope, and therefore show the scope
+ * picker in the workspace tab strip. Orders and Trade Journal are excluded on
+ * purpose — both carry their own multi-character filter, and two competing
+ * character controls in one band would be worse than one.
+ */
+export const CHARACTER_SCOPED_TABS = new Set<MainTabId>([
+  "positions",
+  "jobs",
+  "pi_planets",
+  "pnl",
+  "transactions",
+  "wallet",
+  "risk",
+  "optimizer",
+]);
 
 /** Which workspace owns a tab. Every MainTabId appears in exactly one. */
 export function workspaceForTab(tab: MainTabId): WorkspaceId {
@@ -880,11 +918,39 @@ function sanitizeTabLayouts(value: unknown): Record<MainTabId, CockpitTabLayout>
   }, {} as Record<MainTabId, CockpitTabLayout>);
 }
 
+/**
+ * Fold the tabs a stored preference doesn't know about into the order it does.
+ *
+ * Appending them to the end of the flat list is the obvious thing and it is
+ * wrong: `visibleTabsForWorkspace` orders a workspace's strip by this list, so
+ * a returning user whose stored order predates the IA rewrite would open Assets
+ * and find Price Audit first and the new Positions tab shoved in behind it —
+ * an order nobody designed.
+ *
+ * So merge per workspace instead. Walk each workspace's canonical tab list; a
+ * tab the user has never seen is emitted at its designed slot, and the slots
+ * that belong to tabs they already had are filled from their stored order. New
+ * tabs land where the IA puts them, deliberate reordering of the old ones
+ * survives, and the flat list comes out grouped by workspace.
+ */
+function mergeTabOrder(stored: MainTabId[]): MainTabId[] {
+  const merged: MainTabId[] = [];
+  for (const ws of WORKSPACE_IDS) {
+    const canonical = WORKSPACE_META[ws].tabs;
+    const known = stored.filter((tab) => canonical.includes(tab));
+    let next = 0;
+    for (const tab of canonical) {
+      merged.push(stored.includes(tab) ? known[next++] : tab);
+    }
+  }
+  return merged;
+}
+
 export function sanitizeCockpitPreferences(value: unknown): CockpitPreferences {
   const rec = value && typeof value === "object" ? value as Record<string, unknown> : {};
   const hidden = uniqueKnownTabs(rec.hiddenMainTabs);
   const order = uniqueKnownTabs(rec.mainTabOrder);
-  const fullOrder = [...order, ...MAIN_TAB_IDS.filter((tab) => !order.includes(tab))];
+  const fullOrder = mergeTabOrder(order);
   const allHidden = MAIN_TAB_IDS.every((tab) => hidden.includes(tab));
   const panels = rec.hiddenPanels && typeof rec.hiddenPanels === "object"
     ? rec.hiddenPanels as Record<string, unknown>

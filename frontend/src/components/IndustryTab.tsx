@@ -106,7 +106,6 @@ const IndustryProfitableScannerPanel = lazy(async () => {
   return { default: mod.IndustryProfitableScannerPanel };
 });
 
-const IndustryStockpilePanel = lazy(() => import("./industry/IndustryStockpilePanel"));
 
 // Highlight matching text in search results
 function HighlightMatch({ text, query }: { text: string; query: string }) {
@@ -136,7 +135,9 @@ interface Props {
 // (home base with all your workflows), Discover (find what to build), Plan
 // (per-project build setup), Operations (execution tracking). The old
 // Analysis/Jobs top-level split + nested sub-tabs collapsed into one bar.
-type IndustryTab = "projects" | "discover" | "operations" | "stockpiles";
+// Stockpiles moved to the Assets workspace as its own main tab — it is an
+// inventory view, not an industry step. See WORKSPACE_META in lib/cockpit.ts.
+type IndustryTab = "projects" | "discover" | "operations";
 type DiscoverSource = "search" | "scan";
 const INDUSTRY_TAB_LS_KEY = "eve-settings:industry-tab";
 const DISCOVER_SOURCE_LS_KEY = "eve-settings:industry-discover-source";
@@ -2473,11 +2474,10 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
     updatingLedgerJobId,
   ]);
 
-  const industryTabDefs: Array<{ id: IndustryTab; labelKey: "industryTabProjects" | "industryTabDiscover" | "industryTabOperations" | "industryTabStockpiles" }> = [
+  const industryTabDefs: Array<{ id: IndustryTab; labelKey: "industryTabProjects" | "industryTabDiscover" | "industryTabOperations" }> = [
     { id: "projects", labelKey: "industryTabProjects" },
     { id: "discover", labelKey: "industryTabDiscover" },
     { id: "operations", labelKey: "industryTabOperations" },
-    { id: "stockpiles", labelKey: "industryTabStockpiles" },
   ];
 
   // ── Plan-tab dead-code parking lot ─────────────────────────────────────
@@ -3083,12 +3083,6 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
         </TabSettingsPanel>
       </div>
       </>
-      )}
-
-      {industryTab === "stockpiles" && (
-        <Suspense fallback={<div className="m-2 text-xs text-eve-dim">Loading stockpiles...</div>}>
-          <IndustryStockpilePanel isLoggedIn={isLoggedIn} />
-        </Suspense>
       )}
 
       {/* Projects — the project picker + guide list. Shell simplified after

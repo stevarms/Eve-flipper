@@ -1856,6 +1856,39 @@ func (d *DB) migrate() error {
 		logger.Info("DB", "Applied migration v43 (industry blueprint favorites)")
 	}
 
+	if version < 44 {
+		// Hand-entered holdings for the Positions view.
+		//
+		// The FIFO engine can only see what ESI reports as a market
+		// transaction, so loot, contract buys, corp transfers and anything
+		// bought before the journal's history window are invisible to it —
+		// exactly the stock a patient trader is most likely to be sitting on.
+		// These rows fill that gap and are kept separate from the derived
+		// ones: a manual entry never overwrites a real transaction, it just
+		// appears alongside it with source="manual".
+		if _, err := d.sql.Exec(`
+			CREATE TABLE IF NOT EXISTS manual_positions (
+				id           INTEGER PRIMARY KEY AUTOINCREMENT,
+				user_id      TEXT    NOT NULL,
+				type_id      INTEGER NOT NULL,
+				type_name    TEXT    NOT NULL DEFAULT '',
+				quantity     INTEGER NOT NULL,
+				unit_cost    REAL    NOT NULL,
+				target_price REAL    NOT NULL DEFAULT 0,
+				acquired_at  TEXT    NOT NULL DEFAULT '',
+				note         TEXT    NOT NULL DEFAULT '',
+				created_at   TEXT    NOT NULL DEFAULT '',
+				updated_at   TEXT    NOT NULL DEFAULT ''
+			);
+			CREATE INDEX IF NOT EXISTS idx_manual_positions_user
+				ON manual_positions(user_id, type_id);
+			INSERT OR IGNORE INTO schema_version (version) VALUES (44);
+		`); err != nil {
+			return fmt.Errorf("migration v44: %w", err)
+		}
+		logger.Info("DB", "Applied migration v44 (manual positions)")
+	}
+
 	return nil
 }
 

@@ -619,9 +619,20 @@ func (s *Server) loadTradeJournalResult(r *http.Request) (*engine.TradeJournalRe
 	sinceDate := parseSinceParam(r.URL.Query().Get("days"))
 	fifoMode := parseFIFOMode(r.URL.Query().Get("fifo_mode"))
 
+	result, err := s.loadTradeJournalResultFor(userID, filter, sinceDate, fifoMode)
+	return result, filter, sinceDate, fifoMode, err
+}
+
+// loadTradeJournalResultFor is loadTradeJournalResult without the HTTP
+// request. The Positions tab needs FIFO open positions but arrives with the
+// character-scope query convention (character_id / scope=all) rather than the
+// journal's scope tokens, so it builds the filter itself and calls in here.
+// Same cache and same singleflight group, so a Positions load right after a
+// Journal load is free.
+func (s *Server) loadTradeJournalResultFor(userID string, filter *db.WalletScopeFilter, sinceDate time.Time, fifoMode engine.FIFOMode) (*engine.TradeJournalResult, error) {
 	key := tradeJournalCacheKey(userID, filter, sinceDate, fifoMode)
 	if cached := journalRuntime.get(key); cached != nil {
-		return cached, filter, sinceDate, fifoMode, nil
+		return cached, nil
 	}
 
 	// Coalesce concurrent duplicate compute requests. The Trade Journal
@@ -637,13 +648,13 @@ func (s *Server) loadTradeJournalResult(r *http.Request) (*engine.TradeJournalRe
 		return s.computeTradeJournalResult(userID, filter, sinceDate, fifoMode, key)
 	})
 	if err != nil {
-		return nil, filter, sinceDate, fifoMode, err
+		return nil, err
 	}
 	result, ok := shared.(*engine.TradeJournalResult)
 	if !ok || result == nil {
-		return nil, filter, sinceDate, fifoMode, fmt.Errorf("trade journal compute returned no result")
+		return nil, fmt.Errorf("trade journal compute returned no result")
 	}
-	return result, filter, sinceDate, fifoMode, nil
+	return result, nil
 }
 
 // computeTradeJournalResult is the raw compute path — extracted from

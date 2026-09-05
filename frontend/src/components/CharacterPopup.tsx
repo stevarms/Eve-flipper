@@ -2,7 +2,6 @@ import { useEffect, useState, useCallback } from "react";
 import { Modal } from "./Modal";
 import {
   cancelHostedPayment,
-  getCharacterInfo,
   getCharacterRoles,
   getHostedAccess,
   markHostedPaymentSent,
@@ -10,62 +9,63 @@ import {
   type CharacterScope,
 } from "../lib/api";
 import { useI18n } from "../lib/i18n";
-import { formatIsk as formatIskLib } from "../lib/format";
 import { trackClientTelemetry } from "../lib/telemetry";
-import type { AuthCharacter, CharacterInfo, CharacterRoles, HostedAccessStatus, SecurityVaultStatus } from "../lib/types";
-import { CombinedOrdersTab } from "./character-popup/CombinedOrdersTab";
+import type { AuthCharacter, CharacterRoles, HostedAccessStatus, SecurityVaultStatus } from "../lib/types";
 import { HostedAccessTab } from "./character-popup/HostedAccessTab";
-import { IndustryJobsTab } from "./character-popup/IndustryJobsTab";
-import { OptimizerTab } from "./character-popup/OptimizerTab";
-import { PIPlanetsTab } from "./character-popup/PIPlanetsTab";
 import { OverviewTab } from "./character-popup/OverviewTab";
-import { PnLTab } from "./character-popup/PnLTab";
-import { RiskTab } from "./character-popup/RiskTab";
 import { TabBtn } from "./character-popup/TabButton";
-import { TransactionsTab } from "./character-popup/TransactionsTab";
-import { TradingEdgeTab } from "./character-popup/TradingEdgeTab";
-import { WalletDashboardTab } from "./character-popup/WalletDashboardTab";
 import { AchievementLibraryPanel, useAchievements } from "./achievements";
+import { useCharacterInfo } from "./character/CharacterScopeProvider";
+
+/* The dialog is now about the *character*, not about trading.
+ *
+ * Orders, Transactions, Ledger, Industry Jobs, PI, P&L, Edge, Risk and
+ * Optimizer were nine working tools with no entry point in the navigation;
+ * they are workspace tabs now (see lib/cockpit.ts WORKSPACE_META and
+ * components/character/CharacterTools.tsx). What is left here is what is
+ * genuinely about the account: who you are logged in as, what the scope is,
+ * the security vault, and achievements.
+ *
+ * Scope and the character payload come from the shared CharacterScopeProvider,
+ * so switching character here switches it for every promoted tab too. */
 
 interface CharacterPopupProps {
   open: boolean;
   onClose: () => void;
-  activeCharacterId?: number;
   characters: AuthCharacter[];
-  onSelectCharacter: (characterId: number) => Promise<void>;
   onDeleteCharacter: (characterId: number) => Promise<void>;
   onAddCharacter: () => Promise<void>;
   onAuthRefresh: () => Promise<void>;
-  initialTab?: CharTab;
-  onOpenPaperTradeJournal?: () => void;
-  tradingEdgeEnabled?: boolean;
-  onTradingEdgeEnabledChange?: (enabled: boolean) => void;
   securityVault?: SecurityVaultStatus;
 }
 
-type CharTab = "overview" | "orders" | "transactions" | "ledger" | "industry" | "pi" | "pnl" | "edge" | "risk" | "optimizer" | "achievements" | "access";
+type CharTab = "overview" | "achievements" | "access";
 const SCOPE_COLLAPSE_KEY = "eve-character-scope-collapsed";
 
 export function CharacterPopup({
   open,
   onClose,
-  activeCharacterId,
   characters,
-  onSelectCharacter,
   onDeleteCharacter,
   onAddCharacter,
   onAuthRefresh,
-  initialTab,
-  onOpenPaperTradeJournal,
-  tradingEdgeEnabled = true,
-  onTradingEdgeEnabledChange,
   securityVault,
 }: CharacterPopupProps) {
   const { t } = useI18n();
-  const { pendingCount: achievementPendingCount, trackAchievementEvent, unlockedCount: achievementUnlockedCount } = useAchievements();
-  const [loading, setLoading] = useState(false);
+  const { pendingCount: achievementPendingCount, unlockedCount: achievementUnlockedCount } = useAchievements();
+  const {
+    scope: selectedScope,
+    selectScope,
+    scopeBusy: contextScopeBusy,
+    scopeError,
+    data,
+    loading,
+    error: dataError,
+    refresh,
+    formatIsk,
+    formatNumber,
+  } = useCharacterInfo();
   const [error, setError] = useState<string | null>(null);
-  const [data, setData] = useState<CharacterInfo | null>(null);
   const [tab, setTab] = useState<CharTab>("overview");
   const [corpRoles, setCorpRoles] = useState<CharacterRoles | null>(null);
   const [corpRolesLoading, setCorpRolesLoading] = useState(false);
@@ -73,7 +73,6 @@ export function CharacterPopup({
   const [hostedAccessLoading, setHostedAccessLoading] = useState(false);
   const [hostedAccessError, setHostedAccessError] = useState<string | null>(null);
   const [hostedAccessCheckedAt, setHostedAccessCheckedAt] = useState<Date | null>(null);
-  const [selectedScope, setSelectedScope] = useState<CharacterScope>(activeCharacterId ?? "all");
   const [scopeBusy, setScopeBusy] = useState(false);
   const [deletingCharacterId, setDeletingCharacterId] = useState<number | null>(null);
   const [scopeCollapsed, setScopeCollapsed] = useState(() => {
@@ -84,26 +83,6 @@ export function CharacterPopup({
     }
   });
 
-  useEffect(() => {
-    if (!open) return;
-    if (activeCharacterId) {
-      setSelectedScope(activeCharacterId);
-      return;
-    }
-    setSelectedScope("all");
-  }, [open, activeCharacterId]);
-
-  useEffect(() => {
-    if (!open) return;
-    if (selectedScope === "all") return;
-    if (characters.some((c) => c.character_id === selectedScope)) return;
-    if (activeCharacterId) {
-      setSelectedScope(activeCharacterId);
-      return;
-    }
-    setSelectedScope("all");
-  }, [open, selectedScope, characters, activeCharacterId]);
-
   const selectedCharacter = selectedScope === "all"
     ? null
     : characters.find((c) => c.character_id === selectedScope);
@@ -111,44 +90,6 @@ export function CharacterPopup({
     ? t("charAllCharacters")
     : selectedCharacter?.character_name ?? t("charOverview");
   const hostedBillingEnabled = hostedAccess?.hosted === true;
-
-  const setTrackedTab = useCallback(
-    (nextTab: CharTab) => {
-      if (nextTab === "access" && !hostedBillingEnabled) return;
-      setTab(nextTab);
-      if (nextTab === "ledger") void trackAchievementEvent("ledger_opened");
-      if (nextTab === "pnl" || nextTab === "optimizer" || nextTab === "edge") void trackAchievementEvent("portfolio_opened");
-      if (nextTab === "risk") void trackAchievementEvent("risk_opened");
-      if (nextTab === "access") {
-        trackClientTelemetry({
-          event_type: "billing_panel_opened",
-          module: "hosted",
-          character_id: typeof selectedScope === "number" ? selectedScope : undefined,
-          properties: {
-            plan: hostedAccess?.plan.id,
-            subscription_status: hostedAccess?.status,
-            scope: selectedScope,
-          },
-        });
-      }
-    },
-    [hostedAccess?.plan.id, hostedAccess?.status, hostedBillingEnabled, selectedScope, trackAchievementEvent],
-  );
-
-  useEffect(() => {
-    if (open && initialTab) {
-      setTrackedTab(initialTab);
-    }
-  }, [open, initialTab, setTrackedTab]);
-
-  const loadData = useCallback(() => {
-    setLoading(true);
-    setError(null);
-    getCharacterInfo(selectedScope)
-      .then(setData)
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false));
-  }, [selectedScope]);
 
   const loadHostedAccess = useCallback(() => {
     setHostedAccessLoading(true);
@@ -179,7 +120,6 @@ export function CharacterPopup({
 
   useEffect(() => {
     if (!open) return;
-    loadData();
     loadHostedAccess();
     if (selectedScope === "all") {
       setCorpRoles(null);
@@ -192,12 +132,30 @@ export function CharacterPopup({
       .then(setCorpRoles)
       .catch(() => setCorpRoles(null))
       .finally(() => setCorpRolesLoading(false));
-  }, [open, loadData, loadHostedAccess, selectedScope]);
+  }, [open, loadHostedAccess, selectedScope]);
 
   useEffect(() => {
     if (!open || tab !== "access" || !hostedAccess || hostedBillingEnabled) return;
     setTab("overview");
   }, [open, tab, hostedAccess, hostedBillingEnabled]);
+
+  // Billing telemetry used to hang off the tab-strip click handler; the tab can
+  // also be reached from the plan pill, so it hangs off the tab itself now.
+  useEffect(() => {
+    if (!open || tab !== "access" || !hostedBillingEnabled) return;
+    trackClientTelemetry({
+      event_type: "billing_panel_opened",
+      module: "hosted",
+      character_id: typeof selectedScope === "number" ? selectedScope : undefined,
+      properties: {
+        plan: hostedAccess?.plan.id,
+        subscription_status: hostedAccess?.status,
+        scope: selectedScope,
+      },
+    });
+    // Fires once per visit to the tab, not on every hostedAccess poll.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, tab, hostedBillingEnabled, selectedScope]);
 
   useEffect(() => {
     if (!open || tab !== "access" || !hostedBillingEnabled || !hostedAccess?.payment) return;
@@ -207,23 +165,12 @@ export function CharacterPopup({
     return () => window.clearInterval(timer);
   }, [open, tab, hostedBillingEnabled, hostedAccess?.payment, loadHostedAccess]);
 
-  const handleSelectScope = useCallback(async (scope: CharacterScope) => {
-    if (scope === "all") {
-      setSelectedScope("all");
-      return;
-    }
-    if (selectedScope === scope) return;
-    setScopeBusy(true);
-    setError(null);
-    try {
-      await onSelectCharacter(scope);
-      setSelectedScope(scope);
-    } catch (e: any) {
-      setError(e?.message || "Failed to switch character");
-    } finally {
-      setScopeBusy(false);
-    }
-  }, [selectedScope, onSelectCharacter]);
+  // Scope switching is the provider's job now, so the rail's scope pill and
+  // this dialog cannot disagree about who is selected.
+  const handleSelectScope = useCallback(
+    (scope: CharacterScope) => selectScope(scope),
+    [selectScope],
+  );
 
   const handleDeleteScope = useCallback(async (characterId: number) => {
     setDeletingCharacterId(characterId);
@@ -232,14 +179,14 @@ export function CharacterPopup({
       await onDeleteCharacter(characterId);
       await onAuthRefresh();
       if (selectedScope === characterId) {
-        setSelectedScope("all");
+        await selectScope("all");
       }
     } catch (e: any) {
       setError(e?.message || "Failed to remove character");
     } finally {
       setDeletingCharacterId(null);
     }
-  }, [onDeleteCharacter, onAuthRefresh, selectedScope]);
+  }, [onDeleteCharacter, onAuthRefresh, selectedScope, selectScope]);
 
   const handleAdd = useCallback(async () => {
     setScopeBusy(true);
@@ -262,28 +209,8 @@ export function CharacterPopup({
     });
   }, []);
 
-  /** Local presentation of the shared formatter (lib/format.ts).
-   *
-   *  This copy was the one that had the negative-value fix; that handling now
-   *  lives in formatIsk itself, so the Wallet ledger's "Other net" and
-   *  "Unrealized" cards keep rendering "-123.46M" rather than raw digits —
-   *  and so does every other surface, which previously did not.
-   *
-   *  maxTier is now T rather than B: this popup used to render a 2T figure as
-   *  "2000B" while the Trade Journal showed "2T" for the same number. */
-  const formatIsk = (value: number) =>
-    formatIskLib(value, undefined, {
-      maxTier: "T",
-      space: false,
-      decimals: { t: 2, b: 2, m: 2, k: 1, unit: 0 },
-    });
-
-  const formatNumber = (value: number) => value.toLocaleString();
-
-  const formatDate = (dateStr: string) => {
-    const d = new Date(dateStr);
-    return d.toLocaleDateString() + " " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  };
+  const shownError = error ?? scopeError ?? dataError;
+  const busy = scopeBusy || contextScopeBusy;
 
   const buyOrders = data?.orders.filter((o) => o.is_buy_order) ?? [];
   const sellOrders = data?.orders.filter((o) => !o.is_buy_order) ?? [];
@@ -323,7 +250,7 @@ export function CharacterPopup({
             {hostedBillingEnabled && (
               <button
                 type="button"
-                onClick={() => setTrackedTab("access")}
+                onClick={() => setTab("access")}
                 className={`hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] border rounded-sm transition-colors ${
                   tab === "access"
                     ? "border-eve-accent/70 bg-eve-accent/12 text-eve-accent"
@@ -336,7 +263,7 @@ export function CharacterPopup({
             )}
             <button
               onClick={() => { void handleAdd(); }}
-              disabled={scopeBusy}
+              disabled={busy}
               className="px-2.5 py-1 text-[10px] rounded-sm border border-eve-border bg-eve-dark/80 text-eve-dim hover:text-eve-accent hover:border-eve-accent/50 transition-colors disabled:opacity-50"
             >
               {t("charAddCharacter")}
@@ -408,31 +335,22 @@ export function CharacterPopup({
         {/* Tabs + Refresh */}
         <div className="flex shrink-0 items-center border-b border-eve-border bg-eve-panel">
           <div className="flex flex-1 overflow-x-auto scrollbar-thin">
-            <TabBtn active={tab === "overview"} onClick={() => setTrackedTab("overview")} label={t("charOverview")} />
-            <TabBtn active={tab === "orders"} onClick={() => setTrackedTab("orders")} label={`${t("charOrders")} (${data?.orders.length ?? 0})`} />
-            <TabBtn active={tab === "transactions"} onClick={() => setTrackedTab("transactions")} label={`${t("charTransactions")} (${data?.transactions?.length ?? 0})`} />
-            <TabBtn active={tab === "ledger"} onClick={() => setTrackedTab("ledger")} label={t("ledgerTab")} />
-            <TabBtn active={tab === "industry"} onClick={() => setTrackedTab("industry")} label={`${t("industryJobsTab")} (${data?.industry_jobs?.length ?? 0})`} />
-            <TabBtn active={tab === "pi"} onClick={() => setTrackedTab("pi")} label="PI" />
-            <TabBtn active={tab === "pnl"} onClick={() => setTrackedTab("pnl")} label={t("charPnlTab")} />
-            <TabBtn active={tab === "edge"} onClick={() => setTrackedTab("edge")} label="Edge" />
-            <TabBtn active={tab === "risk"} onClick={() => setTrackedTab("risk")} label={t("charRiskTab")} />
-            <TabBtn active={tab === "optimizer"} onClick={() => setTrackedTab("optimizer")} label={t("charOptimizerTab")} />
+            <TabBtn active={tab === "overview"} onClick={() => setTab("overview")} label={t("charOverview")} />
             <TabBtn
               active={tab === "achievements"}
-              onClick={() => setTrackedTab("achievements")}
+              onClick={() => setTab("achievements")}
               label={
                 achievementPendingCount > 0
                   ? `${t("achievementsTitle")} (${achievementPendingCount} ${t("achievementNewLabel").toLowerCase()})`
                   : `${t("achievementsTitle")} (${achievementUnlockedCount})`
               }
             />
-            {hostedBillingEnabled && <TabBtn active={tab === "access"} onClick={() => setTrackedTab("access")} label="Access" />}
+            {hostedBillingEnabled && <TabBtn active={tab === "access"} onClick={() => setTab("access")} label="Access" />}
           </div>
           {/* Refresh button */}
           <button
-            onClick={loadData}
-            disabled={loading || scopeBusy}
+            onClick={refresh}
+            disabled={loading || busy}
             className="px-2 py-1.5 mr-2 text-eve-dim hover:text-eve-accent transition-colors disabled:opacity-50"
             title={t("charRefresh")}
           >
@@ -444,11 +362,11 @@ export function CharacterPopup({
 
         {/* Content */}
         <div className="flex-1 overflow-auto p-4">
-          {loading && !data && tab !== "achievements" && tab !== "access" && (
+          {loading && !data && tab === "overview" && (
             <div className="flex items-center justify-center h-full text-eve-dim">{t("loading")}...</div>
           )}
-          {error && !data && tab !== "achievements" && tab !== "access" && (
-            <div className="flex items-center justify-center h-full text-eve-error">{error}</div>
+          {shownError && !data && tab === "overview" && (
+            <div className="flex items-center justify-center h-full text-eve-error">{shownError}</div>
           )}
           {tab === "achievements" && <AchievementLibraryPanel />}
           {hostedBillingEnabled && tab === "access" && (
@@ -464,90 +382,27 @@ export function CharacterPopup({
               formatIsk={formatIsk}
             />
           )}
-          {tab !== "achievements" && tab !== "access" && data && (
-            <>
-              {tab === "overview" && (
-                <OverviewTab
-                  data={data}
-                  characterId={selectedScope === "all" ? undefined : selectedScope}
-                  isAllScope={selectedScope === "all"}
-                  securityVault={securityVault}
-                  formatIsk={formatIsk}
-                  formatNumber={formatNumber}
-                  buyOrders={buyOrders}
-                  sellOrders={sellOrders}
-                  totalBuyValue={totalBuyValue}
-                  totalSellValue={totalSellValue}
-                  totalBought={totalBought}
-                  totalSold={totalSold}
-                  corpRoles={corpRoles}
-                  corpRolesLoading={corpRolesLoading}
-                  t={t}
-                />
-              )}
-              {tab === "orders" && (
-                <CombinedOrdersTab
-                  characterScope={selectedScope}
-                  orders={data.orders}
-                  history={data.order_history ?? []}
-                  formatIsk={formatIsk}
-                  formatDate={formatDate}
-                  t={t}
-                />
-              )}
-              {tab === "transactions" && (
-                <TransactionsTab transactions={data.transactions ?? []} formatIsk={formatIsk} formatDate={formatDate} t={t} />
-              )}
-              {tab === "ledger" && (
-                <WalletDashboardTab
-                  characterScope={selectedScope}
-                  formatIsk={formatIsk}
-                  t={t}
-                  onOpenPaperTradeJournal={onOpenPaperTradeJournal}
-                />
-              )}
-              {tab === "industry" && (
-                <IndustryJobsTab
-                  jobs={data.industry_jobs ?? []}
-                  formatIsk={formatIsk}
-                  formatDate={formatDate}
-                  t={t}
-                />
-              )}
-              {tab === "pi" && (
-                <PIPlanetsTab
-                  characterScope={selectedScope}
-                  formatIsk={formatIsk}
-                />
-              )}
-              {tab === "pnl" && (
-                <PnLTab formatIsk={formatIsk} characterScope={selectedScope} t={t} />
-              )}
-              {tab === "edge" && (
-                <TradingEdgeTab
-                  enabled={tradingEdgeEnabled}
-                  onToggleEnabled={(enabled) => onTradingEdgeEnabledChange?.(enabled)}
-                  formatIsk={formatIsk}
-                />
-              )}
-              {tab === "risk" && (
-                <RiskTab
-                  characterId={selectedScope === "all" ? undefined : selectedScope}
-                  isAllScope={selectedScope === "all"}
-                  data={data}
-                  formatIsk={formatIsk}
-                  t={t}
-                />
-              )}
-              {tab === "optimizer" && (
-                <OptimizerTab formatIsk={formatIsk} characterScope={selectedScope} t={t} />
-              )}
-            </>
+          {tab === "overview" && data && (
+            <OverviewTab
+              data={data}
+              characterId={selectedScope === "all" ? undefined : selectedScope}
+              isAllScope={selectedScope === "all"}
+              securityVault={securityVault}
+              formatIsk={formatIsk}
+              formatNumber={formatNumber}
+              buyOrders={buyOrders}
+              sellOrders={sellOrders}
+              totalBuyValue={totalBuyValue}
+              totalSellValue={totalSellValue}
+              totalBought={totalBought}
+              totalSold={totalSold}
+              corpRoles={corpRoles}
+              corpRolesLoading={corpRolesLoading}
+              t={t}
+            />
           )}
         </div>
       </div>
     </Modal>
   );
 }
-
-

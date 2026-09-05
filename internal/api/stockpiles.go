@@ -558,22 +558,35 @@ func (s *Server) handleScanStockpile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp)
 }
 
-// fetchStockpileHubPrices pulls all sell orders in The Forge in one call,
-// then computes the minimum sell price at Jita 4-4 for each stockpile type.
-// Returns (prices, pricingFailed). Missing types simply omit from the map.
+// fetchStockpileHubPrices resolves the Jita 4-4 sell price for each stockpile
+// item. Thin wrapper over fetchHubSellPrices so stockpiles and positions share
+// one implementation of "what is this worth at the hub right now".
 func (s *Server) fetchStockpileHubPrices(items []config.StockpileItem) (map[int32]float64, bool) {
-	if len(items) == 0 || s.esi == nil {
+	typeIDs := make([]int32, 0, len(items))
+	for _, it := range items {
+		if it.TypeID > 0 {
+			typeIDs = append(typeIDs, it.TypeID)
+		}
+	}
+	return s.fetchHubSellPrices(typeIDs)
+}
+
+// fetchHubSellPrices pulls all sell orders in The Forge in one call, then
+// computes the minimum sell price at Jita 4-4 for each requested type.
+// Returns (prices, pricingFailed). Missing types simply omit from the map.
+func (s *Server) fetchHubSellPrices(typeIDs []int32) (map[int32]float64, bool) {
+	if len(typeIDs) == 0 || s.esi == nil {
 		return map[int32]float64{}, false
 	}
 	orders, err := s.esi.FetchRegionOrders(stockpilePriceRegionID, "sell")
 	if err != nil {
-		log.Printf("[STOCKPILE] Jita price fetch: %v", err)
+		log.Printf("[HUBPRICE] Jita price fetch: %v", err)
 		return map[int32]float64{}, true
 	}
-	wanted := make(map[int32]bool, len(items))
-	for _, it := range items {
-		if it.TypeID > 0 {
-			wanted[it.TypeID] = true
+	wanted := make(map[int32]bool, len(typeIDs))
+	for _, id := range typeIDs {
+		if id > 0 {
+			wanted[id] = true
 		}
 	}
 	minSell := make(map[int32]float64, len(wanted))

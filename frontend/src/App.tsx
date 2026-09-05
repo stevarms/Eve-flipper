@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ClipboardList, Coffee, Search } from "lucide-react";
 import { useKeyboardShortcuts } from "./lib/useKeyboardShortcuts";
 import { StatusBar } from "./components/StatusBar";
@@ -32,6 +32,20 @@ import { TaxProfileEditor } from "./components/TaxProfileEditor";
 import { useGlobalToast } from "./components/Toast";
 import { Modal } from "./components/Modal";
 import { CharacterPopup } from "./components/CharacterPopup";
+import { CharacterScopeProvider } from "./components/character/CharacterScopeProvider";
+import { CharacterScopePicker } from "./components/character/CharacterScopePicker";
+import {
+  EdgeWorkspaceTab,
+  JobsWorkspaceTab,
+  OptimizerWorkspaceTab,
+  PIPlanetsWorkspaceTab,
+  PnLWorkspaceTab,
+  RiskWorkspaceTab,
+  TransactionsWorkspaceTab,
+  WalletWorkspaceTab,
+} from "./components/character/CharacterTools";
+import { PositionsTab } from "./components/PositionsTab";
+const IndustryStockpilePanel = lazy(() => import("./components/industry/IndustryStockpilePanel"));
 import { PaperTradeJournalPopup } from "./components/PaperTradeJournalPopup";
 import { useAchievements } from "./components/achievements";
 import {
@@ -71,6 +85,7 @@ import {
   getCockpitTabLayout,
   getEffectiveCockpitDensity,
   getVisibleMainTabs,
+  CHARACTER_SCOPED_TABS,
   isCockpitQuickActionVisible,
   isMainTabId,
   loadCockpitPreferences,
@@ -544,7 +559,6 @@ function App() {
   const [showPatrons, setShowPatrons] = useState(false);
   const [showItemIntelligence, setShowItemIntelligence] = useState(false);
   const [showCharacter, setShowCharacter] = useState(false);
-  const [characterInitialTab, setCharacterInitialTab] = useState<"overview" | "ledger">("overview");
   const [showPaperTradeJournal, setShowPaperTradeJournal] = useState(false);
   const [settingsInterfacePage, setSettingsInterfacePage] = useState<InterfacePage>("overview");
   const [showCommandPalette, setShowCommandPalette] = useState(false);
@@ -601,9 +615,13 @@ function App() {
     (action: CockpitQuickAction) => isCockpitQuickActionVisible(cockpitPreferences, action),
     [cockpitPreferences],
   );
-  const openCharacterProfile = useCallback((initialTab: "overview" | "ledger" = "overview") => {
-    setCharacterInitialTab(initialTab);
+  const openCharacterProfile = useCallback(() => {
     setShowCharacter(true);
+  }, []);
+  // The ledger is a workspace tab now, not a modal tab — the old quick action
+  // and command-palette entries navigate there instead of opening the dialog.
+  const openLedger = useCallback(() => {
+    setTab("wallet");
   }, []);
   const showTabActionBars = !cockpitPreferences.hiddenPanels.tabActionBars;
 
@@ -1716,7 +1734,12 @@ function App() {
   }
 
   return (
-    <>
+    <CharacterScopeProvider
+      isLoggedIn={authStatus.logged_in}
+      characters={authStatus.characters ?? []}
+      activeCharacterId={authStatus.character_id}
+      onSelectCharacter={handleSelectCharacter}
+    >
       <div
         className={`cockpit-density-${effectiveCockpitDensity} h-screen flex flex-col gap-1.5 sm:gap-3 p-1.5 sm:p-4 bg-eve-dark text-eve-text select-none overflow-hidden transition-[opacity,transform,filter] duration-500 ease-out ${
           bootSplashState === "hidden"
@@ -1891,7 +1914,7 @@ function App() {
               <button
                 onClick={() => {
                   trackCockpitActivity("command:ledger");
-                  openCharacterProfile("ledger");
+                  openLedger();
                 }}
                 className="eve-header-action flex items-center gap-1.5 h-[34px] px-3 bg-eve-panel border border-eve-border rounded-sm text-xs text-eve-dim hover:text-eve-accent hover:border-eve-accent/50 transition-colors"
                 title="Ledger"
@@ -1962,7 +1985,7 @@ function App() {
               {authStatus.logged_in ? (
                 <>
                   <button
-                    onClick={() => openCharacterProfile("overview")}
+                    onClick={() => openCharacterProfile()}
                     className="flex items-center gap-2 hover:bg-eve-dark/50 rounded-sm px-1 py-0.5 transition-colors"
                     title={t("charViewInfo")}
                   >
@@ -2160,7 +2183,7 @@ function App() {
               <>
                 <button
                   onClick={() => {
-                    openCharacterProfile("overview");
+                    openCharacterProfile();
                     setMobileMenuOpen(false);
                   }}
                   className="flex items-center gap-2"
@@ -2312,7 +2335,10 @@ function App() {
                to be an exclusion list, which meant Orders, Price Audit, PI
                Factory and Trade Journal all showed a Scan button that ran a
                radius/region scan they do not display. */
-            tab === "radius" || tab === "region" || tab === "contracts" ? (
+            CHARACTER_SCOPED_TABS.has(tab) || tab === "radius" || tab === "region" || tab === "contracts" ? (
+            <>
+            {CHARACTER_SCOPED_TABS.has(tab) && <CharacterScopePicker />}
+            {tab === "radius" || tab === "region" || tab === "contracts" ? (
               <button
                 data-scan-button
                 onClick={handleScan}
@@ -2332,6 +2358,8 @@ function App() {
               >
                 {scanning ? t("stop") : t("scan")}
               </button>
+            ) : null}
+            </>
             ) : null
           }
         />
@@ -2535,6 +2563,44 @@ function App() {
               in-progress plan. See KEEP_ALIVE_TABS in lib/cockpit.ts. */}
           <TabPanel active={tab === "industry"} keepAlive={KEEP_ALIVE_TABS.has("industry")}>
             <IndustryTab isLoggedIn={authStatus.logged_in} />
+          </TabPanel>
+          {/* Promoted out of the character modal — see
+              docs/ARCHITECTURE.md §7a. Each reads the shared scope from
+              CharacterScopeProvider rather than the modal's local state. */}
+          <TabPanel active={tab === "positions"}>
+            <PositionsTab />
+          </TabPanel>
+          <TabPanel active={tab === "stockpiles"}>
+            <Suspense fallback={<div className="m-2 text-xs text-eve-dim">Loading stockpiles...</div>}>
+              <IndustryStockpilePanel isLoggedIn={authStatus.logged_in} />
+            </Suspense>
+          </TabPanel>
+          <TabPanel active={tab === "jobs"}>
+            <JobsWorkspaceTab />
+          </TabPanel>
+          <TabPanel active={tab === "pi_planets"}>
+            <PIPlanetsWorkspaceTab />
+          </TabPanel>
+          <TabPanel active={tab === "pnl"}>
+            <PnLWorkspaceTab onOpenPositions={() => setTab("positions")} />
+          </TabPanel>
+          <TabPanel active={tab === "transactions"}>
+            <TransactionsWorkspaceTab />
+          </TabPanel>
+          <TabPanel active={tab === "wallet"}>
+            <WalletWorkspaceTab onOpenPaperTradeJournal={() => setShowPaperTradeJournal(true)} />
+          </TabPanel>
+          <TabPanel active={tab === "risk"}>
+            <RiskWorkspaceTab />
+          </TabPanel>
+          <TabPanel active={tab === "optimizer"}>
+            <OptimizerWorkspaceTab />
+          </TabPanel>
+          <TabPanel active={tab === "edge"}>
+            <EdgeWorkspaceTab
+              enabled={cockpitPreferences.tradingEdgeEnabled}
+              onToggleEnabled={handleTradingEdgeEnabledChange}
+            />
           </TabPanel>
           <TabPanel active={tab === "demand"}>
             <WarTracker
@@ -2862,16 +2928,10 @@ function App() {
         <CharacterPopup
           open={showCharacter}
           onClose={() => setShowCharacter(false)}
-          activeCharacterId={authStatus.character_id}
           characters={authStatus.characters ?? []}
-          onSelectCharacter={handleSelectCharacter}
           onDeleteCharacter={handleDeleteCharacter}
           onAddCharacter={handleLogin}
           onAuthRefresh={refreshAuthStatus}
-          initialTab={characterInitialTab}
-          onOpenPaperTradeJournal={() => setShowPaperTradeJournal(true)}
-          tradingEdgeEnabled={cockpitPreferences.tradingEdgeEnabled}
-          onTradingEdgeEnabledChange={handleTradingEdgeEnabledChange}
           securityVault={authStatus.security_vault}
         />
       )}
@@ -2903,11 +2963,11 @@ function App() {
         }}
         onOpenCharacter={() => {
           trackCockpitActivity("command:character");
-          openCharacterProfile("overview");
+          openCharacterProfile();
         }}
         onOpenLedger={() => {
           trackCockpitActivity("command:ledger");
-          openCharacterProfile("ledger");
+          openLedger();
         }}
         onOpenItemIntel={() => {
           trackCockpitActivity("command:itemIntel");
@@ -3041,7 +3101,7 @@ function App() {
           </div>
         </div>
       )}
-    </>
+    </CharacterScopeProvider>
   );
 }
 

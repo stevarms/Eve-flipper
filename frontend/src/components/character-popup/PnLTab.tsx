@@ -7,7 +7,6 @@ import {
   PnLChart,
   PnLItemsTable,
   PnLLedgerTable,
-  PnLOpenPositionsTable,
   PnLStationsTable,
   SlotEfficiencyTable,
 } from "../journal/PnLPrimitives";
@@ -18,9 +17,11 @@ interface PnLTabProps {
   formatIsk: (v: number) => string;
   characterScope: CharacterScope;
   t: (key: TranslationKey, params?: Record<string, string | number>) => string;
+  /** Jumps to Assets → Positions, which owns open positions now. */
+  onOpenPositions?: () => void;
 }
 
-export function PnLTab({ formatIsk, characterScope, t }: PnLTabProps) {
+export function PnLTab({ formatIsk, characterScope, t, onOpenPositions }: PnLTabProps) {
   const [period, setPeriod] = useState<PnLPeriod>(30);
   const [data, setData] = useState<PortfolioPnL | null>(null);
   const [loading, setLoading] = useState(false);
@@ -374,12 +375,25 @@ export function PnLTab({ formatIsk, characterScope, t }: PnLTabProps) {
         <PnLLedgerTable ledger={data.ledger ?? []} formatIsk={formatIsk} t={t} />
       </div>
 
-      {/* Open positions */}
-      <div className="bg-eve-panel border border-eve-border rounded-sm p-3">
-        <div className="text-[10px] text-eve-dim uppercase tracking-wider mb-2">
-          {t("pnlOpenPositions")} ({data.open_positions?.length ?? 0})
+      {/* Open positions moved to Assets → Positions, which prices them live
+          and nets out fees. Two open-position tables answering the same
+          question differently was the confusing part; this one is the pointer. */}
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-sm border border-eve-border bg-eve-panel p-3">
+        <div className="min-w-0">
+          <div className="mb-1 text-[10px] uppercase tracking-wider text-eve-dim">
+            {t("pnlOpenPositions")} ({data.open_positions?.length ?? 0})
+          </div>
+          <p className="text-xs text-eve-dim">{t("pnlOpenPositionsMoved")}</p>
         </div>
-        <PnLOpenPositionsTable positions={data.open_positions ?? []} formatIsk={formatIsk} t={t} />
+        {onOpenPositions && (
+          <button
+            type="button"
+            onClick={onOpenPositions}
+            className="rounded-sm border border-eve-accent/60 bg-eve-accent/10 px-3 py-1.5 text-xs text-eve-accent transition-colors hover:bg-eve-accent/20"
+          >
+            {t("pnlOpenPositionsGo")}
+          </button>
+        )}
       </div>
     </div>
   );

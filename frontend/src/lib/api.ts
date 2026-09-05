@@ -84,6 +84,9 @@ import type {
   StockpileResolveInput,
   StockpileResolveResult,
   StockpileScanResult,
+  HistoricalOrder,
+  PositionsResponse,
+  ManualPositionInput,
 } from "./types";
 import type { CockpitLoadout, CockpitPreferences } from "./cockpit";
 import {
@@ -2091,6 +2094,19 @@ export async function getUndercuts(characterId?: CharacterScope): Promise<Underc
   return handleResponse<UndercutStatus[]>(res);
 }
 
+/**
+ * Closed orders for the scope. Dedicated endpoint — the same list used to
+ * arrive as one field of the much heavier getCharacterInfo() payload.
+ */
+export async function getOrderHistory(characterId?: CharacterScope): Promise<HistoricalOrder[]> {
+  const params = new URLSearchParams();
+  appendCharacterScope(params, characterId);
+  const query = params.toString();
+  const res = await apiFetch(`${BASE}/api/auth/orders/history${query ? `?${query}` : ""}`);
+  const data = await handleResponse<{ orders?: HistoricalOrder[] }>(res);
+  return data.orders ?? [];
+}
+
 export interface OrderDeskParams {
   salesTax?: number;
   brokerFee?: number;
@@ -3086,6 +3102,28 @@ export async function getGankCheckBatch(
   );
   if (!res.ok) throw new Error(`Failed to check route safety batch: HTTP ${res.status}`);
   return res.json();
+}
+
+// --- Assets → Positions ---
+
+export async function getPositions(scope: number | "all"): Promise<PositionsResponse> {
+  const q = scope === "all" ? "scope=all" : `character_id=${scope}`;
+  const res = await apiFetch(`${BASE}/api/auth/positions?${q}`);
+  return handleResponse<PositionsResponse>(res);
+}
+
+export async function saveManualPosition(payload: ManualPositionInput): Promise<ManualPositionInput> {
+  const res = await apiFetch(`${BASE}/api/auth/positions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return handleResponse<ManualPositionInput>(res);
+}
+
+export async function deleteManualPosition(id: number): Promise<void> {
+  const res = await apiFetch(`${BASE}/api/auth/positions/${id}`, { method: "DELETE" });
+  await handleResponse<{ ok: boolean }>(res);
 }
 
 // --- Stockpile / Warehouse Manager ---

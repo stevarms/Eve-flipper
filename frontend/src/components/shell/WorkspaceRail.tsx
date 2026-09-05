@@ -118,7 +118,10 @@ export function WorkspaceTabs({ tabs, active, onSelect, label, actions }: Worksp
   return (
     <div className="flex items-stretch border-b border-eve-border">
       <div className="min-w-0 flex-1 overflow-x-auto scrollbar-thin">
-        <div className="flex min-w-max items-center gap-0.5 px-1" role="tablist">
+        {/* Named because it is not the only tablist on the page — Industry
+            renders its own sub-tab strip and stays mounted across workspaces
+            (KEEP_ALIVE_TABS), so a bare [role="tablist"] matches both. */}
+        <div className="flex min-w-max items-center gap-0.5 px-1" role="tablist" aria-label="Workspace tabs">
           {tabs.length > 1 &&
             tabs.map((tab) => {
               const isActive = tab === active;

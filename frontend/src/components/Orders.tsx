@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ExternalLink } from "lucide-react";
-import { getAuthStatus, getOrderDesk, openMarketInGame } from "../lib/api";
+import { getAuthStatus, getOrderDesk, getUndercuts, openMarketInGame } from "../lib/api";
 import type {
   AuthCharacter,
+  BookLevel,
   OrderDeskOrder,
   OrderDeskResponse,
 } from "../lib/types";
@@ -17,6 +18,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { Input } from "@/components/ui/input";
 import { TypeIcon } from "@/components/ui/TypeIcon";
 import { OrderRowDrawer, recommendationTone } from "@/components/orders/OrderRowDrawer";
+import { OrderHistoryPanel } from "@/components/orders/OrderHistoryPanel";
 import { cn } from "@/lib/utils";
 
 // Orders.tsx — first-class main-tab replacement for the buried
@@ -81,6 +83,15 @@ export function Orders({ isLoggedIn }: Props) {
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [authCharacters, setAuthCharacters] = useState<AuthCharacter[]>([]);
   const [inspected, setInspected] = useState<OrderDeskOrder | null>(null);
+  // Active / History. History was only ever reachable inside the character
+  // modal; the tab is the single order surface now, so it lives here.
+  const [subTab, setSubTab] = useState<"active" | "history">("active");
+  // Order-book depth for the drawer. The desk payload already carries
+  // position, best price and the undercut delta; only the price ladder needs
+  // the extra call, so it is fetched once, lazily, the first time a row is
+  // inspected.
+  const [bookLevels, setBookLevels] = useState<Record<number, BookLevel[]> | null>(null);
+  const [bookLoading, setBookLoading] = useState(false);
 
   useEffect(() => {
     if (!isLoggedIn) return;
@@ -88,6 +99,21 @@ export function Orders({ isLoggedIn }: Props) {
       .then((s) => setAuthCharacters(s.characters ?? []))
       .catch(() => setAuthCharacters([]));
   }, [isLoggedIn]);
+
+  useEffect(() => {
+    if (!inspected || bookLevels || bookLoading) return;
+    setBookLoading(true);
+    void getUndercuts("all")
+      .then((rows) => {
+        const map: Record<number, BookLevel[]> = {};
+        for (const u of rows) map[u.order_id] = u.book_levels ?? [];
+        setBookLevels(map);
+      })
+      // A failed depth call just means no ladder — the rest of the drawer,
+      // which is fed by the desk payload, is unaffected.
+      .catch(() => {})
+      .finally(() => setBookLoading(false));
+  }, [inspected, bookLevels, bookLoading]);
 
   const load = useCallback(async () => {
     if (!isLoggedIn) {
@@ -232,8 +258,21 @@ export function Orders({ isLoggedIn }: Props) {
 
   const multiCharacter = authCharacters.length > 1;
 
+  if (subTab === "history") {
+    return (
+      <div className="flex h-full flex-col space-y-3 p-3">
+        <SubTabs subTab={subTab} setSubTab={setSubTab} activeCount={data?.orders.length ?? 0} t={t} />
+        <div className="min-h-0 flex-1">
+          <OrderHistoryPanel formatIsk={formatIsk} t={t} locale={locale} />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-full flex-col space-y-3 p-3">
+      <SubTabs subTab={subTab} setSubTab={setSubTab} activeCount={data?.orders.length ?? 0} t={t} />
+
       {/* Toolbar */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
@@ -455,7 +494,41 @@ export function Orders({ isLoggedIn }: Props) {
         onClose={() => setInspected(null)}
         t={t}
         locale={locale}
+        bookLevels={inspected ? bookLevels?.[inspected.order_id] : undefined}
+        bookLevelsLoading={bookLoading}
       />
+    </div>
+  );
+}
+
+function SubTabs({
+  subTab,
+  setSubTab,
+  activeCount,
+  t,
+}: {
+  subTab: "active" | "history";
+  setSubTab: (v: "active" | "history") => void;
+  activeCount: number;
+  t: (key: TranslationKey, params?: Record<string, string | number>) => string;
+}) {
+  return (
+    <div className="flex gap-1 border-b border-eve-border">
+      {(["active", "history"] as const).map((v) => (
+        <button
+          key={v}
+          type="button"
+          onClick={() => setSubTab(v)}
+          className={cn(
+            "px-3 py-1.5 font-ui text-t-body transition-colors",
+            subTab === v
+              ? "border-b-2 border-eve-accent text-eve-accent"
+              : "text-fg-tertiary hover:text-fg",
+          )}
+        >
+          {v === "active" ? `${t("charActiveOrders")} (${activeCount})` : t("charOrderHistory")}
+        </button>
+      ))}
     </div>
   );
 }

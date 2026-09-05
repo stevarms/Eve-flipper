@@ -837,6 +837,57 @@ export interface StockpileScanResult {
   warnings?: string[];
 }
 
+// --- Assets → Positions (internal/api/positions.go) ---
+
+/** One holding, priced. Mirrors api.PositionRow. */
+export interface PositionRow {
+  type_id: number;
+  type_name: string;
+  /** trade | manufacture | orphan | manual */
+  source: string;
+  qty: number;
+  avg_unit_cost: number;
+  cost_basis: number;
+  oldest_date?: string;
+  days_held: number;
+  /** 0 when the hub has no sell order for the type. */
+  market_price: number;
+  market_value: number;
+  /** market_value less sell-side broker fee and sales tax. */
+  net_proceeds: number;
+  unrealized_isk: number;
+  unrealized_pct: number;
+  listed_qty: number;
+  listed_price: number;
+  manual_id?: number;
+  target_price?: number;
+  note?: string;
+}
+
+export interface PositionsResponse {
+  rows: PositionRow[];
+  pricing_failed: boolean;
+  orders_failed: boolean;
+  sales_tax_percent: number;
+  broker_fee_percent: number;
+  total_cost_basis: number;
+  total_market_value: number;
+  total_unrealized: number;
+  generated_at: string;
+}
+
+/** Payload for POST /api/auth/positions. Omit id to create. */
+export interface ManualPositionInput {
+  id?: number;
+  type_id: number;
+  type_name?: string;
+  quantity: number;
+  unit_cost: number;
+  target_price?: number;
+  acquired_at?: string;
+  note?: string;
+}
+
 export interface StockpileResolveInput {
   name: string;
   qty: number;

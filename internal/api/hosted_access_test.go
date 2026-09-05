@@ -677,6 +677,7 @@ func TestHostedQuotaFeatureMappingClassifiesAllPostAPIRoutes(t *testing.T) {
 		"/api/hosted/payments/cancel":                "billing cancel has dedicated payment limits",
 		"/api/config":                                "local config write",
 		"/api/cockpit/loadouts":                      "cockpit CRUD",
+		"/api/auth/positions":                        "manual position CRUD",
 		"/api/cockpit/loadouts/{loadoutID}/activate": "cockpit CRUD",
 		"/api/alerts/test":                           "local notification test",
 		"/api/orderbook/cleanup":                     "hosted maintenance endpoint",
