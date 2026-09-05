@@ -5,12 +5,15 @@ import type {
   AuthCharacter,
   OrderDeskOrder,
   OrderDeskResponse,
+  OrderDeskSettings,
 } from "../lib/types";
 import { useEsiFeeImport } from "../lib/useEsiFeeImport";
 import {
   applySortClick,
   loadOrdersPrefs,
   saveOrdersPrefs,
+  ORDERS_MIN_MARGIN_PCT_MAX,
+  ORDERS_MIN_MARGIN_PCT_MIN,
   ORDERS_REFRESH_CHOICES,
   ORDERS_TARGET_ETA_MAX_DAYS,
   ORDERS_TARGET_ETA_MIN_DAYS,
@@ -61,11 +64,12 @@ const SORT_LABEL_KEY: Record<OrdersSortKey, TranslationKey> = {
   current: "ordersColCurrent",
   notional: "ordersColValue",
   eta: "ordersColEta",
+  margin: "ordersColMargin",
   expiry: "ordersColExpiry",
 };
 
 /** Columns rendered per row. Group header rows span all of them. */
-const COLUMN_COUNT = 11;
+const COLUMN_COUNT = 12;
 
 /** Editing a fee re-runs the whole server-side computation, so wait for the
  *  user to stop typing rather than firing one request per digit. */
@@ -86,6 +90,11 @@ function orInfinity(v: number): number {
   return v >= 0 ? v : Number.POSITIVE_INFINITY;
 }
 
+/** Unmeasured rows sort last in both directions: "no data" is not a rank. */
+function marginSortValue(row: OrderDeskOrder): number {
+  return row.margin_basis === "none" ? Number.POSITIVE_INFINITY : row.margin_percent;
+}
+
 function compareBy(a: OrderDeskOrder, b: OrderDeskOrder, key: OrdersSortKey): number {
   switch (key) {
     case "owner":
@@ -102,6 +111,11 @@ function compareBy(a: OrderDeskOrder, b: OrderDeskOrder, key: OrdersSortKey): nu
       return a.notional - b.notional;
     case "eta":
       return orInfinity(a.eta_days) - orInfinity(b.eta_days);
+    case "margin":
+      // Ascending puts the losses first, which is the point of the column.
+      // An unmeasured row is not a good one — it is a row with no answer —
+      // so it sorts to the end either way rather than to the top.
+      return marginSortValue(a) - marginSortValue(b);
     case "expiry":
       return orInfinity(a.days_to_expire) - orInfinity(b.days_to_expire);
   }
@@ -202,6 +216,7 @@ export function Orders({ isLoggedIn }: Props) {
           salesTax,
           brokerFee,
           targetEtaDays: prefs.targetEtaDays,
+          minMarginPct: prefs.minMarginPct,
           characterId: "all",
           force,
         });
@@ -215,7 +230,7 @@ export function Orders({ isLoggedIn }: Props) {
         setLoading(false);
       }
     },
-    [isLoggedIn, salesTax, brokerFee, prefs.targetEtaDays],
+    [isLoggedIn, salesTax, brokerFee, prefs.targetEtaDays, prefs.minMarginPct],
   );
 
   // First load is immediate; later reruns are only ever caused by a fee or
@@ -428,6 +443,27 @@ export function Orders({ isLoggedIn }: Props) {
                   targetEtaDays: Math.min(
                     ORDERS_TARGET_ETA_MAX_DAYS,
                     Math.max(ORDERS_TARGET_ETA_MIN_DAYS, v),
+                  ),
+                });
+              }}
+              className="ml-1 w-16 bg-eve-dark border border-eve-border rounded-sm px-1 py-0.5 text-eve-text"
+            />
+          </label>
+          <label className="text-[11px] text-eve-dim" title={t("ordersMinMarginHint")}>
+            {t("ordersMinMargin")}
+            <input
+              type="number"
+              min={ORDERS_MIN_MARGIN_PCT_MIN}
+              max={ORDERS_MIN_MARGIN_PCT_MAX}
+              step={0.5}
+              value={prefs.minMarginPct}
+              onChange={(e) => {
+                const v = parseFloat(e.target.value);
+                if (!Number.isFinite(v)) return;
+                updatePrefs({
+                  minMarginPct: Math.min(
+                    ORDERS_MIN_MARGIN_PCT_MAX,
+                    Math.max(ORDERS_MIN_MARGIN_PCT_MIN, v),
                   ),
                 });
               }}
@@ -655,6 +691,14 @@ export function Orders({ isLoggedIn }: Props) {
                   hint={t("ordersColValueHint")}
                   align="right"
                 />
+                <SortableTH
+                  label={t("ordersColMargin")}
+                  k="margin"
+                  sort={prefs.sort}
+                  onClick={toggleSort}
+                  hint={t("ordersColMarginHint")}
+                  align="right"
+                />
                 <th className="px-2 py-1.5 text-right">{t("ordersColPosition")}</th>
                 <SortableTH
                   label={t("ordersColEta")}
@@ -679,6 +723,7 @@ export function Orders({ isLoggedIn }: Props) {
               rows={sellRows}
               collapsed={prefs.collapsedSell}
               onToggle={() => updatePrefs({ collapsedSell: !prefs.collapsedSell })}
+              settings={data.settings}
               t={t}
               onOpenMarket={openMarketForType}
               addToast={addToast}
@@ -688,6 +733,7 @@ export function Orders({ isLoggedIn }: Props) {
               rows={buyRows}
               collapsed={prefs.collapsedBuy}
               onToggle={() => updatePrefs({ collapsedBuy: !prefs.collapsedBuy })}
+              settings={data.settings}
               t={t}
               onOpenMarket={openMarketForType}
               addToast={addToast}
@@ -714,6 +760,7 @@ function OrderSection({
   rows,
   collapsed,
   onToggle,
+  settings,
   t,
   onOpenMarket,
   addToast,
@@ -722,6 +769,7 @@ function OrderSection({
   rows: OrderDeskOrder[];
   collapsed: boolean;
   onToggle: () => void;
+  settings: OrderDeskSettings;
   t: Translate;
   onOpenMarket: (typeID: number) => void;
   addToast: AddToast;
@@ -764,6 +812,7 @@ function OrderSection({
           <OrderRow
             key={r.order_id}
             row={r}
+            settings={settings}
             formatIsk={formatIsk}
             t={t}
             onOpenMarket={onOpenMarket}
@@ -865,14 +914,50 @@ function etaBreakdown(row: OrderDeskOrder, t: Translate): string {
   });
 }
 
+/** The margin is two fees and an assumed exit price deep by the time it
+ *  reaches the table, and it is now the thing that turns an order red. The
+ *  derivation has to be checkable against the in-game book from the row. */
+function marginBreakdown(row: OrderDeskOrder, settings: OrderDeskSettings, t: Translate): string {
+  const fees = settings.sales_tax_percent + settings.broker_fee_percent;
+  const feeLabel = fees.toFixed(2);
+  const pct = row.margin_percent.toFixed(1);
+
+  if (row.margin_basis === "book") {
+    const exit = row.exit_price ?? 0;
+    return t("ordersMarginBuyBreakdown", {
+      exit: formatIsk(exit),
+      fees: feeLabel,
+      net: formatIsk(exit * (1 - fees / 100)),
+      bid: formatIsk(row.price),
+      margin: formatIsk(row.margin_unit_isk),
+      pct,
+    });
+  }
+  if (row.margin_basis === "cost_basis") {
+    return t("ordersMarginSellBreakdown", {
+      price: formatIsk(row.price),
+      fees: feeLabel,
+      net: formatIsk(row.price * (1 - fees / 100)),
+      cost: formatIsk(row.cost_basis_isk ?? 0),
+      margin: formatIsk(row.margin_unit_isk),
+      pct,
+    });
+  }
+  // Unmeasured. Which input was missing depends on the side, and the two
+  // have different fixes, so the hint has to say which one applies.
+  return row.is_buy_order ? t("ordersMarginNoneBuyHint") : t("ordersMarginNoneSellHint");
+}
+
 function OrderRow({
   row,
+  settings,
   formatIsk,
   t,
   onOpenMarket,
   addToast,
 }: {
   row: OrderDeskOrder;
+  settings: OrderDeskSettings;
   formatIsk: (v: number) => string;
   t: Translate;
   onOpenMarket: (typeID: number) => void;
@@ -902,6 +987,16 @@ function OrderRow({
     void navigator.clipboard.writeText(row.type_name);
     addToast(t("copied"), "success", 1400);
   };
+  // Thin reads amber rather than green: it is still a profit, but it is the
+  // one the floor was set to catch.
+  const marginCls =
+    row.margin_basis === "none"
+      ? "text-eve-dim"
+      : row.margin_unit_isk <= 0
+        ? "text-red-400"
+        : row.warn_thin_margin
+          ? "text-amber-400"
+          : "text-emerald-400";
   const badgeClass =
     row.recommendation === "cancel"
       ? "bg-red-500/20 text-red-400"
@@ -1008,6 +1103,23 @@ function OrderRow({
         })}
       >
         {formatIsk(row.notional)}
+      </td>
+      <td className="px-2 py-1 text-right font-mono" title={marginBreakdown(row, settings, t)}>
+        {row.margin_basis === "none" ? (
+          <span className="text-eve-dim cursor-help">—</span>
+        ) : (
+          <span className={`inline-flex items-center gap-1 justify-end cursor-help ${marginCls}`}>
+            {row.warn_thin_margin && (
+              <span
+                className="text-yellow-400"
+                title={t("ordersThinMarginHint", { floor: settings.min_margin_percent })}
+              >
+                ⚠
+              </span>
+            )}
+            {`${row.margin_percent >= 0 ? "+" : ""}${row.margin_percent.toFixed(1)}%`}
+          </span>
+        )}
       </td>
       <td className="px-2 py-1 text-right text-eve-dim font-mono">
         {row.book_available ? `${row.position}/${row.total_orders}` : "—"}

@@ -1714,6 +1714,8 @@ export interface OrderDeskSettings {
   broker_fee_percent: number;
   target_eta_days: number;
   warn_expiry_days: number;
+  /** Floor under which a still-positive margin is flagged thin. */
+  min_margin_percent: number;
 }
 
 export interface OrderDeskOrder {
@@ -1773,6 +1775,23 @@ export interface OrderDeskOrder {
   relist_fee_isk?: number;
   net_relist_gain_isk?: number;
   warn_unprofitable_relist?: boolean;
+  // Profitability. margin_basis says which question was answerable for this
+  // row: "book" (a buy order priced against the sell side of its own
+  // station), "cost_basis" (a sell order priced against what the stock
+  // actually cost, from the FIFO trade journal), or "none" when neither
+  // input was available — in which case the margin numbers mean nothing and
+  // the UI must render them as unknown rather than as zero.
+  /** Buy rows: the price we assume we could resell at, an undercut of the
+   *  station's best ask rather than the ask itself. */
+  exit_price?: number;
+  /** Sell rows: average unit cost of the stock currently held. */
+  cost_basis_isk?: number;
+  margin_unit_isk: number;
+  margin_percent: number;
+  margin_basis: "book" | "cost_basis" | "none" | string;
+  /** Positive but under settings.min_margin_percent. A warning only — it
+   *  deliberately does not change the recommendation. */
+  warn_thin_margin?: boolean;
 }
 
 export interface OrderDeskResponse {

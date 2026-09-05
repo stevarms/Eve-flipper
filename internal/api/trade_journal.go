@@ -619,9 +619,29 @@ func (s *Server) loadTradeJournalResult(r *http.Request) (*engine.TradeJournalRe
 	sinceDate := parseSinceParam(r.URL.Query().Get("days"))
 	fifoMode := parseFIFOMode(r.URL.Query().Get("fifo_mode"))
 
+	result, err := s.tradeJournalResultFor(userID, filter, sinceDate, fifoMode)
+	if err != nil {
+		return nil, filter, sinceDate, fifoMode, err
+	}
+	return result, filter, sinceDate, fifoMode, nil
+}
+
+// tradeJournalResultFor is the cache + singleflight path, split out of
+// loadTradeJournalResult so callers holding no *http.Request can reach it.
+// The Orders desk is one: it wants OpenPositions as a sell-side cost basis.
+//
+// A caller passing the Trade Journal tab's own defaults (IncludeAll, zero
+// since, strict-date FIFO) lands on the same cache key that tab uses, so
+// the two share one computed result rather than each paying for its own.
+func (s *Server) tradeJournalResultFor(
+	userID string,
+	filter *db.WalletScopeFilter,
+	sinceDate time.Time,
+	fifoMode engine.FIFOMode,
+) (*engine.TradeJournalResult, error) {
 	key := tradeJournalCacheKey(userID, filter, sinceDate, fifoMode)
 	if cached := journalRuntime.get(key); cached != nil {
-		return cached, filter, sinceDate, fifoMode, nil
+		return cached, nil
 	}
 
 	// Coalesce concurrent duplicate compute requests. The Trade Journal
@@ -637,13 +657,80 @@ func (s *Server) loadTradeJournalResult(r *http.Request) (*engine.TradeJournalRe
 		return s.computeTradeJournalResult(userID, filter, sinceDate, fifoMode, key)
 	})
 	if err != nil {
-		return nil, filter, sinceDate, fifoMode, err
+		return nil, err
 	}
 	result, ok := shared.(*engine.TradeJournalResult)
 	if !ok || result == nil {
-		return nil, filter, sinceDate, fifoMode, fmt.Errorf("trade journal compute returned no result")
+		return nil, fmt.Errorf("trade journal compute returned no result")
 	}
-	return result, filter, sinceDate, fifoMode, nil
+	return result, nil
+}
+
+// orderDeskCostBasisByType reduces the journal's open positions to one
+// average unit cost per type, which is what the Orders desk needs to say
+// whether a sell order is still above water.
+//
+// A type can appear twice: ComputeTradeJournal keeps the trading and
+// manufacturing pools separate, so the two are blended by quantity rather
+// than letting one silently win.
+//
+// Best-effort by design. Any failure returns nil, sell rows then report no
+// margin, and the tab behaves as it did before. The Orders desk must never
+// fail or stall because the wallet archive happens to be cold.
+func (s *Server) orderDeskCostBasisByType(userID string) map[int32]float64 {
+	if s == nil || s.db == nil || strings.TrimSpace(userID) == "" {
+		return nil
+	}
+	result, err := s.tradeJournalResultFor(
+		userID,
+		&db.WalletScopeFilter{IncludeAll: true},
+		time.Time{},
+		engine.FIFOModeStrictDate,
+	)
+	if err != nil {
+		log.Printf("[AUTH] OrderDesk cost basis unavailable: %v", err)
+		return nil
+	}
+	if result == nil {
+		return nil
+	}
+	return blendOpenPositionCostBasis(result.OpenPositions)
+}
+
+// blendOpenPositionCostBasis collapses the journal's open positions to one
+// average unit cost per type. A type can appear more than once — the
+// trading pool and the manufacturing pool are tracked separately — so the
+// pools are blended by quantity rather than averaged, or 10 units bought
+// dear would outweigh 10,000 built cheap. Returns nil when nothing is held,
+// which the desk reads as "unmeasured" rather than "free".
+func blendOpenPositionCostBasis(positions []engine.JournalOpenPosition) map[int32]float64 {
+	type acc struct {
+		qty  int64
+		cost float64
+	}
+	byType := make(map[int32]*acc, len(positions))
+	for _, p := range positions {
+		if p.Qty <= 0 || p.AvgUnitCost <= 0 {
+			continue
+		}
+		a := byType[p.TypeID]
+		if a == nil {
+			a = &acc{}
+			byType[p.TypeID] = a
+		}
+		a.qty += p.Qty
+		a.cost += p.AvgUnitCost * float64(p.Qty)
+	}
+	if len(byType) == 0 {
+		return nil
+	}
+	out := make(map[int32]float64, len(byType))
+	for typeID, a := range byType {
+		if a.qty > 0 {
+			out[typeID] = a.cost / float64(a.qty)
+		}
+	}
+	return out
 }
 
 // computeTradeJournalResult is the raw compute path — extracted from

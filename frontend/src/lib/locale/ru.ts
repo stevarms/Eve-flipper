@@ -1628,6 +1628,7 @@ export const ru = {
     ordersColBest: "Best",
     ordersColPosition: "Pos",
     ordersColEta: "ETA",
+    ordersColMargin: "Margin",
     ordersColExpiry: "Expires",
     ordersColValue: "Стоимость",
     ordersColValueHint:
@@ -1644,6 +1645,20 @@ export const ru = {
     ordersEtaBreakdown:
       "Региональный объём {regional}/день считает обе стороны рынка. Примерно {side}% приходится на вашу сторону, из них {station}% торгуется на этой станции — то есть мимо ордера проходит около {perDay}/день ({basis}). {queue}д на разбор глубины впереди, {total}д всего.",
     ordersEtaUnknownHint: "Нет истории цен по предмету — оценивать не из чего.",
+    ordersColMarginHint:
+      "Стоит ли ещё исполнять этот ордер после налога и комиссии. Buy-ордер считается против цены перепродажи на этой станции, sell-ордер — против реальной себестоимости товара. Сортировка поднимает убыточные наверх.",
+    ordersMarginBuyBreakdown:
+      "Перепродажа по {exit} — на шаг ниже лучшего ask на этой станции — минус {fees}% налога и комиссии даёт {net}. Против вашего bid {bid} это {margin} за штуку, {pct}%. Комиссия за размещение не учтена: отмена ордера её не вернёт.",
+    ordersMarginSellBreakdown:
+      "Продажа по {price} минус {fees}% налога и комиссии даёт {net}. Себестоимость {cost} за штуку, итого {margin} за штуку, {pct}%.",
+    ordersMarginNoneBuyHint:
+      "На этой станции никто не продаёт этот предмет — нет цены перепродажи для расчёта.",
+    ordersMarginNoneSellHint:
+      "Нет себестоимости по этому предмету. Синхронизируйте кошелёк во вкладке Trade Journal.",
+    ordersThinMarginHint: "Маржа положительная, но ниже вашего порога {floor}%.",
+    ordersMinMargin: "Мин. маржа",
+    ordersMinMarginHint:
+      "Ниже этого значения маржа помечается как тонкая. На рекомендацию это не влияет: cancel даётся только при отрицательной марже.",
     ordersFlowBasisWeekday: "с учётом дня недели",
     ordersFlowBasisFlat: "плоское недельное среднее — истории мало для профиля по дням",
     ordersSectionSell: "Ордера на продажу",

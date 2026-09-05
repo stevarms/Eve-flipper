@@ -39,12 +39,14 @@ export function OrdersPill({ isLoggedIn, onOpen, refreshKey }: Props) {
       }
       setLoading(true);
       try {
-        // Same target horizon the tab uses, or the badge would count a
+        // Same thresholds the tab uses, or the badge would count a
         // different set of rows than the table it links to.
+        const prefs = loadOrdersPrefs();
         const resp = await getOrderDesk({
           characterId: "all",
           force,
-          targetEtaDays: loadOrdersPrefs().targetEtaDays,
+          targetEtaDays: prefs.targetEtaDays,
+          minMarginPct: prefs.minMarginPct,
         });
         lastLoadedAtRef.current = Date.now();
         if (mountedRef.current) setSummary(resp.summary);

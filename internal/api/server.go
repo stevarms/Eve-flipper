@@ -8375,6 +8375,12 @@ func (s *Server) handleAuthOrderDesk(w http.ResponseWriter, r *http.Request) {
 			targetETADays = f
 		}
 	}
+	minMarginPct := 3.0
+	if v := r.URL.Query().Get("min_margin_pct"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 && f <= 100 {
+			minMarginPct = f
+		}
+	}
 
 	var orders []esi.CharacterOrder
 	// Remember which order belongs to which session so the response can
@@ -8416,6 +8422,7 @@ func (s *Server) handleAuthOrderDesk(w http.ResponseWriter, r *http.Request) {
 			BrokerFeePercent: brokerFee,
 			TargetETADays:    targetETADays,
 			WarnExpiryDays:   2,
+			MinMarginPercent: minMarginPct,
 		}))
 		return
 	}
@@ -8456,6 +8463,17 @@ func (s *Server) handleAuthOrderDesk(w http.ResponseWriter, r *http.Request) {
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 10)
+
+	// The FIFO trade journal is the only source that knows what held stock
+	// actually cost, which is the one thing the book cannot tell us about a
+	// sell order. Run it against the book fan-out rather than after it, so
+	// a cold journal cache costs no extra wall-clock.
+	var costBasisByType map[int32]float64
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		costBasisByType = s.orderDeskCostBasisByType(userID)
+	}()
 
 	for pair := range pairs {
 		wg.Add(1)
@@ -8506,6 +8524,8 @@ func (s *Server) handleAuthOrderDesk(w http.ResponseWriter, r *http.Request) {
 		BrokerFeePercent: brokerFee,
 		TargetETADays:    targetETADays,
 		WarnExpiryDays:   2,
+		MinMarginPercent: minMarginPct,
+		CostBasisByType:  costBasisByType,
 	})
 	// Stamp owner tags for multi-character views (Orders tab). Always
 	// populate — single-character requests just repeat the same identity

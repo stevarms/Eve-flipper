@@ -2113,6 +2113,7 @@ export interface OrderDeskParams {
   salesTax?: number;
   brokerFee?: number;
   targetEtaDays?: number;
+  minMarginPct?: number;
   characterId?: CharacterScope;
   /** Skip the shared cache and refill it. For an explicit user refresh. */
   force?: boolean;
@@ -2152,6 +2153,7 @@ export async function getOrderDesk(params?: OrderDeskParams): Promise<OrderDeskR
   if (params?.salesTax != null) qp.set("sales_tax", String(params.salesTax));
   if (params?.brokerFee != null) qp.set("broker_fee", String(params.brokerFee));
   if (params?.targetEtaDays != null) qp.set("target_eta_days", String(params.targetEtaDays));
+  if (params?.minMarginPct != null) qp.set("min_margin_pct", String(params.minMarginPct));
   appendCharacterScope(qp, params?.characterId);
   const qs = qp.toString();
 

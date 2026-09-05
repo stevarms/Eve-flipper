@@ -15,6 +15,7 @@ export type OrdersSortKey =
   | "current"
   | "notional"
   | "eta"
+  | "margin"
   | "expiry";
 
 export type OrdersSortDir = "asc" | "desc";
@@ -30,6 +31,7 @@ export const ORDERS_SORT_KEYS: readonly OrdersSortKey[] = [
   "current",
   "notional",
   "eta",
+  "margin",
   "expiry",
 ];
 
@@ -54,6 +56,13 @@ export const ORDERS_DEFAULT_TARGET_ETA_DAYS = 3;
 export const ORDERS_TARGET_ETA_MIN_DAYS = 0.5;
 export const ORDERS_TARGET_ETA_MAX_DAYS = 30;
 
+/** Floor under which a still-positive margin is flagged as thin. A warning
+ *  only: the desk cancels on a negative margin, never on a thin one, so this
+ *  never silently hides an order behind the action filter. */
+export const ORDERS_DEFAULT_MIN_MARGIN_PCT = 3;
+export const ORDERS_MIN_MARGIN_PCT_MIN = 0.1;
+export const ORDERS_MIN_MARGIN_PCT_MAX = 100;
+
 /** One layer of the sort stack. */
 export interface OrdersSortLayer {
   key: OrdersSortKey;
@@ -75,6 +84,8 @@ export interface OrdersPrefs {
   refreshMinutes: number;
   /** Days; passed through to the order desk as its target fill horizon. */
   targetEtaDays: number;
+  /** Percent; passed through to the order desk as its thin-margin floor. */
+  minMarginPct: number;
 }
 
 /** Item A→Z, matching the in-game Orders window so the two lists can be
@@ -86,6 +97,7 @@ export const ORDERS_DEFAULT_PREFS: OrdersPrefs = {
   collapsedBuy: false,
   refreshMinutes: ORDERS_DEFAULT_REFRESH_MINUTES,
   targetEtaDays: ORDERS_DEFAULT_TARGET_ETA_DAYS,
+  minMarginPct: ORDERS_DEFAULT_MIN_MARGIN_PCT,
 };
 
 /** Reads the current stack shape. Returns null — not an empty stack — when
@@ -199,6 +211,14 @@ export function normalizeOrdersPrefs(raw: string | null): OrdersPrefs {
   ) {
     prefs.targetEtaDays = parsed.targetEtaDays;
   }
+  if (
+    typeof parsed.minMarginPct === "number" &&
+    Number.isFinite(parsed.minMarginPct) &&
+    parsed.minMarginPct >= ORDERS_MIN_MARGIN_PCT_MIN &&
+    parsed.minMarginPct <= ORDERS_MIN_MARGIN_PCT_MAX
+  ) {
+    prefs.minMarginPct = parsed.minMarginPct;
+  }
   if (ACTION_FILTERS.includes(parsed.actionFilter as OrdersActionFilter)) {
     prefs.actionFilter = parsed.actionFilter as OrdersActionFilter;
   }
@@ -239,6 +259,8 @@ export function defaultDirForSortKey(key: OrdersSortKey): OrdersSortDir {
     case "notional":
     case "current":
       return "desc";
+    // Margin is the one number you want to see the *bottom* of first, so it
+    // keeps the ascending default the names get, for the opposite reason.
     default:
       return "asc";
   }

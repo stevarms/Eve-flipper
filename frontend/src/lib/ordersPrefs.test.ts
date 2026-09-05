@@ -4,6 +4,7 @@ import {
   defaultDirForSortKey,
   normalizeOrdersPrefs,
   ORDERS_DEFAULT_PREFS,
+  ORDERS_DEFAULT_MIN_MARGIN_PCT,
   ORDERS_DEFAULT_REFRESH_MINUTES,
   ORDERS_DEFAULT_TARGET_ETA_DAYS,
   ORDERS_MAX_SORT_LAYERS,
@@ -18,6 +19,7 @@ describe("orders preferences normalization", () => {
     expect(ORDERS_DEFAULT_PREFS.sort).toEqual([{ key: "type", dir: "asc" }]);
     expect(ORDERS_DEFAULT_PREFS.refreshMinutes).toBe(ORDERS_DEFAULT_REFRESH_MINUTES);
     expect(ORDERS_DEFAULT_PREFS.targetEtaDays).toBe(ORDERS_DEFAULT_TARGET_ETA_DAYS);
+    expect(ORDERS_DEFAULT_PREFS.minMarginPct).toBe(ORDERS_DEFAULT_MIN_MARGIN_PCT);
   });
 
   it("falls back to the defaults for anything unreadable", () => {
@@ -38,6 +40,7 @@ describe("orders preferences normalization", () => {
         collapsedBuy: true,
         refreshMinutes: 10,
         targetEtaDays: 7,
+        minMarginPct: 5,
       }),
     );
 
@@ -51,6 +54,7 @@ describe("orders preferences normalization", () => {
       collapsedBuy: true,
       refreshMinutes: 10,
       targetEtaDays: 7,
+      minMarginPct: 5,
     });
   });
 
@@ -129,6 +133,25 @@ describe("orders preferences normalization", () => {
         ORDERS_DEFAULT_TARGET_ETA_DAYS,
       );
     }
+  });
+
+  it("only accepts a minimum margin the input can express", () => {
+    expect(normalizeOrdersPrefs(JSON.stringify({ minMarginPct: 7.5 })).minMarginPct).toBe(7.5);
+    expect(normalizeOrdersPrefs(JSON.stringify({ minMarginPct: 0.1 })).minMarginPct).toBe(0.1);
+    expect(normalizeOrdersPrefs(JSON.stringify({ minMarginPct: 100 })).minMarginPct).toBe(100);
+    for (const bad of [0, -1, 0.05, 101, "3", null, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(normalizeOrdersPrefs(JSON.stringify({ minMarginPct: bad })).minMarginPct).toBe(
+        ORDERS_DEFAULT_MIN_MARGIN_PCT,
+      );
+    }
+  });
+
+  it("upgrades a blob written before the margin floor existed", () => {
+    // The localStorage key did not change for this either, so every browser
+    // that has used the tab has a blob with no minMarginPct in it.
+    const prefs = normalizeOrdersPrefs(JSON.stringify({ targetEtaDays: 7, refreshMinutes: 10 }));
+    expect(prefs.minMarginPct).toBe(ORDERS_DEFAULT_MIN_MARGIN_PCT);
+    expect(prefs.targetEtaDays).toBe(7);
   });
 
   it("keeps the good fields when only some are bad", () => {

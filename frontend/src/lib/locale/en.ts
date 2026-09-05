@@ -1632,6 +1632,7 @@ export const en = {
     ordersColBest: "Best",
     ordersColPosition: "Pos",
     ordersColEta: "ETA",
+    ordersColMargin: "Margin",
     ordersColExpiry: "Expires",
     ordersColValue: "Value",
     ordersColValueHint:
@@ -1648,6 +1649,20 @@ export const en = {
     ordersEtaBreakdown:
       "Regional volume {regional}/day counts both sides of the market. About {side}% of it is your side, and {station}% of that trades at this station, so roughly {perDay}/day flows past your order ({basis}). {queue}d to clear the depth ahead of you, {total}d in total.",
     ordersEtaUnknownHint: "No price history for this item, so there is nothing to estimate from.",
+    ordersColMarginHint:
+      "Whether this order is still worth filling, after sales tax and broker fee. A buy order is measured against what you could resell for at this station; a sell order against what the stock actually cost you. Sort by it to bring the losers to the top.",
+    ordersMarginBuyBreakdown:
+      "Resell at {exit} — one step under the best ask at this station — minus {fees}% tax and broker fee leaves {net}. Against your {bid} bid that is {margin}/unit, {pct}%. The broker fee already paid to place this order is excluded: cancelling will not refund it.",
+    ordersMarginSellBreakdown:
+      "Selling at {price} minus {fees}% tax and broker fee leaves {net}. The stock cost {cost}/unit, so that is {margin}/unit, {pct}%.",
+    ordersMarginNoneBuyHint:
+      "Nothing is being sold at this station, so there is no resale price to measure the bid against.",
+    ordersMarginNoneSellHint:
+      "No cost basis for this item. Sync your wallet on the Trade Journal tab and the desk can tell whether this order is above what the stock cost you.",
+    ordersThinMarginHint: "Margin is positive but under your {floor}% floor.",
+    ordersMinMargin: "Min margin",
+    ordersMinMarginHint:
+      "Below this the margin is flagged thin with a warning. It never changes the recommendation — only a margin that has actually gone negative turns into a cancel.",
     ordersFlowBasisWeekday: "shaped by day of week",
     ordersFlowBasisFlat: "flat weekly average — not enough history to shape by day",
     ordersSectionSell: "Sell orders",
