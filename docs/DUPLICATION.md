@@ -43,9 +43,12 @@ counterparts — proximity made the overlaps obvious:
    portrait-click only) is deleted; its history and undercut status moved into
    the main-tab order desk. See Cluster 14.
 7. **`trade_journal` vs character-modal `PnLTab`** — two accounting surfaces
-   over one shared FIFO backend, now two tabs apart in the Journal workspace.
-   The duplicate open-positions table is gone; the surface merge is
-   deliberately deferred. See Cluster 15.
+   over the same transactions, running **two separate FIFO engines**. Trade
+   Journal folds in industry jobs and pools every wallet; P&L sees wallet
+   transactions for one character and prices fees from UI sliders. They can
+   legitimately disagree and nothing tells the user why. The duplicate
+   open-positions table is gone; the surface merge is deferred but should be
+   the next piece of Journal work. See Cluster 15.
 
 ---
 
@@ -574,34 +577,48 @@ of the drawer — which comes from the desk payload — untouched.
 
 Two accounting surfaces over the same ESI transaction history, built at
 different times for different questions, now sitting two tabs apart in the same
-Journal workspace:
+Journal workspace — and, contrary to a first reading, running **two separate
+FIFO implementations**:
 
-- `components/TradeJournalTab.tsx` + `components/journal/` — realised P&L by
-  type, with a drawer, backed by `loadTradeJournalResult` in
-  `internal/api/trade_journal.go`.
-- `components/character-popup/PnLTab.tsx` — portfolio-level P&L over time,
-  charts, backed by the same FIFO engine (`engine.JournalOpenPosition` and
-  friends in `internal/engine/portfolio_manufacturing.go`).
+| | Trade Journal (`trade_journal`) | P&L (`pnl`) |
+|---|---|---|
+| Component | `components/TradeJournal.tsx` | `components/character-popup/PnLTab.tsx` |
+| API | `/api/journal/summary`, `/by-type`, `/lots` | `/api/portfolio/pnl` |
+| Engine | `engine.ComputeTradeJournal` (`portfolio_manufacturing.go`) | `engine.ComputePortfolioPnLWithOptions` (`portfolio.go`) |
+| Inputs | buys, sells **and industry jobs** | wallet transactions only |
+| Cost basis of a built item | install cost + materials ÷ runs, matched as a lot | invisible — a manufactured sell has no basis |
+| Scope | `WalletScopeFilter`: many characters + corp divisions pooled | one `characterScope` |
+| Fees | the character's real fee profile | two UI sliders, defaulting 8% / 1% |
+| FIFO ordering | three modes (strict date / trade first / manufacture first) | strict date, fixed |
 
-The backend is *not* duplicated — both read the same FIFO derivation, which is
-why the numbers agree. The duplication is at the presentation layer: two
-headers, two scope pickers, two date-range controls, two ISK-formatting call
-sites, and until this pass **two open-positions tables**.
+So the two tabs can legitimately disagree, and the reason is not a bug in
+either: Trade Journal knows what you built, P&L does not. On a manufacturing
+character the gap is the whole industry side of the business. P&L's fee sliders
+are also a what-if control, not a record of what you actually paid.
 
-That last one is the part already closed. `PnLOpenPositionsTable`
-(`journal/PnLPrimitives.tsx`) answered *what did I pay* with five ledger columns
-and no live price; the new Assets → Positions tab answers *should I sell this
-today*. Keeping both meant the same question got two different answers depending
-on which tab you opened, so the primitive was deleted and `PnLTab` now links to
-Positions.
+What P&L still has that Trade Journal does not: the drawdown chart mode, slot
+efficiency, the per-station table, and the raw ledger. Those are real analyses
+and none of them exist elsewhere — which is why this is a merge, not a
+deletion.
 
-What remains is a genuine merge candidate — one Journal surface with realised
-and unrealised views — deliberately **not** attempted in the tab-promotion pass,
-because moving the mount point and rewriting the tool at the same time makes a
-near-mechanical diff unreviewable.
+**Already closed in this pass:** the duplicate open-positions table.
+`PnLOpenPositionsTable` (`journal/PnLPrimitives.tsx`) answered *what did I pay*
+with five ledger columns and no live price; the new Assets → Positions tab
+answers *should I sell this today*. Keeping both meant the same question got two
+different answers depending on which tab you opened, so the primitive was
+deleted and `PnLTab` now links to Positions.
 
-**Priority:** medium. No drift risk today (shared backend); the cost is
-navigational — the user has to know which of two tabs holds the number.
+**Priority: high** — raised from medium once the two engines were traced. This
+is not merely navigational duplication. Two independent FIFO implementations
+over the same transactions is exactly the shape that drifts, and it drifts
+silently: both tabs render a confident ISK figure and nothing tells the user
+they were computed by different code with different inputs.
+
+The merge — one Journal surface, `ComputeTradeJournal` as the single engine,
+P&L's unique panels ported onto it — was deliberately **not** attempted in the
+tab-promotion pass, because moving a tool's mount point and rewriting it in the
+same diff makes a near-mechanical change unreviewable. It should be the next
+piece of Journal work.
 
 ---
 
