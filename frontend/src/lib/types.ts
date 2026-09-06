@@ -1702,6 +1702,9 @@ export interface OrderDeskSummary {
   sell_orders: number;
   needs_reprice: number;
   needs_cancel: number;
+  /** Underwater sell orders: the ISK is already spent, so the panel prices
+   *  cutting, holding and moving rather than the row asserting a verdict. */
+  needs_review: number;
   total_notional: number;
   median_eta_days: number;
   avg_eta_days: number;
@@ -1763,7 +1766,7 @@ export interface OrderDeskOrder {
   issued_at: string;
   expires_at: string;
   days_to_expire: number;
-  recommendation: "hold" | "reprice" | "cancel" | string;
+  recommendation: "hold" | "reprice" | "review" | "cancel" | string;
   reason: string;
   // Owner tags stamped by the api-layer aggregator when scope=all so the
   // multi-character Orders tab can group / filter by owning character.
@@ -1798,6 +1801,78 @@ export interface OrderDeskResponse {
   summary: OrderDeskSummary;
   orders: OrderDeskOrder[];
   settings: OrderDeskSettings;
+}
+
+// --- Disposition -----------------------------------------------------
+// Answers the question a "review" row raises: this stock is underwater and
+// the ISK is already spent, so what is it worth to cut, to wait, or to haul
+// somewhere else? Fetched per order, on demand, when a row is expanded.
+
+/** Whether today's price is a dip that has historically come back, or just
+ *  where this item lives now. basis "none" means it could not be told —
+ *  reason says which gate failed, and the hold plan is simply absent. It is
+ *  never degraded into an optimistic guess. */
+export interface RecoveryOutlook {
+  basis: "history" | "none" | string;
+  reason?: string;
+  /** Fitted drift in percent per day. */
+  trend_pct_day: number;
+  /** How far below trend today sits, in residual standard deviations. */
+  z_score: number;
+  target_price: number;
+  /** Empirical median days comparable dips took to return to trend. */
+  median_days: number;
+  episodes: number;
+  window_days: number;
+  samples: number;
+}
+
+/** One priced option. Every ISK figure covers the whole remaining quantity,
+ *  because the decision is about the position rather than a unit of it. */
+export interface DispositionPlan {
+  kind: "cut" | "hold" | "move" | string;
+  recommended: boolean;
+  venue?: string;
+  jumps?: number;
+  exit_price: number;
+  /** Proceeds after fees. Hitting a standing bid pays sales tax only;
+   *  listing pays broker fee too. */
+  gross_isk: number;
+  haul_isk?: number;
+  net_isk: number;
+  /** Net against what the stock cost. Negative on every plan is normal for
+   *  an underwater position — the question is which loses least. */
+  profit_isk: number;
+  days_to_realise: number;
+  /** Net ISK valued at horizon_days, crediting whatever the plan frees
+   *  early at the hurdle rate. This is the column plans are ranked on. */
+  terminal_isk: number;
+  notes?: string[];
+}
+
+export interface DispositionResponse {
+  type_id: number;
+  type_name?: string;
+  qty: number;
+  cost_basis_isk: number;
+  position_isk: number;
+  held_since?: string;
+  unit_volume_m3?: number;
+  /** The common date every plan is valued at: the slowest plan's own
+   *  completion, so a plan that ties ISK up earns no credit. */
+  horizon_days: number;
+  /** Derived from the tab's own settings, not a separate knob:
+   *  min_margin_percent / target_eta_days. */
+  hurdle_pct_day: number;
+  venues_priced: number;
+  venues_skipped: number;
+  recovery: RecoveryOutlook;
+  plans: DispositionPlan[];
+  /** Top two within 1% of each other — the call is a coin flip and the
+   *  panel says so rather than picking a side. */
+  too_close: boolean;
+  /** Set when plans is empty. An empty list is never "nothing to do". */
+  reason?: string;
 }
 
 export type StationCommandAction = "new_entry" | "reprice" | "hold" | "cancel";

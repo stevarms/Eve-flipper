@@ -84,7 +84,9 @@ export function OrdersPill({ isLoggedIn, onOpen, refreshKey }: Props) {
 
   const total = summary?.total_orders ?? 0;
   const needAction =
-    (summary?.needs_reprice ?? 0) + (summary?.needs_cancel ?? 0);
+    (summary?.needs_reprice ?? 0) +
+    (summary?.needs_cancel ?? 0) +
+    (summary?.needs_review ?? 0);
   const tone =
     needAction > 0
       ? "text-amber-400 border-amber-400/40"
@@ -99,6 +101,7 @@ export function OrdersPill({ isLoggedIn, onOpen, refreshKey }: Props) {
     total,
     reprice: summary?.needs_reprice ?? 0,
     cancel: summary?.needs_cancel ?? 0,
+    review: summary?.needs_review ?? 0,
   });
 
   return (

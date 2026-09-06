@@ -938,6 +938,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/auth/pi/planets", s.handleAuthPIPlanets)
 	mux.HandleFunc("GET /api/auth/undercuts", s.handleAuthUndercuts)
 	mux.HandleFunc("GET /api/auth/orders/desk", s.handleAuthOrderDesk)
+	mux.HandleFunc("GET /api/auth/orders/desk/disposition", s.handleAuthOrderDisposition)
 	mux.HandleFunc("GET /api/auth/station/trade-states", s.handleAuthGetStationTradeStates)
 	mux.HandleFunc("POST /api/auth/station/trade-states/set", s.handleAuthSetStationTradeState)
 	mux.HandleFunc("POST /api/auth/station/trade-states/delete", s.handleAuthDeleteStationTradeStates)

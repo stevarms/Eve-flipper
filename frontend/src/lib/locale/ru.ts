@@ -1618,6 +1618,7 @@ export const ru = {
     ordersKpiTotal: "Всего ордеров",
     ordersKpiReprice: "Reprice",
     ordersKpiCancel: "Cancel",
+    ordersKpiReview: "Review",
     ordersKpiNotional: "Notional",
     ordersKpiCharacters: "Персонажей",
     ordersColOwner: "Char",
@@ -1658,7 +1659,7 @@ export const ru = {
     ordersThinMarginHint: "Маржа положительная, но ниже вашего порога {floor}%.",
     ordersMinMargin: "Мин. маржа",
     ordersMinMarginHint:
-      "Ниже этого значения маржа помечается как тонкая. На рекомендацию это не влияет: cancel даётся только при отрицательной марже.",
+      "Ниже этого значения маржа помечается как тонкая. На рекомендацию это не влияет: только реально отрицательная маржа меняет её — cancel для buy-ордера и review для sell-ордера, где ISK уже потрачен.",
     ordersFlowBasisWeekday: "с учётом дня недели",
     ordersFlowBasisFlat: "плоское недельное среднее — истории мало для профиля по дням",
     ordersSectionSell: "Ордера на продажу",
@@ -1681,10 +1682,51 @@ export const ru = {
       "Открыть окно маркета в EVE клиенте и скопировать рекомендованную цену в буфер обмена (ESI open-window scope). Требует запущенного клиента с тем же персонажем.",
     ordersCopyNameHint:
       "Скопировать название предмета в буфер обмена. Резерв, если 🎮 не открыл окно маркета — вставьте название в поиск маркета в клиенте.",
+    // Disposition panel — три плана, оценённые на один горизонт.
+    ordersDispositionExpandHint:
+      "Сравнить cut, hold и move для этой позиции. Запрашивает рынки других хабов, поэтому занимает секунду.",
+    ordersDispositionLoading: "Считаем cut, hold и move…",
+    ordersDispositionFailed: "Не удалось оценить позицию: {error}",
+    ordersDispositionPosition: "{qty} шт. по {cost} = {total}",
+    ordersDispositionHeld: "с {date}",
+    ordersDispositionHorizon: "горизонт {days}д",
+    ordersDispositionHorizonHint:
+      "Все планы оцениваются на одну и ту же будущую дату — её задаёт самый медленный план. Без общей даты план мог бы выиграть просто потому, что он дольше.",
+    ordersDispositionHurdle: "ставка {pct}%/день",
+    ordersDispositionHurdleHint:
+      "Сколько, как предполагается, заработает освобождённый ISK в другом месте: ваша мин. маржа, растянутая на целевой ETA. Увеличьте Target ETA — ставка упадёт, и медленный план сможет обогнать быстрый.",
+    ordersDispositionVenues: "оценено рынков: {priced}, пропущено: {skipped}",
+    ordersDispositionNoPlans: "Сравнивать нечего.",
+    ordersDispositionColPlan: "План",
+    ordersDispositionColVenue: "Рынок",
+    ordersDispositionColExit: "Цена выхода",
+    ordersDispositionColNet: "Чистый ISK",
+    ordersDispositionColProfit: "к себест.",
+    ordersDispositionColDays: "Дней",
+    ordersDispositionColTerminal: "На горизонте",
+    ordersDispositionKindCut: "Cut",
+    ordersDispositionKindHold: "Hold",
+    ordersDispositionKindMove: "Move",
+    ordersDispositionKindCutHint:
+      "Продать в лучший bid на этой станции прямо сейчас. Исполнение чужого ордера платит налог с продаж, но не брокерскую комиссию, и ISK свободен сегодня.",
+    ordersDispositionKindHoldHint:
+      "Оставить ордер и ждать возврата цены. Предлагается только если у предмета есть измеренная история возврата из таких же просадок.",
+    ordersDispositionKindMoveHint:
+      "Отвезти на другой рынок и продать там. Чистый ISK уже за вычетом доставки по вашей ставке ISK/m³/прыжок.",
+    ordersDispositionBest: "лучший",
+    ordersDispositionJumps: "· {jumps} прыжков",
+    ordersDispositionNetHint: "{gross} после комиссий, минус {haul} доставки.",
+    ordersDispositionNetHintNoHaul: "{gross} после комиссий.",
+    ordersDispositionTooClose:
+      "Два лучших плана различаются меньше чем на 1%. Это подброс монеты, а не рекомендация — решайте по тому, чего эта таблица не видит.",
+    ordersDispositionNoHold: "Hold не предлагается: {reason}.",
+    ordersDispositionRecovery:
+      "Данные по просадкам: {episodes} сопоставимых просадок за {window}д восстановились, медиана {days}д, цель по тренду {target}.",
+
     ordersPillLabel: "Ордера",
     ordersPillAria: "Открыть Orders",
     ordersPillTooltip:
-      "{total} активных · {reprice} reprice · {cancel} cancel. Клик — открыть Orders.",
+      "{total} активных · {reprice} reprice · {cancel} cancel · {review} review. Клик — открыть Orders.",
 
     // Trade Journal tab
     tabTradeJournal: "Trade Journal",
@@ -2309,6 +2351,7 @@ export const ru = {
     orderDeskActionHold: "Держать",
     orderDeskActionReprice: "Переставить",
     orderDeskActionCancel: "Отменить ордер",
+    orderDeskActionReview: "Разобраться",
 
     // Portfolio Optimizer
     charOptimizerTab: "Оптимизатор",

@@ -88,6 +88,7 @@ type OrderDeskSummary struct {
 	SellOrders      int     `json:"sell_orders"`
 	NeedsReprice    int     `json:"needs_reprice"`
 	NeedsCancel     int     `json:"needs_cancel"`
+	NeedsReview     int     `json:"needs_review"`
 	TotalNotional   float64 `json:"total_notional"`
 	MedianETADays   float64 `json:"median_eta_days"`
 	AvgETADays      float64 `json:"avg_eta_days"`
@@ -141,7 +142,7 @@ type OrderDeskOrder struct {
 	IssuedAt         string  `json:"issued_at"`
 	ExpiresAt        string  `json:"expires_at"`
 	DaysToExpire     int     `json:"days_to_expire"` // -1 if unknown
-	Recommendation   string  `json:"recommendation"` // hold | reprice | cancel
+	Recommendation   string  `json:"recommendation"` // hold | reprice | review | cancel
 	Reason           string  `json:"reason"`
 
 	// Owner tags stamped by the api-layer aggregator when scope=all so the
@@ -516,6 +517,8 @@ func ComputeOrderDesk(
 			out.Summary.NeedsReprice++
 		case "cancel":
 			out.Summary.NeedsCancel++
+		case "review":
+			out.Summary.NeedsReview++
 		}
 		if row.ETADays < 0 {
 			out.Summary.UnknownETACount++
@@ -911,7 +914,12 @@ func orderDeskRecommendation(row OrderDeskOrder, opt OrderDeskOptions) (string, 
 		if row.IsBuyOrder {
 			return "cancel", fmt.Sprintf("margin gone: %+.1f%% at current book", row.MarginPercent)
 		}
-		return "cancel", fmt.Sprintf("below cost: %+.1f%% vs basis", row.MarginPercent)
+		// A sell order is already paid for, so cancelling does not undo the
+		// loss — it swaps realising it for holding stock. Whether that is
+		// right depends on the bounce, the other hubs and what the freed ISK
+		// would earn, none of which this row can see. Say "review" and let
+		// the disposition panel price the three options.
+		return "review", fmt.Sprintf("below cost: %+.1f%% — weigh cut, move or hold", row.MarginPercent)
 	}
 
 	action, reason := orderDeskLiquidityRecommendation(row, opt)
@@ -927,7 +935,7 @@ func orderDeskRecommendation(row OrderDeskOrder, opt OrderDeskOptions) (string, 
 		if row.IsBuyOrder {
 			return "cancel", "overbidding would erase the margin"
 		}
-		return "cancel", "reprice would sell below cost"
+		return "review", "reprice would sell below cost"
 	}
 
 	return action, reason
@@ -975,10 +983,12 @@ func orderDeskActionPriority(action string) int {
 	switch action {
 	case "cancel":
 		return 0
-	case "reprice":
+	case "review":
 		return 1
-	default:
+	case "reprice":
 		return 2
+	default:
+		return 3
 	}
 }
 

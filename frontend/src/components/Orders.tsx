@@ -1,8 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getAuthStatus, getOrderDesk, openMarketInGame } from "../lib/api";
+import {
+  getAuthStatus,
+  getOrderDesk,
+  getOrderDisposition,
+  openMarketInGame,
+} from "../lib/api";
 import type { CharacterMarketFees } from "../lib/api";
 import type {
   AuthCharacter,
+  DispositionPlan,
+  DispositionResponse,
   OrderDeskOrder,
   OrderDeskResponse,
   OrderDeskSettings,
@@ -49,10 +56,31 @@ interface Props {
 }
 
 const PRIORITY_BY_ACTION: Record<string, number> = {
-  cancel: 3,
+  cancel: 4,
+  review: 3,
   reprice: 2,
   hold: 0,
 };
+
+/** Every action except "hold" wants a decision from you. `review` is one of
+ *  them — the desk cannot call an underwater sell order on its own, but that
+ *  is precisely a row you have to look at, not one to hide behind the filter. */
+function needsAttention(row: OrderDeskOrder): boolean {
+  return (
+    row.recommendation === "reprice" ||
+    row.recommendation === "cancel" ||
+    row.recommendation === "review"
+  );
+}
+
+/** One expanded disposition panel. Kept per order id in the tab rather than
+ *  in the row, so collapsing a section or re-sorting does not throw away a
+ *  request that cost four region books to answer. */
+interface DispositionState {
+  loading: boolean;
+  error?: string;
+  data?: DispositionResponse;
+}
 
 /** Header label for each sortable column, reused by the chip strip so a
  *  chip and its column can never drift apart. */
@@ -155,6 +183,8 @@ export function Orders({ isLoggedIn }: Props) {
 
   const [feesReady, setFeesReady] = useState(false);
   const [feeSource, setFeeSource] = useState<string | null>(null);
+  const [expandedOrders, setExpandedOrders] = useState<Set<number>>(new Set());
+  const [dispositions, setDispositions] = useState<Record<number, DispositionState>>({});
 
   const lastLoadedAtRef = useRef(0);
   const startedRef = useRef(false);
@@ -290,6 +320,55 @@ export function Orders({ isLoggedIn }: Props) {
     });
   };
 
+  // Every number in a panel is quoted against the fees, the target ETA and
+  // the min margin in force when it was fetched — the hurdle rate is derived
+  // from the last two. Change any of them and the cached answers are not
+  // stale-but-close, they are answers to a different question.
+  useEffect(() => {
+    setDispositions({});
+    setExpandedOrders(new Set());
+  }, [salesTax, brokerFee, prefs.targetEtaDays, prefs.minMarginPct]);
+
+  const toggleDisposition = useCallback(
+    (orderId: number) => {
+      const open = expandedOrders.has(orderId);
+      setExpandedOrders((prev) => {
+        const next = new Set(prev);
+        if (open) next.delete(orderId);
+        else next.add(orderId);
+        return next;
+      });
+      // Only the first open pays. A failed one is retried on the next open,
+      // since the usual cause is a hub fetch timing out.
+      if (open || dispositions[orderId]?.data) return;
+      setDispositions((prev) => ({ ...prev, [orderId]: { loading: true } }));
+      void getOrderDisposition(orderId, {
+        salesTax,
+        brokerFee,
+        targetEtaDays: prefs.targetEtaDays,
+        minMarginPct: prefs.minMarginPct,
+        characterId: "all",
+      })
+        .then((resp) =>
+          setDispositions((prev) => ({ ...prev, [orderId]: { loading: false, data: resp } })),
+        )
+        .catch((e) =>
+          setDispositions((prev) => ({
+            ...prev,
+            [orderId]: { loading: false, error: e instanceof Error ? e.message : String(e) },
+          })),
+        );
+    },
+    [
+      expandedOrders,
+      dispositions,
+      salesTax,
+      brokerFee,
+      prefs.targetEtaDays,
+      prefs.minMarginPct,
+    ],
+  );
+
   const filteredRows = useMemo(() => {
     if (!data) return [] as OrderDeskOrder[];
     let rows = data.orders.slice();
@@ -299,9 +378,7 @@ export function Orders({ isLoggedIn }: Props) {
       );
     }
     if (prefs.actionFilter === "needs_action") {
-      rows = rows.filter(
-        (r) => r.recommendation === "reprice" || r.recommendation === "cancel",
-      );
+      rows = rows.filter(needsAttention);
     } else if (prefs.actionFilter === "hold") {
       rows = rows.filter((r) => r.recommendation === "hold");
     }
@@ -555,7 +632,7 @@ export function Orders({ isLoggedIn }: Props) {
 
       {/* KPI strip */}
       {data && (
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-6 gap-3">
           <KPITile
             label={t("ordersKpiTotal")}
             value={String(data.summary.total_orders)}
@@ -569,6 +646,11 @@ export function Orders({ isLoggedIn }: Props) {
             label={t("ordersKpiCancel")}
             value={String(data.summary.needs_cancel)}
             emphasis={data.summary.needs_cancel > 0}
+          />
+          <KPITile
+            label={t("ordersKpiReview")}
+            value={String(data.summary.needs_review)}
+            emphasis={data.summary.needs_review > 0}
           />
           <KPITile
             label={t("ordersKpiNotional")}
@@ -727,6 +809,9 @@ export function Orders({ isLoggedIn }: Props) {
               t={t}
               onOpenMarket={openMarketForType}
               addToast={addToast}
+              expandedOrders={expandedOrders}
+              dispositions={dispositions}
+              onToggleDisposition={toggleDisposition}
             />
             <OrderSection
               title={t("ordersSectionBuy")}
@@ -737,6 +822,9 @@ export function Orders({ isLoggedIn }: Props) {
               t={t}
               onOpenMarket={openMarketForType}
               addToast={addToast}
+              expandedOrders={expandedOrders}
+              dispositions={dispositions}
+              onToggleDisposition={toggleDisposition}
             />
           </table>
         )}
@@ -764,6 +852,9 @@ function OrderSection({
   t,
   onOpenMarket,
   addToast,
+  expandedOrders,
+  dispositions,
+  onToggleDisposition,
 }: {
   title: string;
   rows: OrderDeskOrder[];
@@ -773,11 +864,12 @@ function OrderSection({
   t: Translate;
   onOpenMarket: (typeID: number) => void;
   addToast: AddToast;
+  expandedOrders: Set<number>;
+  dispositions: Record<number, DispositionState>;
+  onToggleDisposition: (orderId: number) => void;
 }) {
   const notional = rows.reduce((sum, r) => sum + r.notional, 0);
-  const needsAction = rows.filter(
-    (r) => r.recommendation === "reprice" || r.recommendation === "cancel",
-  ).length;
+  const needsAction = rows.filter(needsAttention).length;
 
   return (
     <tbody>
@@ -817,6 +909,9 @@ function OrderSection({
             t={t}
             onOpenMarket={onOpenMarket}
             addToast={addToast}
+            expanded={expandedOrders.has(r.order_id)}
+            disposition={dispositions[r.order_id]}
+            onToggleDisposition={onToggleDisposition}
           />
         ))}
     </tbody>
@@ -955,6 +1050,9 @@ function OrderRow({
   t,
   onOpenMarket,
   addToast,
+  expanded,
+  disposition,
+  onToggleDisposition,
 }: {
   row: OrderDeskOrder;
   settings: OrderDeskSettings;
@@ -962,6 +1060,9 @@ function OrderRow({
   t: Translate;
   onOpenMarket: (typeID: number) => void;
   addToast: AddToast;
+  expanded: boolean;
+  disposition?: DispositionState;
+  onToggleDisposition: (orderId: number) => void;
 }) {
   const atTop = row.position === 1;
   const priceCls = atTop ? "text-eve-dim font-mono" : "text-eve-accent font-mono";
@@ -997,15 +1098,22 @@ function OrderRow({
         : row.warn_thin_margin
           ? "text-amber-400"
           : "text-emerald-400";
+  // `review` is deliberately not red. The ISK is already spent, so the row is
+  // not "you are losing money by leaving this up" — it is "the desk cannot
+  // call this one, come and look".
   const badgeClass =
     row.recommendation === "cancel"
       ? "bg-red-500/20 text-red-400"
-      : row.recommendation === "reprice"
-        ? "bg-amber-500/20 text-amber-400"
-        : row.book_available
-          ? "bg-emerald-500/20 text-emerald-400"
-          : "bg-eve-dim/20 text-eve-dim";
+      : row.recommendation === "review"
+        ? "bg-sky-500/20 text-sky-400"
+        : row.recommendation === "reprice"
+          ? "bg-amber-500/20 text-amber-400"
+          : row.book_available
+            ? "bg-emerald-500/20 text-emerald-400"
+            : "bg-eve-dim/20 text-eve-dim";
+  const reviewable = row.recommendation === "review";
   return (
+    <>
     <tr className="border-t border-eve-border/50 hover:bg-eve-accent/5">
       <td className="px-2 py-1 text-eve-text">
         {row.character_id ? (
@@ -1046,12 +1154,26 @@ function OrderRow({
         {row.location_name || `#${row.location_id}`}
       </td>
       <td className="px-2 py-1">
-        <span
-          className={`inline-flex px-1.5 py-0.5 rounded-sm text-[10px] font-medium uppercase tracking-wide ${badgeClass} cursor-help`}
-          title={row.reason}
-        >
-          {row.recommendation}
-        </span>
+        <div className="flex items-center gap-1">
+          <span
+            className={`inline-flex px-1.5 py-0.5 rounded-sm text-[10px] font-medium uppercase tracking-wide ${badgeClass} cursor-help`}
+            title={row.reason}
+          >
+            {row.recommendation}
+          </span>
+          {reviewable && (
+            <button
+              type="button"
+              onClick={() => onToggleDisposition(row.order_id)}
+              aria-expanded={expanded}
+              className="text-[10px] px-1 rounded-sm text-eve-dim hover:text-eve-accent transition-colors"
+              title={t("ordersDispositionExpandHint")}
+              aria-label={t("ordersDispositionExpandHint")}
+            >
+              {expanded ? "▾" : "▸"}
+            </button>
+          )}
+        </div>
       </td>
       <td className="px-2 py-1 text-right font-mono text-eve-text">{formatIsk(row.price)}</td>
       <td className="px-2 py-1 text-right font-mono text-eve-dim">
@@ -1137,6 +1259,207 @@ function OrderRow({
       <td className="px-2 py-1 text-right text-eve-dim font-mono">
         {row.days_to_expire >= 0 ? `${row.days_to_expire}d` : "—"}
       </td>
+    </tr>
+    {reviewable && expanded && (
+      <tr className="bg-eve-dark/40">
+        <td colSpan={COLUMN_COUNT} className="px-3 py-2">
+          <DispositionPanel state={disposition} formatIsk={formatIsk} t={t} />
+        </td>
+      </tr>
+    )}
+    </>
+  );
+}
+
+const DISPOSITION_KIND_LABEL: Record<string, TranslationKey> = {
+  cut: "ordersDispositionKindCut",
+  hold: "ordersDispositionKindHold",
+  move: "ordersDispositionKindMove",
+};
+
+const DISPOSITION_KIND_HINT: Record<string, TranslationKey> = {
+  cut: "ordersDispositionKindCutHint",
+  hold: "ordersDispositionKindHoldHint",
+  move: "ordersDispositionKindMoveHint",
+};
+
+/** The three answers to "what is this ISK worth at a common future date",
+ *  side by side with the arithmetic that produced them. It shows its working
+ *  because the whole point is that you make the call, not the desk — and
+ *  where a plan is missing it says why rather than quietly dropping it. */
+function DispositionPanel({
+  state,
+  formatIsk,
+  t,
+}: {
+  state?: DispositionState;
+  formatIsk: (v: number) => string;
+  t: Translate;
+}) {
+  if (!state || state.loading) {
+    return <div className="text-[11px] text-eve-dim">{t("ordersDispositionLoading")}</div>;
+  }
+  if (state.error) {
+    return (
+      <div className="text-[11px] text-red-400">
+        {t("ordersDispositionFailed", { error: state.error })}
+      </div>
+    );
+  }
+  const d = state.data;
+  if (!d) return null;
+
+  const holdOffered = d.plans.some((p) => p.kind === "hold");
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-eve-dim">
+        <span>
+          {t("ordersDispositionPosition", {
+            qty: d.qty.toLocaleString(),
+            cost: formatIsk(d.cost_basis_isk),
+            total: formatIsk(d.position_isk),
+          })}
+        </span>
+        {d.held_since && (
+          <span>{t("ordersDispositionHeld", { date: d.held_since })}</span>
+        )}
+        <span className="cursor-help" title={t("ordersDispositionHorizonHint")}>
+          {t("ordersDispositionHorizon", { days: d.horizon_days.toFixed(1) })}
+        </span>
+        <span className="cursor-help" title={t("ordersDispositionHurdleHint")}>
+          {t("ordersDispositionHurdle", { pct: d.hurdle_pct_day.toFixed(2) })}
+        </span>
+        {d.venues_priced > 0 && (
+          <span>
+            {t("ordersDispositionVenues", {
+              priced: d.venues_priced,
+              skipped: d.venues_skipped,
+            })}
+          </span>
+        )}
+      </div>
+
+      {d.plans.length === 0 ? (
+        <div className="text-[11px] text-eve-dim">{d.reason || t("ordersDispositionNoPlans")}</div>
+      ) : (
+        <table className="text-[11px] w-full">
+          <thead>
+            <tr className="text-eve-dim uppercase tracking-wide text-[10px]">
+              <th className="text-left font-medium px-1 py-0.5">{t("ordersDispositionColPlan")}</th>
+              <th className="text-left font-medium px-1 py-0.5">{t("ordersDispositionColVenue")}</th>
+              <th className="text-right font-medium px-1 py-0.5">{t("ordersDispositionColExit")}</th>
+              <th className="text-right font-medium px-1 py-0.5">{t("ordersDispositionColNet")}</th>
+              <th className="text-right font-medium px-1 py-0.5">{t("ordersDispositionColProfit")}</th>
+              <th className="text-right font-medium px-1 py-0.5">{t("ordersDispositionColDays")}</th>
+              <th className="text-right font-medium px-1 py-0.5">
+                {t("ordersDispositionColTerminal")}
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {d.plans.map((p) => (
+              <DispositionRow key={p.kind + (p.venue ?? "")} plan={p} formatIsk={formatIsk} t={t} />
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {d.too_close && (
+        <div className="text-[11px] text-amber-400">{t("ordersDispositionTooClose")}</div>
+      )}
+      {!holdOffered && d.recovery.basis === "none" && d.recovery.reason && (
+        <div className="text-[11px] text-eve-dim">
+          {t("ordersDispositionNoHold", { reason: d.recovery.reason })}
+        </div>
+      )}
+      {holdOffered && d.recovery.basis === "history" && (
+        <div className="text-[11px] text-eve-dim">
+          {t("ordersDispositionRecovery", {
+            episodes: d.recovery.episodes,
+            window: d.recovery.window_days,
+            days: d.recovery.median_days.toFixed(0),
+            target: formatIsk(d.recovery.target_price),
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DispositionRow({
+  plan,
+  formatIsk,
+  t,
+}: {
+  plan: DispositionPlan;
+  formatIsk: (v: number) => string;
+  t: Translate;
+}) {
+  const kindKey = DISPOSITION_KIND_LABEL[plan.kind];
+  const hintKey = DISPOSITION_KIND_HINT[plan.kind];
+  const profitCls = plan.profit_isk >= 0 ? "text-emerald-400" : "text-red-400";
+  return (
+    <tr
+      className={
+        plan.recommended
+          ? "bg-eve-accent/10 text-eve-text"
+          : "text-eve-dim hover:bg-eve-accent/5"
+      }
+    >
+      <td className="px-1 py-0.5">
+        <span className="inline-flex items-center gap-1">
+          <span
+            className={`font-medium uppercase tracking-wide cursor-help ${plan.recommended ? "text-eve-accent" : ""}`}
+            title={hintKey ? t(hintKey) : undefined}
+          >
+            {kindKey ? t(kindKey) : plan.kind}
+          </span>
+          {plan.recommended && (
+            <span className="px-1 rounded-sm bg-eve-accent/20 text-eve-accent text-[9px] uppercase">
+              {t("ordersDispositionBest")}
+            </span>
+          )}
+        </span>
+      </td>
+      <td className="px-1 py-0.5 max-w-[260px]">
+        <div className="truncate" title={plan.venue}>
+          {plan.venue || "—"}
+          {plan.jumps != null && plan.jumps > 0 && (
+            <span className="ml-1 text-eve-dim">
+              {t("ordersDispositionJumps", { jumps: plan.jumps })}
+            </span>
+          )}
+        </div>
+        {/* Server-side notes are how a plan explains a choice the numbers
+            alone hide — "took the standing bid" versus "listed under the
+            best ask" price very differently and read identically otherwise. */}
+        {plan.notes && plan.notes.length > 0 && (
+          <div className="truncate text-[10px] text-eve-dim" title={plan.notes.join(" · ")}>
+            {plan.notes.join(" · ")}
+          </div>
+        )}
+      </td>
+      <td className="px-1 py-0.5 text-right font-mono">{formatIsk(plan.exit_price)}</td>
+      <td
+        className="px-1 py-0.5 text-right font-mono cursor-help"
+        title={
+          plan.haul_isk
+            ? t("ordersDispositionNetHint", {
+                gross: formatIsk(plan.gross_isk),
+                haul: formatIsk(plan.haul_isk),
+              })
+            : t("ordersDispositionNetHintNoHaul", { gross: formatIsk(plan.gross_isk) })
+        }
+      >
+        {formatIsk(plan.net_isk)}
+      </td>
+      <td className={`px-1 py-0.5 text-right font-mono ${profitCls}`}>
+        {plan.profit_isk >= 0 ? "+" : "−"}
+        {formatIsk(Math.abs(plan.profit_isk))}
+      </td>
+      <td className="px-1 py-0.5 text-right font-mono">{plan.days_to_realise.toFixed(1)}d</td>
+      <td className="px-1 py-0.5 text-right font-mono">{formatIsk(plan.terminal_isk)}</td>
     </tr>
   );
 }

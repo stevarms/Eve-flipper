@@ -167,6 +167,7 @@ function ActiveOrdersWithDeskTab({ characterScope, orders, formatIsk, t }: Activ
 
   const recommendationLabel = useCallback((value: string) => {
     if (value === "cancel") return t("orderDeskActionCancel");
+    if (value === "review") return t("orderDeskActionReview");
     if (value === "reprice") return t("orderDeskActionReprice");
     return t("orderDeskActionHold");
   }, [t]);
@@ -290,9 +291,9 @@ function ActiveOrdersWithDeskTab({ characterScope, orders, formatIsk, t }: Activ
               />
               <StatCard
                 label={t("orderDeskNeedAction")}
-                value={String(deskData.summary.needs_reprice + deskData.summary.needs_cancel)}
-                subvalue={`${deskData.summary.needs_reprice} ${t("orderDeskActionReprice")} / ${deskData.summary.needs_cancel} ${t("orderDeskActionCancel")}`}
-                color={(deskData.summary.needs_reprice + deskData.summary.needs_cancel) > 0 ? "text-eve-warning" : "text-eve-profit"}
+                value={String(deskData.summary.needs_reprice + deskData.summary.needs_cancel + deskData.summary.needs_review)}
+                subvalue={`${deskData.summary.needs_reprice} ${t("orderDeskActionReprice")} / ${deskData.summary.needs_cancel} ${t("orderDeskActionCancel")} / ${deskData.summary.needs_review} ${t("orderDeskActionReview")}`}
+                color={(deskData.summary.needs_reprice + deskData.summary.needs_cancel + deskData.summary.needs_review) > 0 ? "text-eve-warning" : "text-eve-profit"}
               />
               <StatCard
                 label={t("orderDeskMedianETA")}
@@ -334,11 +335,13 @@ function ActiveOrdersWithDeskTab({ characterScope, orders, formatIsk, t }: Activ
                             className={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium ${
                               row.recommendation === "cancel"
                                 ? "bg-red-500/20 text-red-400"
-                                : row.recommendation === "reprice"
-                                  ? "bg-amber-500/20 text-amber-400"
-                                  : row.book_available
-                                    ? "bg-emerald-500/20 text-emerald-400"
-                                    : "bg-eve-dim/20 text-eve-dim"
+                                : row.recommendation === "review"
+                                  ? "bg-sky-500/20 text-sky-400"
+                                  : row.recommendation === "reprice"
+                                    ? "bg-amber-500/20 text-amber-400"
+                                    : row.book_available
+                                      ? "bg-emerald-500/20 text-emerald-400"
+                                      : "bg-eve-dim/20 text-eve-dim"
                             }`}
                             title={row.reason}
                           >

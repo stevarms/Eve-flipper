@@ -1622,6 +1622,7 @@ export const en = {
     ordersKpiTotal: "Total orders",
     ordersKpiReprice: "Reprice",
     ordersKpiCancel: "Cancel",
+    ordersKpiReview: "Review",
     ordersKpiNotional: "Notional",
     ordersKpiCharacters: "Characters",
     ordersColOwner: "Char",
@@ -1662,7 +1663,7 @@ export const en = {
     ordersThinMarginHint: "Margin is positive but under your {floor}% floor.",
     ordersMinMargin: "Min margin",
     ordersMinMarginHint:
-      "Below this the margin is flagged thin with a warning. It never changes the recommendation — only a margin that has actually gone negative turns into a cancel.",
+      "Below this the margin is flagged thin with a warning. It never changes the recommendation — only a margin that has actually gone negative does that: cancel on a buy order, review on a sell order, where the ISK is already spent.",
     ordersFlowBasisWeekday: "shaped by day of week",
     ordersFlowBasisFlat: "flat weekly average — not enough history to shape by day",
     ordersSectionSell: "Sell orders",
@@ -1685,10 +1686,51 @@ export const en = {
       "Open this item's market window in the running EVE client and copy the suggested price to the clipboard (uses the ESI open-window scope). Requires the client to be running and logged in on the same character.",
     ordersCopyNameHint:
       "Copy the item name to the clipboard. Backup for when 🎮 doesn't open the market window — paste it into the in-game market search.",
+    // Disposition panel — the three plans priced against one horizon.
+    ordersDispositionExpandHint:
+      "Price cutting, holding and moving this position against each other. Fetches the other hub markets, so it takes a moment.",
+    ordersDispositionLoading: "Pricing cut, hold and move…",
+    ordersDispositionFailed: "Could not price this position: {error}",
+    ordersDispositionPosition: "{qty} units at {cost} cost = {total}",
+    ordersDispositionHeld: "held since {date}",
+    ordersDispositionHorizon: "horizon {days}d",
+    ordersDispositionHorizonHint:
+      "Every plan is valued at this same future date — the slowest plan sets it. Without a common date a plan could win simply by taking longer.",
+    ordersDispositionHurdle: "hurdle {pct}%/day",
+    ordersDispositionHurdleHint:
+      "What the freed ISK is assumed to earn elsewhere: your min margin spread over your target ETA. Raise Target ETA and the hurdle falls, which is what lets a slow plan beat a fast one.",
+    ordersDispositionVenues: "{priced} venues priced, {skipped} skipped",
+    ordersDispositionNoPlans: "Nothing to compare for this position.",
+    ordersDispositionColPlan: "Plan",
+    ordersDispositionColVenue: "Venue",
+    ordersDispositionColExit: "Exit price",
+    ordersDispositionColNet: "Net ISK",
+    ordersDispositionColProfit: "vs cost",
+    ordersDispositionColDays: "Days",
+    ordersDispositionColTerminal: "At horizon",
+    ordersDispositionKindCut: "Cut",
+    ordersDispositionKindHold: "Hold",
+    ordersDispositionKindMove: "Move",
+    ordersDispositionKindCutHint:
+      "Sell into the best bid at this station right now. Hitting a standing order pays sales tax but no broker fee, and the ISK is free today.",
+    ordersDispositionKindHoldHint:
+      "Leave it listed and wait for the price to come back. Only offered when this item has a measured history of recovering from dips this deep.",
+    ordersDispositionKindMoveHint:
+      "Haul it to another market and sell there. Net ISK is already after the haul cost at your configured ISK/m³/jump.",
+    ordersDispositionBest: "best",
+    ordersDispositionJumps: "· {jumps} jumps",
+    ordersDispositionNetHint: "{gross} after fees, less {haul} haul.",
+    ordersDispositionNetHintNoHaul: "{gross} after fees.",
+    ordersDispositionTooClose:
+      "The top two plans are within 1% of each other. That is a coin flip, not a recommendation — pick on whatever this table cannot see.",
+    ordersDispositionNoHold: "Hold is not offered: {reason}.",
+    ordersDispositionRecovery:
+      "Dip evidence: {episodes} comparable dips in the last {window}d recovered, median {days}d, trend target {target}.",
+
     ordersPillLabel: "Orders",
     ordersPillAria: "Open Orders tab",
     ordersPillTooltip:
-      "{total} active orders · {reprice} need reprice · {cancel} need cancel. Click to open the Orders tab.",
+      "{total} active orders · {reprice} need reprice · {cancel} need cancel · {review} need review. Click to open the Orders tab.",
 
     // Trade Journal tab
     tabTradeJournal: "Trade Journal",
@@ -2313,6 +2355,7 @@ export const en = {
     orderDeskActionHold: "Hold",
     orderDeskActionReprice: "Reprice",
     orderDeskActionCancel: "Cancel order",
+    orderDeskActionReview: "Review",
 
     // Portfolio Optimizer
     charOptimizerTab: "Optimizer",

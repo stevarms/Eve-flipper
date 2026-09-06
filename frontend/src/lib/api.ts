@@ -48,6 +48,7 @@ import type {
   OrderBookCoverageResult,
   OrderBookStats,
   OrderDeskResponse,
+  DispositionResponse,
   PaperTrade,
   PaperTradeCreatePayload,
   PaperTradePatch,
@@ -2176,6 +2177,28 @@ export async function getOrderDesk(params?: OrderDeskParams): Promise<OrderDeskR
   });
 
   return promise;
+}
+
+/** Prices cutting, holding and moving one underwater sell order.
+ *
+ *  Deliberately uncached and never called on the desk load: it costs up to
+ *  four extra region fetches plus a full FIFO journal pass server-side, so
+ *  it runs only when a row is actually expanded. The caller caches the
+ *  result per order id for the life of the view. */
+export async function getOrderDisposition(
+  orderId: number,
+  params?: OrderDeskParams,
+): Promise<DispositionResponse> {
+  const qp = new URLSearchParams();
+  qp.set("order_id", String(orderId));
+  if (params?.salesTax != null) qp.set("sales_tax", String(params.salesTax));
+  if (params?.brokerFee != null) qp.set("broker_fee", String(params.brokerFee));
+  if (params?.targetEtaDays != null) qp.set("target_eta_days", String(params.targetEtaDays));
+  if (params?.minMarginPct != null) qp.set("min_margin_pct", String(params.minMarginPct));
+  appendCharacterScope(qp, params?.characterId);
+
+  const res = await apiFetch(`${BASE}/api/auth/orders/desk/disposition?${qp.toString()}`);
+  return handleResponse<DispositionResponse>(res);
 }
 
 export interface StationCommandParams {

@@ -215,17 +215,21 @@ func TestComputeOrderDesk_SellMarginComesFromCostBasis(t *testing.T) {
 	}
 }
 
-func TestComputeOrderDesk_SellBelowCostRecommendsCancel(t *testing.T) {
+func TestComputeOrderDesk_SellBelowCostRecommendsReview(t *testing.T) {
 	opt := orderDeskMarginOpts()
 	opt.CostBasisByType = map[int32]float64{orderDeskMarginTestType: 100}
 
 	// Listed at what we paid, which after tax and broker fee is a loss.
+	// Unlike a buy order there is no obviously right answer here — the ISK
+	// is already spent, so cancelling swaps realising the loss for holding
+	// stock. The verdict points at the disposition panel instead of
+	// asserting that one of those is better.
 	row := orderDeskMarginRow(t, orderDeskMarginMine(100, false), nil, opt)
 
-	if row.Recommendation != "cancel" {
-		t.Fatalf("recommendation = %q (%s), want cancel", row.Recommendation, row.Reason)
+	if row.Recommendation != "review" {
+		t.Fatalf("recommendation = %q (%s), want review", row.Recommendation, row.Reason)
 	}
-	if row.Reason != "below cost: -9.0% vs basis" {
+	if row.Reason != "below cost: -9.0% — weigh cut, move or hold" {
 		t.Fatalf("reason = %q, want the below-cost reason naming the shortfall", row.Reason)
 	}
 }
@@ -283,8 +287,8 @@ func TestComputeOrderDesk_RepriceIsNotAdvisedBelowCost(t *testing.T) {
 	if row.SuggestedPrice >= 120 {
 		t.Fatalf("suggested_price = %v, want it below ours — the reprice branch has to be live", row.SuggestedPrice)
 	}
-	if row.Recommendation != "cancel" {
-		t.Fatalf("recommendation = %q (%s), want cancel instead of chasing the price below cost",
+	if row.Recommendation != "review" {
+		t.Fatalf("recommendation = %q (%s), want review instead of chasing the price below cost",
 			row.Recommendation, row.Reason)
 	}
 	if row.Reason != "reprice would sell below cost" {
