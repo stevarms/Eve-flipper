@@ -59,6 +59,9 @@ const ISK_FMT = {
   decimals: { t: 2, b: 2, m: 2, k: 1, unit: 0 },
 } as const;
 
+/** The unfiltered scope, hoisted so its identity is stable across renders. */
+const SCOPE_ALL: WalletScope = { include_all: true };
+
 function formatIsk(v: number): string {
   return formatIskLib(v, undefined, ISK_FMT);
 }
@@ -114,10 +117,24 @@ export function TradeJournal({ isLoggedIn, visitToken }: Props) {
   // The summary response's tracking_since keys enumerate every wallet with
   // archive rows. Corp divisions surface as "corp:{id}:{div}"; we parse
   // them out to build the corp side of the chip picker.
+  //
+  // Memoize on the *keys*, joined into a string, not on `summary` itself.
+  //
+  // `summary` is a freshly-parsed response object, so its identity changes on
+  // every fetch even when the wallets are identical. Keying this memo off it
+  // closed a render loop: new summary -> new knownCorpDivs array -> new
+  // `scope` object -> new `loadAll` callback -> the [loadAll] effect refires
+  // -> fetch -> new summary. The table repainted continuously and the two
+  // journal endpoints were called in a tight cycle. A joined key string is
+  // stable by value, so a refetch that returns the same wallets ends the
+  // chain here.
+  const trackingKey = useMemo(
+    () => Object.keys(summary?.tracking_since ?? {}).sort().join(","),
+    [summary],
+  );
   const knownCorpDivs = useMemo(() => {
     const out: { key: string; corpID: number; div: number }[] = [];
-    if (!summary) return out;
-    for (const key of Object.keys(summary.tracking_since ?? {})) {
+    for (const key of trackingKey ? trackingKey.split(",") : []) {
       if (!key.startsWith("corp:")) continue;
       const parts = key.split(":");
       if (parts.length !== 3) continue;
@@ -128,10 +145,14 @@ export function TradeJournal({ isLoggedIn, visitToken }: Props) {
       }
     }
     return out;
-  }, [summary]);
+  }, [trackingKey]);
   const scope = useMemo<WalletScope>(() => {
+    // A shared constant, not a fresh literal: with no exclusions -- the
+    // default, and what most users stay on -- this keeps `scope` identical
+    // across every recompute, so `loadAll` is never rebuilt and the mount
+    // settles in one fetch instead of two.
     if (excludedCharacters.size === 0 && excludedCorpDivs.size === 0) {
-      return { include_all: true };
+      return SCOPE_ALL;
     }
     const include_characters = authCharacters
       .filter((c) => !excludedCharacters.has(c.character_id))
@@ -204,15 +225,28 @@ export function TradeJournal({ isLoggedIn, visitToken }: Props) {
     void loadAll();
   }, [loadAll, visitToken]);
 
-  // Silent sync on mount if last sync is >1d old (any wallet).
+  // Silent catch-up sync when a wallet has gone a long time without one.
+  //
+  // Fires at most once per scope per mount, tracked in a ref. It cannot key
+  // off `summary` alone: doSync ends with loadAll(), which replaces `summary`,
+  // which re-runs this effect. If the sync can't actually advance a wallet's
+  // last_sync_at -- an expired refresh token, a corp division whose role was
+  // revoked, a character that left the account but still has archive rows --
+  // then stale_syncs never empties and the two spin against ESI forever.
+  //
+  // The old `days_ago >= 1` test was also dead: walletMetaForFilter only
+  // reports a wallet once it is 20 days stale, so every row it returns
+  // already passes. The backend owns the threshold; don't restate it here.
+  const autoSyncedScopeRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!isLoggedIn || !summary) return;
-    const stale = (summary.stale_syncs ?? []).some((s) => s.days_ago >= 1);
-    if (stale) {
-      void doSync(true);
-    }
+    if (!isLoggedIn || !summary || syncing) return;
+    if ((summary.stale_syncs ?? []).length === 0) return;
+    const key = JSON.stringify(scope);
+    if (autoSyncedScopeRef.current === key) return;
+    autoSyncedScopeRef.current = key;
+    void doSync(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [summary, isLoggedIn]);
+  }, [summary, isLoggedIn, syncing, scope]);
 
   const doSync = async (silent = false) => {
     setSyncing(true);
