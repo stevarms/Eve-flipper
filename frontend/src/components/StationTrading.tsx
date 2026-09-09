@@ -27,6 +27,7 @@ import {
   setWaypointInGame,
 } from "@/lib/api";
 import { formatISK, formatMargin, formatNumber } from "@/lib/format";
+import { formatGridPrice, nextBuyOverbid, nextSellUndercut, priceStep } from "@/lib/pricing";
 import { normalizeTaxProfile, sameTaxProfile, taxProfileKey } from "@/lib/taxProfile";
 import { useI18n, type TranslationKey } from "@/lib/i18n";
 import { MetricTooltip } from "./Tooltip";
@@ -1541,16 +1542,16 @@ export function StationTrading({
 
   // Open in-game market window for a row and, when possible, copy the
   // outbidding price to the clipboard so the user can paste it straight into
-  // the order dialog. mode="buy" copies (top buy + 0.01); "sell" copies
-  // (lowest sell - 0.01).
+  // the order dialog. The step is EVE's 4-significant-digit grid, not a flat
+  // 0.01 — on a 12.3M item the smallest legal move is 10k, and pasting
+  // 12,345,677.99 just gets rejected by the order dialog.
   const openMarketAndCopyPrice = useCallback(
     async (row: StationTrade, mode: "buy" | "sell") => {
       const basis = mode === "buy" ? row.BuyPrice : row.SellPrice;
-      const targetPrice = mode === "buy" ? basis + 0.01 : basis - 0.01;
+      const targetPrice =
+        mode === "buy" ? nextBuyOverbid(basis) : nextSellUndercut(basis);
       const priceText =
-        Number.isFinite(targetPrice) && targetPrice > 0
-          ? targetPrice.toFixed(2)
-          : "";
+        targetPrice > 0 ? formatGridPrice(targetPrice, priceStep(basis)) : "";
       try {
         await openMarketInGame(row.TypeID);
       } catch (err: any) {
