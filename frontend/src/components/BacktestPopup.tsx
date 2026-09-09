@@ -7,13 +7,21 @@ import {
   createChart,
 } from "lightweight-charts";
 import type { LineData, Time } from "lightweight-charts";
-import { checkOrderBookCoverage, cleanupOrderBook, getOrderBookStats, runFlipBacktest } from "@/lib/api";
+import {
+  checkOrderBookCoverage,
+  cleanupOrderBook,
+  getOrderBookRecording,
+  getOrderBookStats,
+  runFlipBacktest,
+  setOrderBookRecording,
+} from "@/lib/api";
 import type {
   FlipBacktestEquityPoint,
   FlipBacktestResult,
   FlipResult,
   OrderBookCleanupPlan,
   OrderBookCoverageResult,
+  OrderBookRecordingSettings,
   OrderBookStats,
 } from "@/lib/types";
 import { formatISK, formatMargin } from "@/lib/format";
@@ -97,6 +105,9 @@ export function BacktestPopup({
   const [orderbookCleanupError, setOrderbookCleanupError] = useState("");
   const [orderbookKeepDays, setOrderbookKeepDays] = useState(90);
   const [orderbookVacuum, setOrderbookVacuum] = useState(false);
+  const [orderbookRecording, setOrderbookRecording] = useState<OrderBookRecordingSettings | null>(null);
+  const [orderbookRecordingBusy, setOrderbookRecordingBusy] = useState(false);
+  const [orderbookRecordingError, setOrderbookRecordingError] = useState("");
 
   const rowsForBacktest = useMemo(() => rows.slice(0, maxRows), [maxRows, rows]);
   const recordedBookMode = strategyMode === "instant_flip" && instantPriceMode === "recorded_orderbook";
@@ -119,6 +130,7 @@ export function BacktestPopup({
   useEffect(() => {
     if (!open || !recordedBookMode || orderbookStats) return;
     void refreshOrderbookStats();
+    void refreshOrderbookRecording();
   }, [open, recordedBookMode, orderbookStats]);
 
   const buildBacktestPayload = () => ({
@@ -212,6 +224,28 @@ export function BacktestPopup({
       setOrderbookStatsError(e instanceof Error ? e.message : "Stats failed");
     } finally {
       setOrderbookStatsLoading(false);
+    }
+  };
+
+  const refreshOrderbookRecording = async () => {
+    try {
+      setOrderbookRecording(await getOrderBookRecording());
+      setOrderbookRecordingError("");
+    } catch (e) {
+      setOrderbookRecordingError(e instanceof Error ? e.message : "Recording state unavailable");
+    }
+  };
+
+  const toggleOrderbookRecording = async (enabled: boolean) => {
+    if (orderbookRecordingBusy) return;
+    setOrderbookRecordingBusy(true);
+    setOrderbookRecordingError("");
+    try {
+      setOrderbookRecording(await setOrderBookRecording(enabled));
+    } catch (e) {
+      setOrderbookRecordingError(e instanceof Error ? e.message : "Could not change recording");
+    } finally {
+      setOrderbookRecordingBusy(false);
     }
   };
 
@@ -393,6 +427,10 @@ export function BacktestPopup({
             cleanupError={orderbookCleanupError}
             keepDays={orderbookKeepDays}
             vacuum={orderbookVacuum}
+            recording={orderbookRecording}
+            recordingBusy={orderbookRecordingBusy}
+            recordingError={orderbookRecordingError}
+            onRecordingChange={(value) => void toggleOrderbookRecording(value)}
             onKeepDaysChange={setOrderbookKeepDays}
             onVacuumChange={setOrderbookVacuum}
             onRefresh={() => void refreshOrderbookStats()}
@@ -639,6 +677,10 @@ function OrderbookMaintenancePanel({
   cleanupError,
   keepDays,
   vacuum,
+  recording,
+  recordingBusy,
+  recordingError,
+  onRecordingChange,
   onKeepDaysChange,
   onVacuumChange,
   onRefresh,
@@ -653,6 +695,10 @@ function OrderbookMaintenancePanel({
   cleanupError: string;
   keepDays: number;
   vacuum: boolean;
+  recording: OrderBookRecordingSettings | null;
+  recordingBusy: boolean;
+  recordingError: string;
+  onRecordingChange: (value: boolean) => void;
   onKeepDaysChange: (value: number) => void;
   onVacuumChange: (value: boolean) => void;
   onRefresh: () => void;
@@ -677,6 +723,38 @@ function OrderbookMaintenancePanel({
       </div>
 
       <div className="p-3 space-y-3">
+        {/* Archiving is on but deliberately narrow. A region-wide book is
+            ~400k rows per snapshot and nothing outside this tab reads it
+            back, so scans keep only the types you actually deal in. Turning
+            it off freezes what you already have instead of aging it out. */}
+        <div className="border border-eve-border/60 bg-eve-dark/40 rounded-sm px-3 py-2 space-y-1">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <CheckControl
+              label="Record orderbooks while scanning"
+              checked={!!recording?.enabled}
+              onChange={onRecordingChange}
+            />
+            <span
+              className={`font-semibold uppercase tracking-wide text-[10px] ${
+                recording?.enabled ? "text-emerald-400" : "text-eve-dim"
+              }`}
+            >
+              {recordingBusy ? "Saving…" : recording?.enabled ? "Recording" : "Not recording"}
+            </span>
+          </div>
+          <div className="text-[10px] text-eve-dim">
+            {!recording?.enabled
+              ? "Replay needs archived books. With this off, scans stop collecting them and whatever you already have is kept as-is rather than aged out."
+              : recording.tracked_type_count > 0
+                ? `Scans archive only the ${recording.tracked_type_count.toLocaleString()} types you trade, watch, stock or plan — not the whole region — at most one snapshot per market every 30 minutes. Snapshots older than ${recording.retention_days} days are swept automatically.`
+                : "On, but storing nothing yet: the archive only keeps types you trade, watch, stock or plan, and none are known. Sync your wallet or add a watchlist item and the next scan starts collecting."}
+          </div>
+        </div>
+        {recordingError && (
+          <div className="border border-red-500/50 bg-red-950/30 text-red-300 rounded-sm px-3 py-2">
+            {recordingError}
+          </div>
+        )}
         {statsError && (
           <div className="border border-red-500/50 bg-red-950/30 text-red-300 rounded-sm px-3 py-2">
             {statsError}

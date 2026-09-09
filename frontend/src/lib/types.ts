@@ -317,6 +317,13 @@ export interface OrderBookStats {
   top_locations: OrderBookStatsLocation[];
 }
 
+export interface OrderBookRecordingSettings {
+  enabled: boolean;
+  retention_days: number;
+  /** How many types the archive considers worth keeping. Zero means it is on but storing nothing. */
+  tracked_type_count: number;
+}
+
 export interface OrderBookCleanupPlan {
   keep_days: number;
   cutoff: string;

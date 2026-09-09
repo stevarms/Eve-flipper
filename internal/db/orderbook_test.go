@@ -7,9 +7,30 @@ import (
 	"eve-flipper/internal/esi"
 )
 
+// seedOrderBookInterest makes the given types "things the owner deals in", so
+// the archive's interest filter lets them through. Without it a fresh test DB
+// has no transactions, no watchlist and no stockpile, so the filter correctly
+// concludes there is nothing worth archiving and every snapshot is a no-op.
+func seedOrderBookInterest(t *testing.T, d *DB, typeIDs ...int32) {
+	t.Helper()
+	for _, typeID := range typeIDs {
+		if _, err := d.sql.Exec(
+			"INSERT OR REPLACE INTO watchlist (user_id, type_id, type_name, added_at) VALUES (?, ?, ?, ?)",
+			DefaultUserID, typeID, "test", time.Now().UTC().Format(time.RFC3339),
+		); err != nil {
+			t.Fatalf("seed interest for type %d: %v", typeID, err)
+		}
+	}
+	// The interest set is cached process-wide, so a test that seeds after
+	// another test resolved an empty set would otherwise see the stale one.
+	InvalidateOrderBookInterest()
+	t.Cleanup(InvalidateOrderBookInterest)
+}
+
 func TestRecordMarketOrderSnapshotAggregatesAndDedupes(t *testing.T) {
 	d := openTestDB(t)
 	defer d.Close()
+	seedOrderBookInterest(t, d, 34, 35, 36, 37, 40, 50, 51, 52, 53, 54, 60)
 
 	snapshot := esi.MarketOrderSnapshot{
 		RegionID:   10000002,
@@ -69,6 +90,7 @@ func TestRecordMarketOrderSnapshotAggregatesAndDedupes(t *testing.T) {
 func TestRecordMarketOrderSnapshotStoresChangedBook(t *testing.T) {
 	d := openTestDB(t)
 	defer d.Close()
+	seedOrderBookInterest(t, d, 34, 35, 36, 37, 40, 50, 51, 52, 53, 54, 60)
 
 	base := esi.MarketOrderSnapshot{
 		RegionID:   10000002,
@@ -83,7 +105,7 @@ func TestRecordMarketOrderSnapshotStoresChangedBook(t *testing.T) {
 		t.Fatalf("record base: %v", err)
 	}
 	base.Orders[0].VolumeRemain = 11
-	base.CapturedAt = base.CapturedAt.Add(time.Minute)
+	base.CapturedAt = base.CapturedAt.Add(orderBookMinRecordInterval + time.Minute)
 	if err := d.RecordMarketOrderSnapshot(base); err != nil {
 		t.Fatalf("record changed: %v", err)
 	}
@@ -97,9 +119,142 @@ func TestRecordMarketOrderSnapshotStoresChangedBook(t *testing.T) {
 	}
 }
 
+func TestRecordMarketOrderSnapshotSkipsInsideCooldown(t *testing.T) {
+	// ESI books expire every five minutes, so a scanning session would
+	// otherwise archive twelve full region snapshots an hour — each one
+	// hundreds of thousands of rows. Replay reads a much coarser grid than
+	// that, so the extra samples are pure cost. A skipped snapshot still
+	// refreshes last_seen_at, so coverage reporting stays truthful about how
+	// recently we actually looked at the book.
+	d := openTestDB(t)
+	defer d.Close()
+	seedOrderBookInterest(t, d, 34, 35, 36, 37, 40, 50, 51, 52, 53, 54, 60)
+
+	base := esi.MarketOrderSnapshot{
+		RegionID:   10000002,
+		OrderType:  "sell",
+		Source:     "region",
+		CapturedAt: time.Now().UTC(),
+		Orders: []esi.MarketOrder{
+			{OrderID: 1, TypeID: 35, LocationID: 60003760, SystemID: 30000142, Price: 10.0, VolumeRemain: 10, IsBuyOrder: false},
+		},
+	}
+	if err := d.RecordMarketOrderSnapshot(base); err != nil {
+		t.Fatalf("record base: %v", err)
+	}
+
+	// A genuinely different book, but inside the window.
+	base.Orders[0].VolumeRemain = 11
+	base.Orders[0].Price = 9.5
+	base.CapturedAt = base.CapturedAt.Add(orderBookMinRecordInterval - time.Minute)
+	if err := d.RecordMarketOrderSnapshot(base); err != nil {
+		t.Fatalf("record inside cooldown: %v", err)
+	}
+
+	snaps, err := d.ListOrderBookSnapshots(OrderBookSnapshotFilter{RegionID: 10000002, OrderType: "sell", Limit: 10})
+	if err != nil {
+		t.Fatalf("list snapshots: %v", err)
+	}
+	if len(snaps) != 1 {
+		t.Fatalf("snapshots len=%d, want 1 — the cooldown should have suppressed the second write", len(snaps))
+	}
+	if snaps[0].LastSeenAt == snaps[0].CapturedAt {
+		t.Fatalf("skipped snapshot did not refresh last_seen_at")
+	}
+
+	// The stored book must still be the first one, untouched — a skip is a
+	// skip, not a silent partial overwrite.
+	levels, err := d.GetOrderBookLevels(snaps[0].ID, OrderBookLevelFilter{TypeID: 35, Side: "sell"})
+	if err != nil {
+		t.Fatalf("get levels: %v", err)
+	}
+	if len(levels) != 1 || levels[0].VolumeRemain != 10 || levels[0].Price != 10.0 {
+		t.Fatalf("stored level = %+v, want the original 10 @ 10.0", levels)
+	}
+}
+
+func TestRecordMarketOrderSnapshotBatchesLevelsAcrossBatchBoundary(t *testing.T) {
+	// Levels go in multi-row INSERTs rather than one statement per level, and
+	// the last batch is a partial one. An off-by-one in the flush would drop
+	// or duplicate the tail of the book, which replay would read as real
+	// depth that is not there.
+	d := openTestDB(t)
+	defer d.Close()
+	seedOrderBookInterest(t, d, 34, 35, 36, 37, 40, 50, 51, 52, 53, 54, 60)
+
+	const levelCount = orderBookInsertBatch*2 + 7
+	snapshot := esi.MarketOrderSnapshot{
+		RegionID:   10000002,
+		OrderType:  "sell",
+		Source:     "region",
+		CapturedAt: time.Now().UTC(),
+	}
+	for i := 0; i < levelCount; i++ {
+		snapshot.Orders = append(snapshot.Orders, esi.MarketOrder{
+			OrderID: int64(i + 1), TypeID: 35, LocationID: 60003760, SystemID: 30000142,
+			Price: 10.0 + float64(i), VolumeRemain: int32(i + 1), IsBuyOrder: false,
+		})
+	}
+	if err := d.RecordMarketOrderSnapshot(snapshot); err != nil {
+		t.Fatalf("record snapshot: %v", err)
+	}
+
+	snaps, err := d.ListOrderBookSnapshots(OrderBookSnapshotFilter{RegionID: 10000002, OrderType: "sell", Limit: 10})
+	if err != nil {
+		t.Fatalf("list snapshots: %v", err)
+	}
+	if len(snaps) != 1 {
+		t.Fatalf("snapshots len=%d, want 1", len(snaps))
+	}
+	if snaps[0].LevelCount != levelCount {
+		t.Fatalf("level_count = %d, want %d", snaps[0].LevelCount, levelCount)
+	}
+
+	levels, err := d.GetOrderBookLevels(snaps[0].ID, OrderBookLevelFilter{TypeID: 35, Side: "sell", Limit: levelCount * 2})
+	if err != nil {
+		t.Fatalf("get levels: %v", err)
+	}
+	if len(levels) != levelCount {
+		t.Fatalf("stored levels = %d, want %d", len(levels), levelCount)
+	}
+	var totalVolume int64
+	for _, level := range levels {
+		totalVolume += level.VolumeRemain
+	}
+	if want := int64(levelCount) * int64(levelCount+1) / 2; totalVolume != want {
+		t.Fatalf("total volume = %d, want %d", totalVolume, want)
+	}
+}
+
+func TestOrderBookRecordingSwitchDefaultsOffAndRoundTrips(t *testing.T) {
+	// On is the default: what makes archiving affordable is the interest
+	// filter and the retention sweep, not refusing to archive. The switch
+	// still has to round-trip so somebody who wants it off can have it off.
+	d := openTestDB(t)
+	defer d.Close()
+	seedOrderBookInterest(t, d, 34, 35, 36, 37, 40, 50, 51, 52, 53, 54, 60)
+
+	if !d.OrderBookRecordingEnabled() {
+		t.Fatal("recording defaulted to off")
+	}
+	if err := d.SetOrderBookRecordingEnabled(false); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if d.OrderBookRecordingEnabled() {
+		t.Fatal("disable did not stick")
+	}
+	if err := d.SetOrderBookRecordingEnabled(true); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	if !d.OrderBookRecordingEnabled() {
+		t.Fatal("enable did not stick")
+	}
+}
+
 func TestListOrderBookReplayBooksFindsRegionWideSnapshotsByLevelType(t *testing.T) {
 	d := openTestDB(t)
 	defer d.Close()
+	seedOrderBookInterest(t, d, 34, 35, 36, 37, 40, 50, 51, 52, 53, 54, 60)
 
 	capturedAt := time.Now().UTC().Add(-time.Minute)
 	if err := d.RecordMarketOrderSnapshot(esi.MarketOrderSnapshot{
@@ -149,6 +304,7 @@ func TestListOrderBookReplayBooksFindsRegionWideSnapshotsByLevelType(t *testing.
 func TestOrderBookStatsAndCleanup(t *testing.T) {
 	d := openTestDB(t)
 	defer d.Close()
+	seedOrderBookInterest(t, d, 34, 35, 36, 37, 40, 50, 51, 52, 53, 54, 60)
 
 	now := time.Now().UTC()
 	if err := d.RecordMarketOrderSnapshot(esi.MarketOrderSnapshot{
@@ -238,6 +394,7 @@ func TestOrderBookStatsAndCleanup(t *testing.T) {
 func TestCleanupOrderBookSnapshotsBatch(t *testing.T) {
 	d := openTestDB(t)
 	defer d.Close()
+	seedOrderBookInterest(t, d, 34, 35, 36, 37, 40, 50, 51, 52, 53, 54, 60)
 
 	old := time.Now().UTC().AddDate(0, 0, -60)
 	for i := 0; i < 3; i++ {
@@ -299,6 +456,7 @@ func TestCleanupOrderBookSnapshotsBatch(t *testing.T) {
 func TestCleanupOrderBookSnapshotsBatches(t *testing.T) {
 	d := openTestDB(t)
 	defer d.Close()
+	seedOrderBookInterest(t, d, 34, 35, 36, 37, 40, 50, 51, 52, 53, 54, 60)
 
 	old := time.Now().UTC().AddDate(0, 0, -60)
 	for i := 0; i < 5; i++ {
@@ -339,5 +497,130 @@ func TestCleanupOrderBookSnapshotsBatches(t *testing.T) {
 	}
 	if stats.SnapshotCount != 1 || stats.LevelCount != 1 || stats.TopTypes[0].TypeID != 60 {
 		t.Fatalf("stats after cleanup batches = %#v, want only fresh snapshot", stats)
+	}
+}
+
+func TestRecordMarketOrderSnapshotArchivesOnlyInterestingTypes(t *testing.T) {
+	// A region book covers ~19,000 types; a trader replays a few hundred. On a
+	// real 19.5M-level archive the owner's traded types were 4.3% of the rows,
+	// so this filter is the difference between a multi-gigabyte table and a
+	// few hundred megabytes. It has to drop the rest before they are staged,
+	// and it must not distort the metadata of what it does keep.
+	d := openTestDB(t)
+	defer d.Close()
+	seedOrderBookInterest(t, d, 34)
+
+	if err := d.RecordMarketOrderSnapshot(esi.MarketOrderSnapshot{
+		RegionID:   10000002,
+		OrderType:  "sell",
+		Source:     "region",
+		CapturedAt: time.Now().UTC(),
+		Orders: []esi.MarketOrder{
+			{OrderID: 1, TypeID: 34, LocationID: 60003760, SystemID: 30000142, Price: 5.0, VolumeRemain: 100, IsBuyOrder: false},
+			{OrderID: 2, TypeID: 34, LocationID: 60003760, SystemID: 30000142, Price: 5.0, VolumeRemain: 50, IsBuyOrder: false},
+			{OrderID: 3, TypeID: 999, LocationID: 60003760, SystemID: 30000142, Price: 7.0, VolumeRemain: 10, IsBuyOrder: false},
+			{OrderID: 4, TypeID: 1000, LocationID: 60011866, SystemID: 30002659, Price: 8.0, VolumeRemain: 10, IsBuyOrder: true},
+		},
+	}); err != nil {
+		t.Fatalf("record snapshot: %v", err)
+	}
+
+	snaps, err := d.ListOrderBookSnapshots(OrderBookSnapshotFilter{RegionID: 10000002, Limit: 10})
+	if err != nil {
+		t.Fatalf("list snapshots: %v", err)
+	}
+	if len(snaps) != 1 {
+		t.Fatalf("snapshots len=%d, want 1", len(snaps))
+	}
+	// Metadata describes the book we kept, not the one we saw: two orders, one
+	// level, one type, one location. Reporting the raw four would make the
+	// Backtest tab's coverage numbers describe data that is not there.
+	if snaps[0].OrderCount != 2 || snaps[0].LevelCount != 1 {
+		t.Fatalf("counts = orders %d levels %d, want 2/1", snaps[0].OrderCount, snaps[0].LevelCount)
+	}
+	if snaps[0].UniqueTypeCount != 1 || snaps[0].UniqueLocationCount != 1 {
+		t.Fatalf("unique = types %d locations %d, want 1/1", snaps[0].UniqueTypeCount, snaps[0].UniqueLocationCount)
+	}
+
+	levels, err := d.GetOrderBookLevels(snaps[0].ID, OrderBookLevelFilter{Limit: 100})
+	if err != nil {
+		t.Fatalf("get levels: %v", err)
+	}
+	if len(levels) != 1 {
+		t.Fatalf("levels len=%d, want only the watched type", len(levels))
+	}
+	if levels[0].TypeID != 34 || levels[0].VolumeRemain != 150 {
+		t.Fatalf("level = %+v, want type 34 with the two orders aggregated", levels[0])
+	}
+}
+
+func TestRecordMarketOrderSnapshotArchivesNothingWithoutInterest(t *testing.T) {
+	// A fresh install has no transactions, no watchlist and no stockpile. The
+	// filter must read that as "nothing worth keeping" rather than falling
+	// back to archiving the whole region — that fallback would hand the one
+	// user with no use for the data the full multi-gigabyte behaviour.
+	d := openTestDB(t)
+	defer d.Close()
+	InvalidateOrderBookInterest()
+	t.Cleanup(InvalidateOrderBookInterest)
+
+	if len(d.OrderBookInterestTypes()) != 0 {
+		t.Fatal("a fresh DB reported types worth archiving")
+	}
+	if err := d.RecordMarketOrderSnapshot(esi.MarketOrderSnapshot{
+		RegionID:   10000002,
+		OrderType:  "sell",
+		Source:     "region",
+		CapturedAt: time.Now().UTC(),
+		Orders: []esi.MarketOrder{
+			{OrderID: 1, TypeID: 34, LocationID: 60003760, SystemID: 30000142, Price: 5.0, VolumeRemain: 100},
+		},
+	}); err != nil {
+		t.Fatalf("record snapshot: %v", err)
+	}
+	snaps, err := d.ListOrderBookSnapshots(OrderBookSnapshotFilter{RegionID: 10000002, Limit: 10})
+	if err != nil {
+		t.Fatalf("list snapshots: %v", err)
+	}
+	if len(snaps) != 0 {
+		t.Fatalf("archived %d snapshots with an empty interest set", len(snaps))
+	}
+}
+
+func TestOrderBookInterestTypesUnionsEverySenseOfDealingInIt(t *testing.T) {
+	// Traded, watched, stocked, planned and paper-traded are all "I deal in
+	// this". Missing one silently costs the user replay history for a type
+	// they would reasonably expect to be covered.
+	d := openTestDB(t)
+	defer d.Close()
+	InvalidateOrderBookInterest()
+	t.Cleanup(InvalidateOrderBookInterest)
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := d.sql.Exec(
+		"INSERT INTO watchlist (user_id, type_id, type_name, added_at) VALUES (?, ?, ?, ?)",
+		DefaultUserID, 34, "Tritanium", now,
+	); err != nil {
+		t.Fatalf("seed watchlist: %v", err)
+	}
+	if _, err := d.sql.Exec(`
+		INSERT INTO wallet_transactions_archive
+			(user_id, character_id, transaction_id, date, type_id, location_id,
+			 unit_price, quantity, is_buy, first_seen_at, last_seen_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, DefaultUserID, 90000001, 5001, now, 35, 60003760, 10.0, 100, 1, now, now); err != nil {
+		t.Fatalf("seed transaction: %v", err)
+	}
+	InvalidateOrderBookInterest()
+
+	types := d.OrderBookInterestTypes()
+	if !types[34] {
+		t.Error("watchlisted type is not archived")
+	}
+	if !types[35] {
+		t.Error("traded type is not archived")
+	}
+	if types[36] {
+		t.Error("an untouched type is archived")
 	}
 }

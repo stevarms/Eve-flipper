@@ -46,6 +46,7 @@ import type {
   OptimizerDiagnostic,
   OrderBookCleanupPlan,
   OrderBookCoverageResult,
+  OrderBookRecordingSettings,
   OrderBookStats,
   OrderDeskResponse,
   DispositionResponse,
@@ -669,6 +670,26 @@ export async function getOrderBookStats(limit = 10): Promise<OrderBookStats> {
   const qs = qp.toString();
   const res = await apiFetch(`${BASE}/api/orderbook/stats${qs ? `?${qs}` : ""}`);
   return handleResponse<OrderBookStats>(res);
+}
+
+// Archiving is on, but narrow: scans record only the types the owner deals in,
+// at most one snapshot per market every 30 minutes, swept after a week. The
+// switch is here for turning it off entirely, which freezes what you have
+// rather than aging it out.
+export async function getOrderBookRecording(): Promise<OrderBookRecordingSettings> {
+  const res = await apiFetch(`${BASE}/api/orderbook/recording`);
+  return handleResponse<OrderBookRecordingSettings>(res);
+}
+
+export async function setOrderBookRecording(
+  enabled: boolean,
+): Promise<OrderBookRecordingSettings> {
+  const res = await apiFetch(`${BASE}/api/orderbook/recording`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+  return handleResponse<OrderBookRecordingSettings>(res);
 }
 
 export async function cleanupOrderBook(params: {

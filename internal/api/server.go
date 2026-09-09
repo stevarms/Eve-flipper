@@ -728,6 +728,8 @@ func NewServer(cfg *config.Config, esiClient *esi.Client, database *db.DB, ssoCo
 	if s.wikiRAG != nil && stationAIWikiRAGAutoStartEnabled() {
 		s.wikiRAG.Start(defaultStationAIWikiRepo)
 	}
+	s.applyOrderBookRecording()
+	s.startOrderBookRetention()
 	return s
 }
 
@@ -902,6 +904,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/orderbook/coverage", s.handleOrderBookCoverage)
 	mux.HandleFunc("GET /api/orderbook/stats", s.handleOrderBookStats)
 	mux.HandleFunc("POST /api/orderbook/cleanup", s.handleOrderBookCleanup)
+	mux.HandleFunc("GET /api/orderbook/recording", s.handleOrderBookRecording)
+	mux.HandleFunc("POST /api/orderbook/recording", s.handleOrderBookRecording)
 	mux.HandleFunc("GET /api/orderbook/snapshots", s.handleOrderBookSnapshots)
 	mux.HandleFunc("GET /api/orderbook/snapshots/{snapshotID}/levels", s.handleOrderBookLevels)
 	mux.HandleFunc("POST /api/route/find", s.handleRouteFind)

@@ -680,6 +680,7 @@ func TestHostedQuotaFeatureMappingClassifiesAllPostAPIRoutes(t *testing.T) {
 		"/api/cockpit/loadouts/{loadoutID}/activate": "cockpit CRUD",
 		"/api/alerts/test":                           "local notification test",
 		"/api/orderbook/cleanup":                     "hosted maintenance endpoint",
+		"/api/orderbook/recording":                   "archiving on/off switch, a setting not a scan",
 		"/api/watchlist":                             "watchlist CRUD",
 		"/api/scan/history/clear":                    "history cleanup",
 		"/api/auth/logout":                           "auth session action",
