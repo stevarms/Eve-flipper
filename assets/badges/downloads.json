@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
   "repo": "stevarms/Eve-flipper",
-  "generated_at": "2026-09-08T04:45:05.792Z",
-  "latest_release": "v1.9.11",
+  "generated_at": "2026-09-09T19:39:22.163Z",
+  "latest_release": "v1.9.12",
   "total_downloads": 1870,
   "current_github_total": 4,
-  "active_asset_count": 6,
+  "active_asset_count": 9,
   "archived_asset_count": 404,
   "clone_stats": {
     "window": "14d",
@@ -423,6 +423,48 @@
       "updated_at": "2026-08-30T03:18:15Z",
       "first_seen_at": "2026-08-30T03:18:25.355Z",
       "last_seen_at": "2026-08-30T03:18:25.355Z"
+    },
+    {
+      "id": "553441845",
+      "name": "eve-flipper-desktop-windows-amd64.exe",
+      "tag_name": "v1.9.12",
+      "release_id": "385794947",
+      "state": "active",
+      "download_count": 0,
+      "github_download_count": 0,
+      "browser_download_url": "https://github.com/stevarms/Eve-flipper/releases/download/v1.9.12/eve-flipper-desktop-windows-amd64.exe",
+      "created_at": "2026-09-09T19:39:13Z",
+      "updated_at": "2026-09-09T19:39:14Z",
+      "first_seen_at": "2026-09-09T19:39:22.163Z",
+      "last_seen_at": "2026-09-09T19:39:22.163Z"
+    },
+    {
+      "id": "553441846",
+      "name": "eve-flipper-web-windows-amd64.exe",
+      "tag_name": "v1.9.12",
+      "release_id": "385794947",
+      "state": "active",
+      "download_count": 0,
+      "github_download_count": 0,
+      "browser_download_url": "https://github.com/stevarms/Eve-flipper/releases/download/v1.9.12/eve-flipper-web-windows-amd64.exe",
+      "created_at": "2026-09-09T19:39:13Z",
+      "updated_at": "2026-09-09T19:39:14Z",
+      "first_seen_at": "2026-09-09T19:39:22.163Z",
+      "last_seen_at": "2026-09-09T19:39:22.163Z"
+    },
+    {
+      "id": "553441844",
+      "name": "SHA256SUMS.txt",
+      "tag_name": "v1.9.12",
+      "release_id": "385794947",
+      "state": "active",
+      "download_count": 0,
+      "github_download_count": 0,
+      "browser_download_url": "https://github.com/stevarms/Eve-flipper/releases/download/v1.9.12/SHA256SUMS.txt",
+      "created_at": "2026-09-09T19:39:13Z",
+      "updated_at": "2026-09-09T19:39:13Z",
+      "first_seen_at": "2026-09-09T19:39:22.163Z",
+      "last_seen_at": "2026-09-09T19:39:22.163Z"
     },
     {
       "id": "546617914",
