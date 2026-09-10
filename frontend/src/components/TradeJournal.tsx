@@ -7,6 +7,7 @@ import {
   getJournalSummary,
   linkJournalJob,
   syncTradeJournal,
+  type JournalAnalyticsSource,
   type JournalByTypeRow,
   type JournalFIFOMode,
   type JournalLinkCandidate,
@@ -20,6 +21,8 @@ import type { AuthCharacter } from "../lib/types";
 import { useI18n, type TranslationKey } from "../lib/i18n";
 import { formatIsk as formatIskLib, formatIskSigned as formatIskSignedLib } from "../lib/format";
 import { PnLChart } from "./journal/PnLPrimitives";
+import { JournalAnalyticsView } from "./journal/JournalAnalyticsView";
+import { JournalFeeStrip } from "./journal/JournalFeeStrip";
 
 // TradeJournal.tsx — main-tab realization of the Eve-Tycoon-style profit
 // tracker. Aggregates trading + manufacturing P&L across every authorized
@@ -33,9 +36,13 @@ interface Props {
   /** Set by the parent when the user clicks the ProfitPill so this tab
    *  can trigger a fresh summary fetch on activation. */
   visitToken?: number;
+  /** Jumps to Assets → Positions, which owns open positions. */
+  onOpenPositions?: () => void;
 }
 
 type PeriodPreset = 7 | 30 | 90 | "all";
+
+type JournalView = "summary" | "analytics";
 
 // Local alias for the PnLChart data shape (avoids re-exporting DailyPnLEntry
 // from lib/types just for this file).
@@ -84,9 +91,19 @@ function humanTimeSince(iso: string | undefined): string {
   return `${d}d ago`;
 }
 
-export function TradeJournal({ isLoggedIn, visitToken }: Props) {
+export function TradeJournal({ isLoggedIn, visitToken, onOpenPositions }: Props) {
   const { t } = useI18n();
   const [period, setPeriod] = useState<PeriodPreset>(DEFAULT_PERIOD);
+  // Summary answers "how am I doing"; Analytics answers "how reliably, and
+  // where from". They used to be two tabs computing profit two different ways.
+  const [view, setView] = useState<JournalView>("summary");
+  // Which slice of the ledger every figure on the tab describes. It replaced
+  // the chart's three legend chips: a per-series show/hide only dimmed lines,
+  // while this drives the statistics too.
+  const [source, setSource] = useState<JournalAnalyticsSource>("");
+  const [feeOverride, setFeeOverride] = useState<{ salesTax: number; brokerFee: number } | null>(
+    null,
+  );
   const [fifoMode, setFifoMode] = useState<JournalFIFOMode>(() => {
     if (typeof window === "undefined") return "strict_date";
     const raw = window.localStorage.getItem(FIFO_STORAGE_KEY);
@@ -168,6 +185,7 @@ export function TradeJournal({ isLoggedIn, visitToken }: Props) {
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastSyncResp, setLastSyncResp] = useState<JournalSyncResponse | null>(null);
+  const [analyticsToken, setAnalyticsToken] = useState(0);
 
   // Drawer state
   const [drawerTypeID, setDrawerTypeID] = useState<number | null>(null);
@@ -175,11 +193,6 @@ export function TradeJournal({ isLoggedIn, visitToken }: Props) {
   const [drawerLots, setDrawerLots] = useState<JournalLot[]>([]);
   const [drawerMfg, setDrawerMfg] = useState<JournalManufacturingLot[]>([]);
   const [drawerLoading, setDrawerLoading] = useState(false);
-
-  // Chart series toggles
-  const [showTrading, setShowTrading] = useState(true);
-  const [showMfg, setShowMfg] = useState(true);
-  const [showCombined, setShowCombined] = useState(true);
 
   // Table sort
   type SortKey =
@@ -206,10 +219,14 @@ export function TradeJournal({ isLoggedIn, visitToken }: Props) {
     setLoading(true);
     setError(null);
     try {
-      const [s, bt] = await Promise.all([
-        getJournalSummary({ scope, days: period, fifoMode }),
-        getJournalByType({ scope, days: period, fifoMode }),
-      ]);
+      const read = {
+        scope,
+        days: period,
+        fifoMode,
+        salesTax: feeOverride?.salesTax,
+        brokerFee: feeOverride?.brokerFee,
+      };
+      const [s, bt] = await Promise.all([getJournalSummary(read), getJournalByType(read)]);
       if (c.signal.aborted) return;
       setSummary(s);
       setByType(bt.rows ?? []);
@@ -218,7 +235,7 @@ export function TradeJournal({ isLoggedIn, visitToken }: Props) {
     } finally {
       if (!c.signal.aborted) setLoading(false);
     }
-  }, [isLoggedIn, scope, period, fifoMode]);
+  }, [isLoggedIn, scope, period, fifoMode, feeOverride]);
 
   // Refetch when period / mode / login / visitToken changes.
   useEffect(() => {
@@ -255,6 +272,9 @@ export function TradeJournal({ isLoggedIn, visitToken }: Props) {
       const resp = await syncTradeJournal(scope);
       setLastSyncResp(resp);
       // After a sync the compute cache is invalidated server-side; reload.
+      // The token pushes the same reload into the analytics view, which fetches
+      // its own endpoint and would otherwise keep showing pre-sync figures.
+      setAnalyticsToken((n) => n + 1);
       await loadAll();
     } catch (e) {
       if (!silent) setError(e instanceof Error ? e.message : String(e));
@@ -268,7 +288,15 @@ export function TradeJournal({ isLoggedIn, visitToken }: Props) {
     setDrawerTypeName(row.type_name || `Type #${row.type_id}`);
     setDrawerLoading(true);
     try {
-      const data = await getJournalLots(row.type_id, { scope, days: period, fifoMode });
+      // Same rate pair as the table: a drawer computed at different fees would
+      // show a different profit for the row the user just clicked.
+      const data = await getJournalLots(row.type_id, {
+        scope,
+        days: period,
+        fifoMode,
+        salesTax: feeOverride?.salesTax,
+        brokerFee: feeOverride?.brokerFee,
+      });
       setDrawerLots(data.lots ?? []);
       setDrawerMfg(data.manufacturing_lots ?? []);
     } catch (e) {
@@ -455,6 +483,53 @@ export function TradeJournal({ isLoggedIn, visitToken }: Props) {
           setExcludedCorpDivs(new Set());
         }}
       />
+      {/* View + source: what depth, over which slice of the ledger. */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-1">
+          {(["summary", "analytics"] as JournalView[]).map((v) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => setView(v)}
+              className={`px-3 py-1 text-[11px] rounded-sm border transition-colors ${
+                view === v
+                  ? "bg-eve-accent/20 border-eve-accent text-eve-accent"
+                  : "bg-eve-panel border-eve-border text-eve-dim hover:text-eve-text hover:border-eve-accent/50"
+              }`}
+            >
+              {v === "summary" ? t("journalViewSummary") : t("journalViewAnalytics")}
+            </button>
+          ))}
+          <span className="ml-3 text-[11px] text-eve-dim uppercase tracking-wider">
+            {t("journalSourceLabel")}
+          </span>
+          {(
+            [
+              ["", t("journalChartSeriesCombined")],
+              ["trade", t("journalChartSeriesTrading")],
+              ["manufacture", t("journalChartSeriesMfg")],
+            ] as [JournalAnalyticsSource, string][]
+          ).map(([value, label]) => (
+            <button
+              key={value || "combined"}
+              type="button"
+              onClick={() => setSource(value)}
+              className={`px-2.5 py-1 text-[11px] rounded-sm border transition-colors ${
+                source === value
+                  ? "bg-eve-accent/20 border-eve-accent text-eve-accent"
+                  : "bg-eve-panel border-eve-border text-eve-dim hover:text-eve-text hover:border-eve-accent/50"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <JournalFeeStrip
+          profile={summary?.fees ?? null}
+          override={feeOverride}
+          onChange={setFeeOverride}
+        />
+      </div>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-xs text-eve-dim uppercase tracking-wider">
@@ -527,29 +602,46 @@ export function TradeJournal({ isLoggedIn, visitToken }: Props) {
         </div>
       )}
 
-      {/* KPI tiles */}
-      {summary && (
+      {/* Analytics: the deep-dive half, fetched from its own endpoint over the
+          same matcher, so it cannot report a different profit than the tiles. */}
+      {view === "analytics" && (
+        <div className="flex-1 min-h-0 overflow-auto">
+          <JournalAnalyticsView
+            scope={scope}
+            period={period}
+            fifoMode={fifoMode}
+            source={source}
+            feeOverride={feeOverride}
+            reloadToken={analyticsToken}
+            formatIsk={formatIsk}
+            onOpenPositions={onOpenPositions}
+          />
+        </div>
+      )}
+
+      {/* KPI tiles. The selected source is the emphasised one. */}
+      {view === "summary" && summary && (
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <KPITile
             label={t("journalKpiTradingPL")}
             value={summary.totals.trading_pnl}
-            emphasis={false}
+            emphasis={source === "trade"}
           />
           <KPITile
             label={t("journalKpiManufacturingPL")}
             value={summary.totals.manufacturing_pnl}
-            emphasis={false}
+            emphasis={source === "manufacture"}
           />
           <KPITile
             label={t("journalKpiCombinedPL")}
             value={summary.totals.combined_pnl}
-            emphasis={true}
+            emphasis={source === ""}
           />
         </div>
       )}
 
       {/* Secondary stat strip */}
-      {summary && (
+      {view === "summary" && summary && (
         <div className="flex flex-wrap gap-3 text-[11px] text-eve-dim">
           <span>
             {t("journalKpiBuyISK")}:{" "}
@@ -582,46 +674,27 @@ export function TradeJournal({ isLoggedIn, visitToken }: Props) {
         </div>
       )}
 
-      {/* Chart */}
-      {summary && summary.daily_pnl.length > 0 && (
+      {/* Chart. Combined stacks all three series so they can be read against
+          each other; a single source shows only its own line. */}
+      {view === "summary" && summary && summary.daily_pnl.length > 0 && (
         <div className="bg-eve-panel border border-eve-border rounded-sm p-3">
           <div className="flex items-center justify-between mb-2">
             <div className="text-[10px] text-eve-dim uppercase tracking-wider">
               {t("journalChartTitle")}
             </div>
-            <div className="flex items-center gap-1 text-[10px]">
-              <ChartLegendChip
-                active={showTrading}
-                color="bg-sky-500"
-                label={t("journalChartSeriesTrading")}
-                onClick={() => setShowTrading(!showTrading)}
-              />
-              <ChartLegendChip
-                active={showMfg}
-                color="bg-amber-500"
-                label={t("journalChartSeriesMfg")}
-                onClick={() => setShowMfg(!showMfg)}
-              />
-              <ChartLegendChip
-                active={showCombined}
-                color="bg-white"
-                label={t("journalChartSeriesCombined")}
-                onClick={() => setShowCombined(!showCombined)}
-              />
-            </div>
           </div>
           <div className="space-y-2">
-            {showCombined && (
+            {source === "" && (
               <SeriesRow label={t("journalChartSeriesCombined")}>
                 <PnLChart data={chartData.combined} mode="cumulative" formatIsk={formatIsk} />
               </SeriesRow>
             )}
-            {showTrading && (
+            {(source === "" || source === "trade") && (
               <SeriesRow label={t("journalChartSeriesTrading")}>
                 <PnLChart data={chartData.trading} mode="cumulative" formatIsk={formatIsk} />
               </SeriesRow>
             )}
-            {showMfg && (
+            {(source === "" || source === "manufacture") && (
               <SeriesRow label={t("journalChartSeriesMfg")}>
                 <PnLChart data={chartData.mfg} mode="cumulative" formatIsk={formatIsk} />
               </SeriesRow>
@@ -631,7 +704,11 @@ export function TradeJournal({ isLoggedIn, visitToken }: Props) {
       )}
 
       {/* Per-item table */}
-      <div className="flex-1 min-h-0 overflow-auto border border-eve-border rounded-sm bg-eve-panel">
+      <div
+        className={`flex-1 min-h-0 overflow-auto border border-eve-border rounded-sm bg-eve-panel ${
+          view === "summary" ? "" : "hidden"
+        }`}
+      >
         {loading && (
           <div className="p-4 text-center text-eve-dim text-xs">
             {t("journalLoading")}
@@ -867,31 +944,6 @@ function KPITile({ label, value, emphasis }: { label: string; value: number; emp
         {formatIskSigned(value)} ISK
       </div>
     </div>
-  );
-}
-
-function ChartLegendChip({
-  active,
-  color,
-  label,
-  onClick,
-}: {
-  active: boolean;
-  color: string;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-sm border transition-opacity ${
-        active ? "border-eve-border bg-eve-dark opacity-100" : "border-eve-border/40 opacity-50"
-      }`}
-    >
-      <span className={`inline-block w-2 h-2 rounded-full ${color}`} />
-      <span className="text-eve-dim">{label}</span>
-    </button>
   );
 }
 

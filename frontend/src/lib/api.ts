@@ -2291,6 +2291,8 @@ export interface JournalSummaryResponse {
   stale_syncs: JournalStaleSync[];
   fifo_mode: JournalFIFOMode;
   since: string;
+  /** The rates these totals were computed with, and where they came from. */
+  fees: JournalFeeProfile;
 }
 
 export interface JournalByTypeRow {
@@ -2392,6 +2394,15 @@ export interface JournalReadParams {
   scope?: WalletScope | null;
   days?: number | "all";
   fifoMode?: JournalFIFOMode;
+  /**
+   * Fee override. Both rates or neither — the backend ignores a half-pair.
+   *
+   * It belongs on every journal read, not just analytics: the rates are
+   * charged inside the FIFO match, so a summary fetched at one pair and a lot
+   * drawer fetched at another would show two profits for the same trade.
+   */
+  salesTax?: number;
+  brokerFee?: number;
 }
 
 function journalReadQuery(params?: JournalReadParams): URLSearchParams {
@@ -2399,6 +2410,10 @@ function journalReadQuery(params?: JournalReadParams): URLSearchParams {
   qp.set("scope", serializeWalletScope(params?.scope ?? null));
   qp.set("days", params?.days === "all" ? "all" : String(params?.days ?? 30));
   if (params?.fifoMode) qp.set("fifo_mode", params.fifoMode);
+  if (params?.salesTax != null && params?.brokerFee != null) {
+    qp.set("sales_tax", String(params.salesTax));
+    qp.set("broker_fee", String(params.brokerFee));
+  }
   return qp;
 }
 
@@ -2420,6 +2435,49 @@ export async function getJournalLots(typeID: number, params?: JournalReadParams)
   qp.set("type_id", String(typeID));
   const res = await apiFetch(`${BASE}/api/auth/journal/lots?${qp.toString()}`);
   return handleResponse<{ lots: JournalLot[]; manufacturing_lots: JournalManufacturingLot[] }>(res);
+}
+
+/** Which slice of the ledger a figure describes. "" is combined. */
+export type JournalAnalyticsSource = "" | "trade" | "manufacture";
+
+/**
+ * The rates a realized-profit figure was actually computed with, and where
+ * they came from. `source` lets the UI say "3.6% / 1.5% from Accounting V"
+ * rather than showing two bare numbers nobody can account for.
+ */
+export interface JournalFeeProfile {
+  sales_tax_percent: number;
+  broker_fee_percent: number;
+  source: "config" | "skills" | "default" | "override";
+  accounting_level?: number;
+  broker_relations_level?: number;
+}
+
+export interface JournalAnalyticsResponse {
+  analytics: PortfolioPnL;
+  source: JournalAnalyticsSource;
+  fifo_mode: JournalFIFOMode;
+  since: string;
+  fees: JournalFeeProfile;
+}
+
+export interface JournalAnalyticsParams extends JournalReadParams {
+  source?: JournalAnalyticsSource;
+  ledgerLimit?: number;
+}
+
+/**
+ * Portfolio analytics computed over the trade journal's ledger — the same
+ * matcher that produces the Summary view, so the two can never disagree.
+ */
+export async function getJournalAnalytics(
+  params?: JournalAnalyticsParams,
+): Promise<JournalAnalyticsResponse> {
+  const qp = journalReadQuery(params);
+  if (params?.source) qp.set("source", params.source);
+  if (params?.ledgerLimit != null) qp.set("ledger_limit", String(params.ledgerLimit));
+  const res = await apiFetch(`${BASE}/api/auth/journal/analytics?${qp.toString()}`);
+  return handleResponse<JournalAnalyticsResponse>(res);
 }
 
 export async function linkJournalJob(esiJobID: number, ledgerJobID: number): Promise<void> {

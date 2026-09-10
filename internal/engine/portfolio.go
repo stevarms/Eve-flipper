@@ -298,50 +298,13 @@ func ComputePortfolioPnLWithOptions(txns []esi.WalletTransaction, opt PortfolioP
 		return parsed[i].t.Before(parsed[j].t)
 	})
 
-	type dayKey string
-	dayMap := make(map[dayKey]*DailyPnLEntry)
-	itemMap := make(map[int32]*ItemPnL)
-	stationMap := make(map[int64]*StationPnL)
 	buyQueues := make(map[int32][]portfolioBuyLot)
-	ledgerCap := len(parsed)
-	if opt.LedgerLimit > 0 {
-		ledgerCap = minInt(len(parsed), opt.LedgerLimit)
-	}
-	ledger := make([]RealizedTrade, 0, ledgerCap)
+	// The ledger is built in full here and only truncated to LedgerLimit at
+	// the very end: summarizeRealizedLedger derives every statistic from it,
+	// so truncating early would silently drop days, items and stations from
+	// the analytics rather than just from the displayed rows.
+	ledger := make([]RealizedTrade, 0, len(parsed))
 	coverage := MatchingCoverage{}
-	summary := PortfolioPnLStats{}
-
-	addDay := func(date string) *DailyPnLEntry {
-		dk := dayKey(date)
-		entry, ok := dayMap[dk]
-		if !ok {
-			entry = &DailyPnLEntry{Date: date}
-			dayMap[dk] = entry
-		}
-		return entry
-	}
-	addItem := func(typeID int32, typeName string) *ItemPnL {
-		item, ok := itemMap[typeID]
-		if !ok {
-			item = &ItemPnL{TypeID: typeID, TypeName: typeName}
-			itemMap[typeID] = item
-		}
-		return item
-	}
-	addStation := func(locationID int64, name string) *StationPnL {
-		st, ok := stationMap[locationID]
-		if !ok {
-			st = &StationPnL{
-				LocationID:   locationID,
-				LocationName: name,
-			}
-			stationMap[locationID] = st
-		}
-		if st.LocationName == "" && name != "" {
-			st.LocationName = name
-		}
-		return st
-	}
 
 	for _, rec := range parsed {
 		tx := rec.tx
@@ -406,32 +369,8 @@ func ComputePortfolioPnLWithOptions(txns []esi.WalletTransaction, opt PortfolioP
 				holdingDays = 0
 			}
 
-			day := addDay(rec.t.Format("2006-01-02"))
-			day.BuyTotal += buyTotal
-			day.SellTotal += sellTotal
-			day.Transactions++
-
-			item := addItem(tx.TypeID, tx.TypeName)
-			item.TotalBought += buyTotal
-			item.TotalSold += sellTotal
-			item.QtyBought += int64(matched)
-			item.QtySold += int64(matched)
-			item.Transactions++
-
-			buySt := addStation(lot.LocationID, lot.LocationName)
-			buySt.TotalBought += buyTotal
-			buySt.Transactions++
-			sellSt := addStation(tx.LocationID, tx.LocationName)
-			sellSt.TotalSold += sellTotal
-			sellSt.Transactions++
-
 			coverage.MatchedSellQty += int64(matched)
 			coverage.MatchedSellValue += sellGross
-
-			summary.RealizedTrades++
-			summary.RealizedQuantity += int64(matched)
-			summary.TotalFees += buyFee + sellBrokerFee
-			summary.TotalTaxes += sellTax
 
 			ledger = append(ledger, RealizedTrade{
 				TypeID:            tx.TypeID,
@@ -472,24 +411,6 @@ func ComputePortfolioPnLWithOptions(txns []esi.WalletTransaction, opt PortfolioP
 				sellTax := unmatchedGross * opt.SalesTaxPercent / 100.0
 				sellTotal := unmatchedGross - sellBrokerFee - sellTax
 
-				day := addDay(rec.t.Format("2006-01-02"))
-				day.SellTotal += sellTotal
-				day.Transactions++
-
-				item := addItem(tx.TypeID, tx.TypeName)
-				item.TotalSold += sellTotal
-				item.QtySold += int64(remaining)
-				item.Transactions++
-
-				sellSt := addStation(tx.LocationID, tx.LocationName)
-				sellSt.TotalSold += sellTotal
-				sellSt.Transactions++
-
-				summary.RealizedTrades++
-				summary.RealizedQuantity += int64(remaining)
-				summary.TotalFees += sellBrokerFee
-				summary.TotalTaxes += sellTax
-
 				ledger = append(ledger, RealizedTrade{
 					TypeID:            tx.TypeID,
 					TypeName:          tx.TypeName,
@@ -529,6 +450,206 @@ func ComputePortfolioPnLWithOptions(txns []esi.WalletTransaction, opt PortfolioP
 		coverage.MatchRateValuePct = coverage.MatchedSellValue / coverage.TotalSellValue * 100
 	}
 	out.Coverage = coverage
+
+	days, items, stations, summary := summarizeRealizedLedger(ledger, opt)
+
+	// Open positions (grouped by type+location to preserve where inventory sits).
+	type openKey struct {
+		typeID     int32
+		locationID int64
+	}
+	type openAgg struct {
+		typeID       int32
+		typeName     string
+		locationID   int64
+		locationName string
+		quantity     int64
+		costBasis    float64
+		oldest       time.Time
+	}
+	openMap := make(map[openKey]*openAgg)
+	totalOpenCost := 0.0
+	for _, queue := range buyQueues {
+		for _, lot := range queue {
+			if lot.Remaining <= 0 {
+				continue
+			}
+			key := openKey{typeID: lot.TypeID, locationID: lot.LocationID}
+			a := openMap[key]
+			if a == nil {
+				a = &openAgg{
+					typeID:       lot.TypeID,
+					typeName:     lot.TypeName,
+					locationID:   lot.LocationID,
+					locationName: lot.LocationName,
+					oldest:       lot.Date,
+				}
+				openMap[key] = a
+			} else if a.locationName == "" && lot.LocationName != "" {
+				a.locationName = lot.LocationName
+			}
+			q := int64(lot.Remaining)
+			gross := lot.UnitPrice * float64(lot.Remaining)
+			buyFee := gross * opt.BrokerFeePercent / 100.0
+			a.quantity += q
+			a.costBasis += gross + buyFee
+			if lot.Date.Before(a.oldest) {
+				a.oldest = lot.Date
+			}
+		}
+	}
+
+	openPositions := make([]OpenPosition, 0, len(openMap))
+	for _, a := range openMap {
+		if a == nil || a.quantity <= 0 {
+			continue
+		}
+		avgCost := 0.0
+		if a.quantity > 0 {
+			avgCost = a.costBasis / float64(a.quantity)
+		}
+		openPositions = append(openPositions, OpenPosition{
+			TypeID:        a.typeID,
+			TypeName:      a.typeName,
+			LocationID:    a.locationID,
+			LocationName:  a.locationName,
+			Quantity:      a.quantity,
+			AvgCost:       avgCost,
+			CostBasis:     a.costBasis,
+			OldestLotDate: a.oldest.Format("2006-01-02"),
+		})
+		totalOpenCost += a.costBasis
+	}
+	sort.Slice(openPositions, func(i, j int) bool {
+		return openPositions[i].CostBasis > openPositions[j].CostBasis
+	})
+	summary.OpenPositions = len(openPositions)
+	summary.OpenCostBasis = totalOpenCost
+
+	// Ledger newest first.
+	sort.Slice(ledger, func(i, j int) bool {
+		if ledger[i].SellDate == ledger[j].SellDate {
+			if ledger[i].SellTransactionID == ledger[j].SellTransactionID {
+				return ledger[i].BuyTransactionID > ledger[j].BuyTransactionID
+			}
+			return ledger[i].SellTransactionID > ledger[j].SellTransactionID
+		}
+		return ledger[i].SellDate > ledger[j].SellDate
+	})
+	if opt.LedgerLimit > 0 && len(ledger) > opt.LedgerLimit {
+		ledger = ledger[:opt.LedgerLimit]
+	}
+	if len(openPositions) > 50 {
+		openPositions = openPositions[:50]
+	}
+
+	out.DailyPnL = days
+	out.Summary = summary
+	out.TopItems = items
+	out.TopStations = stations
+	out.Ledger = ledger
+	out.OpenPositions = openPositions
+	out.SlotEfficiency = ComputePortfolioSlotEfficiency(out, nil)
+	return out
+}
+
+// summarizeRealizedLedger derives the daily series, the per-item and
+// per-station breakdowns, and every summary statistic from a realized-trade
+// ledger.
+//
+// It is the single place those numbers are computed. ComputePortfolioPnLWithOptions
+// calls it after its own FIFO pass; TradeJournalResult.ToPortfolioPnL calls it
+// after projecting the trade-journal engine's lots into the same shape. Two
+// matchers, one summarizer — so the two surfaces cannot report a different
+// Sharpe ratio for the same trades.
+//
+// Pass the FULL ledger. LedgerLimit truncation is the caller's job and must
+// happen afterwards, or whole days drop out of the analytics along with the
+// rows that would have displayed them.
+//
+// Rows flagged Unmatched are asymmetric by design: a sell with no known cost
+// basis credits the sell station and QtySold but never the buy side. That
+// shape predates this extraction — it is reproduced here, not invented.
+func summarizeRealizedLedger(
+	ledger []RealizedTrade,
+	opt PortfolioPnLOptions,
+) ([]DailyPnLEntry, []ItemPnL, []StationPnL, PortfolioPnLStats) {
+	type dayKey string
+	dayMap := make(map[dayKey]*DailyPnLEntry)
+	itemMap := make(map[int32]*ItemPnL)
+	stationMap := make(map[int64]*StationPnL)
+	summary := PortfolioPnLStats{}
+
+	addDay := func(date string) *DailyPnLEntry {
+		dk := dayKey(date)
+		entry, ok := dayMap[dk]
+		if !ok {
+			entry = &DailyPnLEntry{Date: date}
+			dayMap[dk] = entry
+		}
+		return entry
+	}
+	addItem := func(typeID int32, typeName string) *ItemPnL {
+		item, ok := itemMap[typeID]
+		if !ok {
+			item = &ItemPnL{TypeID: typeID, TypeName: typeName}
+			itemMap[typeID] = item
+		}
+		return item
+	}
+	addStation := func(locationID int64, name string) *StationPnL {
+		st, ok := stationMap[locationID]
+		if !ok {
+			st = &StationPnL{
+				LocationID:   locationID,
+				LocationName: name,
+			}
+			stationMap[locationID] = st
+		}
+		if st.LocationName == "" && name != "" {
+			st.LocationName = name
+		}
+		return st
+	}
+
+	for _, row := range ledger {
+		// The day bucket is the sell date: profit is realized when the item
+		// leaves, not when it was bought or built.
+		sellAt, err := time.Parse(time.RFC3339, row.SellDate)
+		if err != nil {
+			continue
+		}
+		day := addDay(sellAt.Format("2006-01-02"))
+		item := addItem(row.TypeID, row.TypeName)
+
+		day.SellTotal += row.SellTotal
+		day.Transactions++
+		item.TotalSold += row.SellTotal
+		item.QtySold += int64(row.Quantity)
+		item.Transactions++
+
+		sellSt := addStation(row.SellLocationID, row.SellLocationName)
+		sellSt.TotalSold += row.SellTotal
+		sellSt.Transactions++
+
+		summary.RealizedTrades++
+		summary.RealizedQuantity += int64(row.Quantity)
+		summary.TotalFees += row.SellBrokerFee
+		summary.TotalTaxes += row.SellTax
+
+		if row.Unmatched {
+			continue
+		}
+
+		day.BuyTotal += row.BuyTotal
+		item.TotalBought += row.BuyTotal
+		item.QtyBought += int64(row.Quantity)
+		summary.TotalFees += row.BuyFee
+
+		buySt := addStation(row.BuyLocationID, row.BuyLocationName)
+		buySt.TotalBought += row.BuyTotal
+		buySt.Transactions++
+	}
 
 	// Build daily series
 	days := make([]DailyPnLEntry, 0, len(dayMap))
@@ -725,104 +846,7 @@ func ComputePortfolioPnLWithOptions(txns []esi.WalletTransaction, opt PortfolioP
 		stations = stations[:20]
 	}
 
-	// Open positions (grouped by type+location to preserve where inventory sits).
-	type openKey struct {
-		typeID     int32
-		locationID int64
-	}
-	type openAgg struct {
-		typeID       int32
-		typeName     string
-		locationID   int64
-		locationName string
-		quantity     int64
-		costBasis    float64
-		oldest       time.Time
-	}
-	openMap := make(map[openKey]*openAgg)
-	totalOpenCost := 0.0
-	for _, queue := range buyQueues {
-		for _, lot := range queue {
-			if lot.Remaining <= 0 {
-				continue
-			}
-			key := openKey{typeID: lot.TypeID, locationID: lot.LocationID}
-			a := openMap[key]
-			if a == nil {
-				a = &openAgg{
-					typeID:       lot.TypeID,
-					typeName:     lot.TypeName,
-					locationID:   lot.LocationID,
-					locationName: lot.LocationName,
-					oldest:       lot.Date,
-				}
-				openMap[key] = a
-			} else if a.locationName == "" && lot.LocationName != "" {
-				a.locationName = lot.LocationName
-			}
-			q := int64(lot.Remaining)
-			gross := lot.UnitPrice * float64(lot.Remaining)
-			buyFee := gross * opt.BrokerFeePercent / 100.0
-			a.quantity += q
-			a.costBasis += gross + buyFee
-			if lot.Date.Before(a.oldest) {
-				a.oldest = lot.Date
-			}
-		}
-	}
-
-	openPositions := make([]OpenPosition, 0, len(openMap))
-	for _, a := range openMap {
-		if a == nil || a.quantity <= 0 {
-			continue
-		}
-		avgCost := 0.0
-		if a.quantity > 0 {
-			avgCost = a.costBasis / float64(a.quantity)
-		}
-		openPositions = append(openPositions, OpenPosition{
-			TypeID:        a.typeID,
-			TypeName:      a.typeName,
-			LocationID:    a.locationID,
-			LocationName:  a.locationName,
-			Quantity:      a.quantity,
-			AvgCost:       avgCost,
-			CostBasis:     a.costBasis,
-			OldestLotDate: a.oldest.Format("2006-01-02"),
-		})
-		totalOpenCost += a.costBasis
-	}
-	sort.Slice(openPositions, func(i, j int) bool {
-		return openPositions[i].CostBasis > openPositions[j].CostBasis
-	})
-	summary.OpenPositions = len(openPositions)
-	summary.OpenCostBasis = totalOpenCost
-
-	// Ledger newest first.
-	sort.Slice(ledger, func(i, j int) bool {
-		if ledger[i].SellDate == ledger[j].SellDate {
-			if ledger[i].SellTransactionID == ledger[j].SellTransactionID {
-				return ledger[i].BuyTransactionID > ledger[j].BuyTransactionID
-			}
-			return ledger[i].SellTransactionID > ledger[j].SellTransactionID
-		}
-		return ledger[i].SellDate > ledger[j].SellDate
-	})
-	if opt.LedgerLimit > 0 && len(ledger) > opt.LedgerLimit {
-		ledger = ledger[:opt.LedgerLimit]
-	}
-	if len(openPositions) > 50 {
-		openPositions = openPositions[:50]
-	}
-
-	out.DailyPnL = days
-	out.Summary = summary
-	out.TopItems = items
-	out.TopStations = stations
-	out.Ledger = ledger
-	out.OpenPositions = openPositions
-	out.SlotEfficiency = ComputePortfolioSlotEfficiency(out, nil)
-	return out
+	return days, items, stations, summary
 }
 
 // ComputePortfolioSlotEfficiency builds per-item slot/capital review metrics.

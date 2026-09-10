@@ -36,7 +36,6 @@ describe("sanitizeCockpitPreferences tab order", () => {
     ]);
     expect(visibleTabsForWorkspace(prefs, "journal")).toEqual([
       "trade_journal",
-      "pnl",
       "transactions",
       "wallet",
       "risk",

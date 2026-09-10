@@ -440,48 +440,25 @@ func (d *DB) ListArchivedWalletActivityForUser(userID string, filter WalletScope
 }
 
 func (d *DB) queryArchivedTxns(userID string, filter WalletScopeFilter, sinceStr string) ([]ArchivedTxn, error) {
-	charScope, corpScope, hasAny := buildWalletScopeSQL(filter)
+	charScope, charArgs, corpScope, corpArgs, hasAny := buildWalletScopeSQL(filter)
 	if !hasAny {
 		return nil, nil
-	}
-
-	var parts []string
-	var args []any
-
-	if charScope != "" {
-		q := `SELECT character_id, transaction_id, date, type_id, location_id,
-			unit_price, quantity, is_buy, type_name, location_name
-		FROM wallet_transactions_archive
-		WHERE user_id = ? AND ` + charScope
-		if sinceStr != "" {
-			q += ` AND date >= ?`
-			args = append(args, userID)
-			args = append(args, sinceStr)
-		} else {
-			args = append(args, userID)
-		}
-		parts = append(parts, q)
-	}
-	if corpScope != "" {
-		q := `SELECT 0 AS character_id, corporation_id, division, transaction_id, date, type_id,
-			location_id, unit_price, quantity, is_buy, type_name, location_name
-		FROM corp_wallet_transactions_archive
-		WHERE user_id = ? AND ` + corpScope
-		if sinceStr != "" {
-			q += ` AND date >= ?`
-			args = append(args, userID)
-			args = append(args, sinceStr)
-		} else {
-			args = append(args, userID)
-		}
-		parts = append(parts, q)
 	}
 
 	// Character and corp rows have different column counts, so run them as
 	// separate queries and merge in Go instead of a UNION with padding.
 	out := make([]ArchivedTxn, 0)
 	if charScope != "" {
-		rows, err := d.sql.Query(parts[0], sliceFirst(args, charScope != "", sinceStr != "")...)
+		q := `SELECT character_id, transaction_id, date, type_id, location_id,
+			unit_price, quantity, is_buy, type_name, location_name
+		FROM wallet_transactions_archive
+		WHERE user_id = ? AND ` + charScope
+		args := append([]any{userID}, charArgs...)
+		if sinceStr != "" {
+			q += ` AND date >= ?`
+			args = append(args, sinceStr)
+		}
+		rows, err := d.sql.Query(q, args...)
 		if err != nil {
 			return nil, err
 		}
@@ -490,11 +467,16 @@ func (d *DB) queryArchivedTxns(userID string, filter WalletScopeFilter, sinceStr
 		}
 	}
 	if corpScope != "" {
-		start := 0
-		if charScope != "" {
-			start = 1
+		q := `SELECT 0 AS character_id, corporation_id, division, transaction_id, date, type_id,
+			location_id, unit_price, quantity, is_buy, type_name, location_name
+		FROM corp_wallet_transactions_archive
+		WHERE user_id = ? AND ` + corpScope
+		args := append([]any{userID}, corpArgs...)
+		if sinceStr != "" {
+			q += ` AND date >= ?`
+			args = append(args, sinceStr)
 		}
-		rows, err := d.sql.Query(parts[start], sliceSecond(args, charScope != "", corpScope != "", sinceStr != "")...)
+		rows, err := d.sql.Query(q, args...)
 		if err != nil {
 			return nil, err
 		}
@@ -508,7 +490,7 @@ func (d *DB) queryArchivedTxns(userID string, filter WalletScopeFilter, sinceStr
 }
 
 func (d *DB) queryArchivedJournal(userID string, filter WalletScopeFilter, sinceStr string) ([]ArchivedJournalEntry, error) {
-	charScope, corpScope, hasAny := buildWalletScopeSQL(filter)
+	charScope, charArgs, corpScope, corpArgs, hasAny := buildWalletScopeSQL(filter)
 	if !hasAny {
 		return nil, nil
 	}
@@ -518,7 +500,7 @@ func (d *DB) queryArchivedJournal(userID string, filter WalletScopeFilter, since
 		q := `SELECT character_id, entry_id, date, ref_type, amount, tax, context_id, context_id_type
 			FROM wallet_journal_archive
 			WHERE user_id = ? AND ` + charScope
-		args := []any{userID}
+		args := append([]any{userID}, charArgs...)
 		if sinceStr != "" {
 			q += ` AND date >= ?`
 			args = append(args, sinceStr)
@@ -535,7 +517,7 @@ func (d *DB) queryArchivedJournal(userID string, filter WalletScopeFilter, since
 		q := `SELECT corporation_id, division, entry_id, date, ref_type, amount
 			FROM corp_wallet_journal_archive
 			WHERE user_id = ? AND ` + corpScope
-		args := []any{userID}
+		args := append([]any{userID}, corpArgs...)
 		if sinceStr != "" {
 			q += ` AND date >= ?`
 			args = append(args, sinceStr)
@@ -605,20 +587,34 @@ func (d *DB) ListArchivedIndustryJobsForUser(userID string, characterIDs []int64
 
 // --- scope SQL builders + row readers (implementation detail) ---
 
-func buildWalletScopeSQL(filter WalletScopeFilter) (charScope, corpScope string, hasAny bool) {
+// buildWalletScopeSQL turns a scope filter into a WHERE fragment plus the
+// arguments that bind its placeholders.
+//
+// The fragment and its args are returned together on purpose. They used to be
+// assembled in separate places, and the ids were never bound at all — every
+// character- or corp-scoped archive read failed with "missing argument with
+// index 3", which each caller logged and swallowed as "no data".
+func buildWalletScopeSQL(filter WalletScopeFilter) (charScope string, charArgs []any, corpScope string, corpArgs []any, hasAny bool) {
 	if filter.IncludeAll {
-		return "1=1", "1=1", true
+		return "1=1", nil, "1=1", nil, true
 	}
 	if len(filter.IncludeCharacters) > 0 {
 		charScope = "character_id IN (" + int64Placeholders(len(filter.IncludeCharacters)) + ")"
+		for _, id := range filter.IncludeCharacters {
+			charArgs = append(charArgs, id)
+		}
 		hasAny = true
 	}
 	if len(filter.IncludeCorpDivisions) > 0 {
 		parts := make([]string, len(filter.IncludeCorpDivisions))
-		for i := range filter.IncludeCorpDivisions {
+		for i, cd := range filter.IncludeCorpDivisions {
 			parts[i] = "(corporation_id = ? AND division = ?)"
+			corpArgs = append(corpArgs, cd.CorporationID, cd.Division)
 		}
-		corpScope = strings.Join(parts, " OR ")
+		// Wrapped: the caller appends this after "user_id = ? AND", and AND
+		// binds tighter than OR, so an unparenthesised list of divisions would
+		// return every user's rows from the second division onward.
+		corpScope = "(" + strings.Join(parts, " OR ") + ")"
 		hasAny = true
 	}
 	return
@@ -629,27 +625,6 @@ func int64Placeholders(n int) string {
 		return ""
 	}
 	return strings.Repeat("?,", n)[:2*n-1]
-}
-
-// sliceFirst / sliceSecond exist so buildWalletScopeSQL can be assembled
-// with args in one flat slice — kept private to avoid leaking helpers.
-func sliceFirst(args []any, _, _ bool) []any {
-	// The first (char) query always uses args[0:] up to and including its
-	// bindings. Since we build args in order (userID, sinceStr) for each
-	// query, we consume from index 0.
-	return args
-}
-
-func sliceSecond(args []any, hasChar, _, _ bool) []any {
-	// If both scopes present, corp args start after char args.
-	if !hasChar {
-		return args
-	}
-	// char has: userID + optional sinceStr
-	skip := 1
-	// This helper is only called when args includes both blocks; the
-	// caller ensured that. Returning args[skip:] slices past the char query's args.
-	return args[skip:]
 }
 
 func readCharTxnRows(rows *sql.Rows, out *[]ArchivedTxn) error {

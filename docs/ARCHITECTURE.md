@@ -421,6 +421,18 @@ transactions with per-type FIFO buy-lot matching, tags unmatched flow,
 builds daily P&L / drawdown curves, rolls up top items/stations.
 `ComputePortfolioSlotEfficiency` scores order-slot utilization.
 
+`summarizeRealizedLedger(ledger, opt)` is the **single** place every derived
+statistic is computed — daily series, per-item, per-station, Sharpe, drawdown,
+Calmar, profit factor, expectancy. Both matchers call it, so the two surfaces
+cannot report a different Sharpe ratio for the same trades. Pass it the *full*
+ledger; `LedgerLimit` truncation is the caller's job and must happen after, or
+whole days vanish from the analytics along with the rows.
+
+`ComputePortfolioPnLWithOptions` is no longer user-facing. It survives for
+three in-memory callers (`eve_ledger.go`, `optimizer.go`, two
+`ComputePortfolioPnL` calls in `server.go`) that score raw ESI transactions
+with no DB round-trip.
+
 **`portfolio_manufacturing.go`** — Extends `portfolio.go` to also consume
 industry jobs. `JournalTxn`, `JournalIndustryJob`, `TradeLot`,
 `ManufacturingLot`, `FIFOMode` (strict-date / trade-first / mfg-first),
@@ -429,7 +441,21 @@ industry jobs. `JournalTxn`, `JournalIndustryJob`, `TradeLot`,
 transactions with completed industry jobs into one chronological event
 stream, maintaining separate trade and manufacturing FIFO pools per
 typeID, and produces `TradeJournalResult` splitting Trading vs
-Manufacturing vs Combined P&L.
+Manufacturing vs Combined P&L. Fees are charged **inside** the match, so a
+rate override has to reach this function — it cannot be applied at the
+presentation layer without the per-lot drawer disagreeing with the totals.
+
+**`portfolio_projection.go`** — `TradeJournalResult.ToPortfolioPnL(opt, src)`
+projects journal lots into `[]RealizedTrade` and runs them through
+`summarizeRealizedLedger`. `src` (`LotSourceTrade` / `LotSourceManufacture` /
+`""`) filters *before* summarizing, which is what makes the Trading /
+Manufacturing / Combined split honest: each slice gets its own Sharpe and
+drawdown rather than a share of a combined number. Coverage is deliberately
+**not** filtered by `src` — it describes the whole sell flow, and a
+manufacturing-only view reporting "100% matched" would be a lie.
+`portfolio_projection_test.go` pins the anti-drift guarantee: with zero
+industry jobs the projection must equal `ComputePortfolioPnLWithOptions` field
+for field.
 
 **`regional_day_trader.go`** — Data model + helpers for the EVE-Guru-style
 "regional day trader" view. `RegionalDayTradeItem`, `RegionalDayTradeHub`
@@ -841,16 +867,38 @@ this pattern.
   (`CF-IPCountry`, ignoring `XX`/`T1`), user agent, user id, character
   id. `normalizedTelemetryPath` rewrites numeric path segments to
   `{id}`.
-- **`trade_journal.go`** (1029 lines) — Trade Journal / FIFO P&L
+- **`trade_journal.go`** (1202 lines) — Trade Journal / FIFO P&L
   endpoints. `handleTradeJournalSync` (per-character wallet + journal +
   industry jobs → archive tables, plus corp wallets for accountant/
   director scope, then `reconcileIndustryJobLinks`),
   `handleTradeJournalSummary`, `handleTradeJournalByType`,
-  `handleTradeJournalLots`, `handleTradeJournalLinkJob`,
-  `handleTradeJournalLinkCandidates`. `journalRuntime` is a 60s TTL
-  package-global cache with `singleflight.Group` collapsing concurrent
-  duplicate computes (the frontend fires `/summary` + `/by-type` in
-  parallel).
+  `handleTradeJournalLots`, `handleTradeJournalAnalytics`,
+  `handleTradeJournalLinkJob`, `handleTradeJournalLinkCandidates`.
+  `journalRuntime` is a 60s TTL package-global cache with
+  `singleflight.Group` collapsing concurrent duplicate computes (the
+  frontend fires `/summary` + `/by-type` in parallel). The cache key
+  includes the resolved fee pair — fees are charged inside the match, so
+  two rate pairs are two different computes, not one compute presented
+  twice.
+
+  `GET /api/auth/journal/analytics` is the deep-dive read: same
+  `loadTradeJournalResult`, then `ToPortfolioPnL(opt, source)` plus a
+  per-character ESI order fetch for slot efficiency. It is a separate
+  route from `/summary` precisely so the default Summary view does not pay
+  for that fetch. Every journal read accepts the `sales_tax` /
+  `broker_fee` override pair, both or neither — a summary computed at one
+  pair beside a lot drawer computed at another would show two profits for
+  one trade.
+- **`fee_profile.go`** (216 lines) — the one place sell-side rates are
+  resolved. `FeeProfile` carries the rates plus their provenance
+  (`config` / `skills` / `default` / `override`) so the UI can state what
+  it is charging instead of showing two unexplained numbers.
+  `resolveFeeProfile` prefers explicit config, else derives from the
+  scope's characters' Accounting / Broker Relations levels
+  (`marketSkillLevels`, 30-minute `feeSkillCache`), else falls back to the
+  defaults. This replaced a hardcoded `brokerFee := 1.0` that never read
+  `cfg.BrokerFeePercent` — every journal figure understated an untrained
+  broker fee by two thirds.
 - **`trading_edge.go`** — `handleAuthTradingEdge`. Aggregates paper
   trades into `tradingEdgeAgg` buckets (per-item / per-category /
   per-station), computes `win_rate`, `expected_isk`, `realized_isk`,
@@ -1290,7 +1338,7 @@ one. `WORKSPACE_META` in `lib/cockpit.ts` maps workspaces to tabs:
 | Trade | `radius`, `region`, `station`, `contracts`, `orders`, `plex`, `optimizer`, `edge` |
 | Industry | `industry`, `pi_factory`, `jobs`, `pi_planets` |
 | Assets | `positions`, `stockpiles`, `price_audit` |
-| Journal | `trade_journal`, `pnl`, `transactions`, `wallet`, `risk` |
+| Journal | `trade_journal`, `transactions`, `wallet`, `risk` |
 | Intel | `route`, `demand` |
 
 This is a **grouping over** `MAIN_TAB_IDS`, not a replacement, so saved
@@ -1325,25 +1373,36 @@ those drafts and empty the set.
 | `plex` | `tabPlex` | `PlexTab` |
 | `pi_factory` | `tabPIFactory` | `PIFactory` |
 | `industry` | `tabIndustry` | `IndustryTab` |
-| `trade_journal` | `tabTradeJournal` | `TradeJournal` |
+| `trade_journal` | `tabTradeJournal` | `TradeJournal` (Summary / Analytics) |
 | `demand` | `tabDemand` (War) | `WarTracker` |
 | `orders` | `tabOrders` | `Orders` (Active / History sub-tabs) |
 | `positions` | `tabPositions` | `PositionsTab` |
 | `stockpiles` | `tabStockpiles` | `IndustryStockpilePanel` (lazy) |
 | `jobs` | `tabJobs` | `JobsWorkspaceTab` → `IndustryJobsTab` |
 | `pi_planets` | `tabPIPlanets` | `PIPlanetsWorkspaceTab` → `PIPlanetsTab` |
-| `pnl` | `tabPnL` | `PnLWorkspaceTab` → `PnLTab` |
 | `transactions` | `tabTransactions` | `TransactionsWorkspaceTab` → `TransactionsTab` |
 | `wallet` | `tabWallet` | `WalletWorkspaceTab` → `WalletDashboardTab` |
 | `risk` | `tabRisk` | `RiskWorkspaceTab` → `RiskTab` |
 | `optimizer` | `tabOptimizer` | `OptimizerWorkspaceTab` → `OptimizerTab` |
 | `edge` | `tabEdge` | `EdgeWorkspaceTab` → `TradingEdgeTab` |
 
+**The `pnl` tab is gone.** It was a second accounting surface running a
+second FIFO engine over the same transactions — one that could not see
+industry jobs, so a built-and-sold item read as a zero-cost windfall there
+while the Journal priced it correctly. Its panels are now the Trade
+Journal's **Analytics** view (`components/journal/JournalAnalyticsView.tsx`),
+reached from a Summary | Analytics switch, with a Trading / Manufacturing /
+Combined source selector that drives every figure on the tab. No migration
+was needed: `uniqueKnownTabs` filters stored preferences against
+`MAIN_TAB_IDS`, so a saved layout naming `pnl` drops it silently. See
+`docs/DUPLICATION.md` cluster 15.
+
 **Nine tools were promoted out of the character modal.** Orders,
 Transactions, Ledger (`wallet`), Industry Jobs, PI planets, P&L, Edge,
 Risk and Optimizer were 4,783 lines of working features whose only entry
 point was a portrait click followed by a tab strip inside a dialog. They
-are workspace tabs now. The tool components under
+are workspace tabs now (P&L has since been folded into Trade Journal, as
+above). The tool components under
 `components/character-popup/` are unchanged; only their mount point
 moved. The thin wrappers live in
 `components/character/CharacterTools.tsx`, and the scope + one shared
@@ -1477,12 +1536,13 @@ entry point.
   `index.ts` barrel.
 - **`components/character-popup/`** — the tool bodies. `OverviewTab` and
   `HostedAccessTab` still render inside the dialog; `IndustryJobsTab`,
-  `OptimizerTab`, `PIPlanetsTab`, `PnLTab`, `RiskTab`, `TradingEdgeTab`,
+  `OptimizerTab`, `PIPlanetsTab`, `RiskTab`, `TradingEdgeTab`,
   `TransactionsTab` and `WalletDashboardTab` are mounted as workspace
   tabs through `components/character/CharacterTools.tsx` and keep their
   original prop signatures. `TabButton` (shared between dialog and main
   tab bar), `shared.tsx`. `CombinedOrdersTab` is gone — the main Orders
-  tab absorbed it (see `components/orders/`).
+  tab absorbed it (see `components/orders/`). `PnLTab` is gone — the Trade
+  Journal's Analytics view replaced it (see `components/journal/`).
 - **`components/character/`** — `CharacterScopeProvider` (scope +
   lazy shared `getCharacterInfo` + the three formatters),
   `CharacterScopePicker` (the scope pill in the tab strip's actions
@@ -1503,12 +1563,19 @@ entry point.
   DateRangeSelector) and `types.ts`.
 - **`components/journal/`** — `PnLPrimitives.tsx` exports
   `PnLChart`, `PnLItemsTable`, `PnLLedgerTable`,
-  `PnLStationsTable`, `SlotEfficiencyTable`,
-  shared between `TradeJournal.tsx` and `character-popup/PnLTab.tsx` so
-  the two surfaces render identical widgets. `PnLOpenPositionsTable` was
-  deleted: five ledger columns with no live price, no unrealized P&L and
-  no action answered "what did I pay", not "should I sell this today".
-  The P&L tab now links to Assets → Positions instead.
+  `PnLStationsTable`, `SlotEfficiencyTable`, shared between
+  `TradeJournal.tsx`'s Summary chart and `JournalAnalyticsView.tsx`.
+  `JournalAnalyticsView.tsx` is the deep-dive half of the tab — risk
+  statistics, the drawdown chart mode, the per-item / per-station / slot
+  tables and the realized ledger, fetched from
+  `GET /api/auth/journal/analytics` with its own AbortController.
+  `JournalFeeStrip.tsx` states the rates every profit figure was computed
+  with plus their provenance, and owns the session override; it replaced
+  two bare number inputs defaulted to 8% / 1% that said nothing about
+  where those came from. `PnLOpenPositionsTable` was deleted: five ledger
+  columns with no live price, no unrealized P&L and no action answered
+  "what did I pay", not "should I sell this today". Analytics links to
+  Assets → Positions instead.
 - **`components/plex-tab/`** — `PlexAnalyticsCards`, `PlexArbitrageModal`,
   `PlexCharts`, `PlexMarketCards`, `SPFarmCard`, all mounted by
   `PlexTab.tsx`.

@@ -42,13 +42,11 @@ counterparts — proximity made the overlaps obvious:
 6. ~~**Two order tabs**~~ — **RESOLVED**. `CombinedOrdersTab` (757 lines,
    portrait-click only) is deleted; its history and undercut status moved into
    the main-tab order desk. See Cluster 14.
-7. **`trade_journal` vs character-modal `PnLTab`** — two accounting surfaces
-   over the same transactions, running **two separate FIFO engines**. Trade
-   Journal folds in industry jobs and pools every wallet; P&L sees wallet
-   transactions for one character and prices fees from UI sliders. They can
-   legitimately disagree and nothing tells the user why. The duplicate
-   open-positions table is gone; the surface merge is deferred but should be
-   the next piece of Journal work. See Cluster 15.
+7. ~~**`trade_journal` vs character-modal `PnLTab`**~~ — **RESOLVED**. The two
+   FIFO engines are now one matcher (`ComputeTradeJournal`) feeding one
+   summarizer (`summarizeRealizedLedger`), and the two tabs are one tab with a
+   Summary / Analytics switch. Pinned by an anti-drift test that fails if the
+   engines can ever disagree again. See Cluster 15.
 
 ---
 
@@ -573,7 +571,49 @@ of the drawer — which comes from the desk payload — untouched.
 
 ---
 
-## Cluster 15: `trade_journal` vs character-modal `PnLTab`
+## Cluster 15: `trade_journal` vs character-modal `PnLTab` — RESOLVED
+
+> **Status: fixed in the UI overhaul.** One matcher, one summarizer, one tab.
+>
+> - `ComputeTradeJournal` is the only matcher a user is shown. Its output is
+>   projected into the analytics shape by `TradeJournalResult.ToPortfolioPnL`
+>   (`internal/engine/portfolio_projection.go`), which filters by `LotSource`
+>   before summarizing — so Trading / Manufacturing / Combined each get their
+>   own Sharpe ratio, drawdown and profit factor rather than a share of a
+>   combined figure.
+> - Every derived statistic now comes from `summarizeRealizedLedger`
+>   (`portfolio.go`), called by both engines. The daily series, per-item and
+>   per-station breakdowns, Sharpe, drawdown, Calmar, profit factor and
+>   expectancy are computed in exactly one place.
+> - `ComputePortfolioPnLWithOptions` survives for three in-memory callers
+>   (`eve_ledger.go`, `optimizer.go`, two `ComputePortfolioPnL` calls in
+>   `server.go`) that score raw ESI transactions with no DB round-trip. It is
+>   no longer a number the user is shown.
+> - `PnLTab` is deleted. Its panels live in
+>   `components/journal/JournalAnalyticsView.tsx`, reached from the Trade
+>   Journal tab's Summary | Analytics switch, and the `pnl` main tab is gone
+>   from `MAIN_TAB_IDS` — stored layouts naming it drop it silently via
+>   `uniqueKnownTabs`.
+> - New `GET /api/auth/journal/analytics` serves it. It is a separate route
+>   from `/journal/summary` so the default Summary view does not pay for the
+>   per-character ESI order fetch that slot efficiency needs.
+>
+> **Fees.** The claim below that Trade Journal used "the character's real fee
+> profile" was wrong: `brokerFee` was hardcoded to 1.0 and `cfg.BrokerFeePercent`
+> was never read, so every journal figure understated an untrained broker fee by
+> two thirds. Fees now resolve config → skills (Accounting / Broker Relations,
+> 30-minute cache) → default, with an explicit session override, and the tab
+> states which of those it used. See `internal/api/fee_profile.go`.
+>
+> **Pinned by** `internal/engine/portfolio_projection_test.go`:
+> `TestToPortfolioPnL_MatchesLegacyEngineWithoutJobs` asserts that given zero
+> industry jobs the projection equals `ComputePortfolioPnLWithOptions` field for
+> field. Writing it immediately caught a real divergence — the journal engine
+> computed fees as `gross*(pct/100)` where the legacy engine used
+> `gross*pct/100`, differing in the last float64 bits. That is precisely the
+> silent drift this cluster was about, found at the smallest scale it can occur.
+>
+> The audit below is retained as the record of what was wrong.
 
 Two accounting surfaces over the same ESI transaction history, built at
 different times for different questions, now sitting two tabs apart in the same
@@ -617,8 +657,8 @@ they were computed by different code with different inputs.
 The merge — one Journal surface, `ComputeTradeJournal` as the single engine,
 P&L's unique panels ported onto it — was deliberately **not** attempted in the
 tab-promotion pass, because moving a tool's mount point and rewriting it in the
-same diff makes a near-mechanical change unreviewable. It should be the next
-piece of Journal work.
+same diff makes a near-mechanical change unreviewable. It landed as its own
+pass; see the status block above.
 
 ---
 

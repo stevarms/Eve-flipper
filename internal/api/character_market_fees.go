@@ -68,23 +68,10 @@ func (s *Server) handleAuthCharacterMarketFees(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	skills, skillsErr := s.esi.GetSkills(sess.CharacterID, token)
+	accountingLevel, brokerLevel, skillsErr := s.marketSkillLevels(sess.CharacterID, token)
 	if skillsErr != nil {
 		writeError(w, 502, "failed to fetch skills: "+skillsErr.Error())
 		return
-	}
-
-	accountingLevel := 0
-	brokerLevel := 0
-	if skills != nil {
-		for _, sk := range skills.Skills {
-			switch sk.SkillID {
-			case skillTypeIDAccounting:
-				accountingLevel = sk.TrainedLevel
-			case skillTypeIDBrokerRelations:
-				brokerLevel = sk.TrainedLevel
-			}
-		}
 	}
 
 	resp := characterMarketFeesResponse{

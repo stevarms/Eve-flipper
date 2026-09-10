@@ -73,24 +73,11 @@ type PositionsResponse struct {
 	GeneratedAt      string        `json:"generated_at"`
 }
 
-// positionFees resolves the sell-side fee pair, config defaults overridden by
-// query params — the same convention handleAuthOrderDesk uses, and cheaper
-// than the skills-backed profile in character_market_fees.go for a page that
-// only needs a percentage.
+// positionFees resolves the sell-side fee pair — the shared config rates
+// (fee_profile.go) overridden by query params, the same convention
+// handleAuthOrderDesk uses.
 func (s *Server) positionFees(userID string, r *http.Request) (salesTax, brokerFee float64) {
-	salesTax, brokerFee = 8.0, 1.0
-	if cfg := s.loadConfigForUser(userID); cfg != nil {
-		if cfg.SellSalesTaxPercent > 0 {
-			salesTax = cfg.SellSalesTaxPercent
-		} else if cfg.SalesTaxPercent > 0 {
-			salesTax = cfg.SalesTaxPercent
-		}
-		if cfg.SellBrokerFeePercent > 0 {
-			brokerFee = cfg.SellBrokerFeePercent
-		} else if cfg.BrokerFeePercent > 0 {
-			brokerFee = cfg.BrokerFeePercent
-		}
-	}
+	salesTax, brokerFee = s.configFees(userID)
 	if v := r.URL.Query().Get("sales_tax"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 && f <= 100 {
 			salesTax = f
@@ -116,6 +103,53 @@ func positionScopeFilter(characterID int64, all bool, sessionCharID int64) *db.W
 		id = sessionCharID
 	}
 	return &db.WalletScopeFilter{IncludeCharacters: []int64{id}}
+}
+
+// collapsePositionsByType folds the engine's per-station open positions back
+// into one row per type + source.
+//
+// The engine splits trade lots by station because the P&L projection needs a
+// per-station cost basis. This tab has no station column, so two rows for the
+// same item would read as a duplicate rather than as two locations. Adding that
+// column is the better answer; until then, collapse.
+func collapsePositionsByType(in []engine.JournalOpenPosition) []engine.JournalOpenPosition {
+	type key struct {
+		typeID int32
+		source engine.LotSource
+	}
+	order := make([]key, 0, len(in))
+	agg := make(map[key]*engine.JournalOpenPosition, len(in))
+	for _, p := range in {
+		if p.Qty <= 0 {
+			continue
+		}
+		k := key{typeID: p.TypeID, source: p.Source}
+		cur, ok := agg[k]
+		if !ok {
+			merged := p
+			// Location is meaningless once stations are merged; leaving a
+			// single station's id here would mislabel the whole row.
+			merged.LocationID = 0
+			merged.LocationName = ""
+			agg[k] = &merged
+			order = append(order, k)
+			continue
+		}
+		cur.Qty += p.Qty
+		cur.CostBasis += p.CostBasis
+		if p.OldestDate != "" && (cur.OldestDate == "" || p.OldestDate < cur.OldestDate) {
+			cur.OldestDate = p.OldestDate
+		}
+	}
+	out := make([]engine.JournalOpenPosition, 0, len(order))
+	for _, k := range order {
+		p := agg[k]
+		if p.Qty > 0 {
+			p.AvgUnitCost = p.CostBasis / float64(p.Qty)
+		}
+		out = append(out, *p)
+	}
+	return out
 }
 
 func (s *Server) handleAuthPositions(w http.ResponseWriter, r *http.Request) {
@@ -147,11 +181,11 @@ func (s *Server) handleAuthPositions(w http.ResponseWriter, r *http.Request) {
 	if sessErr == nil && len(sessions) > 0 {
 		sessionCharID = sessions[0].CharacterID
 		filter := positionScopeFilter(characterID, allScope, sessionCharID)
-		result, jErr := s.loadTradeJournalResultFor(userID, filter, time.Time{}, engine.FIFOModeStrictDate)
+		result, jErr := s.loadTradeJournalResultFor(userID, filter, time.Time{}, engine.FIFOModeStrictDate, journalFeeRates{})
 		if jErr != nil {
 			log.Printf("[POSITIONS] journal compute: %v", jErr)
 		} else if result != nil {
-			derived = result.OpenPositions
+			derived = collapsePositionsByType(result.OpenPositions)
 		}
 	}
 

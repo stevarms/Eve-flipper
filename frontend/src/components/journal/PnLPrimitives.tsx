@@ -8,8 +8,8 @@ import type {
 
 // PnLChart's data shape — just the fields the CSS bar chart uses. Kept
 // permissive here (rather than PortfolioPnL["daily_pnl"]) so callers with
-// their own daily-entry shape (Trade Journal) can pass compatible rows
-// without a cast. Legacy character-popup PnLTab still passes
+// their own daily-entry shape (the Journal's per-source series) can pass
+// compatible rows without a cast. The analytics view passes
 // PortfolioPnL["daily_pnl"] directly — that shape is a superset.
 export interface PnLChartEntry {
   date: string;
@@ -19,9 +19,9 @@ export interface PnLChartEntry {
   transactions?: number;
 }
 
-// Shared P&L primitives — used by the character-popup Ledger tab and the
-// main Trade Journal tab. Extracted from PnLTab.tsx so both surfaces render
-// identical widgets without code duplication.
+// Shared P&L primitives — the Trade Journal's Summary chart and its Analytics
+// view both render from here, so the two depths of the same numbers cannot
+// drift apart visually either.
 
 // --- P&L Bar Chart (CSS-based) ---
 

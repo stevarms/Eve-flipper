@@ -20,6 +20,12 @@ type JournalTxn struct {
 	UnitPrice     float64
 	Quantity      int32
 	IsBuy         bool
+	// Where the trade happened. The journal itself aggregates across
+	// stations, but the P&L projection needs these for its per-station
+	// breakdown — dropping them here is what used to make that table
+	// impossible to derive from this engine.
+	LocationID   int64
+	LocationName string
 }
 
 // JournalIndustryJob is the engine's view of a completed industry job.
@@ -129,7 +135,24 @@ type TradeJournalLot struct {
 	SellFees      float64 `json:"sell_fees"`
 	NetProfit     float64 `json:"net_profit"`
 
-	// Trade-side (Source == "trade")
+	// SellFees split into its two components. The journal itself only ever
+	// needs the sum, but the P&L projection reports broker fees and sales
+	// tax on separate lines, and re-deriving the split from a rate would
+	// drift the moment the rate changed mid-period.
+	SellBrokerFee float64 `json:"sell_broker_fee"`
+	SellTax       float64 `json:"sell_tax"`
+
+	// Where the sell happened, and where the matched buy happened. Empty on
+	// the manufacture side: a built item has no purchase station (the job's
+	// output location is not tracked by ESI's industry endpoint).
+	SellLocationID   int64  `json:"sell_location_id,omitempty"`
+	SellLocationName string `json:"sell_location_name,omitempty"`
+	BuyLocationID    int64  `json:"buy_location_id,omitempty"`
+	BuyLocationName  string `json:"buy_location_name,omitempty"`
+
+	// Cost side. BuyUnitPrice carries the purchase price on trade rows and
+	// the build unit cost (install + materials ÷ produced qty) on
+	// manufacture rows, so cost basis is one expression for both sources.
 	BuyDate      string  `json:"buy_date,omitempty"`
 	BuyTxnID     int64   `json:"buy_txn_id,omitempty"`
 	BuyWallet    string  `json:"buy_wallet_key,omitempty"`
@@ -143,17 +166,24 @@ type TradeJournalLot struct {
 	MaterialsEstimated bool   `json:"materials_estimated,omitempty"`
 }
 
-// JournalOpenPosition mirrors PortfolioPnL's OpenPosition but tags Source
-// and drops the per-station shape (the trade journal aggregates across
-// wallets/stations by typeID + source).
+// JournalOpenPosition mirrors PortfolioPnL's OpenPosition and adds Source.
+// Rows aggregate across wallets but split by station, so the P&L projection
+// can reproduce the per-station cost basis; a surface with no station column
+// (the Positions tab) collapses them back by type first.
 type JournalOpenPosition struct {
-	TypeID      int32     `json:"type_id"`
-	TypeName    string    `json:"type_name,omitempty"`
-	Source      LotSource `json:"source"`
-	Qty         int64     `json:"qty"`
-	AvgUnitCost float64   `json:"avg_unit_cost"`
-	OldestDate  string    `json:"oldest_date"`
-	CostBasis   float64   `json:"cost_basis"`
+	TypeID   int32     `json:"type_id"`
+	TypeName string    `json:"type_name,omitempty"`
+	Source   LotSource `json:"source"`
+	// Where the inventory sits. Trade lots are grouped by type + station,
+	// because the same item held in Jita and in Amarr is not one position.
+	// Zero on manufacture rows: ESI's industry endpoint does not report a
+	// job's output location.
+	LocationID   int64   `json:"location_id,omitempty"`
+	LocationName string  `json:"location_name,omitempty"`
+	Qty          int64   `json:"qty"`
+	AvgUnitCost  float64 `json:"avg_unit_cost"`
+	OldestDate   string  `json:"oldest_date"`
+	CostBasis    float64 `json:"cost_basis"`
 }
 
 // TotalsBreakdown is the KPI-tile input.
@@ -177,7 +207,7 @@ type DailyBreakdown struct {
 	BuyISK           float64 `json:"buy_isk"`
 	SellISK          float64 `json:"sell_isk"`
 	FeesISK          float64 `json:"fees_isk"`
-	Transactions    int     `json:"transactions"`
+	Transactions     int     `json:"transactions"`
 }
 
 // TradeJournalOptions parameterises ComputeTradeJournal.
@@ -211,18 +241,21 @@ type TradeJournalResult struct {
 
 // tradeLot is an open buy-side lot in the trading pool.
 type tradeLot struct {
-	date       time.Time
-	txnID      int64
-	walletKey  string
-	unitPrice  float64
-	remaining  int64
-	feesBuffer float64 // per-unit-share of buy broker fee (flat rate)
+	date         time.Time
+	txnID        int64
+	walletKey    string
+	typeName     string
+	locationID   int64
+	locationName string
+	unitPrice    float64
+	remaining    int64
 }
 
 // mfgLot is an open manufacturing lot in the manufacturing pool.
 type mfgLot struct {
 	jobID              int64
 	characterID        int64
+	productName        string
 	date               time.Time
 	unitCost           float64
 	remaining          int64
@@ -351,13 +384,18 @@ func ComputeTradeJournal(
 		return dailyIndex[key]
 	}
 
-	brokerRate := opts.BrokerFeePercent / 100.0
-	if brokerRate < 0 {
-		brokerRate = 0
+	// Kept as percentages and divided at the point of use — gross*pct/100.0,
+	// not gross*(pct/100.0). The two are the same in exact arithmetic and
+	// differ in the last bits in float64, and the legacy engine uses the
+	// former. Matching it is what lets ToPortfolioPnL reproduce
+	// ComputePortfolioPnLWithOptions exactly (portfolio_projection_test.go).
+	brokerPct := opts.BrokerFeePercent
+	if brokerPct < 0 {
+		brokerPct = 0
 	}
-	salesTaxRate := opts.SalesTaxPercent / 100.0
-	if salesTaxRate < 0 {
-		salesTaxRate = 0
+	salesTaxPct := opts.SalesTaxPercent
+	if salesTaxPct < 0 {
+		salesTaxPct = 0
 	}
 
 	for _, ev := range events {
@@ -365,18 +403,16 @@ func ComputeTradeJournal(
 		case evtBuy:
 			tx := ev.txn
 			gross := tx.UnitPrice * float64(tx.Quantity)
-			buyFee := gross * brokerRate
-			var feePerUnit float64
-			if tx.Quantity > 0 {
-				feePerUnit = buyFee / float64(tx.Quantity)
-			}
+			buyFee := gross * brokerPct / 100.0
 			tradePool[tx.TypeID] = append(tradePool[tx.TypeID], tradeLot{
-				date:       ev.when,
-				txnID:      tx.TransactionID,
-				walletKey:  tx.WalletKey,
-				unitPrice:  tx.UnitPrice,
-				remaining:  int64(tx.Quantity),
-				feesBuffer: feePerUnit,
+				date:         ev.when,
+				txnID:        tx.TransactionID,
+				walletKey:    tx.WalletKey,
+				typeName:     tx.TypeName,
+				locationID:   tx.LocationID,
+				locationName: tx.LocationName,
+				unitPrice:    tx.UnitPrice,
+				remaining:    int64(tx.Quantity),
 			})
 			if ev.when.After(cutoff) || ev.when.Equal(cutoff) || cutoff.IsZero() {
 				d := getDay(ev.when)
@@ -499,6 +535,7 @@ func ComputeTradeJournal(
 			mfgPool[job.ProductTypeID] = append(mfgPool[job.ProductTypeID], mfgLot{
 				jobID:              job.JobID,
 				characterID:        job.CharacterID,
+				productName:        job.ProductTypeName,
 				date:               ev.when,
 				unitCost:           unitCost,
 				remaining:          producedQty,
@@ -511,7 +548,14 @@ func ComputeTradeJournal(
 			tx := ev.txn
 			sellQty := tx.Quantity
 			sellGrossPerUnit := tx.UnitPrice
-			perUnitFees := sellGrossPerUnit * (brokerRate + salesTaxRate)
+			// Fees are taken on the matched gross, not per unit and then
+			// multiplied. Both are the same number in exact arithmetic, but
+			// only this order reproduces ComputePortfolioPnLWithOptions bit
+			// for bit — and a projection that differs in the last float digit
+			// still shows the user two different profits.
+			feesOn := func(gross float64) (broker, tax float64) {
+				return gross * brokerPct / 100.0, gross * salesTaxPct / 100.0
+			}
 			inWindow := cutoff.IsZero() || !ev.when.Before(cutoff)
 
 			if inWindow {
@@ -529,19 +573,24 @@ func ComputeTradeJournal(
 					// revenue as unattributed and stop matching.
 					if inWindow {
 						orphanRev := sellGrossPerUnit * float64(sellQty)
+						orphanBroker, orphanTax := feesOn(orphanRev)
 						result.Totals.UnattributedISK += orphanRev
 						result.Lots = append(result.Lots, TradeJournalLot{
-							Source:        LotSourceOrphan,
-							SellDate:      tx.Date,
-							SellTxnID:     tx.TransactionID,
-							SellWallet:    tx.WalletKey,
-							TypeID:        tx.TypeID,
-							TypeName:      firstNonEmpty(tx.TypeName, opts.TypeNameFor(tx.TypeID)),
-							MatchedQty:    int64(sellQty),
-							SellUnitPrice: sellGrossPerUnit,
-							SellGross:     orphanRev,
-							SellFees:      perUnitFees * float64(sellQty),
-							NetProfit:     0,
+							Source:           LotSourceOrphan,
+							SellDate:         tx.Date,
+							SellTxnID:        tx.TransactionID,
+							SellWallet:       tx.WalletKey,
+							SellLocationID:   tx.LocationID,
+							SellLocationName: tx.LocationName,
+							TypeID:           tx.TypeID,
+							TypeName:         firstNonEmpty(tx.TypeName, opts.TypeNameFor(tx.TypeID)),
+							MatchedQty:       int64(sellQty),
+							SellUnitPrice:    sellGrossPerUnit,
+							SellGross:        orphanRev,
+							SellFees:         orphanBroker + orphanTax,
+							SellBrokerFee:    orphanBroker,
+							SellTax:          orphanTax,
+							NetProfit:        0,
 						})
 					}
 					sellQty = 0
@@ -559,30 +608,37 @@ func ComputeTradeJournal(
 				}
 
 				sellGross := sellGrossPerUnit * float64(matched)
-				sellFees := perUnitFees * float64(matched)
+				sellBroker, sellTax := feesOn(sellGross)
+				sellFees := sellBroker + sellTax
 
 				switch pick.kind {
 				case lotKindTrade:
 					buyGross := pick.unitPrice * float64(matched)
-					buyFees := pick.feesPerUnit * float64(matched)
+					buyFees := buyGross * brokerPct / 100.0
 					net := sellGross - sellFees - buyGross - buyFees
 					result.Lots = append(result.Lots, TradeJournalLot{
-						Source:        LotSourceTrade,
-						SellDate:      tx.Date,
-						SellTxnID:     tx.TransactionID,
-						SellWallet:    tx.WalletKey,
-						TypeID:        tx.TypeID,
-						TypeName:      firstNonEmpty(tx.TypeName, opts.TypeNameFor(tx.TypeID)),
-						MatchedQty:    matched,
-						SellUnitPrice: sellGrossPerUnit,
-						SellGross:     sellGross,
-						SellFees:      sellFees,
-						NetProfit:     net,
-						BuyDate:       pick.date.Format(time.RFC3339),
-						BuyTxnID:      pick.txnID,
-						BuyWallet:     pick.walletKey,
-						BuyUnitPrice:  pick.unitPrice,
-						BuyFees:       buyFees,
+						Source:           LotSourceTrade,
+						SellDate:         tx.Date,
+						SellTxnID:        tx.TransactionID,
+						SellWallet:       tx.WalletKey,
+						SellLocationID:   tx.LocationID,
+						SellLocationName: tx.LocationName,
+						TypeID:           tx.TypeID,
+						TypeName:         firstNonEmpty(tx.TypeName, opts.TypeNameFor(tx.TypeID)),
+						MatchedQty:       matched,
+						SellUnitPrice:    sellGrossPerUnit,
+						SellGross:        sellGross,
+						SellFees:         sellFees,
+						SellBrokerFee:    sellBroker,
+						SellTax:          sellTax,
+						NetProfit:        net,
+						BuyDate:          pick.date.Format(time.RFC3339),
+						BuyTxnID:         pick.txnID,
+						BuyWallet:        pick.walletKey,
+						BuyLocationID:    pick.locationID,
+						BuyLocationName:  pick.locationName,
+						BuyUnitPrice:     pick.unitPrice,
+						BuyFees:          buyFees,
 					})
 					result.Totals.TradingPnL += net
 					result.Totals.FeesISK += sellFees
@@ -593,17 +649,26 @@ func ComputeTradeJournal(
 					buildCost := pick.unitPrice * float64(matched)
 					net := sellGross - sellFees - buildCost
 					result.Lots = append(result.Lots, TradeJournalLot{
-						Source:             LotSourceManufacture,
-						SellDate:           tx.Date,
-						SellTxnID:          tx.TransactionID,
-						SellWallet:         tx.WalletKey,
-						TypeID:             tx.TypeID,
-						TypeName:           firstNonEmpty(tx.TypeName, opts.TypeNameFor(tx.TypeID)),
-						MatchedQty:         matched,
-						SellUnitPrice:      sellGrossPerUnit,
-						SellGross:          sellGross,
-						SellFees:           sellFees,
-						NetProfit:          net,
+						Source:           LotSourceManufacture,
+						SellDate:         tx.Date,
+						SellTxnID:        tx.TransactionID,
+						SellWallet:       tx.WalletKey,
+						SellLocationID:   tx.LocationID,
+						SellLocationName: tx.LocationName,
+						TypeID:           tx.TypeID,
+						TypeName:         firstNonEmpty(tx.TypeName, opts.TypeNameFor(tx.TypeID)),
+						MatchedQty:       matched,
+						SellUnitPrice:    sellGrossPerUnit,
+						SellGross:        sellGross,
+						SellFees:         sellFees,
+						SellBrokerFee:    sellBroker,
+						SellTax:          sellTax,
+						NetProfit:        net,
+						// The build unit cost is the manufacture row's cost
+						// basis. It was previously spent computing `net` and
+						// then discarded, which is why P&L could not see what
+						// a built item cost.
+						BuyUnitPrice:       pick.unitPrice,
 						ManufactureJobID:   pick.jobID,
 						ManufactureME:      pick.me,
 						ManufactureMETag:   pick.meTag,
@@ -631,41 +696,70 @@ func ComputeTradeJournal(
 	})
 
 	// Emit open positions from the pool state at end of stream.
+	//
+	// Trade lots split by station and carry the buy broker fee in their cost
+	// basis, matching ComputePortfolioPnLWithOptions exactly — the P&L
+	// projection compares against it, and a position that cost 5% more than
+	// it says is a position that reports a profit it never made.
+	type openTradeKey struct {
+		typeID     int32
+		locationID int64
+	}
+	type openTradeAgg struct {
+		typeName     string
+		locationName string
+		qty          int64
+		costSum      float64
+		oldest       time.Time
+	}
+	openTrades := make(map[openTradeKey]*openTradeAgg)
 	for typeID, lots := range tradePool {
-		var qty int64
-		var costSum float64
-		var oldest time.Time
 		for _, l := range lots {
 			if l.remaining <= 0 {
 				continue
 			}
-			qty += l.remaining
-			costSum += l.unitPrice * float64(l.remaining)
-			if oldest.IsZero() || l.date.Before(oldest) {
-				oldest = l.date
+			key := openTradeKey{typeID: typeID, locationID: l.locationID}
+			a := openTrades[key]
+			if a == nil {
+				a = &openTradeAgg{typeName: l.typeName, locationName: l.locationName, oldest: l.date}
+				openTrades[key] = a
+			} else {
+				if a.typeName == "" && l.typeName != "" {
+					a.typeName = l.typeName
+				}
+				if a.locationName == "" && l.locationName != "" {
+					a.locationName = l.locationName
+				}
+			}
+			a.qty += l.remaining
+			lotGross := l.unitPrice * float64(l.remaining)
+			a.costSum += lotGross + lotGross*brokerPct/100.0
+			if l.date.Before(a.oldest) {
+				a.oldest = l.date
 			}
 		}
-		if qty <= 0 {
+	}
+	for key, a := range openTrades {
+		if a.qty <= 0 {
 			continue
 		}
-		avg := 0.0
-		if qty > 0 {
-			avg = costSum / float64(qty)
-		}
 		result.OpenPositions = append(result.OpenPositions, JournalOpenPosition{
-			TypeID:      typeID,
-			TypeName:    opts.TypeNameFor(typeID),
-			Source:      LotSourceTrade,
-			Qty:         qty,
-			AvgUnitCost: avg,
-			CostBasis:   costSum,
-			OldestDate:  oldest.Format(time.RFC3339),
+			TypeID:       key.typeID,
+			TypeName:     firstNonEmpty(a.typeName, opts.TypeNameFor(key.typeID)),
+			Source:       LotSourceTrade,
+			LocationID:   key.locationID,
+			LocationName: a.locationName,
+			Qty:          a.qty,
+			AvgUnitCost:  a.costSum / float64(a.qty),
+			CostBasis:    a.costSum,
+			OldestDate:   a.oldest.Format(time.RFC3339),
 		})
 	}
 	for typeID, lots := range mfgPool {
 		var qty int64
 		var costSum float64
 		var oldest time.Time
+		var productName string
 		for _, l := range lots {
 			if l.remaining <= 0 {
 				continue
@@ -675,6 +769,9 @@ func ComputeTradeJournal(
 			if oldest.IsZero() || l.date.Before(oldest) {
 				oldest = l.date
 			}
+			if productName == "" {
+				productName = l.productName
+			}
 		}
 		if qty <= 0 {
 			continue
@@ -685,7 +782,7 @@ func ComputeTradeJournal(
 		}
 		result.OpenPositions = append(result.OpenPositions, JournalOpenPosition{
 			TypeID:      typeID,
-			TypeName:    opts.TypeNameFor(typeID),
+			TypeName:    firstNonEmpty(productName, opts.TypeNameFor(typeID)),
 			Source:      LotSourceManufacture,
 			Qty:         qty,
 			AvgUnitCost: avg,
@@ -697,7 +794,10 @@ func ComputeTradeJournal(
 		if result.OpenPositions[a].TypeID != result.OpenPositions[b].TypeID {
 			return result.OpenPositions[a].TypeID < result.OpenPositions[b].TypeID
 		}
-		return result.OpenPositions[a].Source < result.OpenPositions[b].Source
+		if result.OpenPositions[a].Source != result.OpenPositions[b].Source {
+			return result.OpenPositions[a].Source < result.OpenPositions[b].Source
+		}
+		return result.OpenPositions[a].LocationID < result.OpenPositions[b].LocationID
 	})
 
 	return result
@@ -723,11 +823,12 @@ type pickedLot struct {
 	kind lotKind
 
 	// Trade-side snapshot
-	unitPrice   float64
-	feesPerUnit float64
-	date        time.Time
-	txnID       int64
-	walletKey   string
+	unitPrice    float64
+	date         time.Time
+	txnID        int64
+	walletKey    string
+	locationID   int64
+	locationName string
 
 	// Mfg-side snapshot
 	jobID              int64
@@ -751,13 +852,14 @@ func pickNextLot(mode FIFOMode, tradePool map[int32][]tradeLot, mfgPool map[int3
 	pickT := func() pickedLot {
 		l := tradeSlice[0]
 		return pickedLot{
-			kind:        lotKindTrade,
-			unitPrice:   l.unitPrice,
-			feesPerUnit: l.feesBuffer,
-			date:        l.date,
-			txnID:       l.txnID,
-			walletKey:   l.walletKey,
-			remaining:   l.remaining,
+			kind:         lotKindTrade,
+			unitPrice:    l.unitPrice,
+			date:         l.date,
+			txnID:        l.txnID,
+			walletKey:    l.walletKey,
+			locationID:   l.locationID,
+			locationName: l.locationName,
+			remaining:    l.remaining,
 		}
 	}
 	pickM := func() pickedLot {

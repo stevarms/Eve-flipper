@@ -987,6 +987,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/auth/journal/summary", s.handleTradeJournalSummary)
 	mux.HandleFunc("GET /api/auth/journal/by-type", s.handleTradeJournalByType)
 	mux.HandleFunc("GET /api/auth/journal/lots", s.handleTradeJournalLots)
+	mux.HandleFunc("GET /api/auth/journal/analytics", s.handleTradeJournalAnalytics)
 	mux.HandleFunc("POST /api/auth/journal/link-job", s.handleTradeJournalLinkJob)
 	mux.HandleFunc("GET /api/auth/journal/link-candidates", s.handleTradeJournalLinkCandidates)
 	mux.HandleFunc("GET /api/auth/character/market-fees", s.handleAuthCharacterMarketFees)
@@ -12160,13 +12161,41 @@ func (s *Server) handleAuthPortfolio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result := engine.ComputePortfolioPnLWithOptions(txns, engine.PortfolioPnLOptions{
+	pnlOpts := engine.PortfolioPnLOptions{
 		LookbackDays:         days,
 		SalesTaxPercent:      salesTax,
 		BrokerFeePercent:     brokerFee,
 		LedgerLimit:          ledgerLimit,
 		IncludeUnmatchedSell: false, // strict realized mode for API
-	})
+	}
+
+	// Compute through the trade-journal engine, which sees industry jobs and
+	// corp wallets as well as buys and sells, then project it into this
+	// endpoint's shape. The fetch above still runs: it refreshes the archive
+	// the journal reads from.
+	//
+	// The transaction-only engine remains the answer when there is no
+	// database — with no archive there is nothing richer to compute from, so
+	// the two cannot disagree.
+	var result *engine.PortfolioPnL
+	if s.db != nil {
+		var sessionCharID int64
+		if len(selectedSessions) > 0 {
+			sessionCharID = selectedSessions[0].CharacterID
+		}
+		filter := positionScopeFilter(characterID, allScope, sessionCharID)
+		since := time.Now().UTC().AddDate(0, 0, -days)
+		journal, jErr := s.loadTradeJournalResultFor(userID, filter, since, engine.FIFOModeStrictDate, journalFeeRates{})
+		if jErr != nil {
+			log.Printf("[AUTH] Portfolio journal compute: %v", jErr)
+		} else if journal != nil {
+			result = journal.ToPortfolioPnL(pnlOpts, "")
+		}
+	}
+	if result == nil {
+		result = engine.ComputePortfolioPnLWithOptions(txns, pnlOpts)
+	}
+
 	s.mu.RLock()
 	sdeData := s.sdeData
 	s.mu.RUnlock()

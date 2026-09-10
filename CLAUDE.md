@@ -121,4 +121,4 @@ Outputs land in `.debug/` (gitignored). Env overrides: `EF_URL` (default `http:/
 
 Route navigation is **conservative** — `gotoRoute` skips `page.goto()` whenever the current URL is already under the requested route (SPA state stays put; no reload, no login-redirect re-fire, no tab reset). Passing `/` therefore means "screenshot the current tab, whatever it is"; pass a deeper route (`/industry`, etc.) only when you actually want to navigate. If the browser is on `about:blank` or a non-app URL, goto still fires.
 
-Helper deps live in `scripts/debug/package.json` (`playwright-core` only, no bundled browser download — we always reuse the user's Chrome via CDP). The whole `scripts/` tree is already gitignored.
+Helper deps live in `scripts/debug/package.json` (`playwright-core` only, no bundled browser download — we always reuse the user's Chrome via CDP). The helper scripts themselves are **tracked**; only `scripts/**/node_modules/` is gitignored (along with their `.debug/` output).

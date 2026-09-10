@@ -8,7 +8,6 @@ import { useEffect } from "react";
 import { IndustryJobsTab } from "../character-popup/IndustryJobsTab";
 import { OptimizerTab } from "../character-popup/OptimizerTab";
 import { PIPlanetsTab } from "../character-popup/PIPlanetsTab";
-import { PnLTab } from "../character-popup/PnLTab";
 import { RiskTab } from "../character-popup/RiskTab";
 import { TransactionsTab } from "../character-popup/TransactionsTab";
 import { TradingEdgeTab } from "../character-popup/TradingEdgeTab";
@@ -72,17 +71,6 @@ export function PIPlanetsWorkspaceTab() {
   return (
     <CharacterToolFrame>
       <PIPlanetsTab characterScope={scope} formatIsk={formatIsk} />
-    </CharacterToolFrame>
-  );
-}
-
-export function PnLWorkspaceTab({ onOpenPositions }: { onOpenPositions?: () => void }) {
-  const { t } = useI18n();
-  const { scope, formatIsk } = useCharacterScope();
-  useToolAchievement("portfolio_opened");
-  return (
-    <CharacterToolFrame>
-      <PnLTab formatIsk={formatIsk} characterScope={scope} t={t} onOpenPositions={onOpenPositions} />
     </CharacterToolFrame>
   );
 }

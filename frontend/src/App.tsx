@@ -39,7 +39,6 @@ import {
   JobsWorkspaceTab,
   OptimizerWorkspaceTab,
   PIPlanetsWorkspaceTab,
-  PnLWorkspaceTab,
   RiskWorkspaceTab,
   TransactionsWorkspaceTab,
   WalletWorkspaceTab,
@@ -2544,7 +2543,10 @@ function App() {
             <PIFactory isLoggedIn={authStatus.logged_in} />
           </TabPanel>
           <TabPanel active={tab === "trade_journal"}>
-            <TradeJournal isLoggedIn={authStatus.logged_in} />
+            <TradeJournal
+              isLoggedIn={authStatus.logged_in}
+              onOpenPositions={() => setTab("positions")}
+            />
           </TabPanel>
           <TabPanel active={tab === "orders"}>
             <Orders isLoggedIn={authStatus.logged_in} />
@@ -2580,9 +2582,6 @@ function App() {
           </TabPanel>
           <TabPanel active={tab === "pi_planets"}>
             <PIPlanetsWorkspaceTab />
-          </TabPanel>
-          <TabPanel active={tab === "pnl"}>
-            <PnLWorkspaceTab onOpenPositions={() => setTab("positions")} />
           </TabPanel>
           <TabPanel active={tab === "transactions"}>
             <TransactionsWorkspaceTab />

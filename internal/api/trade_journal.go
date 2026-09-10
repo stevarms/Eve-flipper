@@ -399,7 +399,157 @@ func findLinkCandidates(esiJob db.ArchivedIndustryJob, ledger []db.LinkCandidate
 	return out
 }
 
-// --- read handlers (summary / by-type / lots) ---
+// --- read handlers (summary / by-type / lots / analytics) ---
+
+// handleTradeJournalAnalytics serves the risk-and-breakdown half of the
+// journal: the daily cumulative series with drawdown, per-item and per-station
+// tables, the realized ledger, Sharpe / Calmar / profit factor, and slot
+// efficiency.
+//
+// It is a separate endpoint from /journal/summary rather than more fields on
+// it because it fetches live character orders for the slot-efficiency table.
+// Folding it in would make the default Summary view pay for an ESI round trip
+// it never displays.
+//
+// `source` selects trade | manufacture | (empty) combined, and filters the
+// ledger before any statistic is computed — so a Manufacturing view's Sharpe
+// ratio describes manufacturing, not a share of a combined number.
+func (s *Server) handleTradeJournalAnalytics(w http.ResponseWriter, r *http.Request) {
+	userID := userIDFromRequest(r)
+	res, filter, sinceDate, fifoMode, err := s.loadTradeJournalResult(r)
+	if err != nil {
+		if strings.Contains(err.Error(), "not logged in") {
+			writeError(w, 401, err.Error())
+		} else {
+			writeError(w, 400, err.Error())
+		}
+		return
+	}
+
+	source, err := parseLotSourceParam(r.URL.Query().Get("source"))
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+
+	// The rates are not re-read here to be applied — they were already charged
+	// per matched sell inside the compute above (loadTradeJournalResult passes
+	// the same override into it). Resolving the identical profile again just
+	// echoes what the numbers were computed with, so the UI can state it.
+	profile := s.journalFeeProfile(userID, filter, parseJournalFeeOverride(r))
+
+	ledgerLimit := 500
+	if v := r.URL.Query().Get("ledger_limit"); v != "" {
+		if n, parseErr := strconv.Atoi(v); parseErr == nil && n >= 0 && n <= 5000 {
+			ledgerLimit = n
+		}
+	}
+
+	// LookbackDays only reaches the summarizer's per-day annualisation; the
+	// window itself was already applied by the journal compute via sinceDate.
+	lookbackDays := 90
+	if !sinceDate.IsZero() {
+		if d := int(time.Since(sinceDate).Hours() / 24); d > 0 {
+			lookbackDays = d
+		}
+	}
+
+	out := res.ToPortfolioPnL(engine.PortfolioPnLOptions{
+		LookbackDays:         lookbackDays,
+		SalesTaxPercent:      profile.SalesTaxPercent,
+		BrokerFeePercent:     profile.BrokerFeePercent,
+		LedgerLimit:          ledgerLimit,
+		IncludeUnmatchedSell: false, // strict realized mode, as the old endpoint used
+	}, source)
+
+	// Slot efficiency needs live orders. A failure here costs one table, not
+	// the whole response, so it is logged and skipped rather than returned.
+	if orders := s.characterOrdersForWalletScope(userID, filter); len(orders) > 0 {
+		out.SlotEfficiency = engine.ComputePortfolioSlotEfficiency(out, orders)
+	}
+
+	writeJSON(w, map[string]any{
+		"analytics": out,
+		"source":    string(source),
+		"fifo_mode": string(fifoMode),
+		"since":     sinceDate.Format(time.RFC3339),
+		"fees":      profile,
+	})
+}
+
+// parseLotSourceParam maps the `source` query param onto a LotSource. An empty
+// value means combined. Anything else is rejected rather than silently
+// treated as combined — a typo that quietly widens the view would show the
+// user manufacturing profit under a "Trading" heading.
+func parseLotSourceParam(v string) (engine.LotSource, error) {
+	switch v {
+	case "", "combined", "all":
+		return "", nil
+	case string(engine.LotSourceTrade):
+		return engine.LotSourceTrade, nil
+	case string(engine.LotSourceManufacture):
+		return engine.LotSourceManufacture, nil
+	default:
+		return "", fmt.Errorf("unknown source %q (want trade, manufacture or combined)", v)
+	}
+}
+
+// characterOrdersForWalletScope fetches live market orders for the characters
+// a journal wallet filter covers, enriched with type and station names.
+//
+// Corp divisions in the filter contribute no orders: slot efficiency is a
+// per-character skill question, and corp orders do not consume a character's
+// slots.
+func (s *Server) characterOrdersForWalletScope(userID string, filter *db.WalletScopeFilter) []esi.CharacterOrder {
+	if s.sessions == nil || s.esi == nil || filter == nil {
+		return nil
+	}
+	sessions := s.sessions.ListForUser(userID)
+	if len(sessions) == 0 {
+		return nil
+	}
+	if !filter.IncludeAll {
+		wanted := make(map[int64]bool, len(filter.IncludeCharacters))
+		for _, id := range filter.IncludeCharacters {
+			wanted[id] = true
+		}
+		kept := sessions[:0]
+		for _, sess := range sessions {
+			if wanted[sess.CharacterID] {
+				kept = append(kept, sess)
+			}
+		}
+		sessions = kept
+	}
+
+	var orders []esi.CharacterOrder
+	for _, sess := range sessions {
+		token, tokenErr := s.sessions.EnsureValidTokenForUserCharacter(s.sso, userID, sess.CharacterID)
+		if tokenErr != nil {
+			log.Printf("[JOURNAL] analytics order token error (%s): %v", sess.CharacterName, tokenErr)
+			continue
+		}
+		part, orderErr := s.esi.GetCharacterOrders(sess.CharacterID, token)
+		if orderErr != nil {
+			log.Printf("[JOURNAL] analytics orders error (%s): %v", sess.CharacterName, orderErr)
+			continue
+		}
+		orders = append(orders, part...)
+	}
+
+	s.mu.RLock()
+	sdeData := s.sdeData
+	s.mu.RUnlock()
+	if sdeData != nil {
+		for i := range orders {
+			if t, ok := sdeData.Types[orders[i].TypeID]; ok {
+				orders[i].TypeName = t.Name
+			}
+			orders[i].LocationName = s.esi.StationName(orders[i].LocationID)
+		}
+	}
+	return orders
+}
 
 func (s *Server) handleTradeJournalSummary(w http.ResponseWriter, r *http.Request) {
 	res, filter, sinceDate, fifoMode, err := s.loadTradeJournalResult(r)
@@ -417,6 +567,11 @@ func (s *Server) handleTradeJournalSummary(w http.ResponseWriter, r *http.Reques
 		"stale_syncs":    staleSyncs,
 		"fifo_mode":      string(fifoMode),
 		"since":          sinceDate.Format(time.RFC3339),
+		// Echoing the rates these totals were computed with costs nothing here
+		// (they were already resolved during the compute) and it is what lets
+		// the tab state "3.6% / 1.5% from Accounting V" instead of showing two
+		// unexplained numbers in a fee input.
+		"fees": s.journalFeeProfile(userIDFromRequest(r), filter, parseJournalFeeOverride(r)),
 	})
 }
 
@@ -619,7 +774,7 @@ func (s *Server) loadTradeJournalResult(r *http.Request) (*engine.TradeJournalRe
 	sinceDate := parseSinceParam(r.URL.Query().Get("days"))
 	fifoMode := parseFIFOMode(r.URL.Query().Get("fifo_mode"))
 
-	result, err := s.loadTradeJournalResultFor(userID, filter, sinceDate, fifoMode)
+	result, err := s.loadTradeJournalResultFor(userID, filter, sinceDate, fifoMode, parseJournalFeeOverride(r))
 	return result, filter, sinceDate, fifoMode, err
 }
 
@@ -629,8 +784,12 @@ func (s *Server) loadTradeJournalResult(r *http.Request) (*engine.TradeJournalRe
 // journal's scope tokens, so it builds the filter itself and calls in here.
 // Same cache and same singleflight group, so a Positions load right after a
 // Journal load is free.
-func (s *Server) loadTradeJournalResultFor(userID string, filter *db.WalletScopeFilter, sinceDate time.Time, fifoMode engine.FIFOMode) (*engine.TradeJournalResult, error) {
-	key := tradeJournalCacheKey(userID, filter, sinceDate, fifoMode)
+//
+// `fees` overrides the resolved fee profile for this compute; the zero value
+// means "resolve it". It is part of the cache key, because two rate pairs
+// produce two different sets of realized profits over the same archive.
+func (s *Server) loadTradeJournalResultFor(userID string, filter *db.WalletScopeFilter, sinceDate time.Time, fifoMode engine.FIFOMode, fees journalFeeRates) (*engine.TradeJournalResult, error) {
+	key := tradeJournalCacheKey(userID, filter, sinceDate, fifoMode, fees)
 	if cached := journalRuntime.get(key); cached != nil {
 		return cached, nil
 	}
@@ -645,7 +804,7 @@ func (s *Server) loadTradeJournalResultFor(userID string, filter *db.WalletScope
 		if cached := journalRuntime.get(key); cached != nil {
 			return cached, nil
 		}
-		return s.computeTradeJournalResult(userID, filter, sinceDate, fifoMode, key)
+		return s.computeTradeJournalResult(userID, filter, sinceDate, fifoMode, fees, key)
 	})
 	if err != nil {
 		return nil, err
@@ -660,7 +819,7 @@ func (s *Server) loadTradeJournalResultFor(userID string, filter *db.WalletScope
 // computeTradeJournalResult is the raw compute path — extracted from
 // loadTradeJournalResult so the singleflight closure can call it without
 // re-parsing HTTP request state. Populates the cache on success.
-func (s *Server) computeTradeJournalResult(userID string, filter *db.WalletScopeFilter, sinceDate time.Time, fifoMode engine.FIFOMode, key string) (*engine.TradeJournalResult, error) {
+func (s *Server) computeTradeJournalResult(userID string, filter *db.WalletScopeFilter, sinceDate time.Time, fifoMode engine.FIFOMode, fees journalFeeRates, key string) (*engine.TradeJournalResult, error) {
 	// Load archive, compute, cache.
 	txns, _, err := s.db.ListArchivedWalletActivityForUser(userID, *filter, sinceDate)
 	if err != nil {
@@ -683,6 +842,8 @@ func (s *Server) computeTradeJournalResult(userID string, filter *db.WalletScope
 			UnitPrice:     t.UnitPrice,
 			Quantity:      int32(t.Quantity),
 			IsBuy:         t.IsBuy,
+			LocationID:    t.LocationID,
+			LocationName:  t.LocationName,
 		}
 	}
 	engineJobs := make([]engine.JournalIndustryJob, len(jobs))
@@ -761,17 +922,17 @@ func (s *Server) computeTradeJournalResult(userID string, filter *db.WalletScope
 	// ME resolver — builds per-request from ledger + BP inventory.
 	meResolver := s.buildMEResolver(userID, sdeData, filter)
 
-	// User's flat sales-tax + broker-fee rates from config (fallback 8% / 1%).
-	salesTax, brokerFee := 8.0, 1.0
-	if cfg := s.loadConfigForUser(userID); cfg != nil {
-		salesTax = cfg.SalesTaxPercent
-	}
+	// The one fee profile: the user's configured rates, else the rates their
+	// skills imply, else the fallback — or an explicit per-request override.
+	// Every surface that shows realized profit resolves it the same way, so
+	// none of them can report a different profit for the same trade.
+	profile := s.journalFeeProfile(userID, filter, fees)
 
 	opts := engine.TradeJournalOptions{
 		SinceDate:        sinceDate,
 		FIFOMode:         fifoMode,
-		SalesTaxPercent:  salesTax,
-		BrokerFeePercent: brokerFee,
+		SalesTaxPercent:  profile.SalesTaxPercent,
+		BrokerFeePercent: profile.BrokerFeePercent,
 		Materials:        materials,
 		Products:         products,
 		MEByJob:          meResolver,
@@ -1032,9 +1193,10 @@ func filterAllowsCorpDiv(f *db.WalletScopeFilter, corpID int64, div int) bool {
 }
 
 // tradeJournalCacheKey builds a deterministic key for the result cache.
-func tradeJournalCacheKey(userID string, filter *db.WalletScopeFilter, since time.Time, mode engine.FIFOMode) string {
+func tradeJournalCacheKey(userID string, filter *db.WalletScopeFilter, since time.Time, mode engine.FIFOMode, fees journalFeeRates) string {
 	h := sha1.New()
-	h.Write([]byte(fmt.Sprintf("all=%v|chars=%v|corp=%v|since=%d|mode=%s",
-		filter.IncludeAll, filter.IncludeCharacters, filter.IncludeCorpDivisions, since.Unix(), mode)))
+	h.Write([]byte(fmt.Sprintf("all=%v|chars=%v|corp=%v|since=%d|mode=%s|fees=%v/%g/%g",
+		filter.IncludeAll, filter.IncludeCharacters, filter.IncludeCorpDivisions, since.Unix(), mode,
+		fees.set, fees.salesTax, fees.brokerFee)))
 	return userID + "|" + hex.EncodeToString(h.Sum(nil))
 }
