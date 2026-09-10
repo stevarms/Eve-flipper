@@ -6619,6 +6619,10 @@ func (s *Server) handleAuthRebalanceIndustryProjectMaterials(w http.ResponseWrit
 // counters without threading four returns through every call site.
 type recalcRemainingCompute struct {
 	requiredByType map[int32]int64
+	// producedByType is what the project's own unfinished jobs will yield.
+	// A component built in-project is a build obligation, not a purchase, so
+	// this is what keeps it off the procurement list.
+	producedByType map[int32]int64
 	typeNames      map[int32]string
 	unfinishedJobs int
 	skippedJobs    int
@@ -6644,6 +6648,7 @@ func computeRecalcRemainingRequirements(
 ) recalcRemainingCompute {
 	out := recalcRemainingCompute{
 		requiredByType: make(map[int32]int64),
+		producedByType: make(map[int32]int64),
 		typeNames:      make(map[int32]string),
 	}
 	if sdeData == nil || sdeData.Industry == nil {
@@ -6746,6 +6751,24 @@ func computeRecalcRemainingRequirements(
 		// which is the direction we'd rather err in.
 		mats := engine.CalculateActivityMaterialsExported(bp, activity, runs, constraintME, 0, 0)
 		out.unfinishedJobs++
+
+		// Credit this job's output. Only manufacturing and reactions produce
+		// things that appear in another job's material bill; copy, invention
+		// and research yield blueprints, which are never BOM lines, so
+		// counting them here could only ever cancel out a requirement that
+		// does not exist.
+		switch strings.ToLower(activity) {
+		case "manufacturing", "reaction":
+			if perRun, _ := engine.BlueprintOutputPerRunExported(bp, task.ProductTypeID, activity); perRun > 0 {
+				out.producedByType[task.ProductTypeID] += int64(perRun) * int64(runs)
+				if _, seen := out.typeNames[task.ProductTypeID]; !seen {
+					if t, ok := sdeData.Types[task.ProductTypeID]; ok {
+						out.typeNames[task.ProductTypeID] = strings.TrimSpace(t.Name)
+					}
+				}
+			}
+		}
+
 		for _, mat := range mats {
 			if mat.TypeID <= 0 || mat.Quantity <= 0 {
 				continue
@@ -6759,6 +6782,70 @@ func computeRecalcRemainingRequirements(
 		}
 	}
 	return out
+}
+
+// assembleRecalcRemainingDiffs turns the recalc walk's three tallies into the
+// sorted diff rows the modal renders.
+//
+// The order the credits are applied in is the whole point. A component the
+// project builds itself is covered by its own job, so the build credit comes
+// off the requirement BEFORE stock and before anything is called missing.
+// Without that, a T2 plan reports every intermediate as something to go buy —
+// it is never in the hangar, because the plan is what creates it — and the
+// modal's multibuy paste asks you to buy the components you are about to
+// manufacture. Where the project builds only part of what it needs, the
+// remainder still falls through to stock and then to the buy list.
+//
+// Pure so the credit order is testable without the asset fetch and auth
+// scaffolding around it.
+func assembleRecalcRemainingDiffs(
+	requiredByType map[int32]int64,
+	producedByType map[int32]int64,
+	assetsByType map[int32]int64,
+	typeNames map[int32]string,
+) []db.IndustryMaterialDiff {
+	diffs := make([]db.IndustryMaterialDiff, 0, len(requiredByType))
+	for typeID, required := range requiredByType {
+		build := producedByType[typeID]
+		if build > required {
+			build = required
+		}
+		if build < 0 {
+			build = 0
+		}
+		// What the hangar or the market still has to supply.
+		toSource := required - build
+		available := assetsByType[typeID]
+		if available > toSource {
+			available = toSource
+		}
+		if available < 0 {
+			available = 0
+		}
+		missing := toSource - available
+		if missing < 0 {
+			missing = 0
+		}
+		diffs = append(diffs, db.IndustryMaterialDiff{
+			TypeID:       typeID,
+			TypeName:     typeNames[typeID],
+			RequiredQty:  required,
+			AvailableQty: available,
+			BuyQty:       missing,
+			BuildQty:     build,
+			MissingQty:   missing,
+		})
+	}
+	sort.SliceStable(diffs, func(i, j int) bool {
+		if diffs[i].MissingQty != diffs[j].MissingQty {
+			return diffs[i].MissingQty > diffs[j].MissingQty
+		}
+		if diffs[i].RequiredQty != diffs[j].RequiredQty {
+			return diffs[i].RequiredQty > diffs[j].RequiredQty
+		}
+		return diffs[i].TypeID < diffs[j].TypeID
+	})
+	return diffs
 }
 
 // handleAuthRecalcRemainingIndustryProjectMaterials recomputes material
@@ -6837,6 +6924,7 @@ func (s *Server) handleAuthRecalcRemainingIndustryProjectMaterials(w http.Respon
 
 	compute := computeRecalcRemainingRequirements(snapshot, sdeData, includedStatuses)
 	requiredByType := compute.requiredByType
+	producedByType := compute.producedByType
 	typeNames := compute.typeNames
 	unfinishedJobs := compute.unfinishedJobs
 	skippedJobs := compute.skippedJobs
@@ -7001,36 +7089,7 @@ func (s *Server) handleAuthRecalcRemainingIndustryProjectMaterials(w http.Respon
 		}
 	}
 
-	// Assemble diff rows.
-	diffs := make([]db.IndustryMaterialDiff, 0, len(requiredByType))
-	for typeID, required := range requiredByType {
-		available := assetsByType[typeID]
-		if available > required {
-			available = required
-		}
-		missing := required - available
-		if missing < 0 {
-			missing = 0
-		}
-		diffs = append(diffs, db.IndustryMaterialDiff{
-			TypeID:       typeID,
-			TypeName:     typeNames[typeID],
-			RequiredQty:  required,
-			AvailableQty: available,
-			BuyQty:       missing,
-			BuildQty:     0,
-			MissingQty:   missing,
-		})
-	}
-	sort.SliceStable(diffs, func(i, j int) bool {
-		if diffs[i].MissingQty != diffs[j].MissingQty {
-			return diffs[i].MissingQty > diffs[j].MissingQty
-		}
-		if diffs[i].RequiredQty != diffs[j].RequiredQty {
-			return diffs[i].RequiredQty > diffs[j].RequiredQty
-		}
-		return diffs[i].TypeID < diffs[j].TypeID
-	})
+	diffs := assembleRecalcRemainingDiffs(requiredByType, producedByType, assetsByType, typeNames)
 
 	resp := map[string]interface{}{
 		"ok":        true,

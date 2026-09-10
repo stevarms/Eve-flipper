@@ -506,14 +506,24 @@ export function materialDiffToCoverageRows(
     const required = Math.max(0, m.required_qty ?? 0);
     const available = Math.max(0, m.available_qty ?? 0);
     const missing = Math.max(0, m.missing_qty ?? 0);
+    const build = Math.max(0, m.build_qty ?? 0);
     const coveragePct = required > 0 ? Math.max(0, Math.min(1, available / required)) : 1;
     // Match the "can I start work right now?" block semantic:
     //   covered  = available >= required (stocked, ready to go)
+    //   build    = not in stock, but another task in this project makes all
+    //              of it — nothing to procure, so it must not read as a red
+    //              missing row alongside the things you actually have to buy
     //   partial  = some in stock but short (0 < available < required)
     //   missing  = nothing in stock (available === 0, even if plan says
     //              to buy — buy_qty is intent, not inventory)
     const status: IndustryCoverageMaterialRow["status"] =
-      available >= required ? "covered" : available > 0 ? "partial" : "missing";
+      available >= required
+        ? "covered"
+        : build > 0 && build + available >= required
+          ? "build"
+          : available > 0
+            ? "partial"
+            : "missing";
     return {
       type_id: m.type_id,
       type_name: m.type_name,

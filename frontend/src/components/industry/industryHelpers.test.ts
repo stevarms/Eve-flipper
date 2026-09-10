@@ -4,6 +4,7 @@ import {
   deriveProjectValuation,
   deriveTaskBlockStatus,
   inferTaskPrerequisites,
+  materialDiffToCoverageRows,
   sortOperationsTasks,
   splitTaskDecryptorSuffix,
 } from "./industryHelpers";
@@ -311,5 +312,45 @@ describe("deriveTaskBlockStatus prerequisites", () => {
       materials: [],
     });
     expect(deriveTaskBlockStatus(1, snap, {}).level).toBe("ready");
+  });
+});
+
+describe("materialDiffToCoverageRows in-project builds", () => {
+  it("labels a wholly in-project component build, not missing", () => {
+    // The reported confusion: the components the plan manufactures sat in the
+    // materials list next to the things to actually buy, reading as missing
+    // inventory. They are never in the hangar — the plan is what creates them.
+    const [row] = materialDiffToCoverageRows([
+      { type_id: 11557, type_name: "Linear Shield Emitter", required_qty: 48, available_qty: 0, buy_qty: 0, build_qty: 48, missing_qty: 0 },
+    ]);
+    expect(row.status).toBe("build");
+    expect(row.missing_qty).toBe(0);
+  });
+
+  it("still reports a short in-project build as missing", () => {
+    // Building 30 of 48 with none on the shelf leaves 18 to procure, so this
+    // is genuinely short and must keep saying so.
+    const [row] = materialDiffToCoverageRows([
+      { type_id: 11557, type_name: "Linear Shield Emitter", required_qty: 48, available_qty: 0, buy_qty: 18, build_qty: 30, missing_qty: 18 },
+    ]);
+    expect(row.status).toBe("missing");
+    expect(row.missing_qty).toBe(18);
+  });
+
+  it("prefers covered when the stockpile alone is enough", () => {
+    // Stock beats an in-project build for the "can I start right now?"
+    // question, so a fully-stocked row keeps reading covered.
+    const [row] = materialDiffToCoverageRows([
+      { type_id: 34, type_name: "Tritanium", required_qty: 200, available_qty: 500, buy_qty: 0, build_qty: 200, missing_qty: 0 },
+    ]);
+    expect(row.status).toBe("covered");
+  });
+
+  it("leaves an ordinary market buy untouched", () => {
+    const [row] = materialDiffToCoverageRows([
+      { type_id: 34, type_name: "Tritanium", required_qty: 200, available_qty: 0, buy_qty: 200, build_qty: 0, missing_qty: 200 },
+    ]);
+    expect(row.status).toBe("missing");
+    expect(row.missing_qty).toBe(200);
   });
 });

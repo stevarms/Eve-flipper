@@ -1378,6 +1378,16 @@ func CalculateActivityMaterialsExported(bp *sde.Blueprint, activity string, runs
 	return calculateActivityMaterials(bp, activity, runs, me, structureBonus, rigMEReduction)
 }
 
+// BlueprintOutputPerRunExported reports how many units of productTypeID one
+// run of the given activity yields, plus the outcome probability (1 for
+// deterministic activities). Companion to CalculateActivityMaterialsExported
+// for callers that walk a plan job-by-job: knowing what a job CONSUMES is
+// only half of it — crediting what another job in the same project PRODUCES
+// is what keeps an intermediate off the procurement list.
+func BlueprintOutputPerRunExported(bp *sde.Blueprint, productTypeID int32, activity string) (int32, float64) {
+	return blueprintProductForActivity(bp, productTypeID, activity)
+}
+
 func calculateActivityMaterials(bp *sde.Blueprint, activity string, runs, me int32, structureBonus, rigMEReduction float64) []sde.BlueprintMaterial {
 	materials := activityMaterials(bp, activity)
 	if len(materials) == 0 || runs <= 0 {
