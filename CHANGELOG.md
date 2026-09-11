@@ -1,5 +1,71 @@
 # Changelog
 
+## v1.10.2 - 2026-09-11
+
+The Trade Journal answers "what did that sale actually make me?" one row at a
+time, sales tax and broker fees follow the skills you have trained rather than
+the ones you had when the numbers were first imported, and an API response that
+cannot be encoded says so instead of arriving empty.
+
+### Journal -> Transactions (new view)
+
+- A third view in the Trade Journal listing every matched sale in the window,
+  newest first: date, item, source, unit buy and sell, units, total buy and
+  sell, broker fee on each side, sales tax, margin and net profit. The raw
+  Transactions tab under a character is a wallet dump with no notion of profit,
+  which is why it told you nothing the in-game wallet does not.
+- The engine already computed all of it. Every one of those columns was on the
+  per-sale lot the matcher produces; the only thing missing was reach, because
+  `/api/auth/journal/lots` refused to answer without a `type_id`, so those rows
+  existed only inside one item's drawer. Widening that endpoint rather than
+  adding a second one means a figure in the list and a figure in the drawer are
+  the same matcher's answer by construction.
+- Filter by item name and by minimum profit, sort on any column, page at 40 /
+  100 / all, export the whole current sort to CSV. The minimum-profit filter is
+  on absolute value: a 4M loss moved the needle as much as a 4M win.
+- Build rows are priced on the same cost basis as flips (install + materials
+  divided by produced quantity), so a manufactured sale and a bought-and-flipped
+  sale are comparable in one column.
+- An unmatched sell shows "--" for cost and margin, not 0%. A sale we cannot
+  price is not a break-even sale, and rows with no value sort last in both
+  directions rather than settling into the middle of a profit ranking.
+- Margin is `net profit / cost`, the same ROI the item leaderboard shows for
+  that item. Note this reads a few points below eve-tycoon, which divides by
+  total spend including sell-side fees.
+
+### Fixed: fees frozen at an old skill snapshot (8% at Accounting V)
+
+- The Trade Journal charged 8.00% sales tax and 3.00% broker fee to a character
+  with Accounting V and Broker Relations V trained, where the real rates are
+  3.60% and 1.50%. The formula was right and never consulted: once both rates
+  were stored in config, fee resolution returned them and stopped -- and the
+  stored values were an "import fees from ESI" snapshot taken at a moment when
+  the skill sheet came back empty.
+- A stored rate that exactly matches what the skill formula produces at some
+  level is now treated as a snapshot and recomputed live from your skills. A
+  rate that matches no level -- a 2.5% citadel broker fee you typed in -- is a
+  deliberate choice and still wins.
+- An empty ESI skill sheet is now an error rather than "level 0 in everything",
+  which is what let the bad snapshot be written in the first place.
+- Assets -> Positions resolved its fees by a separate path that never saw
+  skills; it now goes through the same resolver, so a position and a journal row
+  cannot quote different fees for the same character.
+### Fixed: illegible "invalid JSON" errors from the API
+
+- `writeJSON` discarded the encoder's error. `json.Encoder` marshals into a
+  buffer before it writes, so an unmarshalable payload — in practice a NaN or
+  ±Inf `float64` out of a division — sent HTTP 200, `Content-Type:
+  application/json` and **zero bytes**. The browser reported only a JSON parse
+  error naming no endpoint, and nothing at all reached the server log. Both
+  `writeJSON` and `writeJSONStatus` now encode into a buffer first and turn a
+  failure into a logged 500 with a real message.
+- Float query parameters written as `if f < min || f > max` accepted NaN, since
+  every comparison against NaN is false and Go's `ParseFloat` accepts the
+  literal `"NaN"`. Fixed in the order-disposition, journal-fee-override and
+  journal-lots parsers, which then fed the NaN into the response.
+- A 2xx whose body will not parse now raises an error naming the route and
+  status instead of leaking a bare browser `SyntaxError`.
+
 ## v1.10.1 - 2026-09-11
 
 A maintenance release on top of the interface release: the Trade Journal is
@@ -72,22 +138,6 @@ made the app look hung are gone.
   returned index.html with a 200 -- indistinguishable from working until you
   tried to read the dump. This is why the last stall had to be diagnosed from OS
   counters instead of a goroutine profile.
-
-### Fixed: illegible "invalid JSON" errors from the API
-
-- `writeJSON` discarded the encoder's error. `json.Encoder` marshals into a
-  buffer before it writes, so an unmarshalable payload — in practice a NaN or
-  ±Inf `float64` out of a division — sent HTTP 200, `Content-Type:
-  application/json` and **zero bytes**. The browser reported only a JSON parse
-  error naming no endpoint, and nothing at all reached the server log. Both
-  `writeJSON` and `writeJSONStatus` now encode into a buffer first and turn a
-  failure into a logged 500 with a real message.
-- Float query parameters written as `if f < min || f > max` accepted NaN, since
-  every comparison against NaN is false and Go's `ParseFloat` accepts the
-  literal `"NaN"`. Fixed in the order-disposition, journal-fee-override and
-  journal-lots parsers, which then fed the NaN into the response.
-- A 2xx whose body will not parse now raises an error naming the route and
-  status instead of leaking a bare browser `SyntaxError`.
 
 ### Fixed: spurious "ESI unavailable" popup on server installs
 
