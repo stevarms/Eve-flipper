@@ -1363,7 +1363,7 @@ React 19 + TypeScript 5 + Vite + Tailwind SPA.
 
 ### 7a. Workspaces and tabs
 
-Navigation is a **left icon rail of five workspaces**
+Navigation is a **left icon rail of six workspaces**
 (`components/shell/WorkspaceRail.tsx`), with the tabs inside the active
 workspace as a secondary row that appears only when there is more than
 one. `WORKSPACE_META` in `lib/cockpit.ts` maps workspaces to tabs:
