@@ -1,5 +1,102 @@
 # Changelog
 
+## v1.10.1 - 2026-09-11
+
+A maintenance release on top of the interface release: the Trade Journal is
+readable end to end, cumulative profit is drawn as a line rather than as bars,
+the item leaderboard can hide rows that netted nothing, and two stalls that
+made the app look hung are gone.
+
+### Trade Journal
+
+- The page scrolls. It was a fixed-height flex column in which only the inner
+  panels could scroll, so tall content was squeezed instead of pushing the page
+  down -- which is what clipped the leaderboard off the bottom of the screen.
+- Cumulative profit is a line chart, with combined, trading and manufacturing
+  overlaid on one set of axes by default and a Split toggle that puts them in
+  three panels side by side. The choice is remembered. A bar chart draws each
+  day as an independent quantity, which a running total is not; a reader
+  comparing bar heights was comparing two totals that share every day but the
+  last.
+- Tooltips name the two numbers separately -- the day's profit and the running
+  total -- so the same calendar day reading +129M on a 30-day chart and -55M on
+  a 7-day one is legible as what it is: a profitable month containing a losing
+  week, not a bug.
+- Charts no longer overlap their own axis labels. The Y-axis ticks now sit in a
+  gutter inside the chart instead of spanning the whole component and landing on
+  the date row -- harmless at full width, unreadable once three charts sat side
+  by side.
+- Drawdown bars were drawn from `cumulative_pnl` while the scale came from
+  `drawdown_pct`, so ISK values were rendered against a percentage axis. Both
+  now read through one accessor.
+
+### Item leaderboard
+
+- New panel in Journal -> Analytics: winners and losers of the period side by
+  side, ranked, with a rank number, an ISK/ROI switch and a TRADE / BUILD /
+  T+B chip saying where each item's profit came from. It replaces a flat
+  top-20 that showed one side at a time, so "what am I losing money on" was a
+  mode switch away. ROI ranking sets aside rows with a cost basis under 1M ISK
+  and says how many: a 900% return on a 40k flip is not a finding.
+- New Hide flat toggle, on by default. Exact zeros were already excluded, but an
+  item bought and sold at the same price still nets a few ISK of fee residue and
+  renders as a bare "0"; rows under 1K ISK either way are now held back and
+  counted in the footer rather than padding the board.
+- Flat rows are counted before the ROI cost-basis floor, so the two footer
+  counts describe disjoint sets and cannot double-count a row.
+
+### Navigation
+
+- Workspace rail order is now Today, Trade, Assets, Journal, Industry, Intel.
+  Industry sat second, ahead of the two workspaces used far more often. Existing
+  per-tab ordering preferences are untouched -- this is a workspace-level
+  reorder.
+
+### Fixed: nine-minute stalls during orderbook cleanup
+
+- Cleanup batched by snapshot count, which hides an unbounded row count: a
+  snapshot of a busy region carries ~100k level rows, and 100 snapshots once
+  became 11.5M row deletes in a single transaction. That held the one SQLite
+  connection for nine minutes -- every authenticated request queued behind it,
+  the app looked hung -- and grew the WAL to 1.5GB. The deadline check could not
+  help, because it sat between batches and was first consulted after the
+  indivisible batch had finished.
+- Deletes are now chunked by level rows (20k per transaction) with the snapshot
+  row retired in the same transaction as its last chunk, so each commit is
+  small, the deadline has a seam to take effect in, and a part-drained snapshot
+  never leaves `level_count` over-reporting.
+
+### Fixed: /debug/pprof answered with the SPA
+
+- Profiler URLs fell through to the single-page-app fallback, so every request
+  returned index.html with a 200 -- indistinguishable from working until you
+  tried to read the dump. This is why the last stall had to be diagnosed from OS
+  counters instead of a goroutine profile.
+
+### Fixed: spurious "ESI unavailable" popup on server installs
+
+- The full-screen "EVE Online servers are unavailable" overlay could appear on
+  Docker/Unraid installs while ESI was perfectly healthy. Any failed
+  `/api/status` request — a dropped LAN connection, a laptop waking from sleep —
+  counted toward the ESI-down verdict, with no time window and no guard against
+  overlapping polls. Once the status endpoint got slow, requests piled up and a
+  single blip rejected the whole pile at once, tripping the threshold instantly.
+- A failed request to the app's own backend is now reported as its own
+  condition (a distinct status-bar state) instead of being blamed on CCP.
+  Declaring ESI down needs both a failure streak and 15s of wall clock.
+- `/api/status` is polled once for the whole app rather than once per consumer,
+  never with two requests in flight, and with a request timeout.
+- `esi.Client.HealthCheck` no longer holds its write lock across the ESI round
+  trip, so concurrent `/api/status` requests can't serialize behind a network
+  call. A rate-limited reply (420/429) counts as reachable — it proves the
+  network path works — instead of blanking the UI.
+- Health-probe failures are now logged and returned as `esi_error`, visible in
+  the status bar tooltip and the overlay. This was the only ESI call in the
+  codebase that failed silently, which is why the container logs showed nothing.
+- File logging falls back to `$HOME` when the binary's own directory is
+  read-only, so the distroless container writes a real logfile to the `/data`
+  volume instead of warning `permission denied` and disabling file logs.
+
 ## v1.10.0 - 2026-09-10
 
 The interface release. Navigation is a workspace rail instead of one long tab
