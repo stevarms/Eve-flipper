@@ -1,6 +1,8 @@
 package api
 
 import (
+	"errors"
+	"math"
 	"net/http"
 	"strconv"
 	"sync"
@@ -29,30 +31,73 @@ type FeeProfile struct {
 	BrokerRelationsLevel int    `json:"broker_relations_level,omitempty"`
 }
 
-// configFeesExplicit reports the user's configured sell-side rates and whether
-// each was actually set, sell-specific values winning over the generic ones.
+// configFeeRate is one configured sell-side rate and how much authority it
+// carries over the character's actual skills.
+type configFeeRate struct {
+	Value float64
+	// Set: config held a value at all, so it beats the historical fallback.
+	Set bool
+	// Snapshot: the value is exactly one the skill formula can produce, which
+	// makes it a past "import fees from ESI" click rather than a typed rate.
+	Snapshot bool
+}
+
+// authoritative reports whether the rate represents a decision the user made
+// themselves, which skills must not overrule.
+func (r configFeeRate) authoritative() bool { return r.Set && !r.Snapshot }
+
+// skillSnapshotTolerance is far tighter than the gap between adjacent skill
+// levels (0.88pp for sales tax, 0.3pp for broker fee) and far looser than
+// float error, so a stored 4.48 matches Accounting IV and a typed 4.5 does not.
+const skillSnapshotTolerance = 1e-6
+
+// isSkillSnapshot reports whether value is one of the six rates the skill
+// formula can produce, i.e. whether the app itself most likely wrote it.
 //
-// The "was it set" half is what lets skills fill a gap without overwriting a
-// deliberate choice. 8% / 1% is the historical fallback — 1% understates an
-// untrained broker fee (3%), but it is the number every existing figure in the
-// app was computed with, so it stays until skills or config replace it.
-func (s *Server) configFeesExplicit(userID string) (salesTax float64, salesSet bool, brokerFee float64, brokerSet bool) {
-	salesTax, brokerFee = 8.0, 1.0
+// This is how a stale import is told apart from a deliberate rate. Fees are
+// snapshotted into config by the "import from ESI" button and then never
+// revisited, so training Accounting left every profit figure in the app frozen
+// at the old rate, and an import that ran while the skill sheet was unreadable
+// baked in the untrained 8% / 3% permanently. A citadel's 2.5% broker fee is
+// not a value the formula can produce, so a typed rate still wins; and where a
+// stored value genuinely was chosen to match untrained skills, recomputing it
+// from those skills returns the same number.
+func isSkillSnapshot(value float64, suggest func(int) float64) bool {
+	for level := 0; level <= 5; level++ {
+		if math.Abs(value-suggest(level)) < skillSnapshotTolerance {
+			return true
+		}
+	}
+	return false
+}
+
+// configFeesExplicit reports the user's configured sell-side rates, sell
+// specific values winning over the generic ones, along with how much authority
+// each one carries.
+//
+// 8% / 1% is the historical fallback: 1% understates an untrained broker fee
+// (3%), but it is the number every existing figure in the app was computed
+// with, so it stays until skills or config replace it.
+func (s *Server) configFeesExplicit(userID string) (salesTax, brokerFee configFeeRate) {
+	salesTax = configFeeRate{Value: 8.0}
+	brokerFee = configFeeRate{Value: 1.0}
 	cfg := s.loadConfigForUser(userID)
 	if cfg == nil {
-		return salesTax, false, brokerFee, false
+		return salesTax, brokerFee
 	}
 	if cfg.SellSalesTaxPercent > 0 {
-		salesTax, salesSet = cfg.SellSalesTaxPercent, true
+		salesTax = configFeeRate{Value: cfg.SellSalesTaxPercent, Set: true}
 	} else if cfg.SalesTaxPercent > 0 {
-		salesTax, salesSet = cfg.SalesTaxPercent, true
+		salesTax = configFeeRate{Value: cfg.SalesTaxPercent, Set: true}
 	}
 	if cfg.SellBrokerFeePercent > 0 {
-		brokerFee, brokerSet = cfg.SellBrokerFeePercent, true
+		brokerFee = configFeeRate{Value: cfg.SellBrokerFeePercent, Set: true}
 	} else if cfg.BrokerFeePercent > 0 {
-		brokerFee, brokerSet = cfg.BrokerFeePercent, true
+		brokerFee = configFeeRate{Value: cfg.BrokerFeePercent, Set: true}
 	}
-	return salesTax, salesSet, brokerFee, brokerSet
+	salesTax.Snapshot = salesTax.Set && isSkillSnapshot(salesTax.Value, suggestedSalesTax)
+	brokerFee.Snapshot = brokerFee.Set && isSkillSnapshot(brokerFee.Value, suggestedBrokerFee)
+	return salesTax, brokerFee
 }
 
 // configFees is configFeesExplicit for callers that only need the numbers.
@@ -61,8 +106,8 @@ func (s *Server) configFeesExplicit(userID string) (salesTax float64, salesSet b
 // broker fee at 1%, which quietly made every journal figure optimistic for any
 // trader without max Broker Relations.
 func (s *Server) configFees(userID string) (salesTax, brokerFee float64) {
-	salesTax, _, brokerFee, _ = s.configFeesExplicit(userID)
-	return salesTax, brokerFee
+	tax, broker := s.configFeesExplicit(userID)
+	return tax.Value, broker.Value
 }
 
 const feeSkillCacheTTL = 30 * time.Minute
@@ -84,6 +129,11 @@ var feeSkillCache = struct {
 
 // marketSkillLevels returns the character's trained Accounting and Broker
 // Relations levels.
+//
+// An empty skill sheet is an error, not a character with nothing trained. Every
+// capsuleer has skills, so an empty list means ESI answered but told us nothing
+// — and reporting that as level 0 is how an "import fees from ESI" click can
+// bake in the untrained 8% / 3% for a trader with Accounting V.
 func (s *Server) marketSkillLevels(characterID int64, token string) (accounting, broker int, err error) {
 	feeSkillCache.mu.Lock()
 	if e, ok := feeSkillCache.m[characterID]; ok && time.Since(e.cachedAt) < feeSkillCacheTTL {
@@ -96,14 +146,15 @@ func (s *Server) marketSkillLevels(characterID int64, token string) (accounting,
 	if err != nil {
 		return 0, 0, err
 	}
-	if skills != nil {
-		for _, sk := range skills.Skills {
-			switch sk.SkillID {
-			case skillTypeIDAccounting:
-				accounting = sk.TrainedLevel
-			case skillTypeIDBrokerRelations:
-				broker = sk.TrainedLevel
-			}
+	if skills == nil || len(skills.Skills) == 0 {
+		return 0, 0, errors.New("esi returned an empty skill sheet")
+	}
+	for _, sk := range skills.Skills {
+		switch sk.SkillID {
+		case skillTypeIDAccounting:
+			accounting = sk.TrainedLevel
+		case skillTypeIDBrokerRelations:
+			broker = sk.TrainedLevel
 		}
 	}
 	feeSkillCache.mu.Lock()
@@ -112,25 +163,28 @@ func (s *Server) marketSkillLevels(characterID int64, token string) (accounting,
 	return accounting, broker, nil
 }
 
-// resolveFeeProfile answers with the user's configured rates where they set
-// them, the rates their skills imply where they did not, and the historical
-// fallback only when neither is available.
+// resolveFeeProfile answers with the rates the user deliberately chose where
+// they chose them, the rates their skills imply everywhere else, and the
+// historical fallback only when neither is available.
 //
-// Skills win over the fallback but never over an explicit setting: a user who
-// typed 2.5% because they sell from a citadel with a broker-fee discount must
-// keep seeing 2.5%.
+// A typed rate wins over skills: someone who entered 2.5% because they sell
+// from a citadel with a broker-fee discount must keep seeing 2.5%. A stored
+// rate that is exactly what the formula produces does not win, because it is
+// almost certainly a stale "import from ESI" snapshot rather than a choice, and
+// deferring to it is what left this app charging an untrained 8% to a character
+// with Accounting V. See isSkillSnapshot.
 func (s *Server) resolveFeeProfile(userID string, characterID int64) FeeProfile {
-	salesTax, salesSet, brokerFee, brokerSet := s.configFeesExplicit(userID)
-	out := FeeProfile{SalesTaxPercent: salesTax, BrokerFeePercent: brokerFee, Source: "default"}
-	if salesSet && brokerSet {
+	salesTax, brokerFee := s.configFeesExplicit(userID)
+	out := FeeProfile{SalesTaxPercent: salesTax.Value, BrokerFeePercent: brokerFee.Value, Source: "default"}
+	if salesTax.authoritative() && brokerFee.authoritative() {
 		out.Source = "config"
 		return out
 	}
-	// Falling back mid-resolution still reports "config" when one side did
-	// come from config — the UI's override affordance has to name what it is
-	// overriding, and "default" would be a lie for that half.
+	// Falling back mid-resolution still reports "config" when either side did
+	// come from config, snapshot or not: the UI's override affordance has to
+	// name what it is overriding, and the number on screen is the stored one.
 	configOnly := func() FeeProfile {
-		if salesSet || brokerSet {
+		if salesTax.Set || brokerFee.Set {
 			out.Source = "config"
 		}
 		return out
@@ -149,11 +203,16 @@ func (s *Server) resolveFeeProfile(userID string, characterID int64) FeeProfile 
 	out.AccountingLevel = accounting
 	out.BrokerRelationsLevel = broker
 	out.Source = "skills"
-	if !salesSet {
+	if !salesTax.authoritative() {
 		out.SalesTaxPercent = suggestedSalesTax(accounting)
 	}
-	if !brokerSet {
+	if !brokerFee.authoritative() {
 		out.BrokerFeePercent = suggestedBrokerFee(broker)
+	}
+	// Both rates came from config after all, so say so rather than crediting
+	// skills for numbers they did not supply.
+	if salesTax.authoritative() && brokerFee.authoritative() {
+		out.Source = "config"
 	}
 	return out
 }

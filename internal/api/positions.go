@@ -73,11 +73,17 @@ type PositionsResponse struct {
 	GeneratedAt      string        `json:"generated_at"`
 }
 
-// positionFees resolves the sell-side fee pair — the shared config rates
+// positionFees resolves the sell-side fee pair — the shared profile
 // (fee_profile.go) overridden by query params, the same convention
 // handleAuthOrderDesk uses.
-func (s *Server) positionFees(userID string, r *http.Request) (salesTax, brokerFee float64) {
-	salesTax, brokerFee = s.configFees(userID)
+//
+// It resolves against a character rather than reading config directly so that
+// unrealized P&L here is charged the same rates the trade journal charges the
+// realized side. Reading config alone left this tab quoting a fee snapshot the
+// character had long since trained out of.
+func (s *Server) positionFees(userID string, characterID int64, r *http.Request) (salesTax, brokerFee float64) {
+	profile := s.resolveFeeProfile(userID, characterID)
+	salesTax, brokerFee = profile.SalesTaxPercent, profile.BrokerFeePercent
 	if v := r.URL.Query().Get("sales_tax"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 && f <= 100 {
 			salesTax = f
@@ -165,8 +171,6 @@ func (s *Server) handleAuthPositions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	salesTax, brokerFee := s.positionFees(userID, r)
-
 	// Manual rows are readable with no EVE session at all — that is the
 	// whole point of them, and it keeps the tab useful before SSO.
 	manual := []db.ManualPosition{}
@@ -188,6 +192,14 @@ func (s *Server) handleAuthPositions(w http.ResponseWriter, r *http.Request) {
 			derived = collapsePositionsByType(result.OpenPositions)
 		}
 	}
+
+	// After the session lookup: the fee profile needs a character to read
+	// skills from, and sessionCharID is the one whose positions these are.
+	feeCharID := characterID
+	if feeCharID <= 0 {
+		feeCharID = sessionCharID
+	}
+	salesTax, brokerFee := s.positionFees(userID, feeCharID, r)
 
 	rows := make([]PositionRow, 0, len(derived)+len(manual))
 	for _, p := range derived {
