@@ -1,6 +1,124 @@
 # Changelog
 
-## Unreleased
+## v1.10.0 - 2026-09-10
+
+The interface release. Navigation is a workspace rail instead of one long tab
+bar, tables lead with the columns you decide on and put the rest in a row
+drawer, eleven tools that were reachable only by clicking your character
+portrait are now in the navigation, and the two profit-and-loss screens that
+disagreed with each other are one screen that does not.
+
+### Navigation
+
+- Tabs are grouped into six workspaces on a left icon rail — Today, Trade,
+  Industry, Assets, Journal, Intel — with the tabs inside the active workspace
+  as a second row that only appears when there is more than one. Your saved tab
+  order and hidden tabs still apply; the active workspace is derived from the
+  active tab, so every existing shortcut and command-palette entry still works.
+- **Tabs are no longer all mounted at once.** A tab's contents are built the
+  first time you open it and torn down when you leave. Previously every tab was
+  laid out on every frame with the inactive ones merely hidden, which in a real
+  session measured 44,773 elements and left Chrome over two minutes to draw a
+  single frame. A 100-row Station Trade scan now peaks at 1,610 elements and
+  settles back to around 300; no workspace exceeds ~400. Industry is the one
+  exception, kept alive so an unsaved plan draft survives navigation.
+- New **Today** workspace, first on the rail and the landing screen on a cold
+  start (a saved tab still wins). A status strip — capital in orders, open
+  orders, needs reprice, needs cancel — then a numbered routine that ticks off
+  as counts hit zero, a buy sheet of the top 25 candidates by realistic daily
+  profit, and a sell sheet of your outbid sell orders with the price to paste.
+  Existing orders come before new ones, because repricing earns more than a new
+  order at a fraction of the broker fee. It reads your last scan rather than
+  running its own, so the screen is instant.
+
+### The character tools are in the navigation
+
+- Nine tools that existed only behind a portrait click and a dialog tab strip
+  are now workspace tabs: Orders, Transactions, Wallet, Industry Jobs, Planets,
+  Risk, Optimizer, Trading Edge and PLEX. The tools themselves are unchanged —
+  only where they live.
+- The character dialog now holds what is actually about the character: Overview,
+  add/remove/scope, Achievements and the security vault.
+- Character scope and the shared character fetch moved above the workspace, so
+  the dialog and all the promoted tabs share one request instead of refetching
+  each time you open the dialog. The scope picker rides in the tab strip.
+
+### Assets → Positions (new)
+
+- A new tab answering one question: should I sell this today? Item, quantity,
+  average cost, price now, unrealized, age — with a List action and a drawer for
+  the underlying lots, target price, fee breakdown and manual edit/delete.
+- Rows come from the FIFO open positions the trade journal already derives from
+  real ESI transactions, plus hand-entered rows for stock the engine cannot see
+  (loot, contract buys, corp transfers, anything older than the wallet window).
+  A manual entry for a type that also has FIFO history stays a separate row
+  rather than being averaged in, so cost bases stay honest.
+- Unrealized is net of broker fee and sales tax on the sell side. A position is
+  not in profit until it clears fees, and a gross figure in the one column you
+  act on would be misleading.
+
+### Tables
+
+- Station Trade, Flipper, Regional Trade, Contracts and the order desk now lead
+  with six decide-on-it columns and put everything else in a row drawer opened
+  by clicking the row (20→6, 35→6, 16→6 and 11→6 respectively). Removing a
+  column never removes its sort.
+- Station Trade's filters are tabbed rather than one long stack.
+- Industry lost a nav row: the Discover source picker no longer sits inside the
+  scroll container it controls.
+- The scanner shows real blueprint art. Blueprints do not serve the plain icon
+  endpoint, so they used to render as blank cells.
+
+### One accounting surface
+
+- **The P&L tab is gone, folded into Trade Journal.** It was a second FIFO
+  engine over the same transactions — one that could not see industry jobs, so
+  an item you built and sold read there as a zero-cost windfall while the
+  Journal priced it correctly. Its panels are the Journal's new **Analytics**
+  view, reached from a Summary | Analytics switch, with a Trading /
+  Manufacturing / Combined selector that drives every figure on the tab
+  including Sharpe, drawdown and profit factor. A saved layout naming the old
+  tab drops it silently; no migration needed.
+- Every derived statistic — daily series, per-item, per-station, Sharpe,
+  drawdown, Calmar, profit factor, expectancy — is now computed in exactly one
+  place, so the two views cannot report different numbers for the same trades.
+  A test asserts the two engines agree field for field.
+- Manufactured goods now carry a real cost basis into P&L: install cost plus
+  materials divided by runs, matched as a lot like any purchase.
+- **Broker fee fix.** The Trade Journal charged a hardcoded 1% broker fee and
+  never read your configured rate, so every journal figure understated an
+  untrained broker fee by roughly two thirds. Rates now resolve from your
+  config, else from the scope's Accounting and Broker Relations skill levels,
+  else from defaults — and the tab states which of those it used, with a session
+  override. **Your journal numbers will change if your configured broker fee is
+  not 1%.**
+
+### Orders
+
+- The order desk absorbed the duplicate order screen from the character dialog,
+  gaining order history and undercut status, plus the order-book price ladder in
+  the row drawer (fetched once, lazily, the first time you open a row).
+- Active / History sub-tabs. Order history was previously reachable only inside
+  the dialog.
+
+### PLEX
+
+- PLEX is a real tab in the Assets workspace. It never needed a character — the
+  whole dashboard is public market data, so the dialog was only hiding it.
+- The arbitrage matrix is three tabs keyed off the path type — NES / Market /
+  Spread — each stating its model and a viable count that excludes no-data paths
+  from the denominator, so a failed fetch no longer reads as a dead market.
+- **The spread table was one column out of register.** Its header declared five
+  columns while its rows rendered six, so every spread number sat under the
+  wrong label.
+- **"NES Arbitrage" was mislabelled for one of its rows.** Buying a Skill
+  Extractor off the market, extracting and selling the Injector involves no New
+  Eden Store purchase at all, but was filed under the heading that says you must
+  spend real money.
+- Spread plays now read in market-making terms — Buy Order / Sell Order / Raw
+  Spread — rather than "cost / revenue", which is the wrong frame for placing
+  two orders. The unreachable second PLEX dashboard that had these ideas was
+  deleted; the ideas moved here.
 
 ### Ivy AI local models
 
