@@ -73,6 +73,22 @@ made the app look hung are gone.
   tried to read the dump. This is why the last stall had to be diagnosed from OS
   counters instead of a goroutine profile.
 
+### Fixed: illegible "invalid JSON" errors from the API
+
+- `writeJSON` discarded the encoder's error. `json.Encoder` marshals into a
+  buffer before it writes, so an unmarshalable payload — in practice a NaN or
+  ±Inf `float64` out of a division — sent HTTP 200, `Content-Type:
+  application/json` and **zero bytes**. The browser reported only a JSON parse
+  error naming no endpoint, and nothing at all reached the server log. Both
+  `writeJSON` and `writeJSONStatus` now encode into a buffer first and turn a
+  failure into a logged 500 with a real message.
+- Float query parameters written as `if f < min || f > max` accepted NaN, since
+  every comparison against NaN is false and Go's `ParseFloat` accepts the
+  literal `"NaN"`. Fixed in the order-disposition, journal-fee-override and
+  journal-lots parsers, which then fed the NaN into the response.
+- A 2xx whose body will not parse now raises an error naming the route and
+  status instead of leaking a bare browser `SyntaxError`.
+
 ### Fixed: spurious "ESI unavailable" popup on server installs
 
 - The full-screen "EVE Online servers are unavailable" overlay could appear on

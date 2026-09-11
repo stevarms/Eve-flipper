@@ -1315,15 +1315,36 @@ func isAllowedLoopbackDevPort(port string) bool {
 	}
 }
 
+// writeJSON encodes v as the response body.
+//
+// The encode runs into a buffer first so that an unmarshalable payload — in
+// practice a NaN or ±Inf float64 that leaked out of a division — becomes a
+// legible 500 rather than a 200 with an empty body. json.Encoder marshals
+// fully before it writes anything, so on failure the old version sent status
+// 200, Content-Type: application/json, and zero bytes: the browser reported
+// only a JSON parse error naming no endpoint, and the server logged nothing
+// at all.
 func writeJSON(w http.ResponseWriter, v interface{}) {
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(v); err != nil {
+		log.Printf("[API] Response encode failed for %T: %v", v, err)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("response encode failed: %v", err))
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(v)
+	_, _ = w.Write(buf.Bytes())
 }
 
 func writeJSONStatus(w http.ResponseWriter, status int, v interface{}) {
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(v); err != nil {
+		log.Printf("[API] Response encode failed for %T (status %d): %v", v, status, err)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("response encode failed: %v", err))
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	_, _ = w.Write(buf.Bytes())
 }
 
 func writeError(w http.ResponseWriter, code int, msg string) {

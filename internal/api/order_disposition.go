@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"log"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -396,7 +397,12 @@ func dispositionQueryFloat(r *http.Request, key string, def, min, max float64) f
 		return def
 	}
 	f, err := strconv.ParseFloat(v, 64)
-	if err != nil || f < min || f > max {
+	// NaN has to be rejected explicitly: `NaN < min` and `NaN > max` are both
+	// false, so a range test written this way waves it through — and Go's
+	// ParseFloat accepts the literal strings "NaN" and "Inf". A NaN that gets
+	// this far poisons every number derived from it and then fails the whole
+	// response at encode time.
+	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) || f < min || f > max {
 		return def
 	}
 	return f

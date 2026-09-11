@@ -268,8 +268,19 @@ func parseJournalFeeOverride(r *http.Request) journalFeeRates {
 	if taxErr != nil || brokerErr != nil {
 		return journalFeeRates{}
 	}
+	// Non-finite rates slip past a range test written this way (every
+	// comparison against NaN is false) and then fail the response at encode
+	// time instead of here.
+	if !isFiniteRate(salesTax) || !isFiniteRate(brokerFee) {
+		return journalFeeRates{}
+	}
 	if salesTax < 0 || salesTax > 100 || brokerFee < 0 || brokerFee > 100 {
 		return journalFeeRates{}
 	}
 	return journalFeeRates{salesTax: salesTax, brokerFee: brokerFee, set: true}
+}
+
+// isFiniteRate reports whether a client-supplied percentage is a real number.
+func isFiniteRate(v float64) bool {
+	return !math.IsNaN(v) && !math.IsInf(v, 0)
 }

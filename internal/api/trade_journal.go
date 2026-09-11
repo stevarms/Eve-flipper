@@ -709,7 +709,8 @@ func (s *Server) handleTradeJournalLots(w http.ResponseWriter, r *http.Request) 
 	var minProfit float64
 	if v := strings.TrimSpace(q.Get("min_profit")); v != "" {
 		f, parseErr := strconv.ParseFloat(v, 64)
-		if parseErr != nil || f < 0 {
+		// `NaN < 0` is false, so NaN would otherwise be accepted here.
+		if parseErr != nil || math.IsNaN(f) || math.IsInf(f, 0) || f < 0 {
 			writeError(w, 400, "invalid min_profit")
 			return
 		}

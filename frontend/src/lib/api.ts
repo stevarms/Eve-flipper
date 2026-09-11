@@ -198,7 +198,22 @@ async function handleResponse<T>(res: Response): Promise<T> {
     }
     throw new Error(errorMessage);
   }
-  return res.json();
+
+  // A 2xx whose body will not parse is a server bug, not a user error, and it
+  // used to surface as a bare browser SyntaxError naming no endpoint — which
+  // is unactionable when a dozen calls are in flight. Say which route did it.
+  try {
+    return (await res.json()) as T;
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
+    let route = res.url;
+    try {
+      route = new URL(res.url).pathname;
+    } catch {
+      // Relative or otherwise unparseable URL; the raw value still identifies it.
+    }
+    throw new Error(`Malformed response from ${route} (HTTP ${res.status}): ${detail}`);
+  }
 }
 
 export interface AchievementState {
