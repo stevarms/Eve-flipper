@@ -454,13 +454,19 @@ func (s *Server) handleTradeJournalAnalytics(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	out := res.ToPortfolioPnL(engine.PortfolioPnLOptions{
+	opts := engine.PortfolioPnLOptions{
 		LookbackDays:         lookbackDays,
 		SalesTaxPercent:      profile.SalesTaxPercent,
 		BrokerFeePercent:     profile.BrokerFeePercent,
 		LedgerLimit:          ledgerLimit,
 		IncludeUnmatchedSell: false, // strict realized mode, as the old endpoint used
-	}, source)
+	}
+	out := res.ToPortfolioPnL(opts, source)
+
+	// The leaderboard is built from the same journal, deliberately ignoring
+	// `source`: it reports the trading and manufacturing halves side by side,
+	// so narrowing it to one of them would leave the other column empty.
+	leaderboard := res.ItemLeaderboard(opts, journalLeaderboardLimit)
 
 	// Slot efficiency needs live orders. A failure here costs one table, not
 	// the whole response, so it is logged and skipped rather than returned.
@@ -469,13 +475,20 @@ func (s *Server) handleTradeJournalAnalytics(w http.ResponseWriter, r *http.Requ
 	}
 
 	writeJSON(w, map[string]any{
-		"analytics": out,
-		"source":    string(source),
-		"fifo_mode": string(fifoMode),
-		"since":     sinceDate.Format(time.RFC3339),
-		"fees":      profile,
+		"analytics":   out,
+		"leaderboard": leaderboard,
+		"source":      string(source),
+		"fifo_mode":   string(fifoMode),
+		"since":       sinceDate.Format(time.RFC3339),
+		"fees":        profile,
 	})
 }
+
+// journalLeaderboardLimit caps the per-item leaderboard. Well past what the
+// panel shows at once, so its ROI ranking is not confined to the handful of
+// biggest ISK movers, but still bounded for a response that ships on every
+// analytics load.
+const journalLeaderboardLimit = 200
 
 // parseLotSourceParam maps the `source` query param onto a LotSource. An empty
 // value means combined. Anything else is rejected rather than silently

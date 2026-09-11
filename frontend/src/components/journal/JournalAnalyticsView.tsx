@@ -6,11 +6,11 @@ import {
   type WalletScope,
 } from "../../lib/api";
 import { useI18n, type TranslationKey } from "../../lib/i18n";
-import type { PortfolioPnL } from "../../lib/types";
+import type { JournalLeaderboardRow, PortfolioPnL } from "../../lib/types";
 import { StatCard } from "../character-popup/shared";
+import { PnLLeaderboard } from "./PnLLeaderboard";
 import {
   PnLChart,
-  PnLItemsTable,
   PnLLedgerTable,
   PnLStationsTable,
   SlotEfficiencyTable,
@@ -56,10 +56,12 @@ export function JournalAnalyticsView({
 }: Props) {
   const { t } = useI18n();
   const [data, setData] = useState<PortfolioPnL | null>(null);
+  // Kept beside `data` rather than inside it: the leaderboard is computed over
+  // every lot, so unlike the analytics above it does not narrow with `source`.
+  const [leaderboard, setLeaderboard] = useState<JournalLeaderboardRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [chartMode, setChartMode] = useState<"daily" | "cumulative" | "drawdown">("cumulative");
-  const [itemView, setItemView] = useState<"profit" | "loss">("profit");
   const [bottomView, setBottomView] = useState<"slots" | "items" | "stations">("items");
 
   const controllerRef = useRef<AbortController | null>(null);
@@ -81,6 +83,7 @@ export function JournalAnalyticsView({
       .then((resp) => {
         if (c.signal.aborted) return;
         setData(resp.analytics);
+        setLeaderboard(resp.leaderboard ?? []);
       })
       .catch((e) => {
         if (!c.signal.aborted) setError(e instanceof Error ? e.message : String(e));
@@ -92,13 +95,6 @@ export function JournalAnalyticsView({
   }, [scope, period, fifoMode, source, feeOverride, reloadToken]);
 
   const slotRows = useMemo(() => data?.slot_efficiency ?? [], [data]);
-  const { profitItems, lossItems } = useMemo(() => {
-    const items = data?.top_items ?? [];
-    return {
-      profitItems: items.filter((i) => i.net_pnl > 0).sort((a, b) => b.net_pnl - a.net_pnl),
-      lossItems: items.filter((i) => i.net_pnl < 0).sort((a, b) => a.net_pnl - b.net_pnl),
-    };
-  }, [data]);
 
   if (loading && !data) return <LoadingBlock label={`${t("loading")}…`} fill />;
   if (error) {
@@ -328,30 +324,11 @@ export function JournalAnalyticsView({
               onClick={() => setBottomView("slots")}
             />
           </div>
-          {bottomView === "items" && (
-            <div className="flex gap-1">
-              <ModeBtn
-                active={itemView === "profit"}
-                label={`${t("pnlTopProfit")} (${profitItems.length})`}
-                onClick={() => setItemView("profit")}
-              />
-              <ModeBtn
-                active={itemView === "loss"}
-                danger
-                label={`${t("pnlTopLoss")} (${lossItems.length})`}
-                onClick={() => setItemView("loss")}
-              />
-            </div>
-          )}
         </div>
         {bottomView === "slots" ? (
           <SlotEfficiencyTable rows={slotRows} formatIsk={formatIsk} />
         ) : bottomView === "items" ? (
-          <PnLItemsTable
-            items={itemView === "profit" ? profitItems : lossItems}
-            formatIsk={formatIsk}
-            t={t}
-          />
+          <PnLLeaderboard rows={leaderboard} formatIsk={formatIsk} t={t} />
         ) : (
           <PnLStationsTable stations={data.top_stations ?? []} formatIsk={formatIsk} t={t} />
         )}

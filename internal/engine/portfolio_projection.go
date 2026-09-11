@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"math"
 	"sort"
 	"time"
 )
@@ -58,16 +59,88 @@ func (r *TradeJournalResult) ToPortfolioPnL(opt PortfolioPnLOptions, src LotSour
 
 	// Build the full ledger first; LedgerLimit truncation happens at the very
 	// end, after summarizeRealizedLedger has seen every row.
-	ledger := make([]RealizedTrade, 0, len(r.Lots))
+	ledger, coverage := projectJournalLots(r.Lots, opt, src)
+	out.Coverage = coverage
+
+	days, items, stations, summary := summarizeRealizedLedger(ledger, opt)
+
+	openPositions := make([]OpenPosition, 0, len(r.OpenPositions))
+	totalOpenCost := 0.0
+	for _, p := range r.OpenPositions {
+		if p.Qty <= 0 {
+			continue
+		}
+		if src != "" && p.Source != src {
+			continue
+		}
+		openPositions = append(openPositions, OpenPosition{
+			TypeID:        p.TypeID,
+			TypeName:      p.TypeName,
+			LocationID:    p.LocationID,
+			LocationName:  p.LocationName,
+			Quantity:      p.Qty,
+			AvgCost:       p.AvgUnitCost,
+			CostBasis:     p.CostBasis,
+			OldestLotDate: dayOnly(p.OldestDate),
+		})
+		totalOpenCost += p.CostBasis
+	}
+	sort.Slice(openPositions, func(i, j int) bool {
+		return openPositions[i].CostBasis > openPositions[j].CostBasis
+	})
+	summary.OpenPositions = len(openPositions)
+	summary.OpenCostBasis = totalOpenCost
+
+	// Ledger newest first, then truncated — the same order and the same tie
+	// breaks as the legacy engine, so the two produce byte-identical rows.
+	sort.Slice(ledger, func(i, j int) bool {
+		if ledger[i].SellDate == ledger[j].SellDate {
+			if ledger[i].SellTransactionID == ledger[j].SellTransactionID {
+				return ledger[i].BuyTransactionID > ledger[j].BuyTransactionID
+			}
+			return ledger[i].SellTransactionID > ledger[j].SellTransactionID
+		}
+		return ledger[i].SellDate > ledger[j].SellDate
+	})
+	if opt.LedgerLimit > 0 && len(ledger) > opt.LedgerLimit {
+		ledger = ledger[:opt.LedgerLimit]
+	}
+	if len(openPositions) > 50 {
+		openPositions = openPositions[:50]
+	}
+
+	out.DailyPnL = days
+	out.Summary = summary
+	out.TopItems = items
+	out.TopStations = stations
+	out.Ledger = ledger
+	out.OpenPositions = openPositions
+	out.SlotEfficiency = ComputePortfolioSlotEfficiency(out, nil)
+	return out
+}
+
+// projectJournalLots turns journal lots into the legacy engine's ledger rows,
+// and reports match coverage while it is walking them anyway.
+//
+// It is separate from ToPortfolioPnL so the leaderboard can re-run the same
+// projection under a different source filter without a second aggregation
+// implementation to drift against.
+//
+// Coverage is deliberately computed over *every* lot, ignoring src: it is a
+// property of the sell flow, not of the current view filter. Filtering it
+// would report "100% matched" for a manufacturing-only view that in fact left
+// half the character's sells unattributed.
+func projectJournalLots(
+	lots []TradeJournalLot,
+	opt PortfolioPnLOptions,
+	src LotSource,
+) ([]RealizedTrade, MatchingCoverage) {
+	ledger := make([]RealizedTrade, 0, len(lots))
 	coverage := MatchingCoverage{}
 
-	for _, lot := range r.Lots {
+	for _, lot := range lots {
 		matched := lot.Source != LotSourceOrphan
 
-		// Coverage is a property of the sell flow, not of the current view
-		// filter, so it counts every lot the journal matched. Filtering it by
-		// src would report "100% matched" for a manufacturing-only view that
-		// in fact left half the character's sells unattributed.
 		coverage.TotalSellQty += lot.MatchedQty
 		coverage.TotalSellValue += lot.SellGross
 		if matched {
@@ -149,63 +222,112 @@ func (r *TradeJournalResult) ToPortfolioPnL(opt PortfolioPnLOptions, src LotSour
 	if coverage.TotalSellValue > 0 {
 		coverage.MatchRateValuePct = coverage.MatchedSellValue / coverage.TotalSellValue * 100
 	}
-	out.Coverage = coverage
+	return ledger, coverage
+}
 
-	days, items, stations, summary := summarizeRealizedLedger(ledger, opt)
+// ItemLeaderboardRow is one line of the per-item profit/loss leaderboard: what
+// an item earned, and how much of that came from flipping it versus building
+// it.
+//
+// The three figures are the same lots the Combined / Trading / Manufacturing
+// views summarize, so a row can never disagree with the panel above it.
+type ItemLeaderboardRow struct {
+	TypeID   int32  `json:"type_id"`
+	TypeName string `json:"type_name"`
 
-	openPositions := make([]OpenPosition, 0, len(r.OpenPositions))
-	totalOpenCost := 0.0
-	for _, p := range r.OpenPositions {
-		if p.Qty <= 0 {
-			continue
-		}
-		if src != "" && p.Source != src {
-			continue
-		}
-		openPositions = append(openPositions, OpenPosition{
-			TypeID:        p.TypeID,
-			TypeName:      p.TypeName,
-			LocationID:    p.LocationID,
-			LocationName:  p.LocationName,
-			Quantity:      p.Qty,
-			AvgCost:       p.AvgUnitCost,
-			CostBasis:     p.CostBasis,
-			OldestLotDate: dayOnly(p.OldestDate),
-		})
-		totalOpenCost += p.CostBasis
+	NetPnL       float64 `json:"net_pnl"`    // combined realized profit
+	CostBasis    float64 `json:"cost_basis"` // what was committed to earn it
+	Revenue      float64 `json:"revenue"`    // proceeds, net of sell fees
+	QtySold      int64   `json:"qty_sold"`
+	Transactions int     `json:"transactions"`
+
+	TradePnL        float64 `json:"trade_pnl"`
+	TradeCost       float64 `json:"trade_cost"`
+	ManufacturePnL  float64 `json:"manufacture_pnl"`
+	ManufactureCost float64 `json:"manufacture_cost"`
+
+	// ROIPercent is nil when the cost basis is zero — an unknown denominator,
+	// not a 0% return. Rendering nil as 0 would rank a windfall alongside a
+	// break-even trade.
+	ROIPercent *float64 `json:"roi_percent"`
+}
+
+// ItemLeaderboard ranks items by realized profit and splits each row by how
+// the goods were acquired.
+//
+// It runs the projection once per source and joins on type id rather than
+// apportioning a combined number, for the same reason ToPortfolioPnL filters
+// before summarizing: a built item's cost basis is its build cost, and that is
+// only true if manufacturing lots are aggregated as manufacturing lots.
+//
+// Unlike the view above it, the leaderboard is source-agnostic — it always
+// reports both halves, and the caller's source selector does not narrow it.
+//
+// limit caps the rows returned; zero means 200.
+func (r *TradeJournalResult) ItemLeaderboard(opt PortfolioPnLOptions, limit int) []ItemLeaderboardRow {
+	rows := []ItemLeaderboardRow{}
+	if r == nil {
+		return rows
 	}
-	sort.Slice(openPositions, func(i, j int) bool {
-		return openPositions[i].CostBasis > openPositions[j].CostBasis
+	if limit <= 0 {
+		limit = 200
+	}
+	opt = normalizePortfolioOptions(opt)
+	opt.ItemLimit = limit
+
+	byType := func(src LotSource) map[int32]ItemPnL {
+		ledger, _ := projectJournalLots(r.Lots, opt, src)
+		_, items, _, _ := summarizeRealizedLedger(ledger, opt)
+		out := make(map[int32]ItemPnL, len(items))
+		for _, it := range items {
+			out[it.TypeID] = it
+		}
+		return out
+	}
+
+	combined := byType("")
+	trade := byType(LotSourceTrade)
+	mfg := byType(LotSourceManufacture)
+
+	for typeID, it := range combined {
+		row := ItemLeaderboardRow{
+			TypeID:       typeID,
+			TypeName:     it.TypeName,
+			NetPnL:       it.NetPnL,
+			CostBasis:    it.TotalBought,
+			Revenue:      it.TotalSold,
+			QtySold:      it.QtySold,
+			Transactions: it.Transactions,
+		}
+		if t, ok := trade[typeID]; ok {
+			row.TradePnL = t.NetPnL
+			row.TradeCost = t.TotalBought
+		}
+		if m, ok := mfg[typeID]; ok {
+			row.ManufacturePnL = m.NetPnL
+			row.ManufactureCost = m.TotalBought
+		}
+		if row.CostBasis > 0 {
+			roi := row.NetPnL / row.CostBasis * 100
+			row.ROIPercent = &roi
+		}
+		rows = append(rows, row)
+	}
+
+	// Biggest movers first, winners and losers interleaved: the UI splits the
+	// two sides and ranks each, so ordering here only has to be deterministic
+	// and to survive the cap without dropping a large loss.
+	sort.Slice(rows, func(i, j int) bool {
+		absI, absJ := math.Abs(rows[i].NetPnL), math.Abs(rows[j].NetPnL)
+		if absI == absJ {
+			return rows[i].TypeID < rows[j].TypeID
+		}
+		return absI > absJ
 	})
-	summary.OpenPositions = len(openPositions)
-	summary.OpenCostBasis = totalOpenCost
-
-	// Ledger newest first, then truncated — the same order and the same tie
-	// breaks as the legacy engine, so the two produce byte-identical rows.
-	sort.Slice(ledger, func(i, j int) bool {
-		if ledger[i].SellDate == ledger[j].SellDate {
-			if ledger[i].SellTransactionID == ledger[j].SellTransactionID {
-				return ledger[i].BuyTransactionID > ledger[j].BuyTransactionID
-			}
-			return ledger[i].SellTransactionID > ledger[j].SellTransactionID
-		}
-		return ledger[i].SellDate > ledger[j].SellDate
-	})
-	if opt.LedgerLimit > 0 && len(ledger) > opt.LedgerLimit {
-		ledger = ledger[:opt.LedgerLimit]
+	if len(rows) > limit {
+		rows = rows[:limit]
 	}
-	if len(openPositions) > 50 {
-		openPositions = openPositions[:50]
-	}
-
-	out.DailyPnL = days
-	out.Summary = summary
-	out.TopItems = items
-	out.TopStations = stations
-	out.Ledger = ledger
-	out.OpenPositions = openPositions
-	out.SlotEfficiency = ComputePortfolioSlotEfficiency(out, nil)
-	return out
+	return rows
 }
 
 // holdingDaysBetween returns whole days held, clamped at zero. Unparseable or

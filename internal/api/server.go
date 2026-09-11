@@ -1947,6 +1947,13 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		result["esi_last_ok"] = lastOK.Unix()
 	}
 
+	// Why the probe failed (or succeeded with a caveat), so a container
+	// operator can read the cause off the UI instead of needing a shell in a
+	// distroless image.
+	if reason := s.esi.HealthError(); reason != "" {
+		result["esi_error"] = reason
+	}
+
 	writeJSON(w, result)
 }
 

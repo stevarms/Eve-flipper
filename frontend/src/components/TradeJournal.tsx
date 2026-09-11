@@ -20,7 +20,7 @@ import {
 import type { AuthCharacter } from "../lib/types";
 import { useI18n, type TranslationKey } from "../lib/i18n";
 import { formatIsk as formatIskLib, formatIskSigned as formatIskSignedLib } from "../lib/format";
-import { PnLChart } from "./journal/PnLPrimitives";
+import { PnLLineChart, type PnLLineSeries } from "./journal/PnLPrimitives";
 import { JournalAnalyticsView } from "./journal/JournalAnalyticsView";
 import { JournalFeeStrip } from "./journal/JournalFeeStrip";
 
@@ -58,6 +58,13 @@ interface DailyEntryLike {
 
 const DEFAULT_PERIOD: PeriodPreset = 30;
 const FIFO_STORAGE_KEY = "trade_journal.fifo_mode";
+const CHART_LAYOUT_STORAGE_KEY = "trade_journal.chart_layout";
+
+// Overlay puts all three series on one set of axes, which is the layout that
+// answers "did manufacturing carry a losing trading week". Split gives each
+// series its own y-scale, so a small line stays readable next to a large one
+// at the cost of being no longer directly comparable.
+type ChartLayout = "overlay" | "split";
 
 /** Local presentation of the shared formatter (lib/format.ts). */
 const ISK_FMT = {
@@ -110,6 +117,16 @@ export function TradeJournal({ isLoggedIn, visitToken, onOpenPositions }: Props)
     if (raw === "trade_first" || raw === "manufacture_first" || raw === "strict_date") return raw;
     return "strict_date";
   });
+  const [chartLayout, setChartLayout] = useState<ChartLayout>(() => {
+    if (typeof window === "undefined") return "overlay";
+    return window.localStorage.getItem(CHART_LAYOUT_STORAGE_KEY) === "split"
+      ? "split"
+      : "overlay";
+  });
+  const setPersistedChartLayout = (l: ChartLayout) => {
+    setChartLayout(l);
+    if (typeof window !== "undefined") window.localStorage.setItem(CHART_LAYOUT_STORAGE_KEY, l);
+  };
   const setPersistedFifoMode = (m: JournalFIFOMode) => {
     setFifoMode(m);
     if (typeof window !== "undefined") window.localStorage.setItem(FIFO_STORAGE_KEY, m);
@@ -455,7 +472,7 @@ export function TradeJournal({ isLoggedIn, visitToken, onOpenPositions }: Props)
       : "";
 
   return (
-    <div className="flex flex-col h-full space-y-3 p-3">
+    <div className="flex flex-col h-full space-y-3 p-3 overflow-y-auto">
       {/* Header: period + fifo + sync + wallet scope */}
       <WalletScopePicker
         authCharacters={authCharacters}
@@ -605,7 +622,7 @@ export function TradeJournal({ isLoggedIn, visitToken, onOpenPositions }: Props)
       {/* Analytics: the deep-dive half, fetched from its own endpoint over the
           same matcher, so it cannot report a different profit than the tiles. */}
       {view === "analytics" && (
-        <div className="flex-1 min-h-0 overflow-auto">
+        <div>
           <JournalAnalyticsView
             scope={scope}
             period={period}
@@ -676,36 +693,101 @@ export function TradeJournal({ isLoggedIn, visitToken, onOpenPositions }: Props)
 
       {/* Chart. Combined stacks all three series so they can be read against
           each other; a single source shows only its own line. */}
-      {view === "summary" && summary && summary.daily_pnl.length > 0 && (
-        <div className="bg-eve-panel border border-eve-border rounded-sm p-3">
-          <div className="flex items-center justify-between mb-2">
-            <div className="text-[10px] text-eve-dim uppercase tracking-wider">
-              {t("journalChartTitle")}
+      {view === "summary" &&
+        summary &&
+        summary.daily_pnl.length > 0 &&
+        (() => {
+          // Only the series the source selector admits. Emerald for trading and
+          // sky for manufacturing matches the leaderboard's two-tone bars, so
+          // one colour means one thing across the tab.
+          const series: PnLLineSeries[] = [];
+          if (source === "")
+            series.push({
+              key: "combined",
+              label: t("journalChartSeriesCombined"),
+              colorClass: "text-eve-accent",
+              data: chartData.combined,
+            });
+          if (source === "" || source === "trade")
+            series.push({
+              key: "trading",
+              label: t("journalChartSeriesTrading"),
+              colorClass: "text-emerald-400",
+              data: chartData.trading,
+            });
+          if (source === "" || source === "manufacture")
+            series.push({
+              key: "mfg",
+              label: t("journalChartSeriesMfg"),
+              colorClass: "text-sky-400",
+              data: chartData.mfg,
+            });
+          // A single series has nothing to overlay, so the toggle stays hidden
+          // and the layout is the same either way.
+          const overlay = chartLayout === "overlay" && series.length > 1;
+
+          return (
+            <div className="bg-eve-panel border border-eve-border rounded-sm p-3">
+              <div className="flex items-center justify-between gap-3 mb-2 flex-wrap">
+                <div className="text-[10px] text-eve-dim uppercase tracking-wider">
+                  {t("journalChartTitle")}
+                </div>
+                <div className="flex items-center gap-3 flex-wrap">
+                  {overlay && (
+                    <div className="flex items-center gap-2">
+                      {series.map((s) => (
+                        <span
+                          key={s.key}
+                          className="flex items-center gap-1 text-[9px] text-eve-dim"
+                        >
+                          <span className={`w-2 h-2 rounded-full bg-current ${s.colorClass}`} />
+                          {s.label}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {series.length > 1 && (
+                    <div className="flex items-center gap-1">
+                      <ChartLayoutBtn
+                        active={chartLayout === "overlay"}
+                        onClick={() => setPersistedChartLayout("overlay")}
+                      >
+                        {t("journalChartOverlay")}
+                      </ChartLayoutBtn>
+                      <ChartLayoutBtn
+                        active={chartLayout === "split"}
+                        onClick={() => setPersistedChartLayout("split")}
+                      >
+                        {t("journalChartSplit")}
+                      </ChartLayoutBtn>
+                    </div>
+                  )}
+                </div>
+              </div>
+              {overlay ? (
+                <PnLLineChart series={series} formatIsk={formatIsk} height={180} />
+              ) : (
+                <div
+                  className={
+                    series.length > 1 ? "grid grid-cols-1 lg:grid-cols-3 gap-3" : "space-y-2"
+                  }
+                >
+                  {series.map((s) => (
+                    <SeriesRow key={s.key} label={s.label}>
+                      {/* Label blanked: SeriesRow already prints it, and
+                          repeating it in every tooltip is noise. */}
+                      <PnLLineChart series={[{ ...s, label: "" }]} formatIsk={formatIsk} />
+                    </SeriesRow>
+                  ))}
+                </div>
+              )}
             </div>
-          </div>
-          <div className="space-y-2">
-            {source === "" && (
-              <SeriesRow label={t("journalChartSeriesCombined")}>
-                <PnLChart data={chartData.combined} mode="cumulative" formatIsk={formatIsk} />
-              </SeriesRow>
-            )}
-            {(source === "" || source === "trade") && (
-              <SeriesRow label={t("journalChartSeriesTrading")}>
-                <PnLChart data={chartData.trading} mode="cumulative" formatIsk={formatIsk} />
-              </SeriesRow>
-            )}
-            {(source === "" || source === "manufacture") && (
-              <SeriesRow label={t("journalChartSeriesMfg")}>
-                <PnLChart data={chartData.mfg} mode="cumulative" formatIsk={formatIsk} />
-              </SeriesRow>
-            )}
-          </div>
-        </div>
-      )}
+          );
+        })()}
 
       {/* Per-item table */}
       <div
-        className={`flex-1 min-h-0 overflow-auto border border-eve-border rounded-sm bg-eve-panel ${
+        className={`border border-eve-border rounded-sm bg-eve-panel ${
           view === "summary" ? "" : "hidden"
         }`}
       >
@@ -944,6 +1026,29 @@ function KPITile({ label, value, emphasis }: { label: string; value: number; emp
         {formatIskSigned(value)} ISK
       </div>
     </div>
+  );
+}
+
+function ChartLayoutBtn({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`px-2 py-0.5 text-[10px] rounded-sm border transition-colors ${
+        active
+          ? "bg-eve-accent/20 border-eve-accent text-eve-accent"
+          : "bg-eve-panel border-eve-border text-eve-dim hover:text-eve-text hover:border-eve-accent/50"
+      }`}
+    >
+      {children}
+    </button>
   );
 }
 

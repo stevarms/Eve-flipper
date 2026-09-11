@@ -29,6 +29,10 @@ type PortfolioPnLOptions struct {
 	BrokerFeePercent     float64
 	LedgerLimit          int
 	IncludeUnmatchedSell bool // legacy mode: treat unmatched sells as zero-cost proceeds
+	// ItemLimit caps the per-item breakdown. Zero means the historical 50,
+	// which is all the analytics tables render; the leaderboard asks for more
+	// so its ROI ranking is not confined to the fifty biggest ISK movers.
+	ItemLimit int
 }
 
 // PortfolioSettings is echoed back in API responses for traceability.
@@ -237,6 +241,9 @@ func normalizePortfolioOptions(opt PortfolioPnLOptions) PortfolioPnLOptions {
 	}
 	if opt.LedgerLimit < 0 {
 		opt.LedgerLimit = 0 // unlimited
+	}
+	if opt.ItemLimit <= 0 {
+		opt.ItemLimit = 50
 	}
 	return opt
 }
@@ -821,8 +828,12 @@ func summarizeRealizedLedger(
 		}
 		return absI > absJ
 	})
-	if len(items) > 50 {
-		items = items[:50]
+	itemLimit := opt.ItemLimit
+	if itemLimit <= 0 {
+		itemLimit = 50
+	}
+	if len(items) > itemLimit {
+		items = items[:itemLimit]
 	}
 
 	// Per-station stats.

@@ -305,7 +305,11 @@ export const MAIN_TAB_META: Record<MainTabId, { labelKey: TranslationKey; fallba
    preferences (mainTabOrder, hiddenMainTabs, tabLayouts) keep working.
    ------------------------------------------------------------------ */
 
-export const WORKSPACE_IDS = ["home", "trade", "industry", "assets", "journal", "intel"] as const;
+// Rail order is the order the work happens in: find a trade, check what you
+// hold, book the result, and only then step away to a build. Industry sits
+// after the journal because it is the least-visited of the four, not the
+// second-most.
+export const WORKSPACE_IDS = ["home", "trade", "assets", "journal", "industry", "intel"] as const;
 export type WorkspaceId = (typeof WORKSPACE_IDS)[number];
 
 export interface WorkspaceMeta {

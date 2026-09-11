@@ -624,3 +624,106 @@ func TestOrderBookInterestTypesUnionsEverySenseOfDealingInIt(t *testing.T) {
 		t.Error("an untouched type is archived")
 	}
 }
+
+// A snapshot of a busy region carries far more level rows than the batch size
+// suggests, because the batch is counted in snapshots and the cost is in
+// levels. Production hit 11.5M level deletes inside one transaction from a
+// 100-snapshot batch: it held the single SQLite connection for nine minutes
+// and the maxDuration cap never fired, because the old code only consulted it
+// between batches -- after the damage. This pins the seam.
+//
+// The deadline goes in explicitly rather than as CleanupOrderBookSnapshotsBatches'
+// maxDuration: the smallest duration that survives its `<= 0` guard is a
+// nanosecond, and Windows' clock granularity is coarse enough that
+// time.Now().After(that) stays false for several chunks -- which made an
+// otherwise sound assertion flap between 200 and 300 rows.
+func TestCleanupOrderBookSnapshotsBatchStopsMidSnapshot(t *testing.T) {
+	t.Setenv("EVE_FLIPPER_ORDERBOOK_CLEANUP_BATCH_LEVELS", "100")
+
+	d := openTestDB(t)
+	defer d.Close()
+	types := make([]int32, 0, 20)
+	for i := int32(0); i < 20; i++ {
+		types = append(types, 1000+i)
+	}
+	seedOrderBookInterest(t, d, types...)
+
+	// One old snapshot, deliberately far larger than the 100-level budget.
+	old := time.Now().UTC().AddDate(0, 0, -60)
+	orders := make([]esi.MarketOrder, 0, 300)
+	for i := 0; i < 300; i++ {
+		orders = append(orders, esi.MarketOrder{
+			OrderID:      int64(500000 + i),
+			TypeID:       types[i%len(types)],
+			LocationID:   60008494,
+			SystemID:     30000142,
+			Price:        float64(100 + i),
+			VolumeRemain: 10,
+			IsBuyOrder:   false,
+		})
+	}
+	if err := d.RecordMarketOrderSnapshot(esi.MarketOrderSnapshot{
+		RegionID:   10000002,
+		OrderType:  "sell",
+		Source:     "region",
+		CapturedAt: old,
+		Orders:     orders,
+	}); err != nil {
+		t.Fatalf("record fat snapshot: %v", err)
+	}
+
+	before, err := d.GetOrderBookStats(5)
+	if err != nil {
+		t.Fatalf("stats before: %v", err)
+	}
+	if before.LevelCount <= 100 {
+		t.Fatalf("fixture is too small to exercise the budget: %d levels", before.LevelCount)
+	}
+
+	// An already-expired deadline: the sweep must give up after one chunk
+	// rather than draining the whole snapshot.
+	plan, err := d.cleanupOrderBookSnapshotsBatch(30, 100, 100, time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("bounded batch: %v", err)
+	}
+	if plan.LevelsDeleted != 100 {
+		t.Fatalf("levels deleted = %d, want exactly one 100-row chunk", plan.LevelsDeleted)
+	}
+	if plan.SnapshotsDeleted != 0 {
+		t.Fatalf("snapshots deleted = %d, want 0 -- the snapshot is only part drained", plan.SnapshotsDeleted)
+	}
+
+	mid, err := d.GetOrderBookStats(5)
+	if err != nil {
+		t.Fatalf("stats mid: %v", err)
+	}
+	if mid.SnapshotCount != 1 {
+		t.Fatalf("snapshot count = %d, want the part-drained snapshot still present", mid.SnapshotCount)
+	}
+	// GetOrderBookStats sums orderbook_snapshots.level_count rather than
+	// counting level rows, so a part-drained snapshot has to decrement the
+	// counter or the stats keep reporting rows that are already gone.
+	if mid.LevelCount != before.LevelCount-100 {
+		t.Fatalf("level count = %d, want %d", mid.LevelCount, before.LevelCount-100)
+	}
+
+	// With room to finish, chunking still removes everything -- the bound
+	// defers work, it does not lose it.
+	plan, err = d.CleanupOrderBookSnapshotsBatches(30, 100, 30*time.Second)
+	if err != nil {
+		t.Fatalf("cleanup batches (unbounded): %v", err)
+	}
+	if plan.SnapshotsDeleted != 1 {
+		t.Fatalf("snapshots deleted = %d, want the snapshot retired", plan.SnapshotsDeleted)
+	}
+	if plan.LevelsDeleted != before.LevelCount-100 {
+		t.Fatalf("levels deleted = %d, want the remaining %d", plan.LevelsDeleted, before.LevelCount-100)
+	}
+	after, err := d.GetOrderBookStats(5)
+	if err != nil {
+		t.Fatalf("stats after: %v", err)
+	}
+	if after.SnapshotCount != 0 || after.LevelCount != 0 {
+		t.Fatalf("stats after = %#v, want empty", after)
+	}
+}

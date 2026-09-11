@@ -1,7 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { getStatus } from "@/lib/api";
+import { useAppStatus } from "@/lib/appStatus";
 import { useI18n } from "@/lib/i18n";
-import type { AppStatus } from "@/lib/types";
 
 function formatTimeAgo(timestamp: number): string {
   const seconds = Math.floor(Date.now() / 1000 - timestamp);
@@ -13,40 +11,16 @@ function formatTimeAgo(timestamp: number): string {
 
 export function StatusBar() {
   const { t } = useI18n();
-  const [status, setStatus] = useState<AppStatus | null>(null);
-  const mountedRef = useRef(true);
-
-  useEffect(() => {
-    mountedRef.current = true;
-    
-    const poll = async () => {
-      try {
-        const data = await getStatus();
-        if (mountedRef.current) {
-          setStatus(data);
-        }
-      } catch {
-        // If we can't reach our own backend, show as offline
-        if (mountedRef.current) {
-          setStatus(prev => prev ? { ...prev, esi_ok: false } : null);
-        }
-      }
-    };
-    
-    poll();
-    const id = setInterval(poll, 5000);
-    
-    return () => {
-      mountedRef.current = false;
-      clearInterval(id);
-    };
-  }, []);
+  const { status, backendReachable } = useAppStatus();
 
   // Build ESI label with more info when unavailable
   const getEsiLabel = () => {
+    // Our own backend going quiet is a different fault from ESI going quiet,
+    // and saying so beats blaming CCP for a dropped LAN connection.
+    if (!backendReachable) return t("backendUnreachable");
     if (status === null) return t("esiApi");
     if (status.esi_ok) return t("esiApi");
-    
+
     // ESI is down - show when it was last working
     if (status.esi_last_ok) {
       return `${t("esiUnavailable")} (${formatTimeAgo(status.esi_last_ok)})`;
@@ -58,11 +32,14 @@ export function StatusBar() {
     (status?.sde_loaded ?? false) ||
     ((status?.sde_systems ?? 0) > 0 && (status?.sde_types ?? 0) > 0);
 
+  const esiOk = backendReachable && (status?.esi_ok ?? false);
+  const esiDetail = status?.esi_error ? `${t("esiLastError")}: ${status.esi_error}` : undefined;
+
   return (
     <div className="eve-header-status flex min-w-0 items-center gap-2 h-[34px] px-2 bg-eve-panel border border-eve-border rounded-sm">
       <StatusDot
         ok={sdeOk}
-        loading={status === null}
+        loading={status === null && backendReachable}
         label={
           sdeOk
             ? `SDE: ${status?.sde_systems ?? 0} ${t("sdeSystems")}, ${status?.sde_types ?? 0} ${t("sdeTypes")}`
@@ -71,18 +48,31 @@ export function StatusBar() {
       />
       <div className="w-px h-4 bg-eve-border" />
       <StatusDot
-        ok={status?.esi_ok ?? false}
-        loading={status === null}
+        ok={esiOk}
+        loading={status === null && backendReachable}
         label={getEsiLabel()}
-        warning={!status?.esi_ok && status !== null}
+        warning={!esiOk && (status !== null || !backendReachable)}
+        detail={esiDetail}
       />
     </div>
   );
 }
 
-function StatusDot({ ok, loading, label, warning }: { ok: boolean; loading: boolean; label: string; warning?: boolean }) {
+function StatusDot({
+  ok,
+  loading,
+  label,
+  warning,
+  detail,
+}: {
+  ok: boolean;
+  loading: boolean;
+  label: string;
+  warning?: boolean;
+  detail?: string;
+}) {
   return (
-    <div className="flex min-w-0 items-center gap-2 text-xs">
+    <div className="flex min-w-0 items-center gap-2 text-xs" title={detail}>
       <div
         className={`w-2 h-2 rounded-full ${
           loading

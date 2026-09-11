@@ -43,9 +43,13 @@ var frontendFS embed.FS
 //
 // Precedence:
 //  1. EF_LOG_DIR env var — explicit override, always wins.
-//  2. The running binary's directory — correct for release builds and
-//     double-clicked binaries, where logs should sit next to the exe.
-//  3. The current working directory — used when the exe lives in a Go build
+//  2. The running binary's directory, when it is actually writable — correct
+//     for release builds and double-clicked binaries, where logs should sit
+//     next to the exe.
+//  3. $HOME, when that is writable. The distroless container runs the binary
+//     from a read-only /usr/local/bin with HOME pointed at the mounted /data
+//     volume, so this is the one place in the image logs can survive.
+//  4. The current working directory — used when the exe lives in a Go build
 //     cache temp dir, which is what `go run .` produces. Without this the dev
 //     loop writes its logs into a throwaway temp folder that's deleted on exit
 //     (and impossible to find), which defeats the point of file logging.
@@ -53,24 +57,40 @@ func resolveLogDir() string {
 	if dir := strings.TrimSpace(os.Getenv("EF_LOG_DIR")); dir != "" {
 		return dir
 	}
-	exePath, err := os.Executable()
-	if err != nil {
-		return "."
-	}
-	exeDir := filepath.Dir(exePath)
-	if exeDir == "" {
-		return "."
-	}
-	// `go run` compiles into $TMPDIR/go-build*/…; detect that and fall back to
-	// the working directory so dev-loop logs land in the repo.
-	normalized := filepath.ToSlash(exeDir)
-	if strings.Contains(normalized, "/go-build") {
-		if cwd, cwdErr := os.Getwd(); cwdErr == nil && cwd != "" {
-			return cwd
+
+	if exePath, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exePath)
+		// `go run` compiles into $TMPDIR/go-build*/…; detect that and skip
+		// straight to the working directory.
+		if exeDir != "" && !strings.Contains(filepath.ToSlash(exeDir), "/go-build") {
+			if dirIsWritable(exeDir) {
+				return exeDir
+			}
+			if home := strings.TrimSpace(os.Getenv("HOME")); home != "" && dirIsWritable(home) {
+				return home
+			}
 		}
-		return "."
 	}
-	return exeDir
+
+	if cwd, err := os.Getwd(); err == nil && cwd != "" {
+		return cwd
+	}
+	return "."
+}
+
+// dirIsWritable reports whether a log file can actually be created in dir.
+// Stat and permission bits both lie often enough — read-only mounts, container
+// users that don't own the path — that writing something is the only
+// dependable answer.
+func dirIsWritable(dir string) bool {
+	f, err := os.CreateTemp(dir, ".eve-flipper-logcheck-*")
+	if err != nil {
+		return false
+	}
+	name := f.Name()
+	_ = f.Close()
+	_ = os.Remove(name)
+	return true
 }
 
 func main() {
@@ -168,8 +188,14 @@ func main() {
 	fileServer := http.FileServer(http.FS(frontendContent))
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// API routes
-		if strings.HasPrefix(r.URL.Path, "/api/") {
+		// API routes. /debug/pprof/* rides the same handler, which gates it
+		// behind a loopback check in registerPprofRoutes. Without this prefix
+		// the profiler falls through to the SPA fallback below, so every
+		// request answers index.html with a 200 -- indistinguishable from
+		// working until you try to read the dump, and the reason the last
+		// stall had to be diagnosed from OS counters instead of a goroutine
+		// profile.
+		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/debug/pprof") {
 			apiHandler.ServeHTTP(w, r)
 			return
 		}

@@ -562,3 +562,26 @@ func TestComputePortfolioPnLWithOptions_OpenPositionsSummaryNotTruncated(t *test
 		t.Fatalf("returned open positions len = %d, want 50 (UI cap)", len(got.OpenPositions))
 	}
 }
+
+// TestPortfolioItemLimit_DefaultsToFifty guards the legacy contract: callers
+// that never heard of ItemLimit keep the fifty-row breakdown the analytics
+// tables were written against.
+func TestPortfolioItemLimit_DefaultsToFifty(t *testing.T) {
+	txns := []esi.WalletTransaction{}
+	for typeID := int32(1000); typeID < 1060; typeID++ {
+		txns = append(txns,
+			txn(-10, typeID, "Thing", 60003760, "Jita IV-4", true, 100, 1),
+			txn(-5, typeID, "Thing", 60003760, "Jita IV-4", false, float64(200+typeID), 1),
+		)
+	}
+
+	deflt := ComputePortfolioPnLWithOptions(txns, PortfolioPnLOptions{LookbackDays: 30})
+	if len(deflt.TopItems) != 50 {
+		t.Errorf("default TopItems = %d, want 50", len(deflt.TopItems))
+	}
+
+	raised := ComputePortfolioPnLWithOptions(txns, PortfolioPnLOptions{LookbackDays: 30, ItemLimit: 200})
+	if len(raised.TopItems) != 60 {
+		t.Errorf("ItemLimit 200 gave %d items, want all 60", len(raised.TopItems))
+	}
+}

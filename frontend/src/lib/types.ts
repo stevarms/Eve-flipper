@@ -1458,6 +1458,7 @@ export interface AppStatus {
   sde_types: number;
   esi_ok: boolean;
   esi_last_ok?: number; // Unix timestamp of last successful ESI check
+  esi_error?: string; // Why the last health probe failed, when it did
 }
 
 export type NdjsonMessage =
@@ -3219,6 +3220,28 @@ export interface ItemPnL {
   avg_sell_price: number;
   margin_percent: number;
   transactions: number;
+}
+
+/**
+ * One row of the item leaderboard: realized profit for a type, split by how
+ * the goods were acquired.
+ *
+ * `roi_percent` is null when the cost basis is zero — an unknown denominator,
+ * which is not the same claim as a 0% return.
+ */
+export interface JournalLeaderboardRow {
+  type_id: number;
+  type_name: string;
+  net_pnl: number;
+  cost_basis: number;
+  revenue: number;
+  qty_sold: number;
+  transactions: number;
+  trade_pnl: number;
+  trade_cost: number;
+  manufacture_pnl: number;
+  manufacture_cost: number;
+  roi_percent: number | null;
 }
 
 export interface PortfolioSlotEfficiency {

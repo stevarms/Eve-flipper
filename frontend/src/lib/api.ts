@@ -56,6 +56,7 @@ import type {
   PaperTradeReconcileResponse,
   PIPlanetsResponse,
   PLEXDashboard,
+  JournalLeaderboardRow,
   PortfolioPnL,
   PortfolioOptimization,
   RegionOpportunities,
@@ -306,8 +307,8 @@ async function streamNdjson<T>(
   return results;
 }
 
-export async function getStatus(): Promise<AppStatus> {
-  const res = await apiFetch(`${BASE}/api/status`);
+export async function getStatus(signal?: AbortSignal): Promise<AppStatus> {
+  const res = await apiFetch(`${BASE}/api/status`, { signal });
   return handleResponse<AppStatus>(res);
 }
 
@@ -2568,6 +2569,12 @@ export interface JournalFeeProfile {
 
 export interface JournalAnalyticsResponse {
   analytics: PortfolioPnL;
+  /**
+   * Per-item leaderboard. Deliberately not narrowed by `source` — it reports
+   * the trading and manufacturing halves side by side, so filtering it to one
+   * would empty the other column.
+   */
+  leaderboard: JournalLeaderboardRow[];
   source: JournalAnalyticsSource;
   fifo_mode: JournalFIFOMode;
   since: string;

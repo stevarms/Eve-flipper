@@ -80,8 +80,12 @@ type Client struct {
 	// Health check cache
 	healthMu      sync.RWMutex
 	healthOK      bool
+	healthErr     string
 	healthChecked time.Time
 	healthLastOK  time.Time
+	// Single-flight guard for the probe itself. Callers that arrive while a
+	// probe is in flight read the cache rather than queueing behind it.
+	healthProbing atomic.Bool
 }
 
 type structureNameFailure struct {
@@ -347,47 +351,86 @@ func (c *Client) TypeInfo(typeID int32) (UniverseTypeInfo, error) {
 	return info, nil
 }
 
-// HealthCheck pings ESI to verify connectivity.
-// Results are cached for 10 seconds to avoid spamming ESI.
+const healthCacheTTL = 10 * time.Second
+
+// HealthCheck reports whether ESI is reachable. The result is cached for
+// healthCacheTTL so that /api/status polling doesn't spam ESI.
+//
+// The probe deliberately runs *outside* healthMu. An earlier version held the
+// write lock across the HTTP round trip, so every concurrent /api/status
+// serialized behind a live network call. On a LAN-served install (the Docker
+// build) that made the status endpoint slow enough for the frontend's pollers
+// to pile up and then fail as a batch, which read as "ESI is down" when it
+// wasn't. Callers arriving mid-probe now get the cached value immediately.
 func (c *Client) HealthCheck() bool {
+	return c.probeHealthAndStore(baseURL + "/status/?datasource=tranquility")
+}
+
+// probeHealthAndStore is HealthCheck's body with the endpoint injected, so
+// tests can drive the cache and single-flight behaviour against a local server.
+func (c *Client) probeHealthAndStore(url string) bool {
 	c.healthMu.RLock()
-	if time.Since(c.healthChecked) < 10*time.Second {
-		ok := c.healthOK
-		c.healthMu.RUnlock()
-		return ok
-	}
+	cachedOK := c.healthOK
+	fresh := time.Since(c.healthChecked) < healthCacheTTL
 	c.healthMu.RUnlock()
-
-	// Perform actual check
-	c.healthMu.Lock()
-	defer c.healthMu.Unlock()
-
-	// Double-check after acquiring write lock
-	if time.Since(c.healthChecked) < 10*time.Second {
-		return c.healthOK
+	if fresh {
+		return cachedOK
 	}
 
-	req, err := http.NewRequest("GET", baseURL+"/status/?datasource=tranquility", nil)
+	if !c.healthProbing.CompareAndSwap(false, true) {
+		return cachedOK
+	}
+	defer c.healthProbing.Store(false)
+
+	ok, reason := c.probeHealth(url)
+
+	now := time.Now()
+	c.healthMu.Lock()
+	c.healthOK = ok
+	c.healthErr = reason
+	c.healthChecked = now
+	if ok {
+		c.healthLastOK = now
+	}
+	c.healthMu.Unlock()
+
+	if reason != "" {
+		log.Printf("[ESI] Health check: %s", reason)
+	}
+	return ok
+}
+
+// probeHealth performs one /status/ request and describes the outcome.
+//
+// It reports false only when ESI could not be reached at all or answered with
+// a server error. A rate-limit reply (420/429) proves the network path works,
+// so it counts as reachable: blanking the entire UI behind a modal because we
+// polled a 600-per-15-minutes endpoint too often is worse than trusting a
+// throttled response.
+func (c *Client) probeHealth(url string) (ok bool, reason string) {
+	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		c.healthOK = false
-		c.healthChecked = time.Now()
-		return false
+		return false, fmt.Sprintf("request build failed: %v", err)
 	}
 	req.Header.Set("User-Agent", "eve-flipper/1.0 (github.com)")
+
 	resp, err := c.http.Do(req)
 	if err != nil {
-		c.healthOK = false
-		c.healthChecked = time.Now()
-		return false
+		return false, fmt.Sprintf("unreachable: %v", err)
 	}
+	// Drain before closing so the pooled connection can be reused; the body is
+	// a two-field JSON object, so the limit is only a guard against surprises.
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
 	resp.Body.Close()
 
-	c.healthOK = resp.StatusCode == 200
-	c.healthChecked = time.Now()
-	if c.healthOK {
-		c.healthLastOK = time.Now()
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return true, ""
+	case 420, http.StatusTooManyRequests:
+		return true, fmt.Sprintf("reachable but rate limited (HTTP %d)", resp.StatusCode)
+	default:
+		return false, fmt.Sprintf("HTTP %d", resp.StatusCode)
 	}
-	return c.healthOK
 }
 
 // HealthStatus returns detailed health information.
@@ -395,6 +438,14 @@ func (c *Client) HealthStatus() (ok bool, lastOK time.Time) {
 	c.healthMu.RLock()
 	defer c.healthMu.RUnlock()
 	return c.healthOK, c.healthLastOK
+}
+
+// HealthError returns why the last health probe failed, or why it succeeded
+// with a caveat (a throttled response). Empty when the last probe was clean.
+func (c *Client) HealthError() string {
+	c.healthMu.RLock()
+	defer c.healthMu.RUnlock()
+	return c.healthErr
 }
 
 // isNPCStation returns true if the location ID is in the NPC station range.

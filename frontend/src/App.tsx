@@ -488,7 +488,7 @@ function App() {
     platform: updatePlatform,
     releaseURL,
   } = useVersionCheck();
-  const { esiAvailable } = useEsiStatus();
+  const { esiAvailable, esiError } = useEsiStatus();
   const securityVaultStatus = authStatus.security_vault;
   const cockpitRemoteStorageReady =
     Boolean(securityVaultStatus) &&
@@ -3015,6 +3015,11 @@ function App() {
               {t("esiUnavailable")}
             </h2>
             <p className="text-eve-dim mb-4">{t("esiUnavailableDesc")}</p>
+            {esiError && (
+              <p className="text-eve-dim/80 mb-4 break-words font-mono text-xs">
+                {t("esiLastError")}: {esiError}
+              </p>
+            )}
             <div className="flex items-center justify-center gap-2 text-sm text-eve-dim">
               <div className="w-2 h-2 bg-eve-accent rounded-full animate-pulse" />
               <span>{t("esiWaiting")}</span>

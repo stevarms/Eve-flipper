@@ -1,7 +1,8 @@
 /* @vitest-environment jsdom */
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // vitest does not run with `globals: true` here, so RTL's automatic cleanup
@@ -73,11 +74,18 @@ const summaryFixture = (staleDays: number | null) => ({
   since: "2026-01-01T00:00:00Z",
 });
 
+/** Nine characters, the way the tab is actually used. A single-character
+ *  fixture cannot reach the wallet picker's exclusion path. */
+const NINE_PILOTS = Array.from({ length: 9 }, (_, i) => ({
+  character_id: 90000001 + i,
+  character_name: `Pilot ${i + 1}`,
+}));
+
 beforeEach(() => {
   vi.clearAllMocks();
   getAuthStatus.mockResolvedValue({
     logged_in: true,
-    characters: [{ character_id: 90000001, character_name: "Pilot" }],
+    characters: NINE_PILOTS,
   });
   getJournalByType.mockImplementation(async () => ({ rows: [] }));
 });
@@ -131,5 +139,24 @@ describe("TradeJournal fetch loop", () => {
     const n = await settle();
     expect(n.sync).toBe(1);
     expect(n.summary).toBeLessThanOrEqual(3);
+  });
+
+  it("settles after the wallet picker narrows the scope", async () => {
+    // With no exclusions `scope` is the hoisted SCOPE_ALL constant, so its
+    // identity is trivially stable and the cycle is unreachable. Unticking a
+    // chip switches it to a freshly-built object literal -- the path the
+    // original fix had to make safe, and the one every existing test misses.
+    getJournalSummary.mockImplementation(async () => summaryFixture(null));
+    const user = userEvent.setup();
+    mount();
+    await settle();
+
+    await user.click(screen.getByRole("button", { name: /Wallets/i }));
+    await user.click(screen.getByRole("button", { name: "Pilot 3" }));
+
+    const n = await settle();
+    // One refetch for the narrowed scope, and then it stops.
+    expect(n.summary).toBeLessThanOrEqual(3);
+    expect(n.byType).toBeLessThanOrEqual(3);
   });
 });

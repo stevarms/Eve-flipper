@@ -239,3 +239,106 @@ func TestToPortfolioPnL_ManufacturedLotCarriesBuildCostBasis(t *testing.T) {
 			combined.Summary.TotalPnL, res.Totals.CombinedPnL)
 	}
 }
+
+// TestItemLeaderboard_SplitsTradeAndBuildOnOneRow covers the case the flat
+// items table could not show: a type you both flip and build.
+func TestItemLeaderboard_SplitsTradeAndBuildOnOneRow(t *testing.T) {
+	// 10 Trit -> one Rifter (install 1_000_000, materials 50) available 01-05,
+	// plus one Rifter bought outright at 1.2M on 01-06, then both sold at 2M.
+	txns := []JournalTxn{
+		mkTxn(1, "char:1", "2026-01-01", 34, 10, 5, true),
+		mkTxn(2, "char:1", "2026-01-06", 588, 1, 1_200_000, true),
+		mkTxn(3, "char:1", "2026-01-10", 588, 2, 2_000_000, false),
+	}
+	jobs := []JournalIndustryJob{
+		mkJob(100, 1, 587, 588, 1, 1_000_000, "2026-01-02", "2026-01-05"),
+	}
+	res := ComputeTradeJournal(txns, jobs, TradeJournalOptions{
+		FIFOMode:  FIFOModeStrictDate,
+		Materials: rifterMaterials(),
+		Products:  rifterProducts(),
+		MEByJob:   meZero,
+	})
+
+	rows := res.ItemLeaderboard(PortfolioPnLOptions{LookbackDays: 365}, 0)
+	if len(rows) != 1 {
+		t.Fatalf("want 1 leaderboard row (only the Rifter was sold), got %d", len(rows))
+	}
+	row := rows[0]
+	if row.TypeID != 588 {
+		t.Fatalf("TypeID = %d, want 588", row.TypeID)
+	}
+	if row.TradePnL != 800_000 {
+		t.Errorf("TradePnL = %v, want 800000 (2M sale on a 1.2M buy)", row.TradePnL)
+	}
+	if row.ManufacturePnL != 999_950 {
+		t.Errorf("ManufacturePnL = %v, want 999950 (2M sale on a 1000050 build)", row.ManufacturePnL)
+	}
+	if got, want := row.TradePnL+row.ManufacturePnL, row.NetPnL; got != want {
+		t.Errorf("halves sum to %v but NetPnL = %v — the split must be exhaustive", got, want)
+	}
+	if got, want := row.TradeCost+row.ManufactureCost, row.CostBasis; got != want {
+		t.Errorf("cost halves sum to %v but CostBasis = %v", got, want)
+	}
+	if row.QtySold != 2 {
+		t.Errorf("QtySold = %d, want 2", row.QtySold)
+	}
+	if row.ROIPercent == nil {
+		t.Fatal("ROIPercent is nil, but this row has a real cost basis")
+	}
+	if want := row.NetPnL / row.CostBasis * 100; *row.ROIPercent != want {
+		t.Errorf("ROIPercent = %v, want %v", *row.ROIPercent, want)
+	}
+}
+
+// TestItemLeaderboard_OrphanSellHasNoRowOrROI pins the two ways a leaderboard
+// could lie about an unpriced sell: counting it as pure profit, or reporting
+// its return as 0%.
+func TestItemLeaderboard_OrphanSellHasNoRowOrROI(t *testing.T) {
+	// A sale with nothing behind it — stock acquired before the archive starts.
+	txns := []JournalTxn{
+		mkTxn(1, "char:1", "2026-01-10", 34, 100, 9, false),
+	}
+	res := ComputeTradeJournal(txns, nil, TradeJournalOptions{FIFOMode: FIFOModeStrictDate})
+
+	strict := res.ItemLeaderboard(PortfolioPnLOptions{LookbackDays: 365}, 0)
+	if len(strict) != 0 {
+		t.Fatalf("strict mode leaderboard = %d rows, want 0 — an unpriced sell is not a win", len(strict))
+	}
+
+	legacy := res.ItemLeaderboard(PortfolioPnLOptions{
+		LookbackDays:         365,
+		IncludeUnmatchedSell: true,
+	}, 0)
+	if len(legacy) != 1 {
+		t.Fatalf("legacy mode leaderboard = %d rows, want 1", len(legacy))
+	}
+	if legacy[0].CostBasis != 0 {
+		t.Errorf("CostBasis = %v, want 0 for an orphan sell", legacy[0].CostBasis)
+	}
+	if legacy[0].ROIPercent != nil {
+		t.Errorf("ROIPercent = %v, want nil — an unknown denominator, not 0%%", *legacy[0].ROIPercent)
+	}
+}
+
+// TestItemLeaderboard_HonoursLimit keeps the cap from being silently the
+// summarizer's default 50 when the caller asked for fewer or more.
+func TestItemLeaderboard_HonoursLimit(t *testing.T) {
+	txns := []JournalTxn{}
+	id := int64(1)
+	for typeID := int32(1000); typeID < 1060; typeID++ {
+		txns = append(txns,
+			mkTxn(id, "char:1", "2026-01-01", typeID, 1, 100, true),
+			mkTxn(id+1, "char:1", "2026-01-05", typeID, 1, float64(200+typeID), false),
+		)
+		id += 2
+	}
+	res := ComputeTradeJournal(txns, nil, TradeJournalOptions{FIFOMode: FIFOModeStrictDate})
+
+	if got := len(res.ItemLeaderboard(PortfolioPnLOptions{LookbackDays: 365}, 0)); got != 60 {
+		t.Errorf("default limit returned %d rows, want all 60 — the leaderboard is not capped at the table's 50", got)
+	}
+	if got := len(res.ItemLeaderboard(PortfolioPnLOptions{LookbackDays: 365}, 10)); got != 10 {
+		t.Errorf("limit 10 returned %d rows, want 10", got)
+	}
+}
