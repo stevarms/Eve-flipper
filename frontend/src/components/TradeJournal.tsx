@@ -20,8 +20,9 @@ import {
 import type { AuthCharacter } from "../lib/types";
 import { useI18n, type TranslationKey } from "../lib/i18n";
 import { formatIsk as formatIskLib, formatIskSigned as formatIskSignedLib } from "../lib/format";
-import { PnLLineChart, type PnLLineSeries } from "./journal/PnLPrimitives";
+import { PnLLineChart, SortableTH, type PnLLineSeries } from "./journal/PnLPrimitives";
 import { JournalAnalyticsView } from "./journal/JournalAnalyticsView";
+import { JournalTransactionsView } from "./journal/JournalTransactionsView";
 import { JournalFeeStrip } from "./journal/JournalFeeStrip";
 
 // TradeJournal.tsx — main-tab realization of the Eve-Tycoon-style profit
@@ -42,7 +43,13 @@ interface Props {
 
 type PeriodPreset = 7 | 30 | 90 | "all";
 
-type JournalView = "summary" | "analytics";
+type JournalView = "summary" | "analytics" | "transactions";
+
+const VIEW_LABEL_KEY: Record<JournalView, TranslationKey> = {
+  summary: "journalViewSummary",
+  analytics: "journalViewAnalytics",
+  transactions: "journalViewTransactions",
+};
 
 // Local alias for the PnLChart data shape (avoids re-exporting DailyPnLEntry
 // from lib/types just for this file).
@@ -503,7 +510,7 @@ export function TradeJournal({ isLoggedIn, visitToken, onOpenPositions }: Props)
       {/* View + source: what depth, over which slice of the ledger. */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-1">
-          {(["summary", "analytics"] as JournalView[]).map((v) => (
+          {(["summary", "transactions", "analytics"] as JournalView[]).map((v) => (
             <button
               key={v}
               type="button"
@@ -514,7 +521,7 @@ export function TradeJournal({ isLoggedIn, visitToken, onOpenPositions }: Props)
                   : "bg-eve-panel border-eve-border text-eve-dim hover:text-eve-text hover:border-eve-accent/50"
               }`}
             >
-              {v === "summary" ? t("journalViewSummary") : t("journalViewAnalytics")}
+              {t(VIEW_LABEL_KEY[v])}
             </button>
           ))}
           <span className="ml-3 text-[11px] text-eve-dim uppercase tracking-wider">
@@ -584,15 +591,19 @@ export function TradeJournal({ isLoggedIn, visitToken, onOpenPositions }: Props)
               {t("journalTrackingSince", { date: earliestTrackingSince.slice(0, 10) })}
             </span>
           )}
-          <button
-            type="button"
-            onClick={exportCSV}
-            disabled={sortedRows.length === 0}
-            className="px-2 py-1 text-xs rounded-sm border border-eve-border bg-eve-panel text-eve-dim hover:text-eve-text hover:border-eve-accent/50 disabled:opacity-40"
-            title={t("journalExportCsvHint")}
-          >
-            {t("journalExportCsv")}
-          </button>
+          {/* Exports the per-item table, so it only belongs to the view that
+              shows one. The transactions list carries its own export. */}
+          {view === "summary" && (
+            <button
+              type="button"
+              onClick={exportCSV}
+              disabled={sortedRows.length === 0}
+              className="px-2 py-1 text-xs rounded-sm border border-eve-border bg-eve-panel text-eve-dim hover:text-eve-text hover:border-eve-accent/50 disabled:opacity-40"
+              title={t("journalExportCsvHint")}
+            >
+              {t("journalExportCsv")}
+            </button>
+          )}
           <button
             onClick={() => void doSync(false)}
             disabled={syncing}
@@ -617,6 +628,21 @@ export function TradeJournal({ isLoggedIn, visitToken, onOpenPositions }: Props)
         <div className="rounded-sm border border-red-500/50 bg-red-500/10 px-3 py-2 text-xs text-red-300">
           {error}
         </div>
+      )}
+
+      {/* Transactions: one row per sale. Same matcher, same rates, same lots
+          the Summary drawer shows — just not restricted to one item. */}
+      {view === "transactions" && (
+        <JournalTransactionsView
+          scope={scope}
+          period={period}
+          fifoMode={fifoMode}
+          source={source}
+          feeOverride={feeOverride}
+          reloadToken={analyticsToken}
+          formatIsk={formatIsk}
+          formatIskSigned={formatIskSigned}
+        />
       )}
 
       {/* Analytics: the deep-dive half, fetched from its own endpoint over the
@@ -1058,33 +1084,6 @@ function SeriesRow({ label, children }: { label: string; children: React.ReactNo
       <div className="text-[9px] text-eve-dim mb-1">{label}</div>
       {children}
     </div>
-  );
-}
-
-function SortableTH<K extends string>({
-  label,
-  k,
-  curKey,
-  curDir,
-  onClick,
-  align,
-}: {
-  label: string;
-  k: K;
-  curKey: K;
-  curDir: "asc" | "desc";
-  onClick: (k: K) => void;
-  align: "left" | "right";
-}) {
-  const active = curKey === k;
-  return (
-    <th
-      className={`px-2 py-1.5 text-${align} cursor-pointer hover:text-eve-text select-none`}
-      onClick={() => onClick(k)}
-    >
-      {label}
-      {active && <span className="ml-1">{curDir === "asc" ? "▲" : "▼"}</span>}
-    </th>
   );
 }
 

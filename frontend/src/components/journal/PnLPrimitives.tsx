@@ -22,6 +22,49 @@ export interface PnLChartEntry {
 // view both render from here, so the two depths of the same numbers cannot
 // drift apart visually either.
 
+// --- Sortable table header ---
+
+/**
+ * A column header that reports and toggles the active sort.
+ *
+ * Generic over the key type so each table keeps its own union of sortable
+ * columns and a typo in a column key is a compile error rather than a header
+ * that silently does nothing.
+ */
+export function SortableTH<K extends string>({
+  label,
+  k,
+  curKey,
+  curDir,
+  onClick,
+  align,
+  title,
+}: {
+  label: string;
+  k: K;
+  curKey: K;
+  curDir: "asc" | "desc";
+  onClick: (k: K) => void;
+  align: "left" | "right";
+  title?: string;
+}) {
+  const active = curKey === k;
+  return (
+    <th
+      // Written out rather than interpolated: Tailwind scans for literal class
+      // names, and a `text-${align}` never makes it into the stylesheet.
+      className={`px-2 py-1.5 cursor-pointer hover:text-eve-text select-none ${
+        align === "right" ? "text-right" : "text-left"
+      }`}
+      title={title}
+      onClick={() => onClick(k)}
+    >
+      {label}
+      {active && <span className="ml-1">{curDir === "asc" ? "▲" : "▼"}</span>}
+    </th>
+  );
+}
+
 // --- P&L Line Chart (SVG) ---
 
 export interface PnLLineSeries {

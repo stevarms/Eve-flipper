@@ -36,15 +36,19 @@ vi.mock("../lib/api", () => ({
   getJournalSummary: (...a: unknown[]) => getJournalSummary(...a),
   getJournalByType: (...a: unknown[]) => getJournalByType(...a),
   getJournalLots: vi.fn(async () => ({ lots: [], manufacturing_lots: [] })),
+  getJournalTransactions: vi.fn(async () => ({ lots: [], total: 0 })),
   getJournalLinkCandidates: vi.fn(async () => ({ candidates: [] })),
   linkJournalJob: vi.fn(async () => ({})),
   syncTradeJournal: (...a: unknown[]) => syncTradeJournal(...a),
   getAuthStatus: (...a: unknown[]) => getAuthStatus(...a),
 }));
 
-// PnLChart renders an SVG off measured layout; jsdom has no layout.
-vi.mock("./journal/PnLPrimitives", () => ({
+// PnLChart renders an SVG off measured layout; jsdom has no layout. The rest
+// of the module is kept real — SortableTH is a plain <th> the table needs.
+vi.mock("./journal/PnLPrimitives", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./journal/PnLPrimitives")>()),
   PnLChart: () => null,
+  PnLLineChart: () => null,
 }));
 
 import { TradeJournal } from "./TradeJournal";

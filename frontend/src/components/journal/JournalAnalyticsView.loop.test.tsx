@@ -27,14 +27,19 @@ vi.mock("../../lib/api", () => ({
   getJournalByType: (...a: unknown[]) => getJournalByType(...a),
   getJournalAnalytics: (...a: unknown[]) => getJournalAnalytics(...a),
   getJournalLots: vi.fn(async () => ({ lots: [], manufacturing_lots: [] })),
+  getJournalTransactions: vi.fn(async () => ({ lots: [], total: 0 })),
   getJournalLinkCandidates: vi.fn(async () => ({ candidates: [] })),
   linkJournalJob: vi.fn(async () => ({})),
   syncTradeJournal: (...a: unknown[]) => syncTradeJournal(...a),
   getAuthStatus: (...a: unknown[]) => getAuthStatus(...a),
 }));
 
-vi.mock("./PnLPrimitives", () => ({
+// Charts and heavy tables stubbed; the rest of the module stays real so
+// SortableTH still renders the per-item table header.
+vi.mock("./PnLPrimitives", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./PnLPrimitives")>()),
   PnLChart: () => null,
+  PnLLineChart: () => null,
   PnLLedgerTable: () => null,
   PnLStationsTable: () => null,
   SlotEfficiencyTable: () => null,

@@ -2436,10 +2436,22 @@ export interface JournalLot {
   sell_gross: number;
   sell_fees: number;
   net_profit: number;
+  // sell_fees split into its parts. The engine has always sent these; the
+  // transactions view shows broker fee and sales tax on separate columns, so
+  // re-deriving the split from a rate here would drift from the rate the match
+  // was actually charged.
+  sell_broker_fee: number;
+  sell_tax: number;
+  sell_location_id?: number;
+  sell_location_name?: string;
+  buy_location_id?: number;
+  buy_location_name?: string;
   // Trade-side
   buy_date?: string;
   buy_txn_id?: number;
   buy_wallet_key?: string;
+  // Purchase price on trade rows, build unit cost on manufacture rows — one
+  // cost-basis expression covers both. Absent on orphan sells.
   buy_unit_price?: number;
   buy_fees?: number;
   // Manufacture-side
@@ -2549,6 +2561,39 @@ export async function getJournalLots(typeID: number, params?: JournalReadParams)
   qp.set("type_id", String(typeID));
   const res = await apiFetch(`${BASE}/api/auth/journal/lots?${qp.toString()}`);
   return handleResponse<{ lots: JournalLot[]; manufacturing_lots: JournalManufacturingLot[] }>(res);
+}
+
+/** Filters for the per-sale transaction list. All applied server-side. */
+export interface JournalTransactionParams extends JournalReadParams {
+  /** "" is every source. */
+  source?: "" | JournalLotSource;
+  /** Case-insensitive substring of the item name. */
+  q?: string;
+  /** Floor on the absolute net profit, so it keeps big losses too. */
+  minProfit?: number;
+  limit?: number;
+}
+
+/**
+ * Every matched sell in the window, newest first.
+ *
+ * Same endpoint and same rows as getJournalLots — it just omits `type_id`, so
+ * a figure here cannot disagree with the per-item drawer. `total` is the match
+ * count before `limit` was applied, so the view can say what it is not showing.
+ */
+export async function getJournalTransactions(params?: JournalTransactionParams): Promise<{
+  lots: JournalLot[];
+  total: number;
+}> {
+  const qp = journalReadQuery(params);
+  if (params?.source) qp.set("source", params.source);
+  if (params?.q?.trim()) qp.set("q", params.q.trim());
+  if (params?.minProfit != null && params.minProfit > 0) {
+    qp.set("min_profit", String(params.minProfit));
+  }
+  if (params?.limit != null) qp.set("limit", String(params.limit));
+  const res = await apiFetch(`${BASE}/api/auth/journal/lots?${qp.toString()}`);
+  return handleResponse<{ lots: JournalLot[]; total: number }>(res);
 }
 
 /** Which slice of the ledger a figure describes. "" is combined. */

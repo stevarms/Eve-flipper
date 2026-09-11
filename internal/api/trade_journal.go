@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -662,39 +663,178 @@ func (s *Server) handleTradeJournalByType(w http.ResponseWriter, r *http.Request
 	writeJSON(w, map[string]any{"rows": list})
 }
 
+// journalLotsDefaultLimit / journalLotsMaxLimit bound the type-less listing.
+//
+// A busy month of station trading is tens of thousands of matched sells, and
+// every one of them is a JSON object. The cap is applied after sorting by sell
+// date descending, so it always keeps the most recent window rather than an
+// arbitrary slice, and the response reports the pre-cap match count so the UI
+// can say what it is not showing.
+const (
+	journalLotsDefaultLimit = 1000
+	journalLotsMaxLimit     = 10000
+)
+
+// handleTradeJournalLots serves matched sell lots — one row per sale, with the
+// cost basis it was matched against and the fees charged on it.
+//
+// With `type_id` it answers for one item, which is what the per-item drawer in
+// the Summary view asks for. Without it, it lists every sale in the window: the
+// per-transaction profit view. Both read the same `res.Lots`, so a row cannot
+// disagree between the two.
+//
+// Filtering happens here rather than in the browser because of the cap above.
+// Filtering a truncated set would report counts for a window the user cannot
+// see — "3 items over 1M ISK" when there are really 40.
 func (s *Server) handleTradeJournalLots(w http.ResponseWriter, r *http.Request) {
-	typeIDStr := strings.TrimSpace(r.URL.Query().Get("type_id"))
-	if typeIDStr == "" {
-		writeError(w, 400, "type_id required")
+	q := r.URL.Query()
+	typeIDStr := strings.TrimSpace(q.Get("type_id"))
+
+	var typeID int32
+	if typeIDStr != "" {
+		tid64, err := strconv.ParseInt(typeIDStr, 10, 32)
+		if err != nil || tid64 <= 0 {
+			writeError(w, 400, "invalid type_id")
+			return
+		}
+		typeID = int32(tid64)
+	}
+
+	source, err := parseLotFilterSourceParam(q.Get("source"))
+	if err != nil {
+		writeError(w, 400, err.Error())
 		return
 	}
-	tid64, err := strconv.ParseInt(typeIDStr, 10, 32)
-	if err != nil || tid64 <= 0 {
-		writeError(w, 400, "invalid type_id")
-		return
+	nameQuery := strings.ToLower(strings.TrimSpace(q.Get("q")))
+	var minProfit float64
+	if v := strings.TrimSpace(q.Get("min_profit")); v != "" {
+		f, parseErr := strconv.ParseFloat(v, 64)
+		if parseErr != nil || f < 0 {
+			writeError(w, 400, "invalid min_profit")
+			return
+		}
+		minProfit = f
 	}
-	typeID := int32(tid64)
+	limit := journalLotsDefaultLimit
+	if v := strings.TrimSpace(q.Get("limit")); v != "" {
+		n, parseErr := strconv.Atoi(v)
+		if parseErr != nil || n <= 0 || n > journalLotsMaxLimit {
+			writeError(w, 400, fmt.Sprintf("invalid limit (want 1..%d)", journalLotsMaxLimit))
+			return
+		}
+		limit = n
+	}
+
 	res, _, _, _, err := s.loadTradeJournalResult(r)
 	if err != nil {
 		writeError(w, 400, err.Error())
 		return
 	}
-	lots := make([]engine.TradeJournalLot, 0)
-	for _, l := range res.Lots {
-		if l.TypeID == typeID {
-			lots = append(lots, l)
-		}
-	}
+
+	lots, total := filterJournalLots(res.Lots, lotFilter{
+		typeID:    typeID,
+		source:    source,
+		nameQuery: nameQuery,
+		minProfit: minProfit,
+		limit:     limit,
+	})
+
+	// Build detail is per-item and has no column in the transaction table.
+	// Returning every job for a type-less listing would roughly double the
+	// payload for something nothing renders.
 	mfgLots := make([]engine.ManufacturingLot, 0)
-	for _, m := range res.ManufacturingLots {
-		if m.ProductTypeID == typeID {
-			mfgLots = append(mfgLots, m)
+	if typeID != 0 {
+		for _, m := range res.ManufacturingLots {
+			if m.ProductTypeID == typeID {
+				mfgLots = append(mfgLots, m)
+			}
 		}
 	}
+
 	writeJSON(w, map[string]any{
 		"lots":               lots,
 		"manufacturing_lots": mfgLots,
+		"total":              total,
 	})
+}
+
+// lotFilter is what a lots request asks for, separated from how it was spelled
+// on the query string so the selection rules can be tested without a database.
+//
+// A zero typeID means every item, which also turns on the sort and the cap: the
+// per-item drawer wants one item's matches in match order and all of them, while
+// the transaction list wants the most recent N sales across everything.
+type lotFilter struct {
+	typeID int32
+	source engine.LotSource
+	// nameQuery is matched case-insensitively and must already be lowercased.
+	nameQuery string
+	minProfit float64
+	limit     int
+}
+
+// filterJournalLots selects the lots a request asked for and reports how many
+// matched before the cap.
+//
+// The pre-cap count is returned rather than derived from the slice because the
+// UI has to be able to say "showing 1000 of 4213". A truncated list presented as
+// the whole window is the one failure mode here that a user cannot see.
+func filterJournalLots(lots []engine.TradeJournalLot, f lotFilter) ([]engine.TradeJournalLot, int) {
+	out := make([]engine.TradeJournalLot, 0, len(lots))
+	for _, l := range lots {
+		if f.typeID != 0 && l.TypeID != f.typeID {
+			continue
+		}
+		if f.source != "" && l.Source != f.source {
+			continue
+		}
+		if f.nameQuery != "" && !strings.Contains(strings.ToLower(l.TypeName), f.nameQuery) {
+			continue
+		}
+		// Absolute value: a minimum-profit filter is asking "show me the sales
+		// that moved the needle", and a 4M ISK loss moved it as much as a 4M
+		// ISK win.
+		if f.minProfit > 0 && math.Abs(l.NetProfit) < f.minProfit {
+			continue
+		}
+		out = append(out, l)
+	}
+	total := len(out)
+
+	// One item's drawer shows every match in match order, so neither the sort
+	// nor the cap applies to it.
+	if f.typeID != 0 {
+		return out, total
+	}
+	// Sell dates are RFC3339 UTC, so lexical order is chronological order.
+	sort.SliceStable(out, func(a, b int) bool { return out[a].SellDate > out[b].SellDate })
+	if f.limit > 0 && len(out) > f.limit {
+		out = out[:f.limit]
+	}
+	return out, total
+}
+
+// parseLotFilterSourceParam maps the `source` query param onto a LotSource for
+// the lots listing.
+//
+// Unlike parseLotSourceParam (which feeds the analytics projection) this one
+// accepts "orphan": an unmatched sell is a row the transaction list has to be
+// able to isolate, because a sale with no cost basis is exactly the thing worth
+// hunting down. Unknown values are still rejected rather than widened to
+// combined, so a typo cannot show build profit under a "Trading" heading.
+func parseLotFilterSourceParam(v string) (engine.LotSource, error) {
+	switch strings.TrimSpace(v) {
+	case "", "combined", "all":
+		return "", nil
+	case string(engine.LotSourceTrade):
+		return engine.LotSourceTrade, nil
+	case string(engine.LotSourceManufacture):
+		return engine.LotSourceManufacture, nil
+	case string(engine.LotSourceOrphan):
+		return engine.LotSourceOrphan, nil
+	default:
+		return "", fmt.Errorf("unknown source %q (want trade, manufacture, orphan or combined)", v)
+	}
 }
 
 // handleTradeJournalLinkJob is the manual-link endpoint powering the
