@@ -1645,7 +1645,7 @@ export const en = {
 
     // Orders tab
     tabOrders: "Orders",
-    ordersEmpty: "No orders match the current filter.",
+    ordersEmpty: "No active orders.",
     ordersNoAuth: "Log in with an EVE character to see your active orders.",
     ordersLoading: "Loading orders…",
     ordersRefresh: "Refresh",
@@ -1661,6 +1661,7 @@ export const en = {
     ordersKpiTotal: "Total orders",
     ordersKpiReprice: "Reprice",
     ordersKpiCancel: "Cancel",
+    ordersKpiReview: "Review",
     ordersKpiNotional: "Notional",
     ordersKpiCharacters: "Characters",
     ordersColOwner: "Char",
@@ -1671,6 +1672,7 @@ export const en = {
     ordersColBest: "Best",
     ordersColPosition: "Pos",
     ordersColEta: "ETA",
+    ordersColMargin: "Margin",
     ordersColExpiry: "Expires",
     ordersSortLabel: "Sort",
     ordersDrawerGroupPricing: "Pricing",
@@ -1696,12 +1698,102 @@ export const en = {
     ordersDrawerFilled: "{qty} filled so far",
     ordersDrawerNetNotional: "Net notional",
     ordersDrawerIssued: "Placed",
+    ordersColValue: "Value",
+    ordersColValueHint:
+      "Price × quantity remaining — what this order is worth on the market right now. Sort by it to reprice the orders that matter most first.",
+    ordersColValueNet: "{isk} ISK after fees · {qty} remaining",
+    ordersSortHint:
+      "Click to sort by this column; click again to reverse. Shift-click to add it as a second or third sort — Item then Action groups the rows that need work inside each item.",
+    ordersSortStackLabel: "Sorted by",
+    ordersSortStackHint: "shift-click a header to add a layer",
+    ordersSortRemoveLayer: "Remove this sort layer",
+    ordersTargetEta: "Target ETA",
+    ordersTargetEtaHint:
+      "How long an order is allowed to take before the desk calls it slow. Also sets the depth cutoff: an order with more than half this much depth ahead of it is reported as buried rather than on track.",
+    ordersEtaBreakdown:
+      "Regional volume {regional}/day counts both sides of the market. About {side}% of it is your side, and {station}% of that trades at this station, so roughly {perDay}/day flows past your order ({basis}). {queue}d to clear the depth ahead of you, {total}d in total.",
+    ordersEtaUnknownHint: "No price history for this item, so there is nothing to estimate from.",
+    ordersColMarginHint:
+      "Whether this order is still worth filling, after sales tax and broker fee. A buy order is measured against what you could resell for at this station; a sell order against what the stock actually cost you. Sort by it to bring the losers to the top.",
+    ordersMarginBuyBreakdown:
+      "Resell at {exit} — one step under the best ask at this station — minus {fees}% tax and broker fee leaves {net}. Against your {bid} bid that is {margin}/unit, {pct}%. The broker fee already paid to place this order is excluded: cancelling will not refund it.",
+    ordersMarginSellBreakdown:
+      "Selling at {price} minus {fees}% tax and broker fee leaves {net}. The stock cost {cost}/unit, so that is {margin}/unit, {pct}%.",
+    ordersMarginNoneBuyHint:
+      "Nothing is being sold at this station, so there is no resale price to measure the bid against.",
+    ordersMarginNoneSellHint:
+      "No cost basis for this item. Sync your wallet on the Trade Journal tab and the desk can tell whether this order is above what the stock cost you.",
+    ordersThinMarginHint: "Margin is positive but under your {floor}% floor.",
+    ordersMinMargin: "Min margin",
+    ordersMinMarginHint:
+      "Below this the margin is flagged thin with a warning. It never changes the recommendation — only a margin that has actually gone negative does that: cancel on a buy order, review on a sell order, where the ISK is already spent.",
+    ordersFlowBasisWeekday: "shaped by day of week",
+    ordersFlowBasisFlat: "flat weekly average — not enough history to shape by day",
+    ordersSectionSell: "Sell orders",
+    ordersSectionBuy: "Buy orders",
+    ordersSectionSummary: "{count} orders · {isk} ISK",
+    ordersSectionNeedsAction: "⚠ {count}",
+    ordersAutoRefresh: "Auto-refresh",
+    ordersAutoRefreshHint:
+      "How often the order book is re-fetched. Each refresh takes a few seconds, so a longer interval keeps the table still while you work through it. Refresh always updates immediately.",
+    ordersAutoRefreshOff: "Off",
+    ordersAutoRefreshMinutes: "{n} min",
+    ordersUpdatedAgo: "updated {ago} ago",
+    ordersUpdatedJustNow: "updated just now",
+    ordersFeesFromEsi:
+      "Loaded from {char}'s Accounting and Broker Relations skill levels. Edit to override for this session.",
+    ordersFeesNoEsi:
+      "Could not read your skill levels from ESI, so these are defaults rather than your real rates. Edit them, or press ↻ to try again.",
+    ordersFeesResyncHint: "Re-read sales tax and broker fee from ESI skill levels.",
     ordersOpenMarketHint:
       "Open this item's market window in the running EVE client and copy the suggested price to the clipboard (uses the ESI open-window scope). Requires the client to be running and logged in on the same character.",
+    ordersCopyNameHint:
+      "Copy the item name to the clipboard. Backup for when 🎮 doesn't open the market window — paste it into the in-game market search.",
+    // Disposition panel — the three plans priced against one horizon.
+    ordersDispositionExpandHint:
+      "Price cutting, holding and moving this position against each other. Fetches the other hub markets, so it takes a moment.",
+    ordersDispositionLoading: "Pricing cut, hold and move…",
+    ordersDispositionFailed: "Could not price this position: {error}",
+    ordersDispositionPosition: "{qty} units at {cost} cost = {total}",
+    ordersDispositionHeld: "held since {date}",
+    ordersDispositionHorizon: "horizon {days}d",
+    ordersDispositionHorizonHint:
+      "Every plan is valued at this same future date — the slowest plan sets it. Without a common date a plan could win simply by taking longer.",
+    ordersDispositionHurdle: "hurdle {pct}%/day",
+    ordersDispositionHurdleHint:
+      "What the freed ISK is assumed to earn elsewhere: your min margin spread over your target ETA. Raise Target ETA and the hurdle falls, which is what lets a slow plan beat a fast one.",
+    ordersDispositionVenues: "{priced} venues priced, {skipped} skipped",
+    ordersDispositionNoPlans: "Nothing to compare for this position.",
+    ordersDispositionColPlan: "Plan",
+    ordersDispositionColVenue: "Venue",
+    ordersDispositionColExit: "Exit price",
+    ordersDispositionColNet: "Net ISK",
+    ordersDispositionColProfit: "vs cost",
+    ordersDispositionColDays: "Days",
+    ordersDispositionColTerminal: "At horizon",
+    ordersDispositionKindCut: "Cut",
+    ordersDispositionKindHold: "Hold",
+    ordersDispositionKindMove: "Move",
+    ordersDispositionKindCutHint:
+      "Sell into the best bid at this station right now. Hitting a standing order pays sales tax but no broker fee, and the ISK is free today.",
+    ordersDispositionKindHoldHint:
+      "Leave it listed and wait for the price to come back. Only offered when this item has a measured history of recovering from dips this deep.",
+    ordersDispositionKindMoveHint:
+      "Haul it to another market and sell there. Net ISK is already after the haul cost at your configured ISK/m³/jump.",
+    ordersDispositionBest: "best",
+    ordersDispositionJumps: "· {jumps} jumps",
+    ordersDispositionNetHint: "{gross} after fees, less {haul} haul.",
+    ordersDispositionNetHintNoHaul: "{gross} after fees.",
+    ordersDispositionTooClose:
+      "The top two plans are within 1% of each other. That is a coin flip, not a recommendation — pick on whatever this table cannot see.",
+    ordersDispositionNoHold: "Hold is not offered: {reason}.",
+    ordersDispositionRecovery:
+      "Dip evidence: {episodes} comparable dips in the last {window}d recovered, median {days}d, trend target {target}.",
+
     ordersPillLabel: "Orders",
     ordersPillAria: "Open Orders tab",
     ordersPillTooltip:
-      "{total} active orders · {reprice} need reprice · {cancel} need cancel. Click to open the Orders tab.",
+      "{total} active orders · {reprice} need reprice · {cancel} need cancel · {review} need review. Click to open the Orders tab.",
 
     // Trade Journal tab
     tabTradeJournal: "Trade Journal",
@@ -2421,6 +2513,7 @@ export const en = {
     orderDeskActionHold: "Hold",
     orderDeskActionReprice: "Reprice",
     orderDeskActionCancel: "Cancel order",
+    orderDeskActionReview: "Review",
 
     // Portfolio Optimizer
     charOptimizerTab: "Optimizer",
@@ -2996,13 +3089,25 @@ export const en = {
     aiSend: "Send",
     aiAssistantName: "Assistant name",
     aiProvider: "Provider",
-    aiApiKey: "OpenRouter API key",
+    aiApiKey: "API key",
+    aiApiKeyOptional: "API key (optional)",
+    aiApiKeyLocalPlaceholder: "usually not needed for local servers",
+    aiBaseUrl: "Base URL",
+    aiBaseUrlHint: "OpenAI-compatible /v1 endpoint on your machine or LAN. In Docker/unraid use http://host.docker.internal:11434/v1 or the host LAN IP, not 127.0.0.1.",
+    aiRefreshModels: "Refresh models",
+    aiModelsLoading: "Loading…",
+    aiModelsLoaded: "Models found",
+    aiModelsEmpty: "The server responded but is not serving any models.",
+    aiModelsNone: "No models — refresh or use a custom model",
+    aiModelsFailed: "Could not reach the model server.",
+    aiErrorNoBaseUrl: "Set the local model server base URL in AI settings first",
+    aiLocalProviderHostedDisabled: "Local model providers are disabled on hosted deployments.",
     aiModel: "Model",
     aiCustomModel: "Custom model",
     aiUseCustomModel: "Use custom model",
     aiTemperature: "Temperature",
     aiMaxTokens: "Max tokens",
-    aiConfigHint: "API key is stored locally in your browser and sent only to OpenRouter through your backend request.",
+    aiConfigHint: "Settings are stored locally in your browser. The API key is sent only to the provider you select, through your own backend. With a local provider nothing leaves your machine.",
     aiProgressIdle: "Ready",
     aiProgressPreparing: "Preparing context…",
     aiProgressStreaming: "Streaming model output…",
@@ -3036,7 +3141,7 @@ export const en = {
     aiWikiOff: "wiki:off",
     aiWebOn: "web:on",
     aiWebOff: "web:off",
-    aiErrorNoKey: "Add OpenRouter API key in AI settings first",
+    aiErrorNoKey: "Add an API key for this provider in AI settings first",
     aiErrorNoModel: "Select or enter model first",
     aiErrorEmptyAnswer: "AI returned an empty answer",
     aiErrorGeneric: "AI request failed",

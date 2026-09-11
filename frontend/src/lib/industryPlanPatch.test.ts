@@ -1,10 +1,21 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyCoverageToIndustryPlanPatch,
   applyJobSplitToIndustryPlanPatch,
   buildIndustryPlanPatch,
   mergeIndustryPlanPatches,
 } from "./industryPlanPatch";
-import type { IndustryAnalysis } from "./types";
+import type { IndustryAnalysis, IndustryCoverageResult } from "./types";
+
+// Only the fields applyCoverageToIndustryPlanPatch reads are populated.
+function coverage(materials: Array<{ type_id: number; available_qty: number }>): IndustryCoverageResult {
+  return {
+    summary: {},
+    materials,
+    blueprints: [],
+    actions: [],
+  } as unknown as IndustryCoverageResult;
+}
 
 // Only the fields buildIndustryPlanPatch reads are populated; IndustryAnalysis
 // has ~40 columns and spelling them all out obscures the assertion.
@@ -376,6 +387,109 @@ describe("buildIndustryPlanPatch per-task material attribution", () => {
     expect(tritRow?.source).toBe("market");
     expect(tritRow?.buy_qty).toBe(200);
     expect(tritRow?.build_qty).toBe(0);
+  });
+
+  it("keeps built children off the shopping list after the coverage overlay", () => {
+    // The overlay recomputes buy_qty from what the stockpile holds. A built
+    // component is not in the stockpile and never will be -- the plan makes
+    // it -- so a required-minus-available rule turns every intermediate back
+    // into a purchase. That is the reported bug: the materials list asks you
+    // to buy the components you are about to build.
+    const patch = applyCoverageToIndustryPlanPatch(
+      buildIndustryPlanPatch(patchInput(analysis({ material_tree: t2Tree, activity_plan: t2Plan }))),
+      coverage([{ type_id: TRIT, available_qty: 50 }]),
+    );
+    const outputMats = matsFor(patch, -3);
+
+    const t1Row = outputMats.find((m) => m.type_id === T1_ITEM);
+    expect(t1Row?.buy_qty).toBe(0);
+    expect(t1Row?.build_qty).toBe(1);
+    expect(t1Row?.source).toBe("build");
+
+    const componentRow = outputMats.find((m) => m.type_id === COMPONENT);
+    expect(componentRow?.buy_qty).toBe(0);
+    expect(componentRow?.build_qty).toBe(48);
+    expect(componentRow?.source).toBe("build");
+
+    // The overlay must still do its actual job on a bought material.
+    const tritRow = outputMats.find((m) => m.type_id === TRIT);
+    expect(tritRow?.available_qty).toBe(50);
+    expect(tritRow?.buy_qty).toBe(150);
+  });
+
+  it("keeps built children off the shopping list through the batch merge too", () => {
+    // The Scanner commits several rows at once: build each, merge, THEN
+    // overlay coverage. required_qty and build_qty have to stay in lockstep
+    // across the merge or the overlay's build credit under-covers and the
+    // components come back as a purchase on the batch path only.
+    const row = () =>
+      buildIndustryPlanPatch(patchInput(analysis({ material_tree: t2Tree, activity_plan: t2Plan })));
+    const patch = applyCoverageToIndustryPlanPatch(
+      mergeIndustryPlanPatches([row(), row()]),
+      coverage([{ type_id: TRIT, available_qty: 50 }]),
+    );
+
+    const t1Row = (patch.materials ?? []).find((m) => m.type_id === T1_ITEM);
+    expect(t1Row?.required_qty).toBe(2);
+    expect(t1Row?.build_qty).toBe(2);
+    expect(t1Row?.buy_qty).toBe(0);
+    expect(t1Row?.source).toBe("build");
+
+    const componentRow = (patch.materials ?? []).find((m) => m.type_id === COMPONENT);
+    expect(componentRow?.required_qty).toBe(96);
+    expect(componentRow?.build_qty).toBe(96);
+    expect(componentRow?.buy_qty).toBe(0);
+
+    // Both rows' mineral demand merged, and the one stockpile is counted once
+    // rather than per row.
+    const outputTrit = (patch.materials ?? []).find(
+      (m) => m.type_id === TRIT && (m.required_qty ?? 0) === 400,
+    );
+    expect(outputTrit?.available_qty).toBe(50);
+    expect(outputTrit?.buy_qty).toBe(350);
+  });
+
+  it("only buys the un-built remainder of a part-build child", () => {
+    // 30 of 100 bought, 70 built, and 12 already on the shelf: the purchase
+    // is 18, not 88. Crediting the build portion is what separates this from
+    // required-minus-available.
+    const patch = applyCoverageToIndustryPlanPatch(
+      buildIndustryPlanPatch(
+        patchInput(
+          analysis({
+            material_tree: {
+              type_id: T2_ITEM,
+              is_base: false,
+              should_build: true,
+              blueprint: { blueprint_type_id: T2_BP },
+              children: [
+                {
+                  type_id: COMPONENT,
+                  type_name: "Linear Shield Emitter",
+                  quantity: 100,
+                  is_base: false,
+                  should_build: true,
+                  should_split: true,
+                  buy_units: 30,
+                  build_units: 70,
+                  blueprint: { blueprint_type_id: 11558 },
+                  children: [],
+                },
+              ],
+            },
+            activity_plan: [
+              { activity: "manufacturing", product_type_id: T2_ITEM, blueprint_type_id: T2_BP, runs: 1 },
+            ],
+          }),
+        ),
+      ),
+      coverage([{ type_id: COMPONENT, available_qty: 12 }]),
+    );
+    const row = (patch.materials ?? []).find((m) => m.type_id === COMPONENT);
+    expect(row?.build_qty).toBe(70);
+    expect(row?.available_qty).toBe(12);
+    expect(row?.buy_qty).toBe(18);
+    expect(row?.source).toBe("market");
   });
 
   it("splits a part-buy part-build child across buy_qty and build_qty", () => {

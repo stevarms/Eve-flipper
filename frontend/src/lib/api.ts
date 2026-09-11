@@ -46,8 +46,10 @@ import type {
   OptimizerDiagnostic,
   OrderBookCleanupPlan,
   OrderBookCoverageResult,
+  OrderBookRecordingSettings,
   OrderBookStats,
   OrderDeskResponse,
+  DispositionResponse,
   PaperTrade,
   PaperTradeCreatePayload,
   PaperTradePatch,
@@ -64,6 +66,8 @@ import type {
   SolarSystemInfo,
   StationAIChatRequest,
   StationAIChatResponse,
+  StationAIModelsRequest,
+  StationAIModelsResponse,
   StationAIStreamMessage,
   StationCacheMeta,
   StationCommandResponse,
@@ -669,6 +673,26 @@ export async function getOrderBookStats(limit = 10): Promise<OrderBookStats> {
   const qs = qp.toString();
   const res = await apiFetch(`${BASE}/api/orderbook/stats${qs ? `?${qs}` : ""}`);
   return handleResponse<OrderBookStats>(res);
+}
+
+// Archiving is on, but narrow: scans record only the types the owner deals in,
+// at most one snapshot per market every 30 minutes, swept after a week. The
+// switch is here for turning it off entirely, which freezes what you have
+// rather than aging it out.
+export async function getOrderBookRecording(): Promise<OrderBookRecordingSettings> {
+  const res = await apiFetch(`${BASE}/api/orderbook/recording`);
+  return handleResponse<OrderBookRecordingSettings>(res);
+}
+
+export async function setOrderBookRecording(
+  enabled: boolean,
+): Promise<OrderBookRecordingSettings> {
+  const res = await apiFetch(`${BASE}/api/orderbook/recording`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+  return handleResponse<OrderBookRecordingSettings>(res);
 }
 
 export async function cleanupOrderBook(params: {
@@ -1741,6 +1765,22 @@ export async function stationAIChat(
   return handleResponse<StationAIChatResponse>(res);
 }
 
+export async function listStationAIModels(
+  payload: StationAIModelsRequest,
+): Promise<StationAIModelsResponse> {
+  const res = await apiFetch(`${BASE}/api/auth/station/ai/models`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await handleResponse<StationAIModelsResponse>(res);
+  return {
+    provider: data.provider ?? payload.provider,
+    base_url: data.base_url ?? "",
+    models: Array.isArray(data.models) ? data.models : [],
+  };
+}
+
 export async function stationAIChatStream(
   payload: StationAIChatRequest,
   handlers: {
@@ -2111,7 +2151,39 @@ export interface OrderDeskParams {
   salesTax?: number;
   brokerFee?: number;
   targetEtaDays?: number;
+  minMarginPct?: number;
   characterId?: CharacterScope;
+  /** Skip the shared cache and refill it. For an explicit user refresh. */
+  force?: boolean;
+}
+
+// The order desk is the most expensive authenticated endpoint in the app: it
+// pulls every character's orders, then fans out an ESI order book AND price
+// history per (region, type) pair. Several seconds is normal.
+//
+// Two independent components want it — the Orders tab and the always-mounted
+// OrdersPill in the top bar — and both used to refetch on every window focus.
+// Alt-tabbing back from EVE therefore cost two full fetches, repeatedly,
+// while the user was in the middle of repricing.
+//
+// This cache fixes that without either component knowing the other exists:
+// identical requests inside the TTL share one response, and concurrent calls
+// coalesce onto a single in-flight promise instead of racing. Components
+// still apply their own refresh interval on top; this is the floor, not the
+// policy.
+const ORDER_DESK_CACHE_TTL_MS = 60_000;
+
+interface OrderDeskCacheEntry {
+  at: number;
+  promise: Promise<OrderDeskResponse>;
+}
+
+const orderDeskCache = new Map<string, OrderDeskCacheEntry>();
+
+/** Drop every cached order desk response. Call after anything that changes
+ *  which characters are authorized, so a stale roster cannot linger. */
+export function invalidateOrderDeskCache(): void {
+  orderDeskCache.clear();
 }
 
 export async function getOrderDesk(params?: OrderDeskParams): Promise<OrderDeskResponse> {
@@ -2119,10 +2191,51 @@ export async function getOrderDesk(params?: OrderDeskParams): Promise<OrderDeskR
   if (params?.salesTax != null) qp.set("sales_tax", String(params.salesTax));
   if (params?.brokerFee != null) qp.set("broker_fee", String(params.brokerFee));
   if (params?.targetEtaDays != null) qp.set("target_eta_days", String(params.targetEtaDays));
+  if (params?.minMarginPct != null) qp.set("min_margin_pct", String(params.minMarginPct));
   appendCharacterScope(qp, params?.characterId);
   const qs = qp.toString();
-  const res = await apiFetch(`${BASE}/api/auth/orders/desk${qs ? `?${qs}` : ""}`);
-  return handleResponse<OrderDeskResponse>(res);
+
+  const cached = orderDeskCache.get(qs);
+  if (!params?.force && cached && Date.now() - cached.at < ORDER_DESK_CACHE_TTL_MS) {
+    return cached.promise;
+  }
+
+  const promise = (async () => {
+    const res = await apiFetch(`${BASE}/api/auth/orders/desk${qs ? `?${qs}` : ""}`);
+    return handleResponse<OrderDeskResponse>(res);
+  })();
+
+  // Cached before it settles so concurrent callers join this request rather
+  // than starting their own. A rejection must not be served to the next
+  // caller as though it were a result, so failures evict themselves.
+  orderDeskCache.set(qs, { at: Date.now(), promise });
+  promise.catch(() => {
+    if (orderDeskCache.get(qs)?.promise === promise) orderDeskCache.delete(qs);
+  });
+
+  return promise;
+}
+
+/** Prices cutting, holding and moving one underwater sell order.
+ *
+ *  Deliberately uncached and never called on the desk load: it costs up to
+ *  four extra region fetches plus a full FIFO journal pass server-side, so
+ *  it runs only when a row is actually expanded. The caller caches the
+ *  result per order id for the life of the view. */
+export async function getOrderDisposition(
+  orderId: number,
+  params?: OrderDeskParams,
+): Promise<DispositionResponse> {
+  const qp = new URLSearchParams();
+  qp.set("order_id", String(orderId));
+  if (params?.salesTax != null) qp.set("sales_tax", String(params.salesTax));
+  if (params?.brokerFee != null) qp.set("broker_fee", String(params.brokerFee));
+  if (params?.targetEtaDays != null) qp.set("target_eta_days", String(params.targetEtaDays));
+  if (params?.minMarginPct != null) qp.set("min_margin_pct", String(params.minMarginPct));
+  appendCharacterScope(qp, params?.characterId);
+
+  const res = await apiFetch(`${BASE}/api/auth/orders/desk/disposition?${qp.toString()}`);
+  return handleResponse<DispositionResponse>(res);
 }
 
 export interface StationCommandParams {

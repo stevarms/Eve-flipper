@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { deleteAuthCharacter, getAuthStatus, getDesktopLoginUrl, getLoginUrl, getWebLoginUrl, logout as apiLogout, selectAuthCharacter } from "./api";
+import { deleteAuthCharacter, getAuthStatus, getDesktopLoginUrl, getLoginUrl, getWebLoginUrl, invalidateOrderDeskCache, logout as apiLogout, selectAuthCharacter } from "./api";
 import { trackClientTelemetry } from "./telemetry";
 import type { AuthStatus } from "./types";
 
@@ -75,18 +75,25 @@ export function useAuth(): UseAuthReturn {
     };
   }, []);
 
+  // The order desk is cached per query string for a minute (see api.ts), and
+  // "all characters" is one of those query strings. Anything that changes the
+  // roster has to drop that cache or the Orders tab keeps listing a character
+  // who is no longer signed in.
   const handleLogout = useCallback(async () => {
     await apiLogout();
+    invalidateOrderDeskCache();
     setAuthStatus({ logged_in: false, characters: [] });
   }, []);
 
   const handleSelectCharacter = useCallback(async (characterId: number) => {
     const status = await selectAuthCharacter(characterId);
+    invalidateOrderDeskCache();
     setAuthStatus(normalizeAuthStatus(status));
   }, []);
 
   const handleDeleteCharacter = useCallback(async (characterId: number) => {
     const status = await deleteAuthCharacter(characterId);
+    invalidateOrderDeskCache();
     setAuthStatus(normalizeAuthStatus(status));
   }, []);
 

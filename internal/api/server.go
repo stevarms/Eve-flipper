@@ -277,6 +277,7 @@ type stationAIHistoryMessage struct {
 
 type stationAIChatRequestPayload struct {
 	Provider      string                    `json:"provider"`
+	BaseURL       string                    `json:"base_url"`
 	APIKey        string                    `json:"api_key"`
 	Model         string                    `json:"model"`
 	PlannerModel  string                    `json:"planner_model"`
@@ -727,6 +728,8 @@ func NewServer(cfg *config.Config, esiClient *esi.Client, database *db.DB, ssoCo
 	if s.wikiRAG != nil && stationAIWikiRAGAutoStartEnabled() {
 		s.wikiRAG.Start(defaultStationAIWikiRepo)
 	}
+	s.applyOrderBookRecording()
+	s.startOrderBookRetention()
 	return s
 }
 
@@ -901,6 +904,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/orderbook/coverage", s.handleOrderBookCoverage)
 	mux.HandleFunc("GET /api/orderbook/stats", s.handleOrderBookStats)
 	mux.HandleFunc("POST /api/orderbook/cleanup", s.handleOrderBookCleanup)
+	mux.HandleFunc("GET /api/orderbook/recording", s.handleOrderBookRecording)
+	mux.HandleFunc("POST /api/orderbook/recording", s.handleOrderBookRecording)
 	mux.HandleFunc("GET /api/orderbook/snapshots", s.handleOrderBookSnapshots)
 	mux.HandleFunc("GET /api/orderbook/snapshots/{snapshotID}/levels", s.handleOrderBookLevels)
 	mux.HandleFunc("POST /api/route/find", s.handleRouteFind)
@@ -942,6 +947,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/auth/positions", s.handleAuthPositions)
 	mux.HandleFunc("POST /api/auth/positions", s.handleAuthPositionSave)
 	mux.HandleFunc("DELETE /api/auth/positions/{id}", s.handleAuthPositionDelete)
+	mux.HandleFunc("GET /api/auth/orders/desk/disposition", s.handleAuthOrderDisposition)
 	mux.HandleFunc("GET /api/auth/station/trade-states", s.handleAuthGetStationTradeStates)
 	mux.HandleFunc("POST /api/auth/station/trade-states/set", s.handleAuthSetStationTradeState)
 	mux.HandleFunc("POST /api/auth/station/trade-states/delete", s.handleAuthDeleteStationTradeStates)
@@ -1002,6 +1008,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auth/station/command", s.handleAuthStationCommand)
 	mux.HandleFunc("POST /api/auth/station/ai/chat", s.handleAuthStationAIChat)
 	mux.HandleFunc("POST /api/auth/station/ai/chat/stream", s.handleAuthStationAIChatStream)
+	mux.HandleFunc("POST /api/auth/station/ai/models", s.handleAuthStationAIModels)
 	mux.HandleFunc("GET /api/auth/ledger", s.handleAuthLedger)
 	mux.HandleFunc("GET /api/auth/portfolio", s.handleAuthPortfolio)
 	mux.HandleFunc("GET /api/auth/portfolio/optimize", s.handleAuthPortfolioOptimize)
@@ -6618,6 +6625,10 @@ func (s *Server) handleAuthRebalanceIndustryProjectMaterials(w http.ResponseWrit
 // counters without threading four returns through every call site.
 type recalcRemainingCompute struct {
 	requiredByType map[int32]int64
+	// producedByType is what the project's own unfinished jobs will yield.
+	// A component built in-project is a build obligation, not a purchase, so
+	// this is what keeps it off the procurement list.
+	producedByType map[int32]int64
 	typeNames      map[int32]string
 	unfinishedJobs int
 	skippedJobs    int
@@ -6643,6 +6654,7 @@ func computeRecalcRemainingRequirements(
 ) recalcRemainingCompute {
 	out := recalcRemainingCompute{
 		requiredByType: make(map[int32]int64),
+		producedByType: make(map[int32]int64),
 		typeNames:      make(map[int32]string),
 	}
 	if sdeData == nil || sdeData.Industry == nil {
@@ -6745,6 +6757,24 @@ func computeRecalcRemainingRequirements(
 		// which is the direction we'd rather err in.
 		mats := engine.CalculateActivityMaterialsExported(bp, activity, runs, constraintME, 0, 0)
 		out.unfinishedJobs++
+
+		// Credit this job's output. Only manufacturing and reactions produce
+		// things that appear in another job's material bill; copy, invention
+		// and research yield blueprints, which are never BOM lines, so
+		// counting them here could only ever cancel out a requirement that
+		// does not exist.
+		switch strings.ToLower(activity) {
+		case "manufacturing", "reaction":
+			if perRun, _ := engine.BlueprintOutputPerRunExported(bp, task.ProductTypeID, activity); perRun > 0 {
+				out.producedByType[task.ProductTypeID] += int64(perRun) * int64(runs)
+				if _, seen := out.typeNames[task.ProductTypeID]; !seen {
+					if t, ok := sdeData.Types[task.ProductTypeID]; ok {
+						out.typeNames[task.ProductTypeID] = strings.TrimSpace(t.Name)
+					}
+				}
+			}
+		}
+
 		for _, mat := range mats {
 			if mat.TypeID <= 0 || mat.Quantity <= 0 {
 				continue
@@ -6758,6 +6788,70 @@ func computeRecalcRemainingRequirements(
 		}
 	}
 	return out
+}
+
+// assembleRecalcRemainingDiffs turns the recalc walk's three tallies into the
+// sorted diff rows the modal renders.
+//
+// The order the credits are applied in is the whole point. A component the
+// project builds itself is covered by its own job, so the build credit comes
+// off the requirement BEFORE stock and before anything is called missing.
+// Without that, a T2 plan reports every intermediate as something to go buy —
+// it is never in the hangar, because the plan is what creates it — and the
+// modal's multibuy paste asks you to buy the components you are about to
+// manufacture. Where the project builds only part of what it needs, the
+// remainder still falls through to stock and then to the buy list.
+//
+// Pure so the credit order is testable without the asset fetch and auth
+// scaffolding around it.
+func assembleRecalcRemainingDiffs(
+	requiredByType map[int32]int64,
+	producedByType map[int32]int64,
+	assetsByType map[int32]int64,
+	typeNames map[int32]string,
+) []db.IndustryMaterialDiff {
+	diffs := make([]db.IndustryMaterialDiff, 0, len(requiredByType))
+	for typeID, required := range requiredByType {
+		build := producedByType[typeID]
+		if build > required {
+			build = required
+		}
+		if build < 0 {
+			build = 0
+		}
+		// What the hangar or the market still has to supply.
+		toSource := required - build
+		available := assetsByType[typeID]
+		if available > toSource {
+			available = toSource
+		}
+		if available < 0 {
+			available = 0
+		}
+		missing := toSource - available
+		if missing < 0 {
+			missing = 0
+		}
+		diffs = append(diffs, db.IndustryMaterialDiff{
+			TypeID:       typeID,
+			TypeName:     typeNames[typeID],
+			RequiredQty:  required,
+			AvailableQty: available,
+			BuyQty:       missing,
+			BuildQty:     build,
+			MissingQty:   missing,
+		})
+	}
+	sort.SliceStable(diffs, func(i, j int) bool {
+		if diffs[i].MissingQty != diffs[j].MissingQty {
+			return diffs[i].MissingQty > diffs[j].MissingQty
+		}
+		if diffs[i].RequiredQty != diffs[j].RequiredQty {
+			return diffs[i].RequiredQty > diffs[j].RequiredQty
+		}
+		return diffs[i].TypeID < diffs[j].TypeID
+	})
+	return diffs
 }
 
 // handleAuthRecalcRemainingIndustryProjectMaterials recomputes material
@@ -6836,6 +6930,7 @@ func (s *Server) handleAuthRecalcRemainingIndustryProjectMaterials(w http.Respon
 
 	compute := computeRecalcRemainingRequirements(snapshot, sdeData, includedStatuses)
 	requiredByType := compute.requiredByType
+	producedByType := compute.producedByType
 	typeNames := compute.typeNames
 	unfinishedJobs := compute.unfinishedJobs
 	skippedJobs := compute.skippedJobs
@@ -7000,36 +7095,7 @@ func (s *Server) handleAuthRecalcRemainingIndustryProjectMaterials(w http.Respon
 		}
 	}
 
-	// Assemble diff rows.
-	diffs := make([]db.IndustryMaterialDiff, 0, len(requiredByType))
-	for typeID, required := range requiredByType {
-		available := assetsByType[typeID]
-		if available > required {
-			available = required
-		}
-		missing := required - available
-		if missing < 0 {
-			missing = 0
-		}
-		diffs = append(diffs, db.IndustryMaterialDiff{
-			TypeID:       typeID,
-			TypeName:     typeNames[typeID],
-			RequiredQty:  required,
-			AvailableQty: available,
-			BuyQty:       missing,
-			BuildQty:     0,
-			MissingQty:   missing,
-		})
-	}
-	sort.SliceStable(diffs, func(i, j int) bool {
-		if diffs[i].MissingQty != diffs[j].MissingQty {
-			return diffs[i].MissingQty > diffs[j].MissingQty
-		}
-		if diffs[i].RequiredQty != diffs[j].RequiredQty {
-			return diffs[i].RequiredQty > diffs[j].RequiredQty
-		}
-		return diffs[i].TypeID < diffs[j].TypeID
-	})
+	diffs := assembleRecalcRemainingDiffs(requiredByType, producedByType, assetsByType, typeNames)
 
 	resp := map[string]interface{}{
 		"ok":        true,
@@ -8379,6 +8445,12 @@ func (s *Server) handleAuthOrderDesk(w http.ResponseWriter, r *http.Request) {
 			targetETADays = f
 		}
 	}
+	minMarginPct := 3.0
+	if v := r.URL.Query().Get("min_margin_pct"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 && f <= 100 {
+			minMarginPct = f
+		}
+	}
 
 	var orders []esi.CharacterOrder
 	// Remember which order belongs to which session so the response can
@@ -8420,6 +8492,7 @@ func (s *Server) handleAuthOrderDesk(w http.ResponseWriter, r *http.Request) {
 			BrokerFeePercent: brokerFee,
 			TargetETADays:    targetETADays,
 			WarnExpiryDays:   2,
+			MinMarginPercent: minMarginPct,
 		}))
 		return
 	}
@@ -8460,6 +8533,17 @@ func (s *Server) handleAuthOrderDesk(w http.ResponseWriter, r *http.Request) {
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 10)
+
+	// The FIFO trade journal is the only source that knows what held stock
+	// actually cost, which is the one thing the book cannot tell us about a
+	// sell order. Run it against the book fan-out rather than after it, so
+	// a cold journal cache costs no extra wall-clock.
+	var costBasisByType map[int32]float64
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		costBasisByType = s.orderDeskCostBasisByType(userID)
+	}()
 
 	for pair := range pairs {
 		wg.Add(1)
@@ -8510,6 +8594,8 @@ func (s *Server) handleAuthOrderDesk(w http.ResponseWriter, r *http.Request) {
 		BrokerFeePercent: brokerFee,
 		TargetETADays:    targetETADays,
 		WarnExpiryDays:   2,
+		MinMarginPercent: minMarginPct,
+		CostBasisByType:  costBasisByType,
 	})
 	// Stamp owner tags for multi-character views (Orders tab). Always
 	// populate — single-character requests just repeat the same identity
@@ -9020,11 +9106,14 @@ func normalizeStationAIChatRequest(req *stationAIChatRequestPayload) (bool, bool
 	if req.Provider == "" {
 		req.Provider = "openrouter"
 	}
-	if req.Provider != "openrouter" {
+	spec, specOK := stationAIProviderSpecByID(req.Provider)
+	if !specOK {
 		return false, false, nil, "unsupported ai provider"
 	}
+	req.BaseURL = strings.TrimSpace(req.BaseURL)
 	req.APIKey = strings.TrimSpace(req.APIKey)
-	if req.APIKey == "" {
+	// Local providers (Ollama, LM Studio, ...) usually accept any key, or none at all.
+	if spec.RequiresAPIKey && req.APIKey == "" {
 		return false, false, nil, "api_key is required"
 	}
 	req.Model = strings.TrimSpace(req.Model)
@@ -9570,7 +9659,11 @@ func stationAIPipelineMeta(req stationAIChatRequestPayload, plan stationAIPlanne
 	}
 }
 
-func (s *Server) stationAIResolvePlan(ctx context.Context, req stationAIChatRequestPayload) (stationAIPlannerPlan, bool, []string) {
+func (s *Server) stationAIResolvePlan(
+	ctx context.Context,
+	req stationAIChatRequestPayload,
+	target stationAIProviderTarget,
+) (stationAIPlannerPlan, bool, []string) {
 	intent := detectStationAIIntent(req.UserMessage, req.History)
 	plan := stationAIDefaultPlannerPlan(intent)
 	if stationAINeedsWikiContext(intent, req.UserMessage) {
@@ -9583,11 +9676,16 @@ func (s *Server) stationAIResolvePlan(ctx context.Context, req stationAIChatRequ
 	if !plannerEnabled {
 		return plan, false, nil
 	}
-	planned, warnings := s.stationAIPlannerPass(ctx, req, plan)
+	planned, warnings := s.stationAIPlannerPass(ctx, req, target, plan)
 	return planned, true, warnings
 }
 
-func (s *Server) stationAIPlannerPass(ctx context.Context, req stationAIChatRequestPayload, fallback stationAIPlannerPlan) (stationAIPlannerPlan, []string) {
+func (s *Server) stationAIPlannerPass(
+	ctx context.Context,
+	req stationAIChatRequestPayload,
+	target stationAIProviderTarget,
+	fallback stationAIPlannerPlan,
+) (stationAIPlannerPlan, []string) {
 	model := stationAIResolvePlannerModel(req)
 
 	payload := map[string]interface{}{
@@ -9616,18 +9714,15 @@ func (s *Server) stationAIPlannerPass(ctx context.Context, req stationAIChatRequ
 	httpReq, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
-		"https://openrouter.ai/api/v1/chat/completions",
+		target.ChatURL,
 		bytes.NewReader(body),
 	)
 	if err != nil {
 		return fallback, []string{"planner: failed to create planner request"}
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+req.APIKey)
-	httpReq.Header.Set("HTTP-Referer", "http://localhost:1420")
-	httpReq.Header.Set("X-Title", "EVE Flipper Station AI Planner")
+	stationAIApplyProviderHeaders(httpReq, target, "EVE Flipper Station AI Planner")
 
-	client := &http.Client{Timeout: 35 * time.Second}
+	client := stationAIHTTPClient(target, target.PlannerTimeout)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return fallback, []string{"planner unavailable, using fallback intent routing"}
@@ -10055,9 +10150,10 @@ func readBodyWithLimit(r io.Reader, maxBytes int64) ([]byte, error) {
 	return body, nil
 }
 
-func (s *Server) stationAIOpenRouterChatOnce(
+func (s *Server) stationAIProviderChatOnce(
 	ctx context.Context,
 	req stationAIChatRequestPayload,
+	target stationAIProviderTarget,
 	messages []map[string]string,
 ) (stationAIProviderReply, error) {
 	payload := map[string]interface{}{
@@ -10074,18 +10170,15 @@ func (s *Server) stationAIOpenRouterChatOnce(
 	httpReq, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
-		"https://openrouter.ai/api/v1/chat/completions",
+		target.ChatURL,
 		bytes.NewReader(body),
 	)
 	if err != nil {
 		return stationAIProviderReply{}, fmt.Errorf("failed to create ai request: %w", err)
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+req.APIKey)
-	httpReq.Header.Set("HTTP-Referer", "http://localhost:1420")
-	httpReq.Header.Set("X-Title", "EVE Flipper Station AI")
+	stationAIApplyProviderHeaders(httpReq, target, "EVE Flipper Station AI")
 
-	client := &http.Client{Timeout: 90 * time.Second}
+	client := stationAIHTTPClient(target, target.ChatTimeout)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return stationAIProviderReply{}, fmt.Errorf("ai provider request failed: %w", err)
@@ -10154,8 +10247,13 @@ func (s *Server) handleAuthStationAIChat(w http.ResponseWriter, r *http.Request)
 		writeError(w, 400, validationErr)
 		return
 	}
+	target, providerErr := s.stationAIResolveProviderTarget(req.Provider, req.BaseURL, req.APIKey)
+	if providerErr != "" {
+		writeError(w, 400, providerErr)
+		return
+	}
 
-	plan, plannerEnabled, plannerWarnings := s.stationAIResolvePlan(r.Context(), req)
+	plan, plannerEnabled, plannerWarnings := s.stationAIResolvePlan(r.Context(), req, target)
 	warnings = append(warnings, plannerWarnings...)
 	intent := plan.Intent
 	useWiki := enableWiki && intent != stationAIIntentSmallTalk
@@ -10268,7 +10366,7 @@ func (s *Server) handleAuthStationAIChat(w http.ResponseWriter, r *http.Request)
 	}
 	messages := buildStationAIMessages(systemPrompt, req.History, userPrompt)
 
-	reply, err := s.stationAIOpenRouterChatOnce(r.Context(), req, messages)
+	reply, err := s.stationAIProviderChatOnce(r.Context(), req, target, messages)
 	if err != nil {
 		writeError(w, 502, err.Error())
 		return
@@ -10282,7 +10380,7 @@ func (s *Server) handleAuthStationAIChat(w http.ResponseWriter, r *http.Request)
 			map[string]string{"role": "assistant", "content": reply.Answer},
 			map[string]string{"role": "user", "content": stationAIRetryCorrectionPrompt(req.Locale, issue)},
 		)
-		retryReply, retryErr := s.stationAIOpenRouterChatOnce(r.Context(), req, retryMessages)
+		retryReply, retryErr := s.stationAIProviderChatOnce(r.Context(), req, target, retryMessages)
 		if retryErr != nil {
 			warnings = append(warnings, "retry failed: "+retryErr.Error())
 		} else if validRetry, retryIssue := stationAIValidateAnswer(retryReply.Answer, intent); validRetry {
@@ -11056,7 +11154,12 @@ func (s *Server) handleAuthStationAIChatStream(w http.ResponseWriter, r *http.Re
 		writeErr(validationErr)
 		return
 	}
-	plan, plannerEnabled, plannerWarnings := s.stationAIResolvePlan(r.Context(), req)
+	target, providerErr := s.stationAIResolveProviderTarget(req.Provider, req.BaseURL, req.APIKey)
+	if providerErr != "" {
+		writeErr(providerErr)
+		return
+	}
+	plan, plannerEnabled, plannerWarnings := s.stationAIResolvePlan(r.Context(), req, target)
 	warnings = append(warnings, plannerWarnings...)
 	intent := plan.Intent
 	useWiki := enableWiki && intent != stationAIIntentSmallTalk
@@ -11083,14 +11186,14 @@ func (s *Server) handleAuthStationAIChatStream(w http.ResponseWriter, r *http.Re
 
 	prepareMsg := "Preparing context..."
 	plannerMsg := "Planner pass complete"
-	sendMsg := "Sending request to OpenRouter..."
+	sendMsg := "Sending request to " + stationAIProviderLabel(target) + "..."
 	streamMsg := "Streaming model output..."
 	retryMsg := "Final answer failed validation, retrying..."
 	doneMsg := "Done"
 	if req.Locale == "ru" {
 		prepareMsg = "Подготавливаю контекст..."
 		plannerMsg = "Планировщик определил режим ответа"
-		sendMsg = "Отправляю запрос в OpenRouter..."
+		sendMsg = "Отправляю запрос в " + stationAIProviderLabel(target) + "..."
 		streamMsg = "Получаю ответ модели..."
 		retryMsg = "Финальный ответ не прошел валидацию, выполняю retry..."
 		doneMsg = "Готово"
@@ -11226,10 +11329,12 @@ func (s *Server) handleAuthStationAIChatStream(w http.ResponseWriter, r *http.Re
 		"temperature": req.Temperature,
 		"max_tokens":  req.MaxTokens,
 		"stream":      true,
-		"stream_options": map[string]bool{
-			"include_usage": true,
-		},
-		"messages": messages,
+		"messages":    messages,
+	}
+	// Not every OpenAI-compatible server accepts stream_options; some reject the whole
+	// request over it. Local providers fall back to the token estimates instead.
+	if target.Spec.SendStreamUsage {
+		payload["stream_options"] = map[string]bool{"include_usage": true}
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -11240,19 +11345,16 @@ func (s *Server) handleAuthStationAIChatStream(w http.ResponseWriter, r *http.Re
 	httpReq, err := http.NewRequestWithContext(
 		r.Context(),
 		http.MethodPost,
-		"https://openrouter.ai/api/v1/chat/completions",
+		target.ChatURL,
 		bytes.NewReader(body),
 	)
 	if err != nil {
 		writeErr("failed to create ai request")
 		return
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+req.APIKey)
-	httpReq.Header.Set("HTTP-Referer", "http://localhost:1420")
-	httpReq.Header.Set("X-Title", "EVE Flipper Station AI")
+	stationAIApplyProviderHeaders(httpReq, target, "EVE Flipper Station AI")
 
-	client := &http.Client{Timeout: stationAIStreamHTTPTimeout}
+	client := stationAIHTTPClient(target, stationAIStreamHTTPTimeout)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		writeErr("ai provider request failed: " + err.Error())
@@ -11443,7 +11545,7 @@ func (s *Server) handleAuthStationAIChatStream(w http.ResponseWriter, r *http.Re
 			map[string]string{"role": "assistant", "content": answer},
 			map[string]string{"role": "user", "content": stationAIRetryCorrectionPrompt(req.Locale, issue)},
 		)
-		retryReply, retryErr := s.stationAIOpenRouterChatOnce(r.Context(), req, retryMessages)
+		retryReply, retryErr := s.stationAIProviderChatOnce(r.Context(), req, target, retryMessages)
 		if retryErr != nil {
 			warnings = append(warnings, "retry failed: "+retryErr.Error())
 		} else if validRetry, retryIssue := stationAIValidateAnswer(retryReply.Answer, intent); validRetry {

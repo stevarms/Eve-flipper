@@ -67,8 +67,12 @@ const ROW: OrderDeskOrder = {
   queue_ahead_qty: 9000,
   top_price_qty: 3000,
   avg_daily_volume: 120000,
+  sell_side_share: 0.5,
+  station_flow_share: 0.3,
   estimated_fill_per_day: 250,
-  eta_days: 1.6,
+  days_to_clear_queue: 36,
+  flow_basis: "weekday",
+  eta_days: 37.6,
   issued_at: "2026-08-01T12:00:00Z",
   expires_at: "2026-09-30T12:00:00Z",
   days_to_expire: 27,
@@ -79,6 +83,10 @@ const ROW: OrderDeskOrder = {
   relist_fee_isk: 22,
   net_relist_gain_isk: -3,
   warn_unprofitable_relist: true,
+  cost_basis_isk: 4.8,
+  margin_unit_isk: 0.3,
+  margin_percent: 6.25,
+  margin_basis: "cost_basis",
 };
 
 /**

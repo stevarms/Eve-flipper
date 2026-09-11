@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -45,6 +46,13 @@ type Client struct {
 	typeInfoCache sync.Map     // int32 -> UniverseTypeInfo (L1 in-memory)
 	orderCache    *OrderCache  // region order cache with ETag/Expires
 	orderRecorder MarketOrderRecorder
+	// Master switch for order-book archiving, off until something turns it
+	// on. Recording a Forge-wide book costs a ~400k-row SQLite write and
+	// the heap to stage it, and the archive only feeds the Backtest tab's
+	// "recorded orderbook" mode — so installs that never open that tab
+	// should not be paying for it. Persisted by the api layer and applied
+	// at startup; atomic because scans flip through here concurrently.
+	orderRecordingOn atomic.Bool
 	// Bounded slot pool for the fire-and-forget goroutines that persist
 	// order-book snapshots to SQLite. Each in-flight snapshot pins its
 	// full Orders slice (up to ~28 MB for a Forge-wide fetch) alive until
@@ -178,7 +186,28 @@ func (c *Client) marketOrderRecorder() MarketOrderRecorder {
 	return recorder
 }
 
+// SetMarketOrderRecordingEnabled turns order-book archiving on or off at
+// runtime. Off is the default; see the orderRecordingOn field.
+func (c *Client) SetMarketOrderRecordingEnabled(enabled bool) {
+	if c == nil {
+		return
+	}
+	c.orderRecordingOn.Store(enabled)
+}
+
+// MarketOrderRecordingEnabled reports whether order-book archiving is on.
+// False when no recorder was ever attached, regardless of the switch.
+func (c *Client) MarketOrderRecordingEnabled() bool {
+	if c == nil {
+		return false
+	}
+	return c.orderRecordingOn.Load() && c.marketOrderRecorder() != nil
+}
+
 func (c *Client) recordMarketOrderSnapshot(snapshot MarketOrderSnapshot) {
+	if !c.orderRecordingOn.Load() {
+		return
+	}
 	recorder := c.marketOrderRecorder()
 	if recorder == nil || len(snapshot.Orders) == 0 {
 		return

@@ -267,6 +267,16 @@ var hubRegionPriority = map[int32]int{
 	10000030: 4, // Heimatar (Rens)
 }
 
+// regionFetchSem bounds how many region order books are in flight at once,
+// across every stream and every concurrent scan in the process. A region book
+// is fetched page-by-page with every page held in memory until the last one
+// lands, so The Forge alone peaks at a few hundred MB. Unbounded, a multi-region
+// scan launched three streams at once (sell, buy, sell-side sell) and let all of
+// them fan out over every region simultaneously — which is how a scan turned
+// into tens of gigabytes of resident memory. Four is the same width route.go
+// already uses for the same fetch.
+var regionFetchSem = make(chan struct{}, 4)
+
 // fetchOrdersStream starts fetching orders for all regions concurrently and
 // streams batches of filtered orders through the returned channel.
 // Hub regions are launched first so the pipeline starts building maps from
@@ -303,6 +313,9 @@ func (s *Scanner) fetchOrdersStream(
 		wg.Add(1)
 		go func(rid int32) {
 			defer wg.Done()
+			regionFetchSem <- struct{}{}
+			defer func() { <-regionFetchSem }()
+
 			orders, err := s.ESI.FetchRegionOrders(rid, orderType)
 			if err != nil {
 				return

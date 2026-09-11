@@ -9,13 +9,31 @@ import (
 	"testing"
 	"time"
 
+	"eve-flipper/internal/config"
 	"eve-flipper/internal/db"
 	"eve-flipper/internal/engine"
 	"eve-flipper/internal/esi"
 )
 
+// seedOrderBookInterest marks types as ones the owner deals in, so the
+// archive's interest filter lets their books through. A fresh test DB has no
+// trading history at all, and the filter correctly reads that as "nothing
+// worth archiving" — so without this every RecordMarketOrderSnapshot below is
+// a silent no-op.
+func seedOrderBookInterest(t *testing.T, database *db.DB, typeIDs ...int32) {
+	t.Helper()
+	for _, typeID := range typeIDs {
+		if !database.AddWatchlistItem(config.WatchlistItem{TypeID: typeID, TypeName: "test"}) {
+			t.Fatalf("seed interest for type %d", typeID)
+		}
+	}
+	db.InvalidateOrderBookInterest()
+	t.Cleanup(db.InvalidateOrderBookInterest)
+}
+
 func TestOrderBookSnapshotHandlers(t *testing.T) {
 	database := openAPITestDB(t)
+	seedOrderBookInterest(t, database, 34, 35, 200)
 	if err := database.RecordMarketOrderSnapshot(esi.MarketOrderSnapshot{
 		RegionID:   10000002,
 		OrderType:  "all",
@@ -70,6 +88,7 @@ func TestOrderBookSnapshotHandlers(t *testing.T) {
 
 func TestBacktestFlipsRecordedOrderbook(t *testing.T) {
 	database := openAPITestDB(t)
+	seedOrderBookInterest(t, database, 34, 35, 200)
 	now := time.Now().UTC().Add(-time.Hour)
 	if err := database.RecordMarketOrderSnapshot(esi.MarketOrderSnapshot{
 		RegionID:   1,
@@ -138,6 +157,7 @@ func TestBacktestFlipsRecordedOrderbook(t *testing.T) {
 
 func TestOrderBookCoverageHandler(t *testing.T) {
 	database := openAPITestDB(t)
+	seedOrderBookInterest(t, database, 34, 35, 200)
 	now := time.Now().UTC().Add(-time.Hour)
 	if err := database.RecordMarketOrderSnapshot(esi.MarketOrderSnapshot{
 		RegionID:   1,
@@ -199,6 +219,7 @@ func TestOrderBookCoverageHandler(t *testing.T) {
 
 func TestOrderBookMaintenanceHandlers(t *testing.T) {
 	database := openAPITestDB(t)
+	seedOrderBookInterest(t, database, 34, 35, 200)
 	now := time.Now().UTC()
 	if err := database.RecordMarketOrderSnapshot(esi.MarketOrderSnapshot{
 		RegionID:   10000002,
@@ -299,6 +320,9 @@ func TestOrderBookMaintenanceHandlers(t *testing.T) {
 
 func TestOrderBookCleanupHandlerUsesBatchedCleanupOptions(t *testing.T) {
 	database := openAPITestDB(t)
+	seedOrderBookInterest(t, database, 34, 35, 200)
+
+	seedOrderBookInterest(t, database, 100, 101, 102, 103)
 
 	old := time.Now().UTC().AddDate(0, 0, -90)
 	for i := 0; i < 4; i++ {
@@ -351,5 +375,71 @@ func TestOrderBookCleanupHandlerUsesBatchedCleanupOptions(t *testing.T) {
 	}
 	if cleanup.LevelsDeleted != cleanup.SnapshotsDeleted {
 		t.Fatalf("cleanup levels = %#v, want one level per snapshot", cleanup)
+	}
+}
+
+func TestOrderBookRecordingHandlerRoundTripsAndPushesToESI(t *testing.T) {
+	// The switch has to reach two places: the DB, so it survives a restart,
+	// and the live ESI client, so the very next scan honours it. Persisting
+	// only one of the two is the failure mode that looks fine in the UI and
+	// keeps writing gigabytes anyway.
+	database := openAPITestDB(t)
+	seedOrderBookInterest(t, database, 34, 35, 200)
+	client := esi.NewClient(database)
+	srv := &Server{db: database, esi: client}
+	handler := srv.Handler()
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/orderbook/recording", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Enabled       bool `json:"enabled"`
+		RetentionDays int  `json:"retention_days"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&out); err != nil {
+		t.Fatalf("decode get: %v", err)
+	}
+	if out.Enabled {
+		t.Fatal("recording defaulted to on")
+	}
+	if out.RetentionDays != orderBookRetentionDays {
+		t.Fatalf("retention_days=%d, want %d", out.RetentionDays, orderBookRetentionDays)
+	}
+
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/orderbook/recording", bytes.NewReader([]byte(`{"enabled":true}`)))
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("post status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&out); err != nil {
+		t.Fatalf("decode post: %v", err)
+	}
+	if !out.Enabled {
+		t.Fatal("post did not report recording on")
+	}
+	if !client.MarketOrderRecordingEnabled() {
+		t.Fatal("switch did not reach the live ESI client")
+	}
+	if !database.OrderBookRecordingEnabled() {
+		t.Fatal("switch was not persisted")
+	}
+
+	// A fresh Server over the same DB is what a restart looks like.
+	restarted := &Server{db: database, esi: esi.NewClient(database)}
+	if !restarted.applyOrderBookRecording() {
+		t.Fatal("recording did not survive a restart")
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/orderbook/recording", bytes.NewReader([]byte(`{"enabled":false}`)))
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("post off status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if client.MarketOrderRecordingEnabled() || database.OrderBookRecordingEnabled() {
+		t.Fatal("switching off did not stick")
 	}
 }

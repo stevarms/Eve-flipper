@@ -701,17 +701,37 @@ export function applyCoverageToIndustryPlanPatch(
   const nextMaterials: IndustryMaterialPlanInput[] = (patch.materials ?? []).map((m) => {
     const required = Math.max(0, Math.ceil(m.required_qty ?? 0));
     const rawAvailable = availByType.get(m.type_id) ?? 0;
+    // build_qty is the part another task in THIS project produces, so it is
+    // not something the market has to supply. Subtract it before consulting
+    // the stockpile: a built component is never on the shelf and never will
+    // be, so a plain required-minus-available rule turns every intermediate
+    // back into a purchase and the shopping list tells you to buy the
+    // components you are about to build.
+    const build = Math.max(0, Math.ceil(m.build_qty ?? 0));
+    const buyObligation = Math.max(0, required - build);
     // Store raw stockpile count, not the clamped "usable" amount — showing
     // "have 3" when the user actually has 500 datacores is confusing.
-    // buy_qty is still safe because max(0, required - rawAvailable) clamps
-    // negatives to zero, so overshoots don't turn into negative purchases.
-    const buy = Math.max(0, required - rawAvailable);
+    // buy_qty is still safe because max(0, ...) clamps negatives to zero, so
+    // overshoots don't turn into negative purchases.
+    const buy = Math.max(0, buyObligation - rawAvailable);
+    let source: IndustryMaterialPlanInput["source"];
+    if (buy > 0) {
+      source = "market";
+    } else if (buyObligation > 0) {
+      source = "stock";
+    } else if (build > 0) {
+      source = "build";
+    } else {
+      // Nothing to source either way — leave whatever the builder decided
+      // rather than inventing a coverage claim for a zero-quantity row.
+      source = m.source;
+    }
     return {
       ...m,
       required_qty: required,
       available_qty: rawAvailable,
       buy_qty: buy,
-      source: buy > 0 ? ("market" as const) : ("stock" as const),
+      source,
     };
   });
 

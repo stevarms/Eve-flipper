@@ -4,12 +4,13 @@ import type {
   ScanParams,
   StationAIChatContext,
   StationAIHistoryMessage,
+  StationAIProvider,
   StationAIScanSnapshot,
   StationAIUsage,
   StationCommandRow,
   StationTrade,
 } from "@/lib/types";
-import { getHostedAccess, stationAIChatStream } from "@/lib/api";
+import { getHostedAccess, listStationAIModels, stationAIChatStream } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 import { useGlobalToast } from "./Toast";
 
@@ -88,7 +89,9 @@ function buildHistoryForRequest(messages: ChatMessage[]): StationAIHistoryMessag
 }
 
 type StationAIConfig = {
-  provider: "openrouter";
+  provider: StationAIProvider;
+  /** Per-provider base URLs, so switching providers doesn't clobber the others. */
+  baseUrls: Record<StationAIProvider, string>;
   apiKey: string;
   model: string;
   useCustomModel: boolean;
@@ -99,6 +102,35 @@ type StationAIConfig = {
   enableWebResearch: boolean;
   wikiRepo: string;
 };
+
+type StationAIProviderOption = {
+  id: StationAIProvider;
+  label: string;
+  /** Runs on the user's own machine — needs a base URL, no API key. */
+  local: boolean;
+  defaultBaseUrl: string;
+};
+
+// Mirrors stationAIProviderSpecs in internal/api/station_ai_provider.go.
+const AI_PROVIDERS: StationAIProviderOption[] = [
+  { id: "openrouter", label: "OpenRouter", local: false, defaultBaseUrl: "" },
+  { id: "ollama", label: "Ollama", local: true, defaultBaseUrl: "http://127.0.0.1:11434/v1" },
+  { id: "lmstudio", label: "LM Studio", local: true, defaultBaseUrl: "http://127.0.0.1:1234/v1" },
+  { id: "unsloth", label: "Unsloth Studio", local: true, defaultBaseUrl: "http://127.0.0.1:8000/v1" },
+  { id: "openai_compatible", label: "OpenAI-compatible", local: true, defaultBaseUrl: "" },
+];
+
+function aiProviderOption(id: StationAIProvider): StationAIProviderOption {
+  return AI_PROVIDERS.find((p) => p.id === id) ?? AI_PROVIDERS[0];
+}
+
+const DEFAULT_BASE_URLS = AI_PROVIDERS.reduce(
+  (acc, p) => {
+    acc[p.id] = p.defaultBaseUrl;
+    return acc;
+  },
+  {} as Record<StationAIProvider, string>,
+);
 
 interface Props {
   params: ScanParams;
@@ -120,6 +152,7 @@ const OPENROUTER_MODELS = [
 
 const DEFAULT_CONFIG: StationAIConfig = {
   provider: "openrouter",
+  baseUrls: { ...DEFAULT_BASE_URLS },
   apiKey: "",
   model: OPENROUTER_MODELS[0],
   useCustomModel: false,
@@ -208,7 +241,11 @@ function loadAIConfig(): StationAIConfig {
     return {
       ...DEFAULT_CONFIG,
       ...parsed,
-      provider: "openrouter",
+      provider: AI_PROVIDERS.some((p) => p.id === parsed.provider)
+        ? (parsed.provider as StationAIProvider)
+        : DEFAULT_CONFIG.provider,
+      // Backfill so configs stored before local providers existed still get defaults.
+      baseUrls: { ...DEFAULT_BASE_URLS, ...(parsed.baseUrls ?? {}) },
       temperature: Number.isFinite(parsed.temperature)
         ? Math.max(0, Math.min(2, Number(parsed.temperature)))
         : DEFAULT_CONFIG.temperature,
@@ -945,6 +982,9 @@ export function StationAIAssistant({
   const [thinking, setThinking] = useState(false);
   const [input, setInput] = useState("");
   const [cfg, setCfg] = useState<StationAIConfig>(loadAIConfig);
+  const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState<string | null>(null);
   const [nextPromptWiki, setNextPromptWiki] = useState<boolean>(
     DEFAULT_CONFIG.enableWikiContext,
   );
@@ -989,6 +1029,51 @@ export function StationAIAssistant({
         : cfg.model.trim(),
     [cfg.customModel, cfg.model, cfg.useCustomModel],
   );
+
+  const providerOption = useMemo(() => aiProviderOption(cfg.provider), [cfg.provider]);
+  const providerBaseUrl = useMemo(
+    () => (cfg.baseUrls[cfg.provider] ?? providerOption.defaultBaseUrl).trim(),
+    [cfg.baseUrls, cfg.provider, providerOption.defaultBaseUrl],
+  );
+  // Local providers are reached from the backend process, which on a hosted deployment
+  // is somebody else's machine.
+  const localProvidersBlocked = hostedAccess?.hosted === true;
+  const modelOptions = useMemo(
+    () => (discoveredModels.length > 0 ? discoveredModels : providerOption.local ? [] : OPENROUTER_MODELS),
+    [discoveredModels, providerOption.local],
+  );
+
+  // Discovered models belong to whichever provider/endpoint they came from.
+  useEffect(() => {
+    setDiscoveredModels([]);
+    setModelsError(null);
+  }, [cfg.provider, providerBaseUrl]);
+
+  const refreshModels = useCallback(async () => {
+    setModelsLoading(true);
+    setModelsError(null);
+    try {
+      const res = await listStationAIModels({
+        provider: cfg.provider,
+        base_url: providerBaseUrl || undefined,
+        api_key: cfg.apiKey.trim() || undefined,
+      });
+      setDiscoveredModels(res.models);
+      if (res.models.length === 0) {
+        setModelsError(t("aiModelsEmpty"));
+        return;
+      }
+      // Keep the current selection if the server still serves it.
+      setCfg((prev) =>
+        res.models.includes(prev.model) ? prev : { ...prev, model: res.models[0] },
+      );
+    } catch (err) {
+      setDiscoveredModels([]);
+      setModelsError(err instanceof Error ? err.message : t("aiModelsFailed"));
+    } finally {
+      setModelsLoading(false);
+    }
+  }, [cfg.apiKey, cfg.provider, providerBaseUrl, t]);
 
   const createSession = useCallback(
     (seedTitle?: string) => {
@@ -1482,9 +1567,15 @@ export function StationAIAssistant({
       refreshHostedAccess();
       return;
     }
-    if (!cfg.apiKey.trim()) {
+    // Local providers accept any key, or none at all — only OpenRouter needs one.
+    if (!providerOption.local && !cfg.apiKey.trim()) {
       setConfigOpen(true);
       addToast(t("aiErrorNoKey"), "error", 2800);
+      return;
+    }
+    if (providerOption.local && !providerBaseUrl) {
+      setConfigOpen(true);
+      addToast(t("aiErrorNoBaseUrl"), "error", 2800);
       return;
     }
     if (!effectiveModel) {
@@ -1544,7 +1635,8 @@ export function StationAIAssistant({
     try {
       const res = await stationAIChatStream(
         {
-          provider: "openrouter",
+          provider: cfg.provider,
+          base_url: providerOption.local ? providerBaseUrl : undefined,
           api_key: cfg.apiKey.trim(),
           model: effectiveModel,
           temperature: cfg.temperature,
@@ -2150,25 +2242,74 @@ export function StationAIAssistant({
             <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
               <label className="text-xs text-eve-dim">
                 <span className="block mb-1">{t("aiProvider")}</span>
-                <input
-                  value="OpenRouter"
-                  disabled
-                  className="w-full h-8 rounded-sm border border-eve-border bg-eve-dark px-2 text-eve-dim"
-                />
+                <select
+                  value={cfg.provider}
+                  onChange={(e) =>
+                    setCfg((prev) => ({ ...prev, provider: e.target.value as StationAIProvider }))
+                  }
+                  className="w-full h-8 rounded-sm border border-eve-border bg-eve-input px-2 text-eve-text"
+                >
+                  {AI_PROVIDERS.map((p) => (
+                    <option key={p.id} value={p.id} disabled={p.local && localProvidersBlocked}>
+                      {p.label}
+                    </option>
+                  ))}
+                </select>
               </label>
 
               <label className="text-xs text-eve-dim sm:col-span-2">
-                <span className="block mb-1">{t("aiApiKey")}</span>
+                <span className="block mb-1">
+                  {providerOption.local ? t("aiApiKeyOptional") : t("aiApiKey")}
+                </span>
                 <input
                   type="password"
                   value={cfg.apiKey}
                   onChange={(e) =>
                     setCfg((prev) => ({ ...prev, apiKey: e.target.value }))
                   }
-                  placeholder="sk-or-..."
+                  placeholder={providerOption.local ? t("aiApiKeyLocalPlaceholder") : "sk-or-..."}
                   className="w-full h-8 rounded-sm border border-eve-border bg-eve-input px-2 text-eve-text"
                 />
               </label>
+
+              {providerOption.local && (
+                <div className="text-xs text-eve-dim sm:col-span-2">
+                  <div className="flex items-end gap-2">
+                    <label className="flex-1">
+                      <span className="block mb-1">{t("aiBaseUrl")}</span>
+                      <input
+                        value={cfg.baseUrls[cfg.provider] ?? ""}
+                        onChange={(e) =>
+                          setCfg((prev) => ({
+                            ...prev,
+                            baseUrls: { ...prev.baseUrls, [prev.provider]: e.target.value },
+                          }))
+                        }
+                        placeholder={providerOption.defaultBaseUrl || "http://127.0.0.1:8000/v1"}
+                        className="w-full h-8 rounded-sm border border-eve-border bg-eve-input px-2 text-eve-text"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={refreshModels}
+                      disabled={modelsLoading || localProvidersBlocked || !providerBaseUrl}
+                      className="h-8 shrink-0 px-3 rounded-sm border border-eve-border/60 text-eve-dim hover:text-eve-accent hover:border-eve-accent/50 transition-colors disabled:opacity-40 disabled:hover:text-eve-dim disabled:hover:border-eve-border/60"
+                    >
+                      {modelsLoading ? t("aiModelsLoading") : t("aiRefreshModels")}
+                    </button>
+                  </div>
+                  <p className="mt-1 text-[11px] text-eve-dim/80">{t("aiBaseUrlHint")}</p>
+                  {localProvidersBlocked && (
+                    <p className="mt-1 text-[11px] text-eve-warning">{t("aiLocalProviderHostedDisabled")}</p>
+                  )}
+                  {modelsError && <p className="mt-1 text-[11px] text-eve-error">{modelsError}</p>}
+                  {!modelsError && discoveredModels.length > 0 && (
+                    <p className="mt-1 text-[11px] text-eve-accent">
+                      {t("aiModelsLoaded")}: {discoveredModels.length}
+                    </p>
+                  )}
+                </div>
+              )}
 
               <label className="text-xs text-eve-dim">
                 <span className="block mb-1">{t("aiModel")}</span>
@@ -2177,13 +2318,18 @@ export function StationAIAssistant({
                   onChange={(e) =>
                     setCfg((prev) => ({ ...prev, model: e.target.value }))
                   }
-                  className="w-full h-8 rounded-sm border border-eve-border bg-eve-input px-2 text-eve-text"
+                  disabled={modelOptions.length === 0}
+                  className="w-full h-8 rounded-sm border border-eve-border bg-eve-input px-2 text-eve-text disabled:opacity-40"
                 >
-                  {OPENROUTER_MODELS.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
+                  {modelOptions.length === 0 ? (
+                    <option value="">{t("aiModelsNone")}</option>
+                  ) : (
+                    modelOptions.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))
+                  )}
                 </select>
               </label>
 
@@ -2194,7 +2340,7 @@ export function StationAIAssistant({
                   onChange={(e) =>
                     setCfg((prev) => ({ ...prev, customModel: e.target.value }))
                   }
-                  placeholder="provider/model"
+                  placeholder={providerOption.local ? "llama3.1:8b" : "provider/model"}
                   className="w-full h-8 rounded-sm border border-eve-border bg-eve-input px-2 text-eve-text"
                 />
               </label>

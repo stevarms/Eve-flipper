@@ -17,6 +17,21 @@ import (
 
 var orderbookRecordMu sync.Mutex
 
+// orderBookMinRecordInterval is how long a scope (source + region + order type
+// + type + location) stays "already archived" after a snapshot lands. ESI
+// order books expire every five minutes, so without this a session spent
+// scanning writes twelve full region snapshots an hour — each one ~400k rows
+// for The Forge. Backtests replay on a much coarser grid than that, so the
+// extra samples cost gigabytes and buy nothing. A skipped snapshot still
+// refreshes last_seen_at, so coverage reporting stays truthful.
+const orderBookMinRecordInterval = 30 * time.Minute
+
+// orderBookInsertBatch is how many level rows go into one INSERT. SQLite
+// allows 999 bound variables by default and a level is 9 columns, so 100 rows
+// (900 variables) is the largest safe batch. Batching is what keeps a Forge
+// snapshot's transaction from staging 400k separate statements on the heap.
+const orderBookInsertBatch = 100
+
 type OrderBookSnapshotMeta struct {
 	ID                  int64  `json:"id"`
 	Source              string `json:"source"`
@@ -174,15 +189,33 @@ func utcRFC3339(t time.Time) string {
 	return t.UTC().Format(time.RFC3339)
 }
 
-func buildOrderBookLevels(snapshot esi.MarketOrderSnapshot) ([]orderbookLevelAgg, int, int) {
-	levelsByKey := make(map[orderbookLevelKey]*orderbookLevelAgg)
+// buildOrderBookLevels aggregates a book into price levels, keeping only types
+// in `interest`. A nil interest set keeps everything — callers that mean "keep
+// nothing" pass an empty set and are expected to check it first.
+//
+// Returns the levels, the number of orders that survived the filter, and the
+// unique type and location counts of what survived. The order count is what was
+// kept rather than what arrived, so the stored snapshot metadata describes the
+// book we actually have instead of the one we saw and threw away.
+func buildOrderBookLevels(snapshot esi.MarketOrderSnapshot, interest map[int32]bool) ([]orderbookLevelAgg, int, int, int) {
+	// Values, not pointers: a region-wide book has ~400k distinct levels, and
+	// one heap object per level is 400k allocations the GC then has to trace.
+	levelsByKey := make(map[orderbookLevelKey]orderbookLevelAgg)
 	typeSet := make(map[int32]bool)
 	locationSet := make(map[int64]bool)
+	keptOrders := 0
 
 	for _, order := range snapshot.Orders {
 		if order.TypeID <= 0 || order.VolumeRemain <= 0 || order.Price <= 0 || math.IsNaN(order.Price) || math.IsInf(order.Price, 0) {
 			continue
 		}
+		// The filter goes here, before any allocation: skipping a type this
+		// early is what keeps a region-wide book from ever being staged in
+		// memory at full width.
+		if interest != nil && !interest[order.TypeID] {
+			continue
+		}
+		keptOrders++
 		side := "sell"
 		if order.IsBuyOrder {
 			side = "buy"
@@ -199,12 +232,10 @@ func buildOrderBookLevels(snapshot esi.MarketOrderSnapshot) ([]orderbookLevelAgg
 			price:      order.Price,
 		}
 		level := levelsByKey[key]
-		if level == nil {
-			level = &orderbookLevelAgg{key: key}
-			levelsByKey[key] = level
-		}
+		level.key = key
 		level.volumeRemain += int64(order.VolumeRemain)
 		level.orderCount++
+		levelsByKey[key] = level
 		typeSet[order.TypeID] = true
 		if locationID > 0 {
 			locationSet[locationID] = true
@@ -214,7 +245,7 @@ func buildOrderBookLevels(snapshot esi.MarketOrderSnapshot) ([]orderbookLevelAgg
 	levels := make([]orderbookLevelAgg, 0, len(levelsByKey))
 	for _, level := range levelsByKey {
 		if level.volumeRemain > 0 && level.orderCount > 0 {
-			levels = append(levels, *level)
+			levels = append(levels, level)
 		}
 	}
 	sort.Slice(levels, func(i, j int) bool {
@@ -234,7 +265,7 @@ func buildOrderBookLevels(snapshot esi.MarketOrderSnapshot) ([]orderbookLevelAgg
 		return a.price < b.price
 	})
 
-	return levels, len(typeSet), len(locationSet)
+	return levels, keptOrders, len(typeSet), len(locationSet)
 }
 
 func hashOrderBookLevels(snapshot esi.MarketOrderSnapshot, levels []orderbookLevelAgg) string {
@@ -279,17 +310,43 @@ func (d *DB) RecordMarketOrderSnapshot(snapshot esi.MarketOrderSnapshot) error {
 	expiresAtStr := utcRFC3339(snapshot.ExpiresAt)
 	etag := strings.TrimSpace(snapshot.ETag)
 
-	levels, uniqueTypes, uniqueLocations := buildOrderBookLevels(snapshot)
+	// Cheap exit first. Aggregating a region-wide book allocates hundreds of
+	// thousands of levels, so the cooldown has to be checked before that work
+	// happens, not after.
+	orderbookRecordMu.Lock()
+	defer orderbookRecordMu.Unlock()
+
+	recent, recentID, err := d.recentOrderBookSnapshot(source, snapshot.RegionID, orderType, snapshot.TypeID, snapshot.LocationID, capturedAt)
+	if err != nil {
+		return err
+	}
+	if recent {
+		_, err := d.sql.Exec(`
+			UPDATE orderbook_snapshots
+			   SET last_seen_at = ?,
+			       expires_at = ?,
+			       etag = CASE WHEN ? != '' THEN ? ELSE etag END
+			 WHERE id = ?
+		`, capturedAtStr, expiresAtStr, etag, etag, recentID)
+		return err
+	}
+
+	// Only types the owner actually deals in. An empty set means we cannot yet
+	// tell what those are, and archiving a whole region on that basis is the
+	// behaviour this filter exists to prevent — so we archive nothing and wait.
+	interest := d.OrderBookInterestTypes()
+	if len(interest) == 0 {
+		return nil
+	}
+
+	levels, keptOrders, uniqueTypes, uniqueLocations := buildOrderBookLevels(snapshot, interest)
 	if len(levels) == 0 {
 		return nil
 	}
 	hash := hashOrderBookLevels(snapshot, levels)
 
-	orderbookRecordMu.Lock()
-	defer orderbookRecordMu.Unlock()
-
 	var existingID int64
-	err := d.sql.QueryRow(`
+	err = d.sql.QueryRow(`
 		SELECT id
 		  FROM orderbook_snapshots
 		 WHERE source = ?
@@ -329,7 +386,7 @@ func (d *DB) RecordMarketOrderSnapshot(snapshot esi.MarketOrderSnapshot) error {
 	`,
 		source, snapshot.RegionID, orderType, snapshot.TypeID, snapshot.LocationID,
 		etag, hash, capturedAtStr, capturedAtStr, expiresAtStr,
-		len(snapshot.Orders), len(levels), uniqueTypes, uniqueLocations,
+		keptOrders, len(levels), uniqueTypes, uniqueLocations,
 	)
 	if err != nil {
 		return err
@@ -339,32 +396,8 @@ func (d *DB) RecordMarketOrderSnapshot(snapshot esi.MarketOrderSnapshot) error {
 		return err
 	}
 
-	stmt, err := tx.Prepare(`
-		INSERT INTO orderbook_levels (
-			snapshot_id, region_id, type_id, location_id, system_id, side,
-			price, volume_remain, order_count
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`)
-	if err != nil {
+	if err := insertOrderBookLevels(tx, snapshotID, snapshot.RegionID, levels); err != nil {
 		return err
-	}
-	defer stmt.Close()
-
-	for _, level := range levels {
-		key := level.key
-		if _, err := stmt.Exec(
-			snapshotID,
-			snapshot.RegionID,
-			key.typeID,
-			key.locationID,
-			key.systemID,
-			key.side,
-			key.price,
-			level.volumeRemain,
-			level.orderCount,
-		); err != nil {
-			return err
-		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -372,6 +405,85 @@ func (d *DB) RecordMarketOrderSnapshot(snapshot esi.MarketOrderSnapshot) error {
 	}
 	d.invalidateOrderBookStatsCache()
 	return nil
+}
+
+// recentOrderBookSnapshot reports whether this scope was archived inside the
+// cooldown window, and the id of the snapshot that claims it. Callers use that
+// id to refresh last_seen_at rather than writing a near-duplicate book.
+func (d *DB) recentOrderBookSnapshot(source string, regionID int32, orderType string, typeID int32, locationID int64, now time.Time) (bool, int64, error) {
+	if orderBookMinRecordInterval <= 0 {
+		return false, 0, nil
+	}
+	cutoff := utcRFC3339(now.Add(-orderBookMinRecordInterval))
+	var id int64
+	err := d.sql.QueryRow(`
+		SELECT id
+		  FROM orderbook_snapshots
+		 WHERE source = ?
+		   AND region_id = ?
+		   AND order_type = ?
+		   AND type_id = ?
+		   AND location_id = ?
+		   AND captured_at >= ?
+		 ORDER BY captured_at DESC
+		 LIMIT 1
+	`, source, regionID, orderType, typeID, locationID, cutoff).Scan(&id)
+	switch {
+	case err == sql.ErrNoRows:
+		return false, 0, nil
+	case err != nil:
+		return false, 0, err
+	}
+	return true, id, nil
+}
+
+// insertOrderBookLevels writes levels in multi-row batches. One statement per
+// level would be ~400k round trips through the driver for a region-wide book,
+// all staged in a single uncommitted WAL transaction.
+func insertOrderBookLevels(tx *sql.Tx, snapshotID int64, regionID int32, levels []orderbookLevelAgg) error {
+	const cols = 9
+	const rowPlaceholder = "(?, ?, ?, ?, ?, ?, ?, ?, ?)"
+	const insertPrefix = `INSERT INTO orderbook_levels (
+			snapshot_id, region_id, type_id, location_id, system_id, side,
+			price, volume_remain, order_count
+		) VALUES `
+
+	args := make([]any, 0, orderBookInsertBatch*cols)
+	var sb strings.Builder
+
+	flush := func(rows int) error {
+		if rows == 0 {
+			return nil
+		}
+		sb.Reset()
+		sb.WriteString(insertPrefix)
+		for i := 0; i < rows; i++ {
+			if i > 0 {
+				sb.WriteByte(',')
+			}
+			sb.WriteString(rowPlaceholder)
+		}
+		_, err := tx.Exec(sb.String(), args...)
+		args = args[:0]
+		return err
+	}
+
+	rows := 0
+	for _, level := range levels {
+		key := level.key
+		args = append(args,
+			snapshotID, regionID, key.typeID, key.locationID, key.systemID,
+			key.side, key.price, level.volumeRemain, level.orderCount,
+		)
+		rows++
+		if rows == orderBookInsertBatch {
+			if err := flush(rows); err != nil {
+				return err
+			}
+			rows = 0
+		}
+	}
+	return flush(rows)
 }
 
 func scanOrderBookSnapshot(scanner interface{ Scan(dest ...any) error }) (OrderBookSnapshotMeta, error) {

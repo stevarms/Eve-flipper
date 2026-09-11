@@ -1641,7 +1641,7 @@ export const ru = {
 
     // Orders tab
     tabOrders: "Orders",
-    ordersEmpty: "Нет ордеров под текущий фильтр.",
+    ordersEmpty: "Нет активных ордеров.",
     ordersNoAuth: "Войдите EVE-персонажем, чтобы увидеть активные ордера.",
     ordersLoading: "Загрузка ордеров…",
     ordersRefresh: "Обновить",
@@ -1657,6 +1657,7 @@ export const ru = {
     ordersKpiTotal: "Всего ордеров",
     ordersKpiReprice: "Reprice",
     ordersKpiCancel: "Cancel",
+    ordersKpiReview: "Review",
     ordersKpiNotional: "Notional",
     ordersKpiCharacters: "Персонажей",
     ordersColOwner: "Char",
@@ -1667,6 +1668,7 @@ export const ru = {
     ordersColBest: "Best",
     ordersColPosition: "Pos",
     ordersColEta: "ETA",
+    ordersColMargin: "Margin",
     ordersColExpiry: "Expires",
     ordersSortLabel: "Sort",
     ordersDrawerGroupPricing: "Prices",
@@ -1692,12 +1694,102 @@ export const ru = {
     ordersDrawerFilled: "{qty} filled so far",
     ordersDrawerNetNotional: "Net notional",
     ordersDrawerIssued: "Placed",
+    ordersColValue: "Стоимость",
+    ordersColValueHint:
+      "Цена × остаток объёма — сколько ордер стоит на рынке прямо сейчас. Сортируйте по нему, чтобы сначала переставить самые весомые ордера.",
+    ordersColValueNet: "{isk} ISK после комиссий · остаток {qty}",
+    ordersSortHint:
+      "Клик — сортировка по колонке, повторный клик — обратный порядок. Shift+клик добавляет колонку вторым или третьим уровнем: Item, затем Action группирует требующие внимания ордера внутри каждого предмета.",
+    ordersSortStackLabel: "Сортировка",
+    ordersSortStackHint: "shift+клик по заголовку добавляет уровень",
+    ordersSortRemoveLayer: "Убрать этот уровень сортировки",
+    ordersTargetEta: "Целевой ETA",
+    ordersTargetEtaHint:
+      "За сколько дней ордер должен уйти, прежде чем считать его медленным. Тем же значением задаётся порог глубины: если впереди больше половины этого времени, ордер помечается как закопанный.",
+    ordersEtaBreakdown:
+      "Региональный объём {regional}/день считает обе стороны рынка. Примерно {side}% приходится на вашу сторону, из них {station}% торгуется на этой станции — то есть мимо ордера проходит около {perDay}/день ({basis}). {queue}д на разбор глубины впереди, {total}д всего.",
+    ordersEtaUnknownHint: "Нет истории цен по предмету — оценивать не из чего.",
+    ordersColMarginHint:
+      "Стоит ли ещё исполнять этот ордер после налога и комиссии. Buy-ордер считается против цены перепродажи на этой станции, sell-ордер — против реальной себестоимости товара. Сортировка поднимает убыточные наверх.",
+    ordersMarginBuyBreakdown:
+      "Перепродажа по {exit} — на шаг ниже лучшего ask на этой станции — минус {fees}% налога и комиссии даёт {net}. Против вашего bid {bid} это {margin} за штуку, {pct}%. Комиссия за размещение не учтена: отмена ордера её не вернёт.",
+    ordersMarginSellBreakdown:
+      "Продажа по {price} минус {fees}% налога и комиссии даёт {net}. Себестоимость {cost} за штуку, итого {margin} за штуку, {pct}%.",
+    ordersMarginNoneBuyHint:
+      "На этой станции никто не продаёт этот предмет — нет цены перепродажи для расчёта.",
+    ordersMarginNoneSellHint:
+      "Нет себестоимости по этому предмету. Синхронизируйте кошелёк во вкладке Trade Journal.",
+    ordersThinMarginHint: "Маржа положительная, но ниже вашего порога {floor}%.",
+    ordersMinMargin: "Мин. маржа",
+    ordersMinMarginHint:
+      "Ниже этого значения маржа помечается как тонкая. На рекомендацию это не влияет: только реально отрицательная маржа меняет её — cancel для buy-ордера и review для sell-ордера, где ISK уже потрачен.",
+    ordersFlowBasisWeekday: "с учётом дня недели",
+    ordersFlowBasisFlat: "плоское недельное среднее — истории мало для профиля по дням",
+    ordersSectionSell: "Ордера на продажу",
+    ordersSectionBuy: "Ордера на покупку",
+    ordersSectionSummary: "{count} ордеров · {isk} ISK",
+    ordersSectionNeedsAction: "⚠ {count}",
+    ordersAutoRefresh: "Автообновление",
+    ordersAutoRefreshHint:
+      "Как часто перезапрашивается стакан. Каждое обновление занимает несколько секунд, поэтому длинный интервал не даёт таблице дёргаться во время работы. Кнопка Refresh обновляет сразу.",
+    ordersAutoRefreshOff: "Выкл",
+    ordersAutoRefreshMinutes: "{n} мин",
+    ordersUpdatedAgo: "обновлено {ago} назад",
+    ordersUpdatedJustNow: "обновлено только что",
+    ordersFeesFromEsi:
+      "Взято из навыков Accounting и Broker Relations персонажа {char}. Можно перебить вручную на эту сессию.",
+    ordersFeesNoEsi:
+      "Не удалось прочитать навыки из ESI — это значения по умолчанию, а не ваши реальные ставки. Исправьте вручную или нажмите ↻.",
+    ordersFeesResyncHint: "Перечитать налог с продаж и брокерскую комиссию из навыков ESI.",
     ordersOpenMarketHint:
       "Открыть окно маркета в EVE клиенте и скопировать рекомендованную цену в буфер обмена (ESI open-window scope). Требует запущенного клиента с тем же персонажем.",
+    ordersCopyNameHint:
+      "Скопировать название предмета в буфер обмена. Резерв, если 🎮 не открыл окно маркета — вставьте название в поиск маркета в клиенте.",
+    // Disposition panel — три плана, оценённые на один горизонт.
+    ordersDispositionExpandHint:
+      "Сравнить cut, hold и move для этой позиции. Запрашивает рынки других хабов, поэтому занимает секунду.",
+    ordersDispositionLoading: "Считаем cut, hold и move…",
+    ordersDispositionFailed: "Не удалось оценить позицию: {error}",
+    ordersDispositionPosition: "{qty} шт. по {cost} = {total}",
+    ordersDispositionHeld: "с {date}",
+    ordersDispositionHorizon: "горизонт {days}д",
+    ordersDispositionHorizonHint:
+      "Все планы оцениваются на одну и ту же будущую дату — её задаёт самый медленный план. Без общей даты план мог бы выиграть просто потому, что он дольше.",
+    ordersDispositionHurdle: "ставка {pct}%/день",
+    ordersDispositionHurdleHint:
+      "Сколько, как предполагается, заработает освобождённый ISK в другом месте: ваша мин. маржа, растянутая на целевой ETA. Увеличьте Target ETA — ставка упадёт, и медленный план сможет обогнать быстрый.",
+    ordersDispositionVenues: "оценено рынков: {priced}, пропущено: {skipped}",
+    ordersDispositionNoPlans: "Сравнивать нечего.",
+    ordersDispositionColPlan: "План",
+    ordersDispositionColVenue: "Рынок",
+    ordersDispositionColExit: "Цена выхода",
+    ordersDispositionColNet: "Чистый ISK",
+    ordersDispositionColProfit: "к себест.",
+    ordersDispositionColDays: "Дней",
+    ordersDispositionColTerminal: "На горизонте",
+    ordersDispositionKindCut: "Cut",
+    ordersDispositionKindHold: "Hold",
+    ordersDispositionKindMove: "Move",
+    ordersDispositionKindCutHint:
+      "Продать в лучший bid на этой станции прямо сейчас. Исполнение чужого ордера платит налог с продаж, но не брокерскую комиссию, и ISK свободен сегодня.",
+    ordersDispositionKindHoldHint:
+      "Оставить ордер и ждать возврата цены. Предлагается только если у предмета есть измеренная история возврата из таких же просадок.",
+    ordersDispositionKindMoveHint:
+      "Отвезти на другой рынок и продать там. Чистый ISK уже за вычетом доставки по вашей ставке ISK/m³/прыжок.",
+    ordersDispositionBest: "лучший",
+    ordersDispositionJumps: "· {jumps} прыжков",
+    ordersDispositionNetHint: "{gross} после комиссий, минус {haul} доставки.",
+    ordersDispositionNetHintNoHaul: "{gross} после комиссий.",
+    ordersDispositionTooClose:
+      "Два лучших плана различаются меньше чем на 1%. Это подброс монеты, а не рекомендация — решайте по тому, чего эта таблица не видит.",
+    ordersDispositionNoHold: "Hold не предлагается: {reason}.",
+    ordersDispositionRecovery:
+      "Данные по просадкам: {episodes} сопоставимых просадок за {window}д восстановились, медиана {days}д, цель по тренду {target}.",
+
     ordersPillLabel: "Ордера",
     ordersPillAria: "Открыть Orders",
     ordersPillTooltip:
-      "{total} активных · {reprice} reprice · {cancel} cancel. Клик — открыть Orders.",
+      "{total} активных · {reprice} reprice · {cancel} cancel · {review} review. Клик — открыть Orders.",
 
     // Trade Journal tab
     tabTradeJournal: "Trade Journal",
@@ -2417,6 +2509,7 @@ export const ru = {
     orderDeskActionHold: "Держать",
     orderDeskActionReprice: "Переставить",
     orderDeskActionCancel: "Отменить ордер",
+    orderDeskActionReview: "Разобраться",
 
     // Portfolio Optimizer
     charOptimizerTab: "Оптимизатор",
@@ -2992,13 +3085,25 @@ export const ru = {
     aiSend: "Отправить",
     aiAssistantName: "Имя помощника",
     aiProvider: "Провайдер",
-    aiApiKey: "OpenRouter API ключ",
+    aiApiKey: "API ключ",
+    aiApiKeyOptional: "API ключ (необязательно)",
+    aiApiKeyLocalPlaceholder: "обычно не нужен для локальных серверов",
+    aiBaseUrl: "Base URL",
+    aiBaseUrlHint: "OpenAI-совместимый /v1 эндпоинт на твоей машине или в локальной сети. В Docker/unraid используй http://host.docker.internal:11434/v1 или LAN IP хоста, а не 127.0.0.1.",
+    aiRefreshModels: "Обновить модели",
+    aiModelsLoading: "Загрузка…",
+    aiModelsLoaded: "Моделей найдено",
+    aiModelsEmpty: "Сервер ответил, но не отдаёт ни одной модели.",
+    aiModelsNone: "Моделей нет — обнови или укажи кастомную",
+    aiModelsFailed: "Не удалось достучаться до сервера моделей.",
+    aiErrorNoBaseUrl: "Сначала укажи base URL локального сервера моделей в настройках AI",
+    aiLocalProviderHostedDisabled: "Локальные провайдеры моделей отключены на hosted-развертываниях.",
     aiModel: "Модель",
     aiCustomModel: "Кастомная модель",
     aiUseCustomModel: "Использовать кастомную модель",
     aiTemperature: "Температура",
     aiMaxTokens: "Макс. токенов",
-    aiConfigHint: "API ключ хранится локально в браузере и уходит только в OpenRouter через backend-запрос.",
+    aiConfigHint: "Настройки хранятся локально в браузере. API ключ уходит только выбранному провайдеру через твой backend. С локальным провайдером ничего не покидает машину.",
     aiProgressIdle: "Готов",
     aiProgressPreparing: "Подготовка контекста…",
     aiProgressStreaming: "Потоковый ответ модели…",
@@ -3032,7 +3137,7 @@ export const ru = {
     aiWikiOff: "wiki:выкл",
     aiWebOn: "web:вкл",
     aiWebOff: "web:выкл",
-    aiErrorNoKey: "Сначала добавь OpenRouter API ключ в настройках AI",
+    aiErrorNoKey: "Сначала добавь API ключ провайдера в настройках AI",
     aiErrorNoModel: "Сначала выбери или введи модель",
     aiErrorEmptyAnswer: "AI вернул пустой ответ",
     aiErrorGeneric: "Ошибка запроса к AI",

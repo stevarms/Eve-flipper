@@ -36,56 +36,6 @@ var defaultESIClientID = ""
 var defaultESIClientSecret = ""
 var defaultESICallbackURL = "http://localhost:13370/api/auth/callback"
 
-// loadDotEnv loads environment variables from a local .env file so that
-// double-clicked binaries (without a shell) can still use ESI_* settings.
-// Order of lookup:
-//  1. ./.env (current working directory)
-//  2. <binary-dir>/.env
-//
-// Existing OS env vars are NOT overridden.
-func loadDotEnv() {
-	paths := []string{".env"}
-
-	if exePath, err := os.Executable(); err == nil {
-		if exeDir := filepath.Dir(exePath); exeDir != "" {
-			paths = append(paths, filepath.Join(exeDir, ".env"))
-		}
-	}
-
-	seen := make(map[string]bool)
-
-	for _, p := range paths {
-		if seen[p] {
-			continue
-		}
-		seen[p] = true
-
-		data, err := os.ReadFile(p)
-		if err != nil {
-			continue
-		}
-		lines := strings.Split(string(data), "\n")
-		for _, line := range lines {
-			l := strings.TrimSpace(line)
-			if l == "" || strings.HasPrefix(l, "#") {
-				continue
-			}
-			parts := strings.SplitN(l, "=", 2)
-			if len(parts) != 2 {
-				continue
-			}
-			key := strings.TrimSpace(parts[0])
-			val := strings.TrimSpace(parts[1])
-			if key == "" {
-				continue
-			}
-			if os.Getenv(key) == "" {
-				os.Setenv(key, val)
-			}
-		}
-	}
-}
-
 //go:embed frontend/dist/*
 var frontendFS embed.FS
 

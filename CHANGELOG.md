@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Ivy AI local models
+
+- Ivy AI can now run against a local OpenAI-compatible model server — Ollama,
+  LM Studio, Unsloth Studio / vLLM, or any custom endpoint — instead of
+  OpenRouter. With a local provider selected, no prompt or scan context leaves
+  the machine.
+- Added a provider picker, an editable base URL, and a "Refresh models" button
+  that lists what the local server is actually serving (`POST
+  /api/auth/station/ai/models`). The custom-model field still works as a
+  fallback.
+- The API key is now optional for local providers and OpenRouter-specific
+  request details (attribution headers, `stream_options`) are no longer sent to
+  them. Local requests get much longer timeouts to suit CPU inference.
+- Base URLs are restricted to loopback, RFC1918/ULA and `host.docker.internal`,
+  with every resolved address checked; link-local metadata addresses are
+  refused. Local providers are disabled on hosted deployments unless
+  `STATION_AI_ALLOW_LOCAL_PROVIDERS=1` is set.
+
 ## v1.6.6 - 2026-06-08
 
 This release introduces the local security vault, expands encrypted storage for sensitive local data, and tightens desktop/web API boundaries.

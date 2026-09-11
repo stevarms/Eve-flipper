@@ -317,6 +317,13 @@ export interface OrderBookStats {
   top_locations: OrderBookStatsLocation[];
 }
 
+export interface OrderBookRecordingSettings {
+  enabled: boolean;
+  retention_days: number;
+  /** How many types the archive considers worth keeping. Zero means it is on but storing nothing. */
+  tracked_type_count: number;
+}
+
 export interface OrderBookCleanupPlan {
   keep_days: number;
   cutoff: string;
@@ -1753,6 +1760,9 @@ export interface OrderDeskSummary {
   sell_orders: number;
   needs_reprice: number;
   needs_cancel: number;
+  /** Underwater sell orders: the ISK is already spent, so the panel prices
+   *  cutting, holding and moving rather than the row asserting a verdict. */
+  needs_review: number;
   total_notional: number;
   median_eta_days: number;
   avg_eta_days: number;
@@ -1765,6 +1775,8 @@ export interface OrderDeskSettings {
   broker_fee_percent: number;
   target_eta_days: number;
   warn_expiry_days: number;
+  /** Floor under which a still-positive margin is flagged thin. */
+  min_margin_percent: number;
 }
 
 export interface OrderDeskOrder {
@@ -1790,13 +1802,29 @@ export interface OrderDeskOrder {
   undercut_pct: number;
   queue_ahead_qty: number;
   top_price_qty: number;
+  /** Raw blended ESI daily volume: both sides of the book, whole region. */
   avg_daily_volume: number;
+  /** Fraction of that volume estimated to have executed against sell orders,
+   *  0.10–0.90, or 0.50 when the spread cannot support an estimate. */
+  sell_side_share: number;
+  /** Fraction of the region's competitively-priced depth sitting at this
+   *  station, used as the proxy for how much flow passes through it. */
+  station_flow_share: number;
+  /** avg_daily_volume narrowed by the two shares above and averaged over the
+   *  ETA horizon — the flow that could actually reach this order. */
   estimated_fill_per_day: number;
+  /** Days before the depth ahead clears and this order starts filling. */
+  days_to_clear_queue: number;
+  /** "weekday" when a day-of-week shape was applied, "flat" when history was
+   *  too sparse for one, "none" when there is no flow estimate at all. */
+  flow_basis: "weekday" | "flat" | "none" | string;
   eta_days: number;
+  /** eta_days hit the 90-day ceiling; the real figure is unbounded. */
+  eta_capped?: boolean;
   issued_at: string;
   expires_at: string;
   days_to_expire: number;
-  recommendation: "hold" | "reprice" | "cancel" | string;
+  recommendation: "hold" | "reprice" | "review" | "cancel" | string;
   reason: string;
   // Owner tags stamped by the api-layer aggregator when scope=all so the
   // multi-character Orders tab can group / filter by owning character.
@@ -1808,12 +1836,101 @@ export interface OrderDeskOrder {
   relist_fee_isk?: number;
   net_relist_gain_isk?: number;
   warn_unprofitable_relist?: boolean;
+  // Profitability. margin_basis says which question was answerable for this
+  // row: "book" (a buy order priced against the sell side of its own
+  // station), "cost_basis" (a sell order priced against what the stock
+  // actually cost, from the FIFO trade journal), or "none" when neither
+  // input was available — in which case the margin numbers mean nothing and
+  // the UI must render them as unknown rather than as zero.
+  /** Buy rows: the price we assume we could resell at, an undercut of the
+   *  station's best ask rather than the ask itself. */
+  exit_price?: number;
+  /** Sell rows: average unit cost of the stock currently held. */
+  cost_basis_isk?: number;
+  margin_unit_isk: number;
+  margin_percent: number;
+  margin_basis: "book" | "cost_basis" | "none" | string;
+  /** Positive but under settings.min_margin_percent. A warning only — it
+   *  deliberately does not change the recommendation. */
+  warn_thin_margin?: boolean;
 }
 
 export interface OrderDeskResponse {
   summary: OrderDeskSummary;
   orders: OrderDeskOrder[];
   settings: OrderDeskSettings;
+}
+
+// --- Disposition -----------------------------------------------------
+// Answers the question a "review" row raises: this stock is underwater and
+// the ISK is already spent, so what is it worth to cut, to wait, or to haul
+// somewhere else? Fetched per order, on demand, when a row is expanded.
+
+/** Whether today's price is a dip that has historically come back, or just
+ *  where this item lives now. basis "none" means it could not be told —
+ *  reason says which gate failed, and the hold plan is simply absent. It is
+ *  never degraded into an optimistic guess. */
+export interface RecoveryOutlook {
+  basis: "history" | "none" | string;
+  reason?: string;
+  /** Fitted drift in percent per day. */
+  trend_pct_day: number;
+  /** How far below trend today sits, in residual standard deviations. */
+  z_score: number;
+  target_price: number;
+  /** Empirical median days comparable dips took to return to trend. */
+  median_days: number;
+  episodes: number;
+  window_days: number;
+  samples: number;
+}
+
+/** One priced option. Every ISK figure covers the whole remaining quantity,
+ *  because the decision is about the position rather than a unit of it. */
+export interface DispositionPlan {
+  kind: "cut" | "hold" | "move" | string;
+  recommended: boolean;
+  venue?: string;
+  jumps?: number;
+  exit_price: number;
+  /** Proceeds after fees. Hitting a standing bid pays sales tax only;
+   *  listing pays broker fee too. */
+  gross_isk: number;
+  haul_isk?: number;
+  net_isk: number;
+  /** Net against what the stock cost. Negative on every plan is normal for
+   *  an underwater position — the question is which loses least. */
+  profit_isk: number;
+  days_to_realise: number;
+  /** Net ISK valued at horizon_days, crediting whatever the plan frees
+   *  early at the hurdle rate. This is the column plans are ranked on. */
+  terminal_isk: number;
+  notes?: string[];
+}
+
+export interface DispositionResponse {
+  type_id: number;
+  type_name?: string;
+  qty: number;
+  cost_basis_isk: number;
+  position_isk: number;
+  held_since?: string;
+  unit_volume_m3?: number;
+  /** The common date every plan is valued at: the slowest plan's own
+   *  completion, so a plan that ties ISK up earns no credit. */
+  horizon_days: number;
+  /** Derived from the tab's own settings, not a separate knob:
+   *  min_margin_percent / target_eta_days. */
+  hurdle_pct_day: number;
+  venues_priced: number;
+  venues_skipped: number;
+  recovery: RecoveryOutlook;
+  plans: DispositionPlan[];
+  /** Top two within 1% of each other — the call is a coin flip and the
+   *  panel says so rather than picking a side. */
+  too_close: boolean;
+  /** Set when plans is empty. An empty list is never "nothing to do". */
+  reason?: string;
 }
 
 export type StationCommandAction = "new_entry" | "reprice" | "hold" | "cancel";
@@ -1997,8 +2114,17 @@ export interface StationAIHistoryMessage {
   content: string;
 }
 
+export type StationAIProvider =
+  | "openrouter"
+  | "ollama"
+  | "lmstudio"
+  | "unsloth"
+  | "openai_compatible";
+
 export interface StationAIChatRequest {
-  provider: "openrouter";
+  provider: StationAIProvider;
+  /** OpenAI-compatible `/v1` root for local providers. Ignored for OpenRouter. */
+  base_url?: string;
   api_key: string;
   model: string;
   planner_model?: string;
@@ -2038,6 +2164,18 @@ export interface StationAIUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+}
+
+export interface StationAIModelsRequest {
+  provider: StationAIProvider;
+  base_url?: string;
+  api_key?: string;
+}
+
+export interface StationAIModelsResponse {
+  provider: string;
+  base_url: string;
+  models: string[];
 }
 
 export type StationAIStreamMessage =

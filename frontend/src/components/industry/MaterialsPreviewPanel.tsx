@@ -231,9 +231,13 @@ export function MaterialsPreviewPanel({
                       ? "text-emerald-300"
                       : m.status === "partial"
                         ? "text-amber-300"
-                        : missing > 0
-                          ? "text-red-300"
-                          : "text-eve-dim";
+                        : // Covered by another task in this project: nothing to
+                          // procure, so it reads as handled rather than short.
+                          m.status === "build"
+                          ? "text-sky-300"
+                          : missing > 0
+                            ? "text-red-300"
+                            : "text-eve-dim";
                   return (
                     <tr key={m.type_id} className="border-t border-eve-border/20 hover:bg-eve-accent/5">
                       <td className="px-3 py-1 truncate">{m.type_name || `Type ${m.type_id}`}</td>
