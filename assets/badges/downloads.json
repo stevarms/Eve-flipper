@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
   "repo": "stevarms/Eve-flipper",
-  "generated_at": "2026-09-11T04:47:03.513Z",
-  "latest_release": "v1.10.0",
+  "generated_at": "2026-09-11T19:44:39.828Z",
+  "latest_release": "v1.10.1",
   "total_downloads": 1878,
   "current_github_total": 12,
-  "active_asset_count": 15,
+  "active_asset_count": 18,
   "archived_asset_count": 404,
   "clone_stats": {
     "window": "14d",
@@ -5689,6 +5689,20 @@
       "last_seen_at": "2026-08-29T03:45:00.907Z"
     },
     {
+      "id": "557893859",
+      "name": "eve-flipper-desktop-windows-amd64.exe",
+      "tag_name": "v1.10.1",
+      "release_id": "387293710",
+      "state": "active",
+      "download_count": 0,
+      "github_download_count": 0,
+      "browser_download_url": "https://github.com/stevarms/Eve-flipper/releases/download/v1.10.1/eve-flipper-desktop-windows-amd64.exe",
+      "created_at": "2026-09-11T19:44:26Z",
+      "updated_at": "2026-09-11T19:44:28Z",
+      "first_seen_at": "2026-09-11T19:44:39.828Z",
+      "last_seen_at": "2026-09-11T19:44:39.828Z"
+    },
+    {
       "id": "534442078",
       "name": "eve-flipper-desktop-windows-amd64.exe",
       "tag_name": "v1.10.1",
@@ -5703,6 +5717,20 @@
       "last_seen_at": "2026-08-28T22:53:51.596Z"
     },
     {
+      "id": "557893862",
+      "name": "eve-flipper-web-windows-amd64.exe",
+      "tag_name": "v1.10.1",
+      "release_id": "387293710",
+      "state": "active",
+      "download_count": 0,
+      "github_download_count": 0,
+      "browser_download_url": "https://github.com/stevarms/Eve-flipper/releases/download/v1.10.1/eve-flipper-web-windows-amd64.exe",
+      "created_at": "2026-09-11T19:44:26Z",
+      "updated_at": "2026-09-11T19:44:27Z",
+      "first_seen_at": "2026-09-11T19:44:39.828Z",
+      "last_seen_at": "2026-09-11T19:44:39.828Z"
+    },
+    {
       "id": "534442076",
       "name": "eve-flipper-web-windows-amd64.exe",
       "tag_name": "v1.10.1",
@@ -5715,6 +5743,20 @@
       "updated_at": "2026-08-28T22:53:42Z",
       "first_seen_at": "2026-08-28T22:53:51.596Z",
       "last_seen_at": "2026-08-28T22:53:51.596Z"
+    },
+    {
+      "id": "557893860",
+      "name": "SHA256SUMS.txt",
+      "tag_name": "v1.10.1",
+      "release_id": "387293710",
+      "state": "active",
+      "download_count": 0,
+      "github_download_count": 0,
+      "browser_download_url": "https://github.com/stevarms/Eve-flipper/releases/download/v1.10.1/SHA256SUMS.txt",
+      "created_at": "2026-09-11T19:44:26Z",
+      "updated_at": "2026-09-11T19:44:26Z",
+      "first_seen_at": "2026-09-11T19:44:39.828Z",
+      "last_seen_at": "2026-09-11T19:44:39.828Z"
     },
     {
       "id": "534442075",
