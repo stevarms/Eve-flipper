@@ -1,5 +1,111 @@
 # Changelog
 
+## v1.12.0 - 2026-09-12
+
+Stock you are holding on purpose stops being nagged about, a new scan finds
+items trading at the bottom of their own year, and the backtester can finally
+see further back than the day you switched recording on.
+
+### Assets -> Positions: hold-until-price, and ships you actually fly
+
+- **A target price per item.** Below it, Today will not tell you to list -- the
+  holding moves to a "Waiting on price" summary showing how far it has come and
+  what reaching the target is worth. When the hub gets there, the sell action
+  returns at the top of the queue marked urgent, because a price you waited
+  weeks for can go away.
+- **A reserved quantity.** A count, not a flag: owning six Gnosis and flying two
+  is the normal case, and a flag would make the other four invisible. Every
+  sell-side figure reads the tradeable quantity, so nothing can quietly offer
+  the ships you undock in.
+- Targets can be typed, or suggested from the item's own trailing year as five
+  named percentiles from cheap to peak. A price the item has genuinely traded at
+  a quarter of the time is one it can plausibly reach again; cost-plus-40% is a
+  number about you rather than about the market. Suggestions are refused outright
+  when an item has too little traded history, instead of being computed from
+  three weeks and shown with the same confidence.
+- Rules are keyed by item, so they survive the FIFO engine recomputing your
+  holdings and apply to derived and hand-entered rows alike.
+  `manual_positions.target_price` predates this, only ever reached manual rows,
+  and nothing ever consumed it.
+
+### Trade -> Accumulate (new tab)
+
+A market-wide sweep for items trading near the bottom of their own year. The
+inverse axis to everything else here: Station and Regional Trade look at a
+spread right now, this looks at one price across a year. Nothing else in the app
+asked whether something is cheap *for that item*.
+
+Four gates, and they are the feature, because the naive version of this idea is
+actively harmful -- "cheapest all year" describes a bargain and a dying item
+identically:
+
+- **Liquidity first**, on traded volume rather than what happens to be listed.
+  An annual low on something nobody trades is not an entry, it is a position you
+  cannot exit.
+- **Actually cheap**: bottom quarter of its own year, with a price far below the
+  yearly floor treated as suspect data rather than a gift.
+- **Upside that survives fees**, quoted against the yearly median as the exit.
+  Never the peak -- a recovery thesis that needs a new high is not a recovery.
+- **A track record of recovering.** Whether dips in this item have measurably
+  come back before, and whether the trend itself is falling.
+
+Sizing is capped at a quarter of a week of the item's own turnover, so a
+position cannot become the market. The tab shows what was refused and why,
+prominently: a short list is the normal outcome and has to look like the filters
+working rather than a broken scan. Today carries the top three as a roll-up,
+deliberately outside the action queue -- that queue ranks on seven-day ISK per
+minute of attention, and a hold that pays out over a month has no honest place
+on that scale.
+
+### Fixed: the hold-or-cut verdict depended on cache state
+
+`CalcRecoveryOutlook` fits a 180-day trend to decide whether an underwater order
+is a dip worth waiting out. Its caller read the raw price cache, which holds 90
+days -- but only on a hit: on a miss it fetched from ESI and got the full ~390.
+So the same order could be told to hold or to cut depending on whether some
+other scan had warmed the cache first, and nothing surfaced that it had
+happened. It now always sees the full window.
+
+### Under the hood
+
+- **A year of prices is looked up, not stored.** ESI's history endpoint already
+  serves ~390 days in one call and expires daily, so there was never a reason to
+  keep the rows. They are reduced immediately to about a dozen derived figures
+  and only those are cached -- 335 bytes measured against ~32 KB of rows. The raw
+  cache stays capped at 90 days because the blueprint scanner holds every scanned
+  type's series in memory at once, where a year would take a 5,000-blueprint scan
+  from roughly 36 MB to 160 MB.
+- **Today's refresh no longer queues on one connection.** The database is opened
+  with a single connection, and the refresh fanned out seven mostly DB-bound
+  sources concurrently, which buys nothing and only queues -- while the trade
+  journal can hold that connection across an ESI round trip. The journal is now
+  computed once up front and only ESI-bound work runs concurrently.
+- **Seed the orderbook backtester from archived depth.** ESI never serves
+  historical order books, so replay could only reach back to whenever recording
+  was switched on. `POST /api/orderbook/import/fuzzwork` pulls snapshots from
+  market.fuzzwork.co.uk, which has captured the whole game's book roughly every
+  half hour since mid-2023, and feeds them through the existing recorder so they
+  are indistinguishable from live captures apart from their source. Bounded to
+  the types you already deal in, streamed rather than buffered, and polite to a
+  service run for free: one file at a time, a dry run that states the transfer
+  cost first, and a hard cap. It is not a price-history source -- the files are
+  quotes with no record of what executed.
+- Today's colours were four semantic hues used decoratively. The capital bar is
+  now one hue at four weights running solid to faint as capital gets further from
+  being spendable, so it reads as deployment rather than verdict.
+- Reclaimed 4.7 GB: the database was 4.63 GB of which 4.56 GB was empty pages
+  from market-history churn. Live data was 70 MB.
+
+### Known limits
+
+- Accumulate's buy candidates and Today's are drawn from saved scans, so their
+  prices are as fresh as the last sweep.
+- The Fuzzwork import is API-only; there is no button for it yet.
+- Row prose on Today and Accumulate is generated server-side in English; only the
+  surrounding chrome is translated.
+- Skillbooks have no notion of NPC seeding, so a "discount" on one can reflect a
+  seeding change rather than a dip.
+
 ## v1.11.0 - 2026-09-11
 
 Today stops being a dashboard and becomes a work order: one ranked queue over
