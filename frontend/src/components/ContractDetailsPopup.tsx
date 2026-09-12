@@ -1,4 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
+import { ExternalLink } from "lucide-react";
+import { CopyButton } from "@/components/ui/CopyButton";
+import { OpenMarketButton } from "@/components/ui/OpenMarketButton";
+import { TypeIcon } from "@/components/ui/TypeIcon";
 import { Modal } from "./Modal";
 import { getContractDetails, openContractInGame } from "../lib/api";
 import type { ContractDetails, ContractItem } from "../lib/types";
@@ -150,7 +154,8 @@ export function ContractDetailsPopup({
                 onClick={handleOpenContract}
                 className="px-2.5 py-1 rounded-sm border border-eve-border text-eve-dim hover:text-eve-accent hover:border-eve-accent/40 transition-colors text-xs whitespace-nowrap"
               >
-                🎮 {t("openContract")}
+                <ExternalLink aria-hidden="true" className="mr-1 inline h-3 w-3" />
+                {t("openContract")}
               </button>
             )}
           </div>
@@ -337,21 +342,23 @@ function ItemRow({ item, highlightRig = false }: { item: ContractItem; highlight
   const damagePercent = item.damage ? Math.round(item.damage * 100) : 0;
 
   return (
-    <tr className={`border-b border-eve-border last:border-b-0 ${highlightRig ? "bg-yellow-900/20" : ""}`}>
+    <tr className={`group border-b border-eve-border last:border-b-0 ${highlightRig ? "bg-yellow-900/20" : ""}`}>
       <td className="px-3 py-1.5">
         <div className="flex items-center gap-2">
-          <img
-            src={`https://images.evetech.net/types/${item.type_id}/icon?size=32`}
-            alt={item.type_name}
-            className="w-8 h-8 flex-shrink-0"
-            onError={(e) => {
-              // Fallback if icon fails to load
-              e.currentTarget.style.display = 'none';
-            }}
-          />
+          <TypeIcon typeId={item.type_id} size={32} />
           <div className="flex-1">
             <div className="text-eve-text flex items-center gap-2">
               <span>{item.type_name || `Type ${item.type_id}`}</span>
+              {/* A contract lists items you cannot buy from it — checking the
+                  market price of each is the whole point of opening this. */}
+              <OpenMarketButton
+                typeId={item.type_id}
+                reveal="hover"
+                label={t("openMarketHint")}
+              />
+              {item.type_name && (
+                <CopyButton text={item.type_name} label={t("copyItem")} reveal="hover" />
+              )}
               {highlightRig && (
                 <span className="px-1.5 py-0.5 rounded-sm border border-yellow-600/70 text-[10px] uppercase tracking-wider text-yellow-300">
                   {t("contractRigExcludedTag")}

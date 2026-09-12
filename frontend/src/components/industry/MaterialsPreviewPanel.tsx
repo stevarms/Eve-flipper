@@ -1,4 +1,5 @@
 import { useCallback, type ReactNode } from "react";
+import { ItemRef } from "@/components/ui/ItemRef";
 import type { IndustryCoverageMaterialRow } from "@/lib/types";
 
 /**
@@ -239,8 +240,17 @@ export function MaterialsPreviewPanel({
                             ? "text-red-300"
                             : "text-eve-dim";
                   return (
-                    <tr key={m.type_id} className="border-t border-eve-border/20 hover:bg-eve-accent/5">
-                      <td className="px-3 py-1 truncate">{m.type_name || `Type ${m.type_id}`}</td>
+                    <tr key={m.type_id} className="group border-t border-eve-border/20 hover:bg-eve-accent/5">
+                      <td className="max-w-[240px] px-3 py-1">
+                        <ItemRef
+                          typeId={m.type_id}
+                          name={m.type_name}
+                          iconSize={16}
+                          market
+                          copyName
+                          reveal="hover"
+                        />
+                      </td>
                       <td className="px-3 py-1 text-right font-mono">{Math.ceil(m.required_qty ?? 0).toLocaleString()}</td>
                       <td className="px-3 py-1 text-right font-mono text-eve-dim">
                         {Math.floor(m.available_qty ?? 0).toLocaleString()}

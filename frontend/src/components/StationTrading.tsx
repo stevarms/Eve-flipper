@@ -23,7 +23,6 @@ import {
   getWatchlist,
   addToWatchlist,
   removeFromWatchlist,
-  openMarketInGame,
   setWaypointInGame,
 } from "@/lib/api";
 import { formatISK, formatMargin, formatNumber } from "@/lib/format";
@@ -57,9 +56,37 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StationRowDrawer } from "./station/StationRowDrawer";
 import { TypeIcon } from "@/components/ui/TypeIcon";
 import { getStationsWhenReady } from "@/lib/stationLookup";
+import { ExternalLink } from "lucide-react";
+import { CopyButton } from "@/components/ui/CopyButton";
+import { CopyPrice } from "@/components/ui/CopyPrice";
+import { OpenMarketButton, type CopyOnOpen } from "@/components/ui/OpenMarketButton";
+import { useEveUiActions } from "@/lib/eveUiActions";
 
 type SortKey = keyof StationTrade;
 type SortDir = "asc" | "desc";
+
+/**
+ * The price to put on the clipboard when the market window opens for a row.
+ *
+ * Module scope, not a closure inside the row component: this is called from
+ * every row's OpenMarketButton, and a fresh arrow per row would defeat any
+ * future row-level memo.
+ *
+ * The step is EVE's 4-significant-digit grid, not a flat 0.01 — on a 12.3M
+ * item the smallest legal move is 10k, and pasting 12,345,677.99 just gets
+ * rejected by the order dialog.
+ */
+function stationCopyOnOpen(row: StationTrade, mode: "buy" | "sell"): CopyOnOpen | null {
+  const basis = mode === "buy" ? row.BuyPrice : row.SellPrice;
+  const target = mode === "buy" ? nextBuyOverbid(basis) : nextSellUndercut(basis);
+  if (!(target > 0)) return null;
+  const price = formatGridPrice(target, priceStep(basis));
+  return {
+    text: price,
+    toastKey: mode === "buy" ? "openMarketBuyCopied" : "openMarketSellCopied",
+    toastParams: { price },
+  };
+}
 type CTSProfile = "balanced" | "aggressive" | "defensive";
 type BatchPreset = "safe" | "balanced" | "aggressive";
 type HiddenTradeMode = "done" | "ignored";
@@ -859,6 +886,7 @@ export function StationTrading({
 
   // Watchlist
   const { addToast } = useGlobalToast();
+  const eveUi = useEveUiActions();
   const { trackAchievementEvent } = useAchievements();
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
   useEffect(() => {
@@ -1610,43 +1638,27 @@ export function StationTrading({
 
   // Open in-game market window for a row and, when possible, copy the
   // outbidding price to the clipboard so the user can paste it straight into
-  // the order dialog. The step is EVE's 4-significant-digit grid, not a flat
-  // 0.01 — on a 12.3M item the smallest legal move is 10k, and pasting
-  // 12,345,677.99 just gets rejected by the order dialog.
+  // the order dialog. Shares stationCopyOnOpen with the per-row
+  // OpenMarketButton so the two cannot disagree about the price; the ESI call
+  // and its error toast come from useEveUiActions.
   const openMarketAndCopyPrice = useCallback(
     async (row: StationTrade, mode: "buy" | "sell") => {
-      const basis = mode === "buy" ? row.BuyPrice : row.SellPrice;
-      const targetPrice =
-        mode === "buy" ? nextBuyOverbid(basis) : nextSellUndercut(basis);
-      const priceText =
-        targetPrice > 0 ? formatGridPrice(targetPrice, priceStep(basis)) : "";
-      try {
-        await openMarketInGame(row.TypeID);
-      } catch (err: any) {
-        const { messageKey, duration } = handleEveUIError(err);
-        addToast(t(messageKey), "error", duration);
-        return;
-      }
-      if (!priceText) {
+      const plan = stationCopyOnOpen(row, mode);
+      if (!(await eveUi.openMarket(row.TypeID))) return;
+      if (!plan) {
         addToast(t("actionSuccess"), "success", 2000);
         return;
       }
       try {
-        await navigator.clipboard.writeText(priceText);
-        addToast(
-          t(mode === "buy" ? "openMarketBuyCopied" : "openMarketSellCopied", {
-            price: priceText,
-          }),
-          "success",
-          2400,
-        );
+        await navigator.clipboard.writeText(plan.text);
+        addToast(t(plan.toastKey ?? "actionSuccess", plan.toastParams), "success", 2400);
       } catch {
         // Clipboard rejection (e.g. headless/insecure context). Still surface
         // success for the in-game window so the user isn't confused.
         addToast(t("actionSuccess"), "success", 2000);
       }
     },
-    [addToast, t],
+    [eveUi, addToast, t],
   );
 
   // Keep context menu inside viewport
@@ -3700,15 +3712,16 @@ export function StationTrading({
               >
                 📊
               </th>
-              {isLoggedIn && (
-                <th
-                  style={{ width: 32, minWidth: 32, maxWidth: 32 }}
-                  className="px-1 py-2 text-center text-[10px] uppercase tracking-wider text-eve-dim"
-                  title={t("openMarketShiftHint")}
-                >
-                  🎮
-                </th>
-              )}
+              {/* Unconditional — the button below dims rather than vanishing when
+                  logged out, so the colSpan arithmetic stays constant. */}
+              <th
+                style={{ width: 32, minWidth: 32, maxWidth: 32 }}
+                className="px-1 py-2 text-center text-[10px] uppercase tracking-wider text-eve-dim"
+                title={t("openMarketShiftHint")}
+              >
+                <ExternalLink aria-hidden="true" className="mx-auto h-3.5 w-3.5" />
+                <span className="sr-only">{t("openMarket")}</span>
+              </th>
               {showOperatorColumns && (
                 <>
                   <th className="min-w-[92px] px-2 py-2 text-left text-[10px] uppercase tracking-wider text-eve-dim font-medium">
@@ -3859,27 +3872,19 @@ export function StationTrading({
                       </button>
                     )}
                   </td>
-                  {isLoggedIn && (
-                    <td
-                      style={{ width: 32, minWidth: 32, maxWidth: 32 }}
-                      className="px-1 py-1 text-center"
-                    >
-                      <button
-                        type="button"
-                        className="text-eve-dim hover:text-eve-accent transition-colors text-sm"
-                        title={t("openMarketShiftHint")}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void openMarketAndCopyPrice(
-                            row,
-                            e.shiftKey ? "sell" : "buy",
-                          );
-                        }}
-                      >
-                        🎮
-                      </button>
-                    </td>
-                  )}
+                  <td
+                    style={{ width: 32, minWidth: 32, maxWidth: 32 }}
+                    className="px-1 py-1 text-center"
+                  >
+                    <OpenMarketButton
+                      typeId={row.TypeID}
+                      label={t("openMarketShiftHint")}
+                      /* Shift still means "copy the sell price". The grid
+                         snapping lives in stationCopyOnOpen, not the button. */
+                      copyOnOpen={({ shift }) => stationCopyOnOpen(row, shift ? "sell" : "buy")}
+                      className="mx-auto"
+                    />
+                  </td>
                   {showOperatorColumns && (
                     <>
                       <td className="px-2 py-1 text-left">
@@ -3909,13 +3914,6 @@ export function StationTrading({
                           }
                           formatISK={formatISK}
                           t={t}
-                          onCopy={(text) =>
-                            addToast(
-                              t("operatorCopiedToast", { value: text }),
-                              "success",
-                              1500,
-                            )
-                          }
                         />
                       </td>
                     </>
@@ -3956,6 +3954,10 @@ export function StationTrading({
                         <span className="truncate font-ui text-t-emphasis text-fg">
                           {formatCell(col, row)}
                         </span>
+                        {/* Sits next to the name it copies, ahead of the
+                            badges — the raw TypeName, not formatCell's
+                            possibly-truncated display form. */}
+                        <CopyButton text={row.TypeName} label={t("copyItem")} />
                         {row.IsContraband && (
                           <span
                             title="Contraband item: hauling through empire space can be unsafe."
@@ -4053,7 +4055,7 @@ export function StationTrading({
             {displayRows.length === 0 && !scanning && (
               <tr>
                 <td
-                  colSpan={columnDefs.length + 2 + (isLoggedIn ? 1 : 0) + (showOperatorColumns ? 3 : 0)}
+                  colSpan={columnDefs.length + 3 + (showOperatorColumns ? 3 : 0)}
                   className="p-0"
                 >
                   {results.length > 0 && hiddenCounts.total > 0 && !showHiddenRows ? (
@@ -4291,14 +4293,14 @@ export function StationTrading({
               <>
                 <div className="h-px bg-eve-border my-1" />
                 <ContextItem
-                  label={`🎮 ${t("openMarket")}`}
+                  label={t("openMarket")}
                   onClick={() => {
                     void openMarketAndCopyPrice(contextMenu.row, "buy");
                     setContextMenu(null);
                   }}
                 />
                 <ContextItem
-                  label={`📈 ${t("openMarketCopySell")}`}
+                  label={t("openMarketCopySell")}
                   onClick={() => {
                     void openMarketAndCopyPrice(contextMenu.row, "sell");
                     setContextMenu(null);
@@ -4796,21 +4798,15 @@ function SuggestedPriceCell({
   suggestion,
   formatISK,
   t,
-  onCopy,
 }: {
   suggestion?: import("../lib/types").StationCommandSuggestedOrder;
   formatISK: (v: number) => string;
   t: (key: TranslationKey, params?: Record<string, string | number>) => string;
-  onCopy: (text: string) => void;
 }) {
   if (!suggestion) {
     return <span className="text-eve-dim">—</span>;
   }
   const price = suggestion.suggested_price;
-  const rawDigits = price.toFixed(2);
-  const copy = () => {
-    void navigator.clipboard.writeText(rawDigits).then(() => onCopy(rawDigits));
-  };
   const atTop = suggestion.position === 1;
   const priceCls = atTop
     ? "text-eve-dim font-mono"
@@ -4828,15 +4824,13 @@ function SuggestedPriceCell({
         </span>
       )}
       <span className={priceCls}>{formatISK(price)}</span>
+      {/* Already at the top of the book — there is no price to move to. */}
       {!atTop && (
-        <button
-          type="button"
-          onClick={copy}
-          className="text-[10px] px-1 py-0.5 rounded-sm border border-eve-border text-eve-dim hover:text-eve-accent hover:border-eve-accent transition-colors"
-          title={t("operatorSuggestedPriceCopyHint")}
-        >
-          📋
-        </button>
+        <CopyPrice
+          value={price}
+          step={priceStep(price)}
+          label={t("operatorSuggestedPriceCopyHint")}
+        />
       )}
     </div>
   );

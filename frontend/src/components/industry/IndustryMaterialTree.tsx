@@ -1,4 +1,7 @@
 import { useState } from "react";
+import { useI18n } from "@/lib/i18n";
+import { CopyButton } from "@/components/ui/CopyButton";
+import { OpenMarketButton } from "@/components/ui/OpenMarketButton";
 import { formatISK } from "@/lib/format";
 import type { MaterialNode } from "@/lib/types";
 
@@ -15,6 +18,7 @@ export function IndustryMaterialTree({ node }: IndustryMaterialTreeProps) {
 }
 
 function IndustryTreeNode({ node, level = 0 }: { node: MaterialNode; level?: number }) {
+  const { t } = useI18n();
   const [expanded, setExpanded] = useState(level < 2);
   const hasChildren = node.children && node.children.length > 0;
   const indent = level * 20;
@@ -36,7 +40,7 @@ function IndustryTreeNode({ node, level = 0 }: { node: MaterialNode; level?: num
   return (
     <div>
       <div
-        className={`flex items-center py-1 px-2 hover:bg-eve-accent/5 rounded-sm ${
+        className={`group flex items-center py-1 px-2 hover:bg-eve-accent/5 rounded-sm ${
           node.should_build || isSplit ? "" : "opacity-70"
         }`}
         style={{ paddingLeft: Math.min(indent + 8, 120) }}
@@ -52,9 +56,11 @@ function IndustryTreeNode({ node, level = 0 }: { node: MaterialNode; level?: num
           <span className="w-4 h-4 mr-1" />
         )}
 
-        <span className="flex-1 text-sm text-eve-text truncate">
-          {node.type_name}
-          <span className="text-eve-dim ml-2">x{node.quantity.toLocaleString()}</span>
+        <span className="flex min-w-0 flex-1 items-center gap-1 text-sm text-eve-text">
+          <span className="truncate">{node.type_name}</span>
+          <span className="shrink-0 text-eve-dim">x{node.quantity.toLocaleString()}</span>
+          <OpenMarketButton typeId={node.type_id} reveal="hover" label={t("openMarketHint")} />
+          <CopyButton text={node.type_name} label={t("copyItem")} reveal="hover" />
         </span>
 
         <span className="text-xs text-eve-dim mx-2">

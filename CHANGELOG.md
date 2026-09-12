@@ -1,5 +1,126 @@
 # Changelog
 
+## v1.11.0 - 2026-09-11
+
+Today stops being a dashboard and becomes a work order: one ranked queue over
+trading, held stock, industry and PI, ranked on the realistic case rather than
+the headline, with the price already on your clipboard.
+
+### Today -> the work order
+
+- **One ranked queue instead of a checklist.** Repricing, cancelling, new buy
+  orders, listing stock you already hold, collecting finished jobs and
+  restarting stalled colonies all land in one list, ordered by what each is
+  worth per minute of your attention. A cut line marks where your twenty
+  minutes run out and states what is below it, so carrying on is a decision
+  rather than a wall of rows.
+- Everything is normalised to **ISK over the next seven days**, computed twice:
+  the median figure is displayed and the realistic-bad figure is what the queue
+  is actually sorted on. Ranking on the median is how a tool ends up
+  recommending a 10M opportunity in an illiquid item over a reliable 2M
+  reprice.
+- The conservative figure was already there and unused --
+  `StationTrade.RealizableDailyProfit`, the station forecast's P80 band, and
+  `OrderDeskOrder.FlowBasis` all say how much the optimistic number should be
+  believed. Nothing here invents a haircut.
+- **Repricing is priced correctly for the first time.** The order desk's
+  `NetRelistGainISK` is always negative -- moving toward the top of the book
+  concedes price on every remaining unit and then pays a broker fee on the
+  change -- so it is the *cost* of repricing, not the reward. The value is the
+  margin on the units repricing actually unlocks, less what it costs, which
+  means an order already at the front of the queue is now correctly reported as
+  not worth touching.
+- **Only a buy cancel frees capital.** Cancelling a sell order returns stock to
+  the hangar, not ISK to the wallet; valuing it as though it released ISK
+  floated housekeeping to the top of the queue on money that never arrives.
+
+### Risk and reward, on every row
+
+- Every action carries a grade -- **proven / likely / unproven / avoid** -- built
+  from evidence, strongest source first: realized P&L per item from the FIFO
+  trade journal, then Trading Edge's reality ratio and `do_not_trade` verdict,
+  then the forecast spread, then data completeness, then portfolio risk. Only
+  proven and likely reach the queue.
+- **Unknown is not zero.** A missing cost basis, an unreadable order book, no
+  volume estimate or no price history makes the profit *unknown*, and those rows
+  are graded unproven instead of appearing in the queue asserting a number.
+- Rows the model held back are listed in a **Held back** panel with the reason
+  spelled out -- "your last 14 sales of this lost 3.1M", "no cost basis, so the
+  profit is unknown". A filter you cannot inspect is indistinguishable from a
+  bug.
+- Reward and risk are both on the face of every action: expected, realistic
+  case, and the capital exposed if it goes wrong.
+- **Quantity is capped by risk, not just capital** -- the smallest of a day of
+  flow, a quarter of daily volume, your configured investment ceiling, free
+  wallet ISK, the size your own trades have worked at, and portfolio
+  concentration. The row names whichever bound applied, so the number is
+  explained rather than asserted.
+
+### Doing it, with almost no clicks
+
+- **Run mode** puts one action in front of you with the price already on the
+  clipboard. Enter opens the item's market window in the client and re-copies
+  the price, Q swaps the clipboard to the quantity, Space marks it done and
+  advances, S skips. Nothing is typed and nothing is chosen; prices arrive
+  already snapped to EVE's 4-significant-digit grid.
+- A refused clipboard is never reported as a successful one -- the panel says
+  "click to copy" rather than claiming a price is ready to paste when it is not.
+- **Location awareness.** Each action is tagged against where its character is
+  docked; ones you can do without undocking lead, and anything elsewhere offers
+  a one-click destination instead of leaving you to work out the route.
+- Progress persists. Space records the mark, and a reload resumes where you left
+  off. Marks are filtered by when they were made, so yesterday's work does not
+  come back already crossed out.
+- **Bulk hatches** where bulk is faster: every buy in the queue as a
+  `Name<TAB>Qty` multibuy paste, and every reprice as a two-column list. Only
+  advised rows are included -- a batch is one commitment with no per-row
+  decision, so an unproven row in one would bypass the grading entirely.
+
+### Where to put your ISK
+
+- A capital bar showing free / buy orders / inventory / sell orders, with what
+  idle ISK is costing you per day stated in ISK, and **return per day** -- the
+  compounding rate -- as the headline figure. An unmeasured rate renders as "--"
+  rather than 0.00%, which would read as a claim about performance.
+- Allocation options quoted on one scale, return per day on the capital they
+  need, so station flips, colonies and cash compare directly. Each carries its
+  own grade, so a high-percentage option built on unproven rows cannot
+  out-argue a modest one built on proven ones. Cash is always listed, at zero:
+  it is the baseline the others are measured against.
+
+### Under the hood
+
+- New `GET /api/auth/today` reads a stored plan from one SQLite row, so the page
+  paints before anything touches the network. `POST /api/auth/today/refresh`
+  rebuilds it over NDJSON with per-source progress, and auto-fires once when the
+  server reports the plan has aged past eight hours. A plan older than three
+  days is withheld entirely -- a stale paste price is worse than none.
+- Ranking and grading are pure Go in `internal/engine/today.go` and
+  `today_risk.go`, driven by plain input structs, so the rules are table-tested
+  rather than tangled with HTTP.
+- The order desk, positions and PI planet payloads were extracted from their
+  handlers into reusable builders; each handler is now parse, build, respond.
+  Their existing tests are unchanged, which is the proof the extraction was
+  behaviour-preserving.
+- Deep links: Today's rows carry the tab and row they came from, and the Orders
+  tab expands and scrolls to the order you arrived for.
+- `POST /api/auth/today/refresh` needs a character and says so with a 401 before
+  the stream opens. Once NDJSON headers are written the status is 200 whatever
+  happens next, and a client cannot tell "log in" from "the plan failed".
+- Migration v45 adds `today_plan` and `today_action_state`. The second is not a
+  cache: alongside done/skip it records what the plan *promised* at the moment
+  you acted, because the plan is replaced on the next refresh and that is the
+  only chance to write it down.
+
+### Known limits
+
+- Buy candidates still come from your last saved Station Trade scan rather than
+  a scan of Today's own, so their prices are as fresh as that scan.
+- Row prose -- the headline, the reason, the evidence, the blockers -- is
+  generated server-side in English. Only the chrome around it is translated.
+- Timing is still the existing ETA in days. The order desk computes a
+  day-of-week volume profile internally and does not yet publish it.
+
 ## v1.10.2 - 2026-09-11
 
 The Trade Journal answers "what did that sale actually make me?" one row at a

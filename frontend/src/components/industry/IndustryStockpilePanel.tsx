@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ItemRef } from "@/components/ui/ItemRef";
 import { useI18n } from "@/lib/i18n";
 import {
   createStockpile,
@@ -715,7 +716,16 @@ export default function IndustryStockpilePanel({ isLoggedIn }: Props) {
                               const hasShortfall = (row.shortfall ?? 0) > 0;
                               return (
                                 <tr key={row.typeId} className="border-b border-eve-border/50">
-                                  <td className="py-1 pr-3">{row.typeName}</td>
+                                  <td className="max-w-[260px] py-1 pr-3">
+                                    <ItemRef
+                                      typeId={row.typeId}
+                                      name={row.typeName}
+                                      iconSize={16}
+                                      market
+                                      copyName
+                                      marketLabel={t("openMarketHint")}
+                                    />
+                                  </td>
                                   <td className="py-1 pr-3 text-right">
                                     <ThresholdInput
                                       value={row.threshold}

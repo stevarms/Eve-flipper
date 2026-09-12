@@ -82,17 +82,44 @@ type PositionsResponse struct {
 // realized side. Reading config alone left this tab quoting a fee snapshot the
 // character had long since trained out of.
 func (s *Server) positionFees(userID string, characterID int64, r *http.Request) (salesTax, brokerFee float64) {
-	profile := s.resolveFeeProfile(userID, characterID)
-	salesTax, brokerFee = profile.SalesTaxPercent, profile.BrokerFeePercent
+	return s.positionFeesWith(userID, characterID, positionFeeOverrideFromQuery(r))
+}
+
+// positionFeeOverride is the query-parameter override expressed without an
+// http.Request, so the Today builder can reuse fee resolution. A nil field
+// means "no override" — distinct from an override of zero, which is a legal
+// rate at a citadel with no broker fee.
+type positionFeeOverride struct {
+	SalesTax  *float64
+	BrokerFee *float64
+}
+
+func positionFeeOverrideFromQuery(r *http.Request) positionFeeOverride {
+	var out positionFeeOverride
+	if r == nil {
+		return out
+	}
 	if v := r.URL.Query().Get("sales_tax"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 && f <= 100 {
-			salesTax = f
+			out.SalesTax = &f
 		}
 	}
 	if v := r.URL.Query().Get("broker_fee"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 && f <= 100 {
-			brokerFee = f
+			out.BrokerFee = &f
 		}
+	}
+	return out
+}
+
+func (s *Server) positionFeesWith(userID string, characterID int64, over positionFeeOverride) (salesTax, brokerFee float64) {
+	profile := s.resolveFeeProfile(userID, characterID)
+	salesTax, brokerFee = profile.SalesTaxPercent, profile.BrokerFeePercent
+	if over.SalesTax != nil {
+		salesTax = *over.SalesTax
+	}
+	if over.BrokerFee != nil {
+		brokerFee = *over.BrokerFee
 	}
 	return salesTax, brokerFee
 }
@@ -171,6 +198,23 @@ func (s *Server) handleAuthPositions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	resp, err := s.buildPositions(userID, characterID, allScope, positionFeeOverrideFromQuery(r))
+	if err != nil {
+		writeStatusError(w, err)
+		return
+	}
+	writeJSON(w, resp)
+}
+
+// buildPositions is the positions payload without the HTTP wrapper, so the
+// Today work order can ask "what am I holding, and is it in profit" without
+// going back out through the network.
+func (s *Server) buildPositions(
+	userID string,
+	characterID int64,
+	allScope bool,
+	feeOverride positionFeeOverride,
+) (PositionsResponse, error) {
 	// Manual rows are readable with no EVE session at all — that is the
 	// whole point of them, and it keeps the tab useful before SSO.
 	manual := []db.ManualPosition{}
@@ -199,7 +243,7 @@ func (s *Server) handleAuthPositions(w http.ResponseWriter, r *http.Request) {
 	if feeCharID <= 0 {
 		feeCharID = sessionCharID
 	}
-	salesTax, brokerFee := s.positionFees(userID, feeCharID, r)
+	salesTax, brokerFee := s.positionFeesWith(userID, feeCharID, feeOverride)
 
 	rows := make([]PositionRow, 0, len(derived)+len(manual))
 	for _, p := range derived {
@@ -232,13 +276,12 @@ func (s *Server) handleAuthPositions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(rows) == 0 {
-		writeJSON(w, PositionsResponse{
+		return PositionsResponse{
 			Rows:             []PositionRow{},
 			SalesTaxPercent:  salesTax,
 			BrokerFeePercent: brokerFee,
 			GeneratedAt:      time.Now().UTC().Format(time.RFC3339),
-		})
-		return
+		}, nil
 	}
 
 	s.fillPositionNames(rows)
@@ -293,7 +336,7 @@ func (s *Server) handleAuthPositions(w http.ResponseWriter, r *http.Request) {
 		return math.Abs(rows[i].UnrealizedISK) > math.Abs(rows[j].UnrealizedISK)
 	})
 	resp.Rows = rows
-	writeJSON(w, resp)
+	return resp, nil
 }
 
 // fillPositionNames backfills type names from the SDE. FIFO rows usually

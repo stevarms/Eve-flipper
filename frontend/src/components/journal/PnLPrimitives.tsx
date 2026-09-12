@@ -1,4 +1,7 @@
 import { type TranslationKey } from "../../lib/i18n";
+import { useI18n } from "@/lib/i18n";
+import { CopyPrice } from "@/components/ui/CopyPrice";
+import { ItemRef } from "@/components/ui/ItemRef";
 import type {
   PortfolioPnL,
   PortfolioSlotEfficiency,
@@ -437,6 +440,7 @@ export function SlotEfficiencyTable({
   rows: PortfolioSlotEfficiency[];
   formatIsk: (v: number) => string;
 }) {
+  const { t } = useI18n();
   if (!rows || rows.length === 0) {
     return (
       <div className="text-center text-eve-dim text-xs py-4">
@@ -471,23 +475,18 @@ export function SlotEfficiencyTable({
             const isProfit = (row.isk_per_slot ?? 0) >= 0;
             const barPct = Math.max(4, Math.min(100, Math.abs(row.isk_per_slot ?? 0) / maxAbs * 100));
             return (
-              <tr key={`${row.type_id}-${row.slot_source}`} className="border-t border-eve-border/50 hover:bg-eve-panel/50">
-                <td className="px-3 py-2 text-eve-text">
-                  <div className="flex items-center gap-2">
-                    <img
-                      src={`https://images.evetech.net/types/${row.type_id}/icon?size=32`}
-                      alt=""
-                      className="w-5 h-5"
-                    />
-                    <div className="min-w-0">
-                      <div className="truncate max-w-[220px]" title={row.type_name}>
-                        {row.type_name || `Type #${row.type_id}`}
-                      </div>
-                      <div className="text-[10px] text-eve-dim">
-                        {row.active_buy_orders} buy / {row.active_sell_orders} sell, {row.slot_source}
-                      </div>
-                    </div>
-                  </div>
+              <tr key={`${row.type_id}-${row.slot_source}`} className="group border-t border-eve-border/50 hover:bg-eve-panel/50">
+                <td className="max-w-[280px] px-3 py-2 text-eve-text">
+                  <ItemRef
+                    typeId={row.type_id}
+                    name={row.type_name}
+                    iconSize={20}
+                    market
+                    copyName
+                    reveal="hover"
+                    marketLabel={t("openMarketHint")}
+                    subtitle={`${row.active_buy_orders} buy / ${row.active_sell_orders} sell, ${row.slot_source}`}
+                  />
                 </td>
                 <td className="px-3 py-2 text-right">
                   <div className="flex items-center justify-end gap-2">
@@ -511,8 +510,18 @@ export function SlotEfficiencyTable({
                 </td>
                 <td className="px-3 py-2 text-right text-eve-dim">{formatIsk(row.turnover_per_slot ?? 0)}</td>
                 <td className="px-3 py-2 text-right text-eve-dim">{formatIsk(row.capital_per_slot ?? 0)}</td>
-                <td className="px-3 py-2 text-right text-eve-dim">{formatIsk(row.avg_entry_price ?? 0)}</td>
-                <td className="px-3 py-2 text-right text-eve-dim">{formatIsk(row.avg_exit_price ?? 0)}</td>
+                <td className="px-3 py-2 text-right text-eve-dim">
+                  <span className="inline-flex items-center justify-end gap-1">
+                    {formatIsk(row.avg_entry_price ?? 0)}
+                    <CopyPrice value={row.avg_entry_price ?? 0} label={t("copyPrice")} reveal="hover" />
+                  </span>
+                </td>
+                <td className="px-3 py-2 text-right text-eve-dim">
+                  <span className="inline-flex items-center justify-end gap-1">
+                    {formatIsk(row.avg_exit_price ?? 0)}
+                    <CopyPrice value={row.avg_exit_price ?? 0} label={t("copyPrice")} reveal="hover" />
+                  </span>
+                </td>
                 <td className="px-3 py-2 text-right text-eve-dim">{(row.win_rate_pct ?? 0).toFixed(0)}%</td>
                 <td className="px-3 py-2 text-right text-eve-dim">{(row.avg_holding_days ?? 0).toFixed(1)}d</td>
                 <td className="px-3 py-2 text-left">

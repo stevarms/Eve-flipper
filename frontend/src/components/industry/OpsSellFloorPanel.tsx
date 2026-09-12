@@ -1,4 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
+import { useI18n } from "@/lib/i18n";
+import { CopyPrice } from "@/components/ui/CopyPrice";
+import { ItemRef } from "@/components/ui/ItemRef";
 import { priceAudit, type PriceAuditRow } from "@/lib/api";
 import { formatISK, formatISKFull } from "@/lib/format";
 import type { IndustryProjectSnapshot } from "@/lib/types";
@@ -56,6 +59,7 @@ export function OpsSellFloorPanel({
   salesTaxPercent,
   onError,
 }: OpsSellFloorPanelProps) {
+  const { t } = useI18n();
   const [quotes, setQuotes] = useState<Map<number, PriceAuditRow> | null>(null);
   const [loading, setLoading] = useState(false);
   const [checkedAt, setCheckedAt] = useState<string>("");
@@ -196,8 +200,17 @@ export function OpsSellFloorPanel({
               }
 
               return (
-                <tr key={`sf-${r.typeID}`} className="border-b border-eve-border/30 hover:bg-eve-accent/5">
-                  <td className="px-1.5 py-1 text-eve-text truncate">{r.name}</td>
+                <tr key={`sf-${r.typeID}`} className="group border-b border-eve-border/30 hover:bg-eve-accent/5">
+                  <td className="max-w-[220px] px-1.5 py-1 text-eve-text">
+                    <ItemRef
+                      typeId={r.typeID}
+                      name={r.name}
+                      iconSize={16}
+                      market
+                      copyName
+                      marketLabel={t("openMarketHint")}
+                    />
+                  </td>
                   <td className="px-1.5 py-1 text-right font-mono text-eve-accent">{r.qty.toLocaleString()}</td>
                   <td
                     className="px-1.5 py-1 text-right font-mono text-eve-text"
@@ -209,7 +222,14 @@ export function OpsSellFloorPanel({
                     {formatISK(r.plannedNet)}
                   </td>
                   <td className="px-1.5 py-1 text-right font-mono text-eve-dim">
-                    {haveQuote ? formatISK(ask) : "—"}
+                    {haveQuote ? (
+                      <span className="inline-flex items-center justify-end gap-1">
+                        {formatISK(ask)}
+                        <CopyPrice value={ask} label={t("copyPrice")} />
+                      </span>
+                    ) : (
+                      "—"
+                    )}
                   </td>
                   <td className={`px-1.5 py-1 text-right font-mono ${haveQuote && netNow < r.costBasis ? "text-red-300" : "text-eve-text"}`}>
                     {haveQuote ? formatISK(netNow) : "—"}

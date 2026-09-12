@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { ItemRef } from "@/components/ui/ItemRef";
 import { getPortfolioOptimization, type CharacterScope, type OptimizerResult } from "../../lib/api";
 import { type TranslationKey, useI18n } from "../../lib/i18n";
 import type { AllocationSuggestion, AssetStats, OptimizerDiagnostic, PortfolioCapital, PortfolioPositionRisk } from "../../lib/types";
@@ -346,24 +347,26 @@ function PositionRiskTable({ risks, formatIsk }: { risks: PortfolioPositionRisk[
             {rows.map((row) => {
               const riskColor = riskTextClass(row.risk_level, row.risk_score);
               return (
-                <tr key={row.type_id} className="border-t border-eve-border/50 hover:bg-eve-dark/40">
+                <tr key={row.type_id} className="group border-t border-eve-border/50 hover:bg-eve-dark/40">
                   <td className="px-3 py-2">
                     <span className={`px-2 py-0.5 rounded-sm border text-[10px] font-bold uppercase ${actionBadgeClass(row.action)}`}>
                       {actionLabel(row.action)}
                     </span>
                     <div className="text-[9px] text-eve-dim mt-1">{reasonLabel(row.reason)}</div>
                   </td>
-                  <td className="px-3 py-2 text-eve-text">
-                    <div className="flex items-center gap-2">
-                      <img src={`https://images.evetech.net/types/${row.type_id}/icon?size=32`} alt="" className="w-5 h-5" />
-                      <div className="min-w-0">
-                        <div className="truncate max-w-[180px]">{row.type_name || `#${row.type_id}`}</div>
-                        <div className="text-[9px] text-eve-dim">
-                          {row.inventory_qty.toLocaleString()} inv / {row.active_sell_qty.toLocaleString()} sell
-                          {row.inventory_source ? ` / ${inventorySourceLabel(row.inventory_source)}` : ""}
-                        </div>
-                      </div>
-                    </div>
+                  <td className="max-w-[240px] px-3 py-2 text-eve-text">
+                    <ItemRef
+                      typeId={row.type_id}
+                      name={row.type_name}
+                      iconSize={20}
+                      market
+                      copyName
+                      reveal="hover"
+                      marketLabel={t("openMarketHint")}
+                      subtitle={`${row.inventory_qty.toLocaleString()} inv / ${row.active_sell_qty.toLocaleString()} sell${
+                        row.inventory_source ? ` / ${inventorySourceLabel(row.inventory_source)}` : ""
+                      }`}
+                    />
                   </td>
                   <td className="px-3 py-2 text-right">
                     <div className="text-eve-text">{formatIsk(row.exposure_isk)}</div>
@@ -695,16 +698,17 @@ function AssetTable({
         <tbody>
           {assets.map((asset, i) => {
             return (
-              <tr key={asset.type_id} className="border-t border-eve-border/50 hover:bg-eve-panel/50">
-                <td className="px-3 py-2 text-eve-text">
-                  <div className="flex items-center gap-2">
-                    <img
-                      src={`https://images.evetech.net/types/${asset.type_id}/icon?size=32`}
-                      alt=""
-                      className="w-5 h-5"
-                    />
-                    <span className="truncate max-w-[160px]">{asset.type_name || `#${asset.type_id}`}</span>
-                  </div>
+              <tr key={asset.type_id} className="group border-t border-eve-border/50 hover:bg-eve-panel/50">
+                <td className="max-w-[220px] px-3 py-2 text-eve-text">
+                  <ItemRef
+                    typeId={asset.type_id}
+                    name={asset.type_name}
+                    iconSize={20}
+                    market
+                    copyName
+                    reveal="hover"
+                    marketLabel={t("openMarketHint")}
+                  />
                 </td>
                 <td className="px-3 py-2 text-right text-eve-text">
                   <div className="flex items-center justify-end gap-1">
@@ -766,7 +770,7 @@ function SuggestionsPanel({
         return (
           <div
             key={s.type_id}
-            className={`flex items-center gap-3 px-3 py-2 rounded-sm border text-xs ${
+            className={`group flex items-center gap-3 px-3 py-2 rounded-sm border text-xs ${
               isIncrease
                 ? "bg-emerald-500/5 border-emerald-500/20"
                 : "bg-red-500/5 border-red-500/20"
@@ -775,12 +779,16 @@ function SuggestionsPanel({
             <span className={`text-[10px] font-bold uppercase tracking-wider ${isIncrease ? "text-emerald-400" : "text-red-400"}`}>
               {isIncrease ? t("optIncrease") : t("optDecrease")}
             </span>
-            <img
-              src={`https://images.evetech.net/types/${s.type_id}/icon?size=32`}
-              alt=""
-              className="w-5 h-5"
+            <ItemRef
+              typeId={s.type_id}
+              name={s.type_name}
+              iconSize={20}
+              market
+              copyName
+              reveal="hover"
+              marketLabel={t("openMarketHint")}
+              className="max-w-[220px]"
             />
-            <span className="text-eve-text font-medium truncate max-w-[150px]">{s.type_name}</span>
             <span className="text-eve-dim">
               {s.current_pct.toFixed(1)}% → {s.optimal_pct.toFixed(1)}%
             </span>

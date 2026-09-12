@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { OpenMarketButton } from "@/components/ui/OpenMarketButton";
+import { useEveUiActions } from "@/lib/eveUiActions";
 import { Modal } from "./Modal";
 import { useGlobalToast } from "./Toast";
 import { useI18n } from "@/lib/i18n";
@@ -8,10 +10,7 @@ import {
   getCharacterInfo,
   getExecutionPlan,
   getTradingEdgeSummary,
-  openMarketInGame,
-  setWaypointInGame,
 } from "@/lib/api";
-import { handleEveUIError } from "@/lib/handleEveUIError";
 import { loadCockpitPreferences } from "@/lib/cockpit";
 import { useAchievements } from "./achievements";
 import type {
@@ -499,6 +498,7 @@ export function TradeExecutionAutopilotPopup({
 }: TradeExecutionAutopilotPopupProps) {
   const { addToast } = useGlobalToast();
   const { t } = useI18n();
+  const eveUi = useEveUiActions();
   const { trackAchievementEvent } = useAchievements();
   const isStationMode = mode === "station";
   const [quantity, setQuantity] = useState(1);
@@ -1049,19 +1049,14 @@ export function TradeExecutionAutopilotPopup({
   }, [onClose, onJournalCreated]);
 
   const runEveAction = useCallback(
-    async (action: "market" | "buy" | "sell") => {
+    async (action: "buy" | "sell") => {
       if (!row) return;
-      try {
-        if (action === "market") await openMarketInGame(row.TypeID);
-        if (action === "buy") await setWaypointInGame(row.BuySystemID);
-        if (action === "sell") await setWaypointInGame(row.SellSystemID);
-        addToast("EVE UI action sent", "success", 1800);
-      } catch (err: unknown) {
-        const { messageKey, duration } = handleEveUIError(err);
-        addToast(t(messageKey), "error", duration);
+      const systemID = action === "buy" ? row.BuySystemID : row.SellSystemID;
+      if (await eveUi.setDestination(systemID)) {
+        addToast(t("actionSuccess"), "success", 1800);
       }
     },
-    [addToast, row],
+    [eveUi, addToast, t, row],
   );
 
   if (!row) {
@@ -1196,9 +1191,7 @@ export function TradeExecutionAutopilotPopup({
           </button>
           {isLoggedIn && (
             <>
-              <button type="button" onClick={() => void runEveAction("market")} className="px-3 py-1.5 bg-eve-dark border border-eve-border text-eve-dim hover:text-eve-text text-xs">
-                Open market
-              </button>
+              <OpenMarketButton typeId={row.TypeID} size="md" />
               <button type="button" onClick={() => void runEveAction("buy")} className="px-3 py-1.5 bg-eve-dark border border-eve-border text-eve-dim hover:text-eve-text text-xs">
                 {isStationMode ? "Station waypoint" : "Buy waypoint"}
               </button>

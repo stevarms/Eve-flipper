@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CopyPrice } from "@/components/ui/CopyPrice";
+import { ItemRef } from "@/components/ui/ItemRef";
 import {
   getAuthStatus,
   getJournalByType,
@@ -173,6 +175,12 @@ export function TradeJournal({ isLoggedIn, visitToken, onOpenPositions }: Props)
     () => Object.keys(summary?.tracking_since ?? {}).sort().join(","),
     [summary],
   );
+  // What the period paid to *place* orders, as opposed to fill them. Kept out
+  // of combined P&L (which is the sum of per-row profits, and no row owns
+  // these) and shown as its own subtraction underneath it.
+  const orderCostsIsk =
+    (summary?.totals.actual_broker_fee_isk ?? 0) +
+    (summary?.totals.actual_provider_tax_isk ?? 0);
   const knownCorpDivs = useMemo(() => {
     const out: { key: string; corpID: number; div: number }[] = [];
     for (const key of trackingKey ? trackingKey.split(",") : []) {
@@ -714,6 +722,42 @@ export function TradeJournal({ isLoggedIn, visitToken, onOpenPositions }: Props)
               </span>
             </span>
           )}
+          {/* Order-placement costs, from the wallet journal.
+              These are real ISK the app used to show nowhere: a broker fee is
+              charged when an order is placed, so it is owed whether or not the
+              order ever fills, and cannot be attributed to a sale. They are
+              reported beside the P&L rather than folded into it — hence the
+              separate net-after figure below. */}
+          {(summary.totals.actual_broker_fee_isk ?? 0) > 0 && (
+            <span title={t("journalKpiActualBrokerHint")} className="cursor-help">
+              {t("journalKpiActualBroker")}:{" "}
+              <span className="text-eve-text font-mono">
+                {formatIsk(summary.totals.actual_broker_fee_isk ?? 0)}
+              </span>
+            </span>
+          )}
+          {(summary.totals.actual_provider_tax_isk ?? 0) > 0 && (
+            <span title={t("journalKpiProviderTaxHint")} className="cursor-help">
+              {t("journalKpiProviderTax")}:{" "}
+              <span className="text-eve-text font-mono">
+                {formatIsk(summary.totals.actual_provider_tax_isk ?? 0)}
+              </span>
+            </span>
+          )}
+          {orderCostsIsk > 0 && (
+            <span title={t("journalKpiNetAfterOrderCostsHint")} className="cursor-help">
+              {t("journalKpiNetAfterOrderCosts")}:{" "}
+              <span
+                className={`font-mono ${
+                  summary.totals.combined_pnl - orderCostsIsk >= 0
+                    ? "text-eve-accent"
+                    : "text-red-400"
+                }`}
+              >
+                {formatIsk(summary.totals.combined_pnl - orderCostsIsk)}
+              </span>
+            </span>
+          )}
         </div>
       )}
 
@@ -849,22 +893,41 @@ export function TradeJournal({ isLoggedIn, visitToken, onOpenPositions }: Props)
                   <tr
                     key={row.type_id}
                     onClick={() => void openDrawer(row)}
-                    className="border-t border-eve-border/50 hover:bg-eve-accent/5 cursor-pointer"
+                    className="group border-t border-eve-border/50 hover:bg-eve-accent/5 cursor-pointer"
                   >
-                    <td className="px-2 py-1 text-eve-text">
-                      <div className="flex items-center gap-2">
-                        <img
-                          src={`https://images.evetech.net/types/${row.type_id}/icon?size=32`}
-                          alt=""
-                          className="w-4 h-4"
-                        />
-                        <span className="truncate max-w-[220px]">{row.type_name || `Type #${row.type_id}`}</span>
-                      </div>
+                    <td className="max-w-[260px] px-2 py-1 text-eve-text">
+                      <ItemRef
+                        typeId={row.type_id}
+                        name={row.type_name}
+                        iconSize={16}
+                        market
+                        copyName
+                        reveal="hover"
+                        marketLabel={t("openMarketHint")}
+                      />
                     </td>
                     <td className="px-2 py-1 text-right font-mono text-eve-dim">{row.buys_qty}</td>
                     <td className="px-2 py-1 text-right font-mono text-eve-dim">{row.sells_qty}</td>
-                    <td className="px-2 py-1 text-right font-mono text-eve-dim">{row.avg_buy_price ? formatIsk(row.avg_buy_price) : "—"}</td>
-                    <td className="px-2 py-1 text-right font-mono text-eve-dim">{row.avg_sell_price ? formatIsk(row.avg_sell_price) : "—"}</td>
+                    <td className="px-2 py-1 text-right font-mono text-eve-dim">
+                      {row.avg_buy_price ? (
+                        <span className="inline-flex items-center justify-end gap-1">
+                          {formatIsk(row.avg_buy_price)}
+                          <CopyPrice value={row.avg_buy_price} label={t("copyPrice")} reveal="hover" />
+                        </span>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                    <td className="px-2 py-1 text-right font-mono text-eve-dim">
+                      {row.avg_sell_price ? (
+                        <span className="inline-flex items-center justify-end gap-1">
+                          {formatIsk(row.avg_sell_price)}
+                          <CopyPrice value={row.avg_sell_price} label={t("copyPrice")} reveal="hover" />
+                        </span>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
                     <td className={`px-2 py-1 text-right font-mono ${row.trading_profit >= 0 ? "text-eve-profit" : "text-eve-error"}`}>
                       {formatIskSigned(row.trading_profit)}
                     </td>
@@ -1140,14 +1203,14 @@ function LotsDrawer({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="sticky top-0 bg-eve-dark border-b border-eve-border p-3 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <img
-              src={`https://images.evetech.net/types/${typeID}/icon?size=32`}
-              alt=""
-              className="w-6 h-6"
-            />
-            <span className="text-sm text-eve-text">{typeName}</span>
-          </div>
+          <ItemRef
+            typeId={typeID}
+            name={typeName}
+            iconSize={24}
+            market
+            copyName
+            marketLabel={t("openMarketHint")}
+          />
           <button
             onClick={onClose}
             className="text-eve-dim hover:text-eve-text text-lg"

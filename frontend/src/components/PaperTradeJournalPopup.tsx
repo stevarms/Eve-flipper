@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { ItemRef } from "@/components/ui/ItemRef";
 import {
   createPaperTrade,
   deletePaperTrade,
@@ -844,7 +845,7 @@ export function PaperTradeJournalPopup({ open, onClose }: Props) {
                 const busy = busyID === trade.id;
                 const live = reconcileByID.get(trade.id);
                 return (
-                  <tr key={trade.id} className="border-t border-eve-border/40 align-top">
+                  <tr key={trade.id} className="group border-t border-eve-border/40 align-top">
                     <td className="px-2 py-2">
                       <span className={`inline-flex px-1.5 py-0.5 rounded-sm border text-[10px] uppercase tracking-wide ${statusTone(trade.status)}`}>
                         {statusLabel(trade.status)}
@@ -852,7 +853,15 @@ export function PaperTradeJournalPopup({ open, onClose }: Props) {
                       <div className="mt-1 text-[10px] text-eve-dim font-mono">{shortDate(trade.updated_at)}</div>
                     </td>
                     <td className="px-2 py-2 min-w-[260px]">
-                      <div className="text-eve-text">{trade.type_name}</div>
+                      <ItemRef
+                        typeId={trade.type_id}
+                        name={trade.type_name}
+                        iconSize={16}
+                        market
+                        copyName
+                        reveal="hover"
+                        marketLabel={t("openMarketHint")}
+                      />
                       <div className="text-eve-dim mt-0.5 truncate">
                         {trade.buy_station || trade.buy_system_name || "-"} {"->"} {trade.sell_station || trade.sell_system_name || "-"}
                       </div>

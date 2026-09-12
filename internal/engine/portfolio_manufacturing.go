@@ -142,6 +142,14 @@ type TradeJournalLot struct {
 	SellBrokerFee float64 `json:"sell_broker_fee"`
 	SellTax       float64 `json:"sell_tax"`
 
+	// SellTaxActual is true when SellTax is the amount CCP actually charged,
+	// recovered from the wallet journal, rather than the rate this app models
+	// from the character's skills. False on rows older than the journal
+	// archive (ESI only serves ~30 days, so they can never be reconciled) and
+	// on any sale the pairing could not resolve. The UI marks the modelled
+	// ones, since inside the archive window they are the exception.
+	SellTaxActual bool `json:"sell_tax_actual,omitempty"`
+
 	// Where the sell happened, and where the matched buy happened. Empty on
 	// the manufacture side: a built item has no purchase station (the job's
 	// output location is not tracked by ESI's industry endpoint).
@@ -196,6 +204,20 @@ type TotalsBreakdown struct {
 	FeesISK            float64 `json:"fees_isk"`
 	UnattributedISK    float64 `json:"unattributed_isk"`
 	EstMaterialCostISK float64 `json:"est_material_cost_isk"`
+
+	// Fees as the wallet journal recorded them, for the part of the period the
+	// journal archive covers. These are period figures, not row figures, and
+	// the last two cannot be anything else: broker fee and the structure
+	// owner's provider tax are charged when an order is placed, against the
+	// whole order, so one charge can cover many fills — and an order that
+	// never filled still cost ISK. Attributing them to a sale would invent a
+	// number; leaving them out (as the app did until now) hides real ISK.
+	//
+	// The caller fills these in from the journal; the matcher does not compute
+	// them. Zero means "the journal had nothing to say about this window".
+	ActualSalesTaxISK    float64 `json:"actual_sales_tax_isk,omitempty"`
+	ActualBrokerFeeISK   float64 `json:"actual_broker_fee_isk,omitempty"`
+	ActualProviderTaxISK float64 `json:"actual_provider_tax_isk,omitempty"`
 }
 
 // DailyBreakdown feeds the three-series cumulative chart.
@@ -216,8 +238,17 @@ type TradeJournalOptions struct {
 	FIFOMode         FIFOMode
 	SalesTaxPercent  float64
 	BrokerFeePercent float64
-	Materials        map[int32][]sde.BlueprintMaterial
-	Products         map[int32]sde.BlueprintProduct
+	// ActualSellTaxRateByTxnID is the sales tax rate, in percent, that was
+	// actually charged on a sell transaction, keyed by its ESI transaction id.
+	// A sale found here is charged this rate instead of SalesTaxPercent.
+	//
+	// A rate rather than an ISK amount on purpose: one sale can be matched
+	// against several buy lots and emitted as several rows, and a rate
+	// apportions across that split by construction. Nil or a miss means fall
+	// back to the modelled rate.
+	ActualSellTaxRateByTxnID map[int64]float64
+	Materials                map[int32][]sde.BlueprintMaterial
+	Products                 map[int32]sde.BlueprintProduct
 	// MEByJob is the resolved ME lookup chain — planner link → owned BP →
 	// tech-level default → 0 fallback. See internal/api/trade_journal.go's
 	// resolveME for the concrete chain.
@@ -553,8 +584,22 @@ func ComputeTradeJournal(
 			// only this order reproduces ComputePortfolioPnLWithOptions bit
 			// for bit — and a projection that differs in the last float digit
 			// still shows the user two different profits.
+			//
+			// The tax rate is per-sale, not per-period: where the wallet
+			// journal recorded what CCP actually took on this transaction, a
+			// historic row reports that fact instead of what today's skills
+			// would imply. A rate (rather than the charge itself) is what
+			// makes this work when one sale is split across several buy lots —
+			// each row taxes its own slice of the gross and the slices sum to
+			// the transaction's charge.
+			taxPct := salesTaxPct
+			taxActual := false
+			if rate, ok := opts.ActualSellTaxRateByTxnID[tx.TransactionID]; ok {
+				taxPct = rate
+				taxActual = true
+			}
 			feesOn := func(gross float64) (broker, tax float64) {
-				return gross * brokerPct / 100.0, gross * salesTaxPct / 100.0
+				return gross * brokerPct / 100.0, gross * taxPct / 100.0
 			}
 			inWindow := cutoff.IsZero() || !ev.when.Before(cutoff)
 
@@ -590,6 +635,7 @@ func ComputeTradeJournal(
 							SellFees:         orphanBroker + orphanTax,
 							SellBrokerFee:    orphanBroker,
 							SellTax:          orphanTax,
+							SellTaxActual:    taxActual,
 							NetProfit:        0,
 						})
 					}
@@ -631,6 +677,7 @@ func ComputeTradeJournal(
 						SellFees:         sellFees,
 						SellBrokerFee:    sellBroker,
 						SellTax:          sellTax,
+						SellTaxActual:    taxActual,
 						NetProfit:        net,
 						BuyDate:          pick.date.Format(time.RFC3339),
 						BuyTxnID:         pick.txnID,
@@ -663,6 +710,7 @@ func ComputeTradeJournal(
 						SellFees:         sellFees,
 						SellBrokerFee:    sellBroker,
 						SellTax:          sellTax,
+						SellTaxActual:    taxActual,
 						NetProfit:        net,
 						// The build unit cost is the manufacture row's cost
 						// basis. It was previously spent computing `net` and

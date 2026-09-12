@@ -1889,6 +1889,48 @@ func (d *DB) migrate() error {
 		logger.Info("DB", "Applied migration v44 (manual positions)")
 	}
 
+	if version < 45 {
+		// The Today work order, and what was done with it.
+		//
+		// today_plan is a cache: one row per user, replaced wholesale on
+		// each refresh, so the landing screen can paint from a single DB
+		// read instead of waiting on the half-dozen ESI round trips that
+		// built it.
+		//
+		// today_action_state is not a cache. Alongside done/skip it records
+		// what the plan *predicted* at the moment the user acted, because
+		// that is the only moment it can be recorded — once the plan is
+		// replaced the projection is gone. Reconciling those projections
+		// against realized journal outcomes is what lets Today be graded on
+		// its own record rather than on its own optimism.
+		if _, err := d.sql.Exec(`
+			CREATE TABLE IF NOT EXISTS today_plan (
+				user_id      TEXT PRIMARY KEY,
+				generated_at TEXT NOT NULL,
+				payload_json TEXT NOT NULL
+			);
+			CREATE TABLE IF NOT EXISTS today_action_state (
+				user_id       TEXT    NOT NULL,
+				action_id     TEXT    NOT NULL,
+				mode          TEXT    NOT NULL,
+				kind          TEXT    NOT NULL DEFAULT '',
+				type_id       INTEGER NOT NULL DEFAULT 0,
+				grade         TEXT    NOT NULL DEFAULT '',
+				projected_isk REAL    NOT NULL DEFAULT 0,
+				quantity      INTEGER NOT NULL DEFAULT 0,
+				price         REAL    NOT NULL DEFAULT 0,
+				acted_at      TEXT    NOT NULL DEFAULT '',
+				PRIMARY KEY (user_id, action_id)
+			);
+			CREATE INDEX IF NOT EXISTS idx_today_action_state_acted
+				ON today_action_state(user_id, acted_at);
+			INSERT OR IGNORE INTO schema_version (version) VALUES (45);
+		`); err != nil {
+			return fmt.Errorf("migration v45: %w", err)
+		}
+		logger.Info("DB", "Applied migration v45 (today plan + action state)")
+	}
+
 	return nil
 }
 

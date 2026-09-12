@@ -2,7 +2,8 @@ import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Badge } from "@/components/ui/badge";
 import { DetailGroup as Group, DetailRow as Row } from "@/components/ui/DetailList";
 import { formatISK, formatMargin, formatNumber } from "@/lib/format";
-import { TypeIcon } from "@/components/ui/TypeIcon";
+import { ItemRef } from "@/components/ui/ItemRef";
+import { useI18n } from "@/lib/i18n";
 import type { StationTrade } from "@/lib/types";
 
 /**
@@ -33,6 +34,7 @@ export interface StationRowDrawerProps {
 }
 
 export function StationRowDrawer({ row, onClose, dailyProfit }: StationRowDrawerProps) {
+  const { t } = useI18n();
   if (!row) return null;
 
   const profit = dailyProfit(row);
@@ -42,10 +44,15 @@ export function StationRowDrawer({ row, onClose, dailyProfit }: StationRowDrawer
       <SheetContent
         width="w-[560px]"
         title={
-          <span className="flex items-center gap-2">
-            <TypeIcon typeId={row.TypeID} categoryId={row.CategoryID} size={24} />
-            <span className="truncate">{row.TypeName}</span>
-          </span>
+          <ItemRef
+            typeId={row.TypeID}
+            name={row.TypeName}
+            categoryId={row.CategoryID}
+            iconSize={24}
+            tone="title"
+            market
+            copyName
+          />
         }
         description={`#${row.TypeID}${row.CategoryName ? ` · ${row.CategoryName}` : ""} · ${row.StationName}`}
       >
@@ -79,8 +86,8 @@ export function StationRowDrawer({ row, onClose, dailyProfit }: StationRowDrawer
         </Group>
 
         <Group title="Prices">
-          <Row label="Buy" value={isk(row.BuyPrice)} />
-          <Row label="Sell" value={isk(row.SellPrice)} />
+          <Row label="Buy" value={isk(row.BuyPrice)} copyValue={row.BuyPrice} copyLabel={t("copyPrice")} />
+          <Row label="Sell" value={isk(row.SellPrice)} copyValue={row.SellPrice} copyLabel={t("copyPrice")} />
           <Row label="Spread" value={isk(row.Spread)} />
           <Row
             label="Region average"
@@ -94,12 +101,12 @@ export function StationRowDrawer({ row, onClose, dailyProfit }: StationRowDrawer
             }
             hint="ESI market average, or SDE base price for thin markets."
           />
-          <Row label="Suggested buy" value={isk(row.SuggestedBid)} />
-          <Row label="VWAP" value={isk(row.VWAP)} />
+          <Row label="Suggested buy" value={isk(row.SuggestedBid)} copyValue={row.SuggestedBid} copyLabel={t("copyPrice")} />
+          <Row label="VWAP" value={isk(row.VWAP)} copyValue={row.VWAP} copyLabel={t("copyPrice")} />
           <Row label="Average price" value={isk(row.AvgPrice)} />
           <Row label="High / low" value={`${isk(row.PriceHigh)} / ${isk(row.PriceLow)}`} />
-          <Row label="Expected buy fill" value={isk(row.ExpectedBuyPrice)} />
-          <Row label="Expected sell fill" value={isk(row.ExpectedSellPrice)} />
+          <Row label="Expected buy fill" value={isk(row.ExpectedBuyPrice)} copyValue={row.ExpectedBuyPrice} copyLabel={t("copyPrice")} />
+          <Row label="Expected sell fill" value={isk(row.ExpectedSellPrice)} copyValue={row.ExpectedSellPrice} copyLabel={t("copyPrice")} />
         </Group>
 
         <Group title="Liquidity">

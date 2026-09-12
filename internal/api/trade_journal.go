@@ -109,22 +109,22 @@ type corpDivisionKW struct {
 
 // journalSyncWalletStat is one line per synced wallet in the response.
 type journalSyncWalletStat struct {
-	WalletKind        string `json:"wallet_kind"` // "character" | "corporation"
-	CharacterID       int64  `json:"character_id,omitempty"`
-	CorporationID     int64  `json:"corporation_id,omitempty"`
-	Division          int    `json:"division,omitempty"`
-	SyncedAt          string `json:"synced_at"`
-	LiveTxnRows       int    `json:"live_txn_rows"`
-	LiveJournalRows   int    `json:"live_journal_rows"`
-	LiveIndustryRows  int    `json:"live_industry_rows,omitempty"`
-	LimitHit          bool   `json:"limit_hit"`
-	Error             string `json:"error,omitempty"`
+	WalletKind       string `json:"wallet_kind"` // "character" | "corporation"
+	CharacterID      int64  `json:"character_id,omitempty"`
+	CorporationID    int64  `json:"corporation_id,omitempty"`
+	Division         int    `json:"division,omitempty"`
+	SyncedAt         string `json:"synced_at"`
+	LiveTxnRows      int    `json:"live_txn_rows"`
+	LiveJournalRows  int    `json:"live_journal_rows"`
+	LiveIndustryRows int    `json:"live_industry_rows,omitempty"`
+	LimitHit         bool   `json:"limit_hit"`
+	Error            string `json:"error,omitempty"`
 }
 
 type journalSyncResponse struct {
-	Wallets                          []journalSyncWalletStat `json:"wallets"`
-	IndustryJobsAutoLinked           int                     `json:"industry_jobs_auto_linked"`
-	IndustryJobsStillUnlinkedAmbig   int                     `json:"industry_jobs_still_unlinked_ambiguous"`
+	Wallets                        []journalSyncWalletStat `json:"wallets"`
+	IndustryJobsAutoLinked         int                     `json:"industry_jobs_auto_linked"`
+	IndustryJobsStillUnlinkedAmbig int                     `json:"industry_jobs_still_unlinked_ambiguous"`
 }
 
 // --- handlers ---
@@ -597,18 +597,18 @@ func (s *Server) handleTradeJournalByType(w http.ResponseWriter, r *http.Request
 	}
 	// Roll lots up per (typeID, source) into a single row per typeID.
 	type byTypeRow struct {
-		TypeID                 int32   `json:"type_id"`
-		TypeName               string  `json:"type_name,omitempty"`
-		BuysQty                int64   `json:"buys_qty"`
-		SellsQty               int64   `json:"sells_qty"`
-		AvgBuyPrice            float64 `json:"avg_buy_price"`
-		AvgSellPrice           float64 `json:"avg_sell_price"`
-		TradingProfit          float64 `json:"trading_profit"`
-		ManufacturingProfit    float64 `json:"manufacturing_profit"`
-		CombinedProfit         float64 `json:"combined_profit"`
-		HeldQtyTrade           int64   `json:"held_qty_trade"`
-		HeldQtyManufacture     int64   `json:"held_qty_manufacture"`
-		UnattributedSellsQty   int64   `json:"unattributed_sells_qty"`
+		TypeID               int32   `json:"type_id"`
+		TypeName             string  `json:"type_name,omitempty"`
+		BuysQty              int64   `json:"buys_qty"`
+		SellsQty             int64   `json:"sells_qty"`
+		AvgBuyPrice          float64 `json:"avg_buy_price"`
+		AvgSellPrice         float64 `json:"avg_sell_price"`
+		TradingProfit        float64 `json:"trading_profit"`
+		ManufacturingProfit  float64 `json:"manufacturing_profit"`
+		CombinedProfit       float64 `json:"combined_profit"`
+		HeldQtyTrade         int64   `json:"held_qty_trade"`
+		HeldQtyManufacture   int64   `json:"held_qty_manufacture"`
+		UnattributedSellsQty int64   `json:"unattributed_sells_qty"`
 	}
 	rows := map[int32]*byTypeRow{}
 	get := func(typeID int32, name string) *byTypeRow {
@@ -1048,10 +1048,14 @@ func blendOpenPositionCostBasis(positions []engine.JournalOpenPosition) map[int3
 // re-parsing HTTP request state. Populates the cache on success.
 func (s *Server) computeTradeJournalResult(userID string, filter *db.WalletScopeFilter, sinceDate time.Time, fifoMode engine.FIFOMode, fees journalFeeRates, key string) (*engine.TradeJournalResult, error) {
 	// Load archive, compute, cache.
-	txns, _, err := s.db.ListArchivedWalletActivityForUser(userID, *filter, sinceDate)
+	// The journal entries alongside the transactions are what CCP actually
+	// charged. They were being loaded and dropped on the floor; the fees below
+	// come out of them wherever they can be tied to a sale.
+	txns, journalEntries, err := s.db.ListArchivedWalletActivityForUser(userID, *filter, sinceDate)
 	if err != nil {
 		return nil, err
 	}
+	actual := actualFeesFromJournal(journalEntries)
 	jobs, err := s.db.ListArchivedIndustryJobsForUser(userID, filter.IncludeCharacters, time.Time{})
 	if err != nil {
 		return nil, err
@@ -1160,10 +1164,13 @@ func (s *Server) computeTradeJournalResult(userID string, filter *db.WalletScope
 		FIFOMode:         fifoMode,
 		SalesTaxPercent:  profile.SalesTaxPercent,
 		BrokerFeePercent: profile.BrokerFeePercent,
-		Materials:        materials,
-		Products:         products,
-		MEByJob:          meResolver,
-		RegionAvgByType:  regionAvg,
+		// Modelled rates above are the fallback; a sale the journal can prove
+		// is charged what it was charged.
+		ActualSellTaxRateByTxnID: actual.SellTaxRateByTxnID,
+		Materials:                materials,
+		Products:                 products,
+		MEByJob:                  meResolver,
+		RegionAvgByType:          regionAvg,
 		TypeNameFor: func(id int32) string {
 			if sdeData == nil {
 				return ""
@@ -1175,6 +1182,14 @@ func (s *Server) computeTradeJournalResult(userID string, filter *db.WalletScope
 		},
 	}
 	result := engine.ComputeTradeJournal(engineTxns, engineJobs, opts)
+	// Period fee facts. Sales tax is also attributed per row above; broker fee
+	// and provider tax are charged at order placement and can only ever be
+	// period figures. They are reported rather than subtracted from any row —
+	// prorating them would make a row's profit move whenever an unrelated sale
+	// in the same window changed.
+	result.Totals.ActualSalesTaxISK = actual.SalesTaxISK
+	result.Totals.ActualBrokerFeeISK = actual.BrokerFeeISK
+	result.Totals.ActualProviderTaxISK = actual.ProviderTaxISK
 	journalRuntime.put(key, result)
 	return result, nil
 }

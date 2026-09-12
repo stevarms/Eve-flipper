@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, createContext, useContext, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, createContext, useContext, type ReactNode } from "react";
 
 export type ToastType = "info" | "success" | "error" | "warning";
 
@@ -65,8 +65,16 @@ const ToastContext = createContext<ToastContextType | null>(null);
 export function ToastProvider({ children }: { children: ReactNode }) {
   const { toasts, addToast, removeToast } = useToast();
 
+  // `toasts` lives in this component, so it re-renders on every toast. An
+  // object literal here would hand every useGlobalToast() consumer a new
+  // context value each time — which used to mean a handful of components and
+  // now means every row-action button in every table (see ui/rowAction.ts).
+  // Both callbacks are already useCallback-stable, so this identity never
+  // changes after mount.
+  const value = useMemo(() => ({ addToast, removeToast }), [addToast, removeToast]);
+
   return (
-    <ToastContext.Provider value={{ addToast, removeToast }}>
+    <ToastContext.Provider value={value}>
       {children}
       <ToastContainer toasts={toasts} removeToast={removeToast} />
     </ToastContext.Provider>
@@ -79,6 +87,19 @@ export function useGlobalToast() {
     throw new Error("useGlobalToast must be used within a ToastProvider");
   }
   return context;
+}
+
+const NO_TOASTS: ToastContextType = { addToast: () => 0, removeToast: () => {} };
+
+/**
+ * Like useGlobalToast, but silent instead of fatal when there is no provider.
+ *
+ * For the shared leaf primitives in components/ui, which are rendered bare in
+ * unit tests. Feature components should keep using useGlobalToast — a missing
+ * provider there is a real wiring bug and should stay loud.
+ */
+export function useOptionalToast(): ToastContextType {
+  return useContext(ToastContext) ?? NO_TOASTS;
 }
 
 export function ToastContainer({ toasts, removeToast }: { toasts: ToastMessage[]; removeToast: (id: number) => void }) {

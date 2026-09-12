@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { CopyButton } from "@/components/ui/CopyButton";
+import { OpenMarketButton } from "@/components/ui/OpenMarketButton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
@@ -155,6 +157,8 @@ export function AddHoldingSheet({
                 <TypeIcon typeId={typeId} size={16} />
                 <span>{resolvedName}</span>
                 <span className="text-fg-tertiary">#{typeId}</span>
+                <OpenMarketButton typeId={typeId} label={t("openMarketHint")} />
+                <CopyButton text={resolvedName} label={t("copyItem")} />
               </div>
             ) : null}
             {matches.length > 0 ? (

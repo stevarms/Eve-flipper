@@ -1699,7 +1699,8 @@ start / isCurrent tracking to cancel superseded scans),
 `scanResultsLogic.ts`, `stationLookup.ts`, `tablePrefs.ts`,
 `taxProfile.ts`, `telemetry.ts` (`trackClientTelemetry`), `tradeHubs.ts`
 (canonical hub metadata), `useAuth.ts`, `useEsiFeeImport.ts`,
-`useEsiStatus.ts`, `useEveContextMenu.ts`, `useIndustrySharedPrefs.ts`,
+`useEsiStatus.ts`, `useEveUiActions.ts` (the three ESI in-game
+actions, with one shared error path), `useIndustrySharedPrefs.ts`,
 `useKeyboardShortcuts.ts`, `useTheme.ts`, `useVersionCheck.ts`,
 `utils.ts`.
 

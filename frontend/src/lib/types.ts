@@ -4061,3 +4061,209 @@ export type RouteState =
       totalISK: number;
       systems: SystemDanger[];
     };
+
+// --- Today: the ranked work order -------------------------------------
+//
+// Mirrors internal/engine/today.go. Two figures per action on purpose:
+// expected_isk_7d is the median view and is only ever displayed, while
+// downside_isk_7d is the realistic-bad view the queue is actually ranked on.
+// Reading the first as "what this is worth" is the mistake the split exists
+// to prevent.
+
+export type TodayActionKind =
+  | "reprice"
+  | "cancel"
+  | "buy"
+  | "list"
+  | "deliver"
+  | "pi_restart";
+
+/** proven/likely reach the queue; unproven/avoid go to `not_advised`. */
+export type TodayGrade = "proven" | "likely" | "unproven" | "avoid";
+
+export type TodayUrgency = "now" | "today" | "soon";
+
+export interface TodayDeepLink {
+  tab: string;
+  type_id?: number;
+  station_id?: number;
+  order_id?: number;
+}
+
+export interface TodayReliability {
+  grade: TodayGrade;
+  score: number;
+  /** Realized over expected on your own record. 0 means no record exists,
+   *  which is not the same as a record of zero. */
+  reality_ratio?: number;
+  sample_trades: number;
+  realized_isk: number;
+  win_rate_pct?: number;
+  /** Which ceiling decided the quantity, so the number is explained. */
+  caps?: string[];
+  /** Why this is not advised. Non-empty exactly when the grade is not
+   *  proven/likely. */
+  blockers?: string[];
+  evidence: string;
+}
+
+export interface TodayAction {
+  id: string;
+  kind: TodayActionKind;
+  urgency: TodayUrgency;
+
+  type_id?: number;
+  type_name?: string;
+  category_id?: number;
+  location_id?: number;
+  location_name?: string;
+
+  character_id?: number;
+  character_name?: string;
+  /** True when one of your characters is already docked where this happens. */
+  here: boolean;
+
+  headline: string;
+  why: string;
+
+  current_price?: number;
+  /** Already on EVE's 4-significant-digit grid — paste it verbatim. */
+  paste_price?: number;
+  price_step?: number;
+  quantity?: number;
+  capital_isk?: number;
+
+  expected_isk_7d: number;
+  downside_isk_7d: number;
+  /** Capital exposed if this goes wrong. */
+  at_risk_isk: number;
+
+  grade: TodayGrade;
+  reliability: TodayReliability;
+
+  est_seconds: number;
+  risk_adjusted_isk_per_minute: number;
+
+  cumulative_seconds: number;
+  in_budget: boolean;
+
+  deadline?: string;
+  timing_note?: string;
+
+  deep_link: TodayDeepLink;
+
+  done: boolean;
+  skipped: boolean;
+}
+
+export interface TodayCapital {
+  wallet_isk: number;
+  buy_order_isk: number;
+  inventory_isk: number;
+  sell_order_isk: number;
+  total_isk: number;
+  idle_pct: number;
+  idle_cost_isk_per_day: number;
+  verdict: string;
+}
+
+export interface TodayPerformance {
+  realized_today_isk: number;
+  avg_7d_isk_per_day: number;
+  avg_30d_isk_per_day: number;
+  return_pct_per_day: number;
+  /** False when the rate is a default rather than an observation. */
+  measured: boolean;
+}
+
+export interface TodayOption {
+  id: string;
+  kind: "station_flips" | "build" | "pi" | "cash" | string;
+  label: string;
+  detail: string;
+  capital_isk: number;
+  expected_isk_per_day: number;
+  downside_isk_per_day: number;
+  return_pct_per_day: number;
+  setup_seconds: number;
+  grade: TodayGrade;
+  action_count: number;
+  deep_link: TodayDeepLink;
+}
+
+export type TodayBatchKind = "multibuy" | "reprice_list" | "waypoint";
+
+export interface TodayBatchItem {
+  type_id: number;
+  type_name: string;
+  quantity: number;
+  price?: number;
+}
+
+export interface TodayBatch {
+  id: string;
+  kind: TodayBatchKind;
+  label: string;
+  items?: TodayBatchItem[];
+  destination_id?: number;
+  destination_system_id?: number;
+  destination_name?: string;
+  total_capital_isk: number;
+  expected_isk_7d: number;
+  downside_isk_7d: number;
+}
+
+export interface TodayTiming {
+  /** 0 = Sunday, -1 = unknown. */
+  best_weekday: number;
+  best_multiplier?: number;
+  today_multiplier?: number;
+  note?: string;
+}
+
+export interface TodayBudget {
+  budget_seconds: number;
+  planned_seconds: number;
+  in_budget_count: number;
+  total_count: number;
+  in_budget_isk_7d: number;
+  beyond_isk_7d: number;
+}
+
+export interface TodayPlan {
+  generated_at: string;
+  capital: TodayCapital;
+  performance: TodayPerformance;
+  actions: TodayAction[];
+  not_advised: TodayAction[];
+  options: TodayOption[];
+  batches: TodayBatch[];
+  timing: TodayTiming;
+  budget: TodayBudget;
+  warnings?: string[];
+}
+
+export interface TodayPlanEnvelope {
+  plan: TodayPlan | null;
+  generated_at?: string;
+  age_seconds: number;
+  stale: boolean;
+  /** The server's own staleness threshold, so the frontend does not keep a
+   *  second copy of the number. */
+  stale_after_seconds: number;
+}
+
+export type TodayActionStateMode = "done" | "skip" | "clear";
+
+/** What the plan promised at the moment of acting. Sent with the mark because
+ *  the plan is replaced on the next refresh and the projection is then gone. */
+export interface TodayActionStatePayload {
+  action_id: string;
+  mode: TodayActionStateMode;
+  kind?: string;
+  type_id?: number;
+  grade?: string;
+  projected_isk?: number;
+  quantity?: number;
+  price?: number;
+}

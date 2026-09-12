@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useI18n } from "@/lib/i18n";
+import { ItemRef } from "@/components/ui/ItemRef";
 import { useAchievements } from "../achievements/AchievementsProvider";
 import { getEveLedgerDashboard, type CharacterScope } from "../../lib/api";
 import { type TranslationKey } from "../../lib/i18n";
@@ -36,7 +38,7 @@ export function WalletDashboardTab({ characterScope, formatIsk, t, onOpenPaperTr
   const [windowDays, setWindowDays] = useState<LedgerWindow>(90);
   const [period, setPeriod] = useState<LedgerPeriod>("daily");
   const [chartMode, setChartMode] = useState<LedgerChartMode>("capital");
-  const [salesTax, setSalesTax] = useState(8);
+  const [salesTax, setSalesTax] = useState(7.5);
   const [brokerFee, setBrokerFee] = useState(1);
   const [data, setData] = useState<EveLedgerDashboard | null>(null);
   const [loading, setLoading] = useState(false);
@@ -606,6 +608,7 @@ function InventoryTable({
   items: EveLedgerInventoryItem[];
   formatIsk: (v: number) => string;
 }) {
+  const { t } = useI18n();
   if (items.length === 0) {
     return <div className="py-8 text-center text-xs text-eve-dim">No asset snapshot</div>;
   }
@@ -623,13 +626,22 @@ function InventoryTable({
         {items.slice(0, 16).map((item) => {
           const positive = item.unrealized_pnl >= 0;
           return (
-            <tr key={item.type_id} className="border-t border-eve-border/50 hover:bg-eve-panel/40">
-              <td className="px-3 py-2 text-eve-text">
-                <div className="flex items-center gap-2 min-w-0">
-                  <img src={`https://images.evetech.net/types/${item.type_id}/icon?size=32`} alt="" className="w-5 h-5" />
-                  <span className="truncate">{item.type_name || `Type #${item.type_id}`}</span>
-                  {!item.priced && <span className="text-[10px] text-eve-warning">unpriced</span>}
-                </div>
+            <tr key={item.type_id} className="group border-t border-eve-border/50 hover:bg-eve-panel/40">
+              <td className="max-w-[280px] px-3 py-2 text-eve-text">
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <ItemRef
+                    typeId={item.type_id}
+                    name={item.type_name}
+                    iconSize={20}
+                    market
+                    copyName
+                    reveal="hover"
+                    marketLabel={t("openMarketHint")}
+                  />
+                  {!item.priced && (
+                    <span className="shrink-0 text-[10px] text-eve-warning">unpriced</span>
+                  )}
+                </span>
               </td>
               <td className="px-3 py-2 text-right text-eve-dim">{item.quantity.toLocaleString()}</td>
               <td className="px-3 py-2 text-right text-eve-accent">{formatIsk(item.market_value)}</td>

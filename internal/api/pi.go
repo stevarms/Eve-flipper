@@ -74,14 +74,22 @@ func (s *Server) handleAuthPIPlanets(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	resp, err := s.buildPIPlanets(userID, characterID, allScope)
+	if err != nil {
+		writeStatusError(w, err)
+		return
+	}
+	writeJSON(w, resp)
+}
+
+// buildPIPlanets is the colony payload without the HTTP wrapper. Today reads
+// it to find extractors that have stopped, which is the most time-sensitive
+// thing the app knows about: a stalled colony is ISK per day already lost,
+// not a forecast.
+func (s *Server) buildPIPlanets(userID string, characterID int64, allScope bool) (piPlanetsResponse, error) {
 	sessions, err := s.authSessionsForScope(userID, characterID, allScope, true)
 	if err != nil {
-		if strings.Contains(err.Error(), "not logged in") {
-			writeError(w, http.StatusUnauthorized, err.Error())
-		} else {
-			writeError(w, http.StatusBadRequest, err.Error())
-		}
-		return
+		return piPlanetsResponse{}, authScopeStatusError(err)
 	}
 
 	priceByType := map[int32]float64{}
@@ -159,7 +167,7 @@ func (s *Server) handleAuthPIPlanets(w http.ResponseWriter, r *http.Request) {
 		}
 		return rows[i].PlanetID < rows[j].PlanetID
 	})
-	writeJSON(w, piPlanetsResponse{Planets: rows, Count: len(rows), Warnings: warnings})
+	return piPlanetsResponse{Planets: rows, Count: len(rows), Warnings: warnings}, nil
 }
 
 func summarizePIPlanet(row *piPlanetRow, detail *esi.CharacterPlanetDetail, priceByType map[int32]float64, typeName func(int32) string, schematics map[int32]*sde.PlanetSchematic) {

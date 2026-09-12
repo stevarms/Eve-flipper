@@ -1,4 +1,6 @@
 import { useCallback, useMemo } from "react";
+import { CopyPrice } from "@/components/ui/CopyPrice";
+import { ItemRef } from "@/components/ui/ItemRef";
 import { useI18n } from "@/lib/i18n";
 import { formatISK } from "@/lib/format";
 import type { FlatMaterial } from "@/lib/types";
@@ -108,12 +110,24 @@ export function IndustryShoppingList({
                   </button>
                 )}
               </td>
-              <td className="px-3 py-1.5 text-eve-text">{material.type_name}</td>
+              <td className="max-w-[280px] px-3 py-1.5 text-eve-text">
+                <ItemRef
+                  typeId={material.type_id}
+                  name={material.type_name}
+                  iconSize={16}
+                  market
+                  copyName
+                  marketLabel={t("openMarketHint")}
+                />
+              </td>
               <td className="px-3 py-1.5 text-right font-mono text-eve-accent">
                 {material.quantity.toLocaleString()}
               </td>
               <td className="px-3 py-1.5 text-right font-mono text-eve-dim">
-                {formatISK(material.unit_price)}
+                <span className="inline-flex items-center justify-end gap-1">
+                  {formatISK(material.unit_price)}
+                  <CopyPrice value={material.unit_price} label={t("copyPrice")} />
+                </span>
               </td>
               <td className="px-3 py-1.5 text-right font-mono text-eve-accent">
                 {formatISK(material.total_price)}

@@ -14,7 +14,27 @@ interface I18nContextType {
   t: (key: TranslationKey, params?: Record<string, string | number>) => string;
 }
 
-const I18nContext = createContext<I18nContextType>(null!);
+/**
+ * Default value, not `null!`.
+ *
+ * The old `null!` meant any component calling useI18n() outside a provider
+ * crashed on destructuring — which is fine for feature components (they are
+ * always inside the app tree) but not for the shared leaf primitives in
+ * components/ui, which are rendered bare in unit tests. Falling back to the
+ * English table gives those a working `t` instead of a TypeError; inside the
+ * app the provider always wins.
+ */
+const I18nContext = createContext<I18nContextType>({
+  locale: "en",
+  setLocale: () => {},
+  t: (key, params) => {
+    let str: string = en[key] ?? key;
+    if (params) {
+      for (const [k, v] of Object.entries(params)) str = str.replace(`{${k}}`, String(v));
+    }
+    return str;
+  },
+});
 
 function getDefaultLocale(): Locale {
   // Check localStorage first

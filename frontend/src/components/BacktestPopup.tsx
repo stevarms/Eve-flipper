@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useI18n } from "@/lib/i18n";
+import { ItemRef } from "@/components/ui/ItemRef";
 import {
   ColorType,
   CrosshairMode,
@@ -62,6 +64,7 @@ export function BacktestPopup({
   sellSalesTaxPercent,
   cargoCapacity = 0,
 }: Props) {
+  const { t } = useI18n();
   const { trackAchievementEvent } = useAchievements();
   const [holdDays, setHoldDays] = useState(7);
   const [windowDays, setWindowDays] = useState(90);
@@ -498,8 +501,18 @@ export function BacktestPopup({
                     </thead>
                     <tbody>
                       {(result.items ?? []).slice(0, 20).map((item) => (
-                        <tr key={item.type_id} className="border-t border-eve-border/40">
-                          <td className="px-2 py-1 truncate max-w-[220px]">{item.type_name}</td>
+                        <tr key={item.type_id} className="group border-t border-eve-border/40">
+                          <td className="max-w-[220px] px-2 py-1">
+                            <ItemRef
+                              typeId={item.type_id}
+                              name={item.type_name}
+                              iconSize={16}
+                              market
+                              copyName
+                              reveal="hover"
+                              marketLabel={t("openMarketHint")}
+                            />
+                          </td>
                           <td className={`px-2 py-1 text-right font-mono ${item.total_pnl >= 0 ? "text-green-400" : "text-red-300"}`}>
                             {formatISK(item.total_pnl)}
                           </td>
@@ -530,9 +543,19 @@ export function BacktestPopup({
                     </thead>
                     <tbody>
                       {ledger.map((tr, idx) => (
-                        <tr key={`${tr.type_id}:${tr.entry_date}:${idx}`} className="border-t border-eve-border/40">
+                        <tr key={`${tr.type_id}:${tr.entry_date}:${idx}`} className="group border-t border-eve-border/40">
                           <td className="px-2 py-1 text-eve-dim">{tr.exit_date}{tr.status === "open" ? " *" : ""}</td>
-                          <td className="px-2 py-1 truncate max-w-[160px]">{tr.type_name}</td>
+                          <td className="max-w-[200px] px-2 py-1">
+                            <ItemRef
+                              typeId={tr.type_id}
+                              name={tr.type_name}
+                              iconSize={16}
+                              market
+                              copyName
+                              reveal="hover"
+                              marketLabel={t("openMarketHint")}
+                            />
+                          </td>
                           <td className="px-2 py-1 text-right font-mono text-eve-dim">
                             {formatTradeQty(tr)}
                           </td>

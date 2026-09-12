@@ -942,6 +942,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/auth/pi/planets", s.handleAuthPIPlanets)
 	mux.HandleFunc("GET /api/auth/undercuts", s.handleAuthUndercuts)
 	mux.HandleFunc("GET /api/auth/orders/desk", s.handleAuthOrderDesk)
+	// Today, the ranked work order. See internal/api/today.go.
+	mux.HandleFunc("GET /api/auth/today", s.handleAuthToday)
+	mux.HandleFunc("POST /api/auth/today/refresh", s.handleAuthTodayRefresh)
+	mux.HandleFunc("POST /api/auth/today/state", s.handleAuthTodayState)
 	mux.HandleFunc("GET /api/auth/orders/history", s.handleAuthOrderHistory)
 	// Assets → Positions. See internal/api/positions.go.
 	mux.HandleFunc("GET /api/auth/positions", s.handleAuthPositions)
@@ -8434,209 +8438,6 @@ func (s *Server) handleAuthRebootStationCache(w http.ResponseWriter, r *http.Req
 	})
 }
 
-func (s *Server) handleAuthOrderDesk(w http.ResponseWriter, r *http.Request) {
-	userID := userIDFromRequest(r)
-
-	characterID, allScope, err := parseAuthScope(r)
-	if err != nil {
-		writeError(w, 400, err.Error())
-		return
-	}
-	selectedSessions, err := s.authSessionsForScope(userID, characterID, allScope, true)
-	if err != nil {
-		if strings.Contains(err.Error(), "not logged in") {
-			writeError(w, 401, err.Error())
-		} else {
-			writeError(w, 400, err.Error())
-		}
-		return
-	}
-
-	salesTax := 8.0
-	if cfg := s.loadConfigForUser(userID); cfg != nil {
-		salesTax = cfg.SalesTaxPercent
-	}
-	if v := r.URL.Query().Get("sales_tax"); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 && f <= 100 {
-			salesTax = f
-		}
-	}
-	brokerFee := 1.0
-	if v := r.URL.Query().Get("broker_fee"); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 && f <= 100 {
-			brokerFee = f
-		}
-	}
-	targetETADays := 3.0
-	if v := r.URL.Query().Get("target_eta_days"); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 && f <= 60 {
-			targetETADays = f
-		}
-	}
-	minMarginPct := 3.0
-	if v := r.URL.Query().Get("min_margin_pct"); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 && f <= 100 {
-			minMarginPct = f
-		}
-	}
-
-	var orders []esi.CharacterOrder
-	// Remember which order belongs to which session so the response can
-	// carry owner tags on each row. Empty in single-character mode (the
-	// map is only consulted when scope=all).
-	type orderOwner struct {
-		characterID   int64
-		characterName string
-	}
-	ownerByOrderID := make(map[int64]orderOwner)
-	for _, sess := range selectedSessions {
-		token, tokenErr := s.sessions.EnsureValidTokenForUserCharacter(s.sso, userID, sess.CharacterID)
-		if tokenErr != nil {
-			log.Printf("[AUTH] OrderDesk token error (%s): %v", sess.CharacterName, tokenErr)
-			if !allScope {
-				writeError(w, 401, tokenErr.Error())
-				return
-			}
-			continue
-		}
-		charOrders, fetchErr := s.esi.GetCharacterOrders(sess.CharacterID, token)
-		if fetchErr != nil {
-			log.Printf("[AUTH] OrderDesk orders error (%s): %v", sess.CharacterName, fetchErr)
-			if !allScope {
-				writeError(w, 500, "failed to fetch orders: "+fetchErr.Error())
-				return
-			}
-			continue
-		}
-		for _, o := range charOrders {
-			ownerByOrderID[o.OrderID] = orderOwner{characterID: sess.CharacterID, characterName: sess.CharacterName}
-		}
-		orders = append(orders, charOrders...)
-	}
-
-	if len(orders) == 0 {
-		writeJSON(w, engine.ComputeOrderDesk(nil, nil, nil, nil, engine.OrderDeskOptions{
-			SalesTaxPercent:  salesTax,
-			BrokerFeePercent: brokerFee,
-			TargetETADays:    targetETADays,
-			WarnExpiryDays:   2,
-			MinMarginPercent: minMarginPct,
-		}))
-		return
-	}
-
-	// Enrich names for UI readability.
-	s.mu.RLock()
-	sdeData := s.sdeData
-	s.mu.RUnlock()
-	if sdeData != nil {
-		locationIDs := make(map[int64]bool, len(orders))
-		for _, o := range orders {
-			locationIDs[o.LocationID] = true
-		}
-		s.esi.PrefetchStationNames(locationIDs)
-		for i := range orders {
-			if t, ok := sdeData.Types[orders[i].TypeID]; ok {
-				orders[i].TypeName = t.Name
-			}
-			orders[i].LocationName = s.esi.StationName(orders[i].LocationID)
-		}
-	}
-
-	type regionType struct {
-		regionID int32
-		typeID   int32
-	}
-	pairs := make(map[regionType]bool)
-	for _, o := range orders {
-		pairs[regionType{regionID: o.RegionID, typeID: o.TypeID}] = true
-	}
-
-	type fetchResult struct {
-		orders []esi.MarketOrder
-		err    error
-	}
-	books := make(map[regionType]fetchResult)
-	history := make(map[engine.OrderDeskHistoryKey][]esi.HistoryEntry)
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 10)
-
-	// The FIFO trade journal is the only source that knows what held stock
-	// actually cost, which is the one thing the book cannot tell us about a
-	// sell order. Run it against the book fan-out rather than after it, so
-	// a cold journal cache costs no extra wall-clock.
-	var costBasisByType map[int32]float64
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		costBasisByType = s.orderDeskCostBasisByType(userID)
-	}()
-
-	for pair := range pairs {
-		wg.Add(1)
-		go func(rt regionType) {
-			defer wg.Done()
-
-			sem <- struct{}{}
-			ro, fetchErr := s.esi.FetchRegionOrdersByTypeContext(r.Context(), rt.regionID, rt.typeID)
-			<-sem
-
-			var entries []esi.HistoryEntry
-			var ok bool
-			if s.db != nil {
-				entries, ok = s.db.GetMarketHistory(rt.regionID, rt.typeID)
-			}
-			if !ok {
-				fresh, histErr := s.esi.FetchMarketHistory(rt.regionID, rt.typeID)
-				if histErr == nil {
-					entries = fresh
-					if s.db != nil && len(entries) > 0 {
-						s.db.SetMarketHistory(rt.regionID, rt.typeID, entries)
-					}
-				}
-			}
-
-			mu.Lock()
-			books[rt] = fetchResult{orders: ro, err: fetchErr}
-			if len(entries) > 0 {
-				history[engine.NewOrderDeskHistoryKey(rt.regionID, rt.typeID)] = entries
-			}
-			mu.Unlock()
-		}(pair)
-	}
-	wg.Wait()
-
-	var allRegional []esi.MarketOrder
-	unavailableBooks := make(map[engine.OrderDeskHistoryKey]bool)
-	for rt, fr := range books {
-		if fr.err == nil {
-			allRegional = append(allRegional, fr.orders...)
-			continue
-		}
-		unavailableBooks[engine.NewOrderDeskHistoryKey(rt.regionID, rt.typeID)] = true
-	}
-
-	result := engine.ComputeOrderDesk(orders, allRegional, history, unavailableBooks, engine.OrderDeskOptions{
-		SalesTaxPercent:  salesTax,
-		BrokerFeePercent: brokerFee,
-		TargetETADays:    targetETADays,
-		WarnExpiryDays:   2,
-		MinMarginPercent: minMarginPct,
-		CostBasisByType:  costBasisByType,
-	})
-	// Stamp owner tags for multi-character views (Orders tab). Always
-	// populate — single-character requests just repeat the same identity
-	// per row, and the frontend can still use it.
-	for i := range result.Orders {
-		if owner, ok := ownerByOrderID[result.Orders[i].OrderID]; ok {
-			result.Orders[i].CharacterID = owner.characterID
-			result.Orders[i].CharacterName = owner.characterName
-		}
-	}
-	writeJSON(w, result)
-}
-
 func (s *Server) handleAuthStationCommand(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
 	if !s.isReady() {
@@ -8929,7 +8730,7 @@ func (s *Server) handleAuthStationCommand(w http.ResponseWriter, r *http.Request
 		if userCfg != nil && userCfg.SalesTaxPercent > 0 {
 			salesTax = userCfg.SalesTaxPercent
 		} else {
-			salesTax = 8.0
+			salesTax = baseSalesTaxPercent
 		}
 	}
 	brokerFee := req.BrokerFee
@@ -11882,7 +11683,7 @@ func (s *Server) handleAuthLedger(w http.ResponseWriter, r *http.Request) {
 			days = n
 		}
 	}
-	salesTax := 8.0
+	salesTax := baseSalesTaxPercent
 	if cfg := s.loadConfigForUser(userID); cfg != nil {
 		salesTax = cfg.SalesTaxPercent
 	}
@@ -12197,7 +11998,7 @@ func (s *Server) handleAuthPortfolio(w http.ResponseWriter, r *http.Request) {
 			days = d
 		}
 	}
-	salesTax := 8.0
+	salesTax := baseSalesTaxPercent
 	if cfg := s.loadConfigForUser(userID); cfg != nil {
 		salesTax = cfg.SalesTaxPercent
 	}

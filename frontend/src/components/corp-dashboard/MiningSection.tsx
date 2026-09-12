@@ -4,6 +4,7 @@ import { type TranslationKey } from "../../lib/i18n";
 import type { CorpDashboard, CorpMiningEntry } from "../../lib/types";
 import { BarChart, CsvExportButton, DateRangeSelector, KpiCard } from "./shared";
 import { LoadingBlock } from "@/components/ui/LoadingBlock";
+import { ItemRef } from "@/components/ui/ItemRef";
 export function MiningSection({
   dashboard,
   mode,
@@ -191,13 +192,18 @@ export function MiningSection({
                 {minerEntries.slice(0, 100).map((e, i) => {
                   const unitIsk = oreIskPerUnit.get(e.type_id) || 0;
                   return (
-                    <tr key={i} className="border-t border-eve-border/30">
+                    <tr key={i} className="group border-t border-eve-border/30">
                       <td className="px-2 py-1 text-eve-dim">{e.date}</td>
                       <td className="px-2 py-1 text-eve-text">
-                        <div className="flex items-center gap-1.5">
-                          <img src={`https://images.evetech.net/types/${e.type_id}/icon?size=32`} alt="" className="w-4 h-4" />
-                          {e.type_name}
-                        </div>
+                        <ItemRef
+                          typeId={e.type_id}
+                          name={e.type_name}
+                          iconSize={16}
+                          market
+                          copyName
+                          reveal="hover"
+                          marketLabel={t("openMarketHint")}
+                        />
                       </td>
                       <td className="px-2 py-1 text-eve-accent text-right font-mono">{e.quantity.toLocaleString()}</td>
                       <td className="px-2 py-1 text-eve-profit text-right font-mono">{unitIsk > 0 ? formatIsk(e.quantity * unitIsk) : "—"}</td>

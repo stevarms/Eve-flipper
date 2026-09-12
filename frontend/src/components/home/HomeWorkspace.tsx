@@ -1,170 +1,198 @@
-import { useEffect, useMemo, useState } from "react";
-import { ArrowRight, Check } from "lucide-react";
-import {
-  getOrderDesk,
-  getScanHistory,
-  getScanHistoryResults,
-} from "@/lib/api";
-import { formatISK, formatNumber } from "@/lib/format";
-import { TypeIcon } from "@/components/ui/TypeIcon";
-import { CopyPrice } from "@/components/ui/CopyPrice";
-import { useI18n } from "@/lib/i18n";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getTodayPlan, refreshTodayPlan, setTodayActionState } from "@/lib/api";
+import { useGlobalToast } from "@/components/Toast";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/EmptyState";
-import { cn } from "@/lib/utils";
+import { useI18n } from "@/lib/i18n";
 import type { MainTabId } from "@/lib/cockpit";
-import type { OrderDeskOrder, OrderDeskResponse, ScanRecord, StationTrade } from "@/lib/types";
+import type { TodayAction, TodayDeepLink, TodayOption, TodayPlan } from "@/lib/types";
+import { ActionList } from "./ActionList";
+import { BatchBar } from "./BatchBar";
+import { CapitalBar } from "./CapitalBar";
+import { NotAdvisedPanel } from "./NotAdvisedPanel";
+import { OptionsPanel } from "./OptionsPanel";
+import { RunPanel } from "./RunPanel";
+import { TodayHeader, type TodayView } from "./TodayHeader";
 
 /**
- * Home / "Today" — the work order.
+ * Home / "Today" — decide, then execute.
  *
- * Everything here is derived from data the app already produces: the order
- * desk (which orders are outbid or dead, and what to reprice them to) and
- * your most recent Station Trade scan, read back out of scan history. No new
- * endpoints, and deliberately no fresh scan on load — this screen must be
- * instant, and a scan is an explicit action you take on the Trade workspace.
+ * The screen answers three questions in order: where the ISK is and what it
+ * is earning, what to do next and in what order, and where the idle ISK
+ * should go. The ranking, the grading and the sentences all come from
+ * internal/engine/today.go; this component renders them and owns the
+ * interaction.
  *
- * The design intent is a short ordered pass, not a dashboard: check what you
- * already have on the market before adding anything new, because repricing
- * an existing order earns more than a new one and costs a fraction of the
- * broker fee.
+ * Two loads with deliberately different costs. The stored plan is one SQLite
+ * row, so the page paints immediately. Rebuilding it fans out to ESI and
+ * streams progress, which is why it happens on an explicit refresh, or
+ * automatically once the server reports the plan has gone stale.
  */
 
-const BUY_SHEET_LIMIT = 25;
-const SELL_SHEET_LIMIT = 25;
+const VIEW_STORAGE_KEY = "eve-flipper:today-view";
 
-function relativeAge(iso: string): string {
-  const then = Date.parse(iso);
-  if (!Number.isFinite(then)) return "";
-  const mins = Math.max(0, Math.round((Date.now() - then) / 60000));
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.round(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.round(hours / 24)}d ago`;
-}
-
-function Kpi({ label, value, tone }: { label: string; value: string; tone?: "warn" | "loss" }) {
-  return (
-    <div className="min-w-0 flex-1 border-r border-eve-border px-3 py-2 last:border-r-0">
-      <div className="font-ui text-t-caption uppercase tracking-wide text-fg-tertiary">{label}</div>
-      <div
-        className={cn(
-          "font-num tnum text-t-title font-semibold",
-          tone === "warn" && "text-warn",
-          tone === "loss" && "text-loss",
-          !tone && "text-fg",
-        )}
-      >
-        {value}
-      </div>
-    </div>
-  );
-}
-
-function Step({
-  n,
-  label,
-  done,
-  action,
-}: {
-  n: number;
-  label: string;
-  done?: boolean;
-  action?: React.ReactNode;
-}) {
-  return (
-    <li className="flex items-center gap-3 border-b border-eve-border/50 py-2 last:border-b-0">
-      <span
-        className={cn(
-          "flex h-5 w-5 shrink-0 items-center justify-center rounded-full font-num text-t-caption font-semibold",
-          done ? "bg-profit/15 text-profit" : "bg-eve-accent/15 text-eve-accent",
-        )}
-      >
-        {done ? <Check className="h-3 w-3" /> : n}
-      </span>
-      <span className={cn("flex-1 font-ui text-t-body", done ? "text-fg-tertiary" : "text-fg")}>
-        {label}
-      </span>
-      {action}
-    </li>
-  );
-}
+/** Done and skipped marks applied locally while the server catches up. */
+type LocalMarks = Record<string, "done" | "skip">;
 
 export interface HomeWorkspaceProps {
   isLoggedIn: boolean;
-  onNavigate: (tab: MainTabId) => void;
+  onNavigate: (tab: MainTabId, focus?: TodayDeepLink) => void;
 }
 
 export function HomeWorkspace({ isLoggedIn, onNavigate }: HomeWorkspaceProps) {
   const { t } = useI18n();
-  const [desk, setDesk] = useState<OrderDeskResponse | null>(null);
-  const [scan, setScan] = useState<{ record: ScanRecord; rows: StationTrade[] } | null>(null);
+  const { addToast } = useGlobalToast();
+
+  const [plan, setPlan] = useState<TodayPlan | null>(null);
+  const [generatedAt, setGeneratedAt] = useState<string | undefined>(undefined);
+  const [stale, setStale] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [progress, setProgress] = useState("");
+  const [marks, setMarks] = useState<LocalMarks>({});
+  const [view, setView] = useState<TodayView>(() => {
+    try {
+      return localStorage.getItem(VIEW_STORAGE_KEY) === "list" ? "list" : "run";
+    } catch {
+      return "run";
+    }
+  });
+
+  // Guards the once-per-load auto-refresh so a re-render cannot fire a second
+  // scan-shaped request while the first is still in flight.
+  const autoRefreshed = useRef(false);
+
+  const applyPlan = useCallback((next: TodayPlan) => {
+    setPlan(next);
+    setGeneratedAt(next.generated_at);
+    setStale(false);
+    // A fresh plan supersedes every local mark: the actions were rebuilt, so
+    // a "done" against the old list is no longer about anything on screen.
+    setMarks({});
+  }, []);
+
+  const runRefresh = useCallback(async () => {
+    setRefreshing(true);
+    setProgress("");
+    try {
+      const next = await refreshTodayPlan(setProgress);
+      applyPlan(next);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      addToast(t("todayRefreshFailed", { error: message }), "error", 4000);
+    } finally {
+      setRefreshing(false);
+      setProgress("");
+    }
+  }, [addToast, applyPlan, t]);
 
   useEffect(() => {
     let cancelled = false;
+    if (!isLoggedIn) {
+      setLoading(false);
+      return;
+    }
 
     (async () => {
       setLoading(true);
+      try {
+        const env = await getTodayPlan();
+        if (cancelled) return;
+        setPlan(env.plan);
+        setGeneratedAt(env.generated_at);
+        setStale(env.stale);
+        setLoading(false);
 
-      // Order desk needs auth; the buy sheet does not. Load them
-      // independently so a logged-out user still gets the scan-derived half.
-      const deskPromise = isLoggedIn
-        ? getOrderDesk().catch(() => null)
-        : Promise.resolve(null);
-
-      const scanPromise = (async () => {
-        try {
-          const history = await getScanHistory(25);
-          const latest = history.find((r) => r.tab === "station");
-          if (!latest) return null;
-          const res = await getScanHistoryResults(latest.id);
-          return { record: latest, rows: (res.results as StationTrade[]) ?? [] };
-        } catch {
-          return null;
+        // Auto-refresh once per load when the server says the plan has aged
+        // out. The paint above has already happened, so this costs the user
+        // no waiting on a plan they can already read.
+        if (env.stale && !autoRefreshed.current) {
+          autoRefreshed.current = true;
+          await runRefresh();
         }
-      })();
-
-      const [deskRes, scanRes] = await Promise.all([deskPromise, scanPromise]);
-      if (cancelled) return;
-      setDesk(deskRes);
-      setScan(scanRes);
-      setLoading(false);
+      } catch {
+        if (!cancelled) setLoading(false);
+      }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [isLoggedIn]);
+  }, [isLoggedIn, runRefresh]);
 
-  /** Top candidates from the last scan, by realistic daily profit. */
-  const buySheet = useMemo(() => {
-    if (!scan) return [];
-    return [...scan.rows]
-      .filter((r) => (r.DailyProfit ?? r.RealizableDailyProfit ?? 0) > 0)
-      .sort(
-        (a, b) =>
-          (b.DailyProfit ?? b.RealizableDailyProfit ?? 0) -
-          (a.DailyProfit ?? a.RealizableDailyProfit ?? 0),
-      )
-      .slice(0, BUY_SHEET_LIMIT);
-  }, [scan]);
+  const changeView = useCallback((next: TodayView) => {
+    setView(next);
+    try {
+      localStorage.setItem(VIEW_STORAGE_KEY, next);
+    } catch {
+      // A remembered view is a convenience; a browser refusing storage is
+      // not a reason to fail the interaction.
+    }
+  }, []);
 
-  /** Sell-side orders the desk says are outbid, with the price to paste. */
-  const sellSheet = useMemo(() => {
-    const orders = desk?.orders ?? [];
-    return orders
-      .filter((o) => !o.is_buy_order && o.recommendation === "reprice" && o.suggested_price > 0)
-      .sort((a, b) => b.net_notional - a.net_notional)
-      .slice(0, SELL_SHEET_LIMIT);
-  }, [desk]);
+  /**
+   * Mark an action and move on.
+   *
+   * Optimistic: the queue advances immediately and the write follows. This is
+   * what the Space key hits dozens of times in a session, and a round trip
+   * between keypress and the next action would be felt every time. The
+   * projection travels with the mark because the plan that produced it is
+   * replaced on the next refresh — this is the only moment it can be recorded.
+   */
+  const mark = useCallback(
+    (action: TodayAction, mode: "done" | "skip") => {
+      setMarks((prev) => ({ ...prev, [action.id]: mode }));
+      void setTodayActionState({
+        action_id: action.id,
+        mode,
+        kind: action.kind,
+        type_id: action.type_id,
+        grade: action.grade,
+        projected_isk: action.downside_isk_7d,
+        quantity: action.quantity,
+        price: action.paste_price,
+      }).catch(() => {
+        // The mark did not persist, so put the action back rather than let
+        // the user believe work was recorded that was not.
+        setMarks((prev) => {
+          const next = { ...prev };
+          delete next[action.id];
+          return next;
+        });
+        addToast(t("todayRefreshFailed", { error: "could not save that" }), "error", 3000);
+      });
+    },
+    [addToast, t],
+  );
 
-  const summary = desk?.summary;
-  const needsReprice = summary?.needs_reprice ?? 0;
-  const needsCancel = summary?.needs_cancel ?? 0;
-  const nothingToDo = isLoggedIn && needsReprice === 0 && needsCancel === 0 && buySheet.length === 0;
+  const onDone = useCallback((a: TodayAction) => mark(a, "done"), [mark]);
+  const onSkip = useCallback((a: TodayAction) => mark(a, "skip"), [mark]);
+
+  const navigateTo = useCallback(
+    (link: TodayDeepLink) => onNavigate(link.tab as MainTabId, link),
+    [onNavigate],
+  );
+  const onDetails = useCallback((a: TodayAction) => navigateTo(a.deep_link), [navigateTo]);
+  const onOptionDetails = useCallback((o: TodayOption) => navigateTo(o.deep_link), [navigateTo]);
+
+  /** Everything still outstanding, in the engine's order. */
+  const pending = useMemo(() => {
+    if (!plan) return [];
+    return plan.actions.filter((a) => !a.done && !a.skipped && !marks[a.id]);
+  }, [plan, marks]);
+
+  const remainingSeconds = useMemo(
+    () => pending.reduce((sum, a) => sum + a.est_seconds, 0),
+    [pending],
+  );
+
+  if (!isLoggedIn) {
+    return (
+      <div className="flex-1 min-h-0 overflow-y-auto eve-scrollbar p-3">
+        <p className="font-ui text-t-body text-fg-secondary">{t("todayLoginPrompt")}</p>
+      </div>
+    );
+  }
 
   if (loading) {
     return (
@@ -176,186 +204,75 @@ export function HomeWorkspace({ isLoggedIn, onNavigate }: HomeWorkspaceProps) {
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto eve-scrollbar p-3">
-      {/* Status strip — where your ISK currently is. */}
-      {isLoggedIn && summary && (
-        <div className="mb-3 flex rounded-sm border border-eve-border bg-surface-1">
-          <Kpi label={t("homeCapitalInOrders")} value={formatISK(summary.total_notional)} />
-          <Kpi label={t("homeOpenOrders")} value={formatNumber(summary.total_orders)} />
-          <Kpi
-            label={t("homeNeedsReprice")}
-            value={formatNumber(needsReprice)}
-            tone={needsReprice > 0 ? "warn" : undefined}
-          />
-          <Kpi
-            label={t("homeNeedsCancel")}
-            value={formatNumber(needsCancel)}
-            tone={needsCancel > 0 ? "loss" : undefined}
-          />
-        </div>
-      )}
+      <TodayHeader
+        generatedAt={generatedAt}
+        stale={stale}
+        refreshing={refreshing}
+        progress={progress}
+        view={view}
+        onViewChange={changeView}
+        onRefresh={() => void runRefresh()}
+        remainingSeconds={remainingSeconds}
+        doneCount={(plan?.actions.length ?? 0) - pending.length}
+        totalCount={plan?.actions.length ?? 0}
+      />
 
-      {/* The routine. Ordered deliberately: existing orders before new ones. */}
-      <section className="mb-3 rounded-sm border border-eve-border bg-surface-1 p-3">
-        <h2 className="font-ui text-t-title font-semibold text-fg">{t("homeRoutineTitle")}</h2>
-        <p className="mb-2 font-ui text-t-caption text-fg-tertiary">{t("homeRoutineHint")}</p>
-
-        {!isLoggedIn ? (
-          <p className="font-ui text-t-body text-fg-secondary">{t("homeLoginPrompt")}</p>
-        ) : nothingToDo ? (
-          <p className="font-ui text-t-body text-profit">{t("homeStepNothing")}</p>
-        ) : (
-          <ol>
-            <Step
-              n={1}
-              done={needsReprice === 0}
-              label={t("homeStepReprice", { n: String(needsReprice) })}
-              action={
-                needsReprice > 0 ? (
-                  <Button size="sm" variant="ghost" onClick={() => onNavigate("orders")}>
-                    {t("homeOpenOrdersTab")} <ArrowRight className="h-3 w-3" />
-                  </Button>
-                ) : undefined
-              }
-            />
-            <Step
-              n={2}
-              done={needsCancel === 0}
-              label={t("homeStepCancel", { n: String(needsCancel) })}
-              action={
-                needsCancel > 0 ? (
-                  <Button size="sm" variant="ghost" onClick={() => onNavigate("orders")}>
-                    {t("homeOpenOrdersTab")} <ArrowRight className="h-3 w-3" />
-                  </Button>
-                ) : undefined
-              }
-            />
-            <Step
-              n={3}
-              done={buySheet.length === 0}
-              label={t("homeStepAdd", { n: String(buySheet.length) })}
-            />
-            <Step n={4} done={sellSheet.length === 0} label={t("homeStepList")} />
-          </ol>
-        )}
-      </section>
-
-      {/* Buy sheet — from the last scan, not a fresh one. */}
-      <section className="mb-3 rounded-sm border border-eve-border bg-surface-1">
-        <header className="flex items-baseline justify-between gap-3 border-b border-eve-border px-3 py-2">
-          <h2 className="font-ui text-t-title font-semibold text-fg">{t("homeBuySheet")}</h2>
-          {scan && (
-            <span className="font-ui text-t-caption text-fg-tertiary">
-              {t("homeScanAge", { age: relativeAge(scan.record.timestamp) })}
-            </span>
-          )}
-        </header>
-
-        {buySheet.length === 0 ? (
-          <div className="px-3 py-6 text-center">
-            <p className="font-ui text-t-body text-fg-secondary">{t("homeNoScan")}</p>
-            <p className="mt-1 font-ui text-t-caption text-fg-tertiary">{t("homeNoScanHint")}</p>
-            <Button className="mt-3" size="sm" onClick={() => onNavigate("station")}>
-              {t("homeOpenStationTab")} <ArrowRight className="h-3 w-3" />
-            </Button>
-          </div>
-        ) : (
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-eve-border text-left font-ui text-t-caption uppercase tracking-wide text-fg-tertiary">
-                <th className="px-3 py-1.5 font-medium">Item</th>
-                <th className="px-3 py-1.5 text-right font-medium">Buy price</th>
-                <th className="px-3 py-1.5 text-right font-medium">Qty/day</th>
-                <th className="px-3 py-1.5 text-right font-medium">Capital</th>
-                <th className="px-3 py-1.5 text-right font-medium">Daily profit</th>
-              </tr>
-            </thead>
-            <tbody>
-              {buySheet.map((row) => {
-                // SuggestedBid is the patient-buy price when the scan
-                // produced one; otherwise fall back to the live buy price.
-                const price = row.SuggestedBid && row.SuggestedBid > 0 ? row.SuggestedBid : row.BuyPrice;
-                const daily = row.DailyProfit ?? row.RealizableDailyProfit ?? 0;
-                return (
-                  <tr key={`${row.TypeID}-${row.StationID}`} className="border-b border-eve-border/40">
-                    <td className="px-3 py-1.5">
-                      <div className="flex min-w-0 items-center gap-1.5">
-                        <TypeIcon typeId={row.TypeID} categoryId={row.CategoryID} />
-                        <span className="truncate font-ui text-t-body text-fg">{row.TypeName}</span>
-                        {row.IsHighRiskFlag && <Badge tone="warn">Risk</Badge>}
-                      </div>
-                    </td>
-                    <td className="px-3 py-1.5 text-right">
-                      <span className="inline-flex items-center gap-1.5">
-                        <span className="font-num tnum text-t-cell text-fg-secondary">
-                          {formatISK(price)}
-                        </span>
-                        <CopyPrice value={price} label={t("homeCopyPrice")} />
-                      </span>
-                    </td>
-                    <td className="px-3 py-1.5 text-right font-num tnum text-t-cell text-fg-secondary">
-                      {formatNumber(Math.round(row.BuyUnitsPerDay ?? 0))}
-                    </td>
-                    <td className="px-3 py-1.5 text-right font-num tnum text-t-cell text-fg-secondary">
-                      {formatISK(row.CapitalRequired)}
-                    </td>
-                    <td className="px-3 py-1.5 text-right font-num tnum text-t-cell font-semibold text-profit">
-                      {formatISK(daily)}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
-      </section>
-
-      {/* Sell sheet — outbid sell orders and the price to paste. */}
-      {isLoggedIn && sellSheet.length > 0 && (
-        <section className="rounded-sm border border-eve-border bg-surface-1">
-          <header className="border-b border-eve-border px-3 py-2">
-            <h2 className="font-ui text-t-title font-semibold text-fg">{t("homeSellSheet")}</h2>
-          </header>
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-eve-border text-left font-ui text-t-caption uppercase tracking-wide text-fg-tertiary">
-                <th className="px-3 py-1.5 font-medium">Item</th>
-                <th className="px-3 py-1.5 text-right font-medium">Your price</th>
-                <th className="px-3 py-1.5 text-right font-medium">Suggested</th>
-                <th className="px-3 py-1.5 text-right font-medium">Qty</th>
-                <th className="px-3 py-1.5 text-right font-medium">Position</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sellSheet.map((o: OrderDeskOrder) => (
-                <tr key={o.order_id} className="border-b border-eve-border/40">
-                  <td className="px-3 py-1.5">
-                    <div className="flex min-w-0 items-center gap-1.5">
-                      <TypeIcon typeId={o.type_id} />
-                      <span className="truncate font-ui text-t-body text-fg">{o.type_name}</span>
-                    </div>
-                  </td>
-                  <td className="px-3 py-1.5 text-right font-num tnum text-t-cell text-fg-tertiary">
-                    {formatISK(o.price)}
-                  </td>
-                  <td className="px-3 py-1.5 text-right">
-                    <span className="inline-flex items-center gap-1.5">
-                      <span className="font-num tnum text-t-cell font-semibold text-fg">
-                        {formatISK(o.suggested_price)}
-                      </span>
-                      <CopyPrice value={o.suggested_price} label={t("homeCopyPrice")} />
-                    </span>
-                  </td>
-                  <td className="px-3 py-1.5 text-right font-num tnum text-t-cell text-fg-secondary">
-                    {formatNumber(o.volume_remain)}
-                  </td>
-                  <td className="px-3 py-1.5 text-right font-num tnum text-t-cell text-fg-secondary">
-                    {o.position > 0 ? `#${o.position} / ${o.total_orders}` : "—"}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {!plan ? (
+        <section className="rounded-sm border border-eve-border bg-surface-1 px-3 py-8 text-center">
+          <p className="font-ui text-t-body text-fg-secondary">{t("todayNoPlan")}</p>
+          <p className="mt-1 font-ui text-t-caption text-fg-tertiary">{t("todayNoPlanHint")}</p>
+          <Button className="mt-3" onClick={() => void runRefresh()} disabled={refreshing}>
+            {t("todayBuildPlan")}
+          </Button>
         </section>
+      ) : (
+        <div className="flex flex-col gap-3">
+          <CapitalBar capital={plan.capital} performance={plan.performance} />
+
+          {plan.warnings?.map((warning) => (
+            <p key={warning} className="font-ui text-t-caption text-warn">
+              {warning}
+            </p>
+          ))}
+
+          {plan.timing.note && (
+            <p className="font-ui text-t-caption text-info">{plan.timing.note}</p>
+          )}
+
+          {pending.length === 0 ? (
+            <section className="rounded-sm border border-eve-border bg-surface-1 px-3 py-8 text-center">
+              <p className="font-ui text-t-body text-profit">{t("todayAllDone")}</p>
+              <p className="mt-1 font-ui text-t-caption text-fg-tertiary">
+                {t("todayAllDoneHint")}
+              </p>
+            </section>
+          ) : view === "run" ? (
+            <>
+              <RunPanel
+                action={pending[0]}
+                index={plan.actions.length - pending.length}
+                total={plan.actions.length}
+                secondsRemaining={remainingSeconds}
+                onDone={onDone}
+                onSkip={onSkip}
+                onDetails={onDetails}
+              />
+              <p className="font-ui text-t-caption text-fg-tertiary">{t("todayKeyboardHint")}</p>
+            </>
+          ) : (
+            <ActionList
+              actions={pending}
+              budgetSeconds={plan.budget.budget_seconds}
+              onDone={onDone}
+              onSkip={onSkip}
+              onDetails={onDetails}
+            />
+          )}
+
+          <BatchBar batches={plan.batches} />
+          <OptionsPanel options={plan.options} onNavigate={onOptionDetails} />
+          <NotAdvisedPanel actions={plan.not_advised} onDetails={onDetails} />
+        </div>
       )}
     </div>
   );

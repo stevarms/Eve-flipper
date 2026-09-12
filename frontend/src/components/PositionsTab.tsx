@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ExternalLink, Plus } from "lucide-react";
-import { deleteManualPosition, getPositions, openMarketInGame } from "../lib/api";
+import { Plus } from "lucide-react";
+import { deleteManualPosition, getPositions } from "../lib/api";
 import type { PositionRow, PositionsResponse } from "../lib/types";
 import { useI18n } from "../lib/i18n";
 import { formatIsk as formatIskLib, formatNumber } from "../lib/format";
 import { useGlobalToast } from "./Toast";
-import { handleEveUIError } from "../lib/handleEveUIError";
 import { useCharacterScope } from "./character/CharacterScopeProvider";
 import { AddHoldingSheet } from "./positions/AddHoldingSheet";
 import { PositionRowDrawer } from "./positions/PositionRowDrawer";
@@ -13,7 +12,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/EmptyState";
 import { LoadingBlock } from "@/components/ui/LoadingBlock";
-import { TypeIcon } from "@/components/ui/TypeIcon";
+import { CopyPrice } from "@/components/ui/CopyPrice";
+import { ItemRef } from "@/components/ui/ItemRef";
 import { cn } from "@/lib/utils";
 
 /**
@@ -98,25 +98,6 @@ export function PositionsTab() {
     });
     return list;
   }, [data, sortKey]);
-
-  const openMarket = useCallback(
-    async (typeID: number) => {
-      if (!typeID) return;
-      try {
-        await openMarketInGame(typeID);
-        addToast(t("actionSuccess"), "success", 2000);
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        const { messageKey, duration } = handleEveUIError({ message });
-        if (messageKey === "actionFailed") {
-          addToast(t(messageKey, { error: message || "Unknown error" }), "error", duration);
-        } else {
-          addToast(t(messageKey), "error", duration);
-        }
-      }
-    },
-    [addToast, t],
-  );
 
   const removeManual = useCallback(
     async (manualID: number) => {
@@ -216,7 +197,6 @@ export function PositionsTab() {
                   key={`${row.source}-${row.manual_id ?? 0}-${row.type_id}`}
                   row={row}
                   onInspect={setInspected}
-                  onOpenMarket={openMarket}
                   t={t}
                 />
               ))}
@@ -248,12 +228,10 @@ export function PositionsTab() {
 function Row({
   row,
   onInspect,
-  onOpenMarket,
   t,
 }: {
   row: PositionRow;
   onInspect: (row: PositionRow) => void;
-  onOpenMarket: (typeID: number) => void;
   t: ReturnType<typeof useI18n>["t"];
 }) {
   const priced = row.market_price > 0;
@@ -266,19 +244,15 @@ function Row({
       }}
     >
       <td className="max-w-[320px] px-2 py-1">
-        <div className="flex items-center gap-1.5">
-          <TypeIcon typeId={row.type_id} size={18} />
-          <div className="min-w-0">
-            <div className="truncate font-ui text-t-emphasis text-fg" title={row.type_name}>
-              {row.type_name || `Type #${row.type_id}`}
-            </div>
-            {row.source === "manual" && (
-              <div className="font-ui text-t-caption text-fg-tertiary">
-                {t("positionsSourceManual")}
-              </div>
-            )}
-          </div>
-        </div>
+        <ItemRef
+          typeId={row.type_id}
+          name={row.type_name}
+          tone="emphasis"
+          market
+          copyName
+          marketLabel={t("positionsListHint")}
+          subtitle={row.source === "manual" ? t("positionsSourceManual") : undefined}
+        />
       </td>
       <td className="px-2 py-1 text-right font-num tnum text-t-cell text-fg-secondary">
         {formatNumber(row.qty)}
@@ -288,7 +262,10 @@ function Row({
       </td>
       <td className="px-2 py-1 text-right font-num tnum text-t-cell text-fg">
         {priced ? (
-          formatUnitPrice(row.market_price)
+          <span className="inline-flex items-center justify-end gap-1">
+            {formatUnitPrice(row.market_price)}
+            <CopyPrice value={row.market_price} label={t("copyPrice")} />
+          </span>
         ) : (
           <span className="cursor-help text-warn" title={t("positionsNoPrice")}>
             —
@@ -325,18 +302,7 @@ function Row({
             {t("positionsListed", { n: formatNumber(row.listed_qty) })}
           </Badge>
         ) : (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onOpenMarket(row.type_id);
-            }}
-            className="inline-flex items-center gap-1 rounded-sm border border-eve-border px-1.5 py-0.5 font-ui text-t-caption text-fg-secondary transition-colors hover:bg-surface-2 hover:text-fg"
-            title={t("positionsListHint")}
-          >
-            <ExternalLink className="h-3 w-3" />
-            {t("positionsList")}
-          </button>
+          <span className="text-fg-tertiary">—</span>
         )}
       </td>
     </tr>

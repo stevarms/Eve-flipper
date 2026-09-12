@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { ItemRef } from "@/components/ui/ItemRef";
 import { getScanHistory, deleteScanHistory, clearScanHistory, getScanHistoryResults } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 import { formatISK, formatMargin } from "@/lib/format";
@@ -382,8 +383,18 @@ function FlipPreview({ items, more, t }: { items: FlipResult[]; more: number; t:
       </thead>
       <tbody>
         {items.map((r, i) => (
-          <tr key={i} className="hover:bg-eve-accent/5">
-            <td className="p-2 border-b border-eve-border/30">{r.TypeName || "Unknown"}</td>
+          <tr key={i} className="group hover:bg-eve-accent/5">
+            <td className="max-w-[220px] p-2 border-b border-eve-border/30">
+              <ItemRef
+                typeId={r.TypeID}
+                name={r.TypeName}
+                iconSize={16}
+                market
+                copyName
+                reveal="hover"
+                marketLabel={t("openMarketHint")}
+              />
+            </td>
             <td className="p-2 border-b border-eve-border/30 text-right text-eve-success font-mono">{formatISK(r.TotalProfit)}</td>
             <td className="p-2 border-b border-eve-border/30 text-right font-mono">{formatMargin(r.MarginPercent)}</td>
             <td className="p-2 border-b border-eve-border/30 text-right font-mono text-eve-dim">{r.TotalJumps ?? "—"}</td>
@@ -410,8 +421,18 @@ function StationPreview({ items, more, t }: { items: StationTrade[]; more: numbe
       </thead>
       <tbody>
         {items.map((r, i) => (
-          <tr key={i} className="hover:bg-eve-accent/5">
-            <td className="p-2 border-b border-eve-border/30">{r.TypeName}</td>
+          <tr key={i} className="group hover:bg-eve-accent/5">
+            <td className="max-w-[220px] p-2 border-b border-eve-border/30">
+              <ItemRef
+                typeId={r.TypeID}
+                name={r.TypeName}
+                iconSize={16}
+                market
+                copyName
+                reveal="hover"
+                marketLabel={t("openMarketHint")}
+              />
+            </td>
             <td className="p-2 border-b border-eve-border/30 text-eve-dim truncate max-w-[150px]">{r.StationName}</td>
             <td className="p-2 border-b border-eve-border/30 text-right font-mono text-eve-accent">{r.CTS?.toFixed(1) ?? "—"}</td>
             <td className="p-2 border-b border-eve-border/30 text-right text-eve-success font-mono">{formatISK(r.TotalProfit)}</td>

@@ -716,6 +716,7 @@ func hostedQuotaFeatureForRequest(r *http.Request) (string, bool) {
 		path == "/api/auth/station/command",
 		path == "/api/auth/industry/coverage",
 		path == "/api/auth/industry/blueprints/profitable-scan",
+		path == "/api/auth/today/refresh",
 		path == "/api/auth/journal/sync",
 		path == "/api/auth/journal/link-job",
 		isHostedQuotaIndustryProjectComputePath(path),

@@ -1,4 +1,5 @@
 import { Fragment, useMemo, useState, type Dispatch, type SetStateAction } from "react";
+import { ItemRef } from "@/components/ui/ItemRef";
 import { useI18n } from "@/lib/i18n";
 import type {
   IndustryBlueprintPoolRecord,
@@ -510,15 +511,20 @@ export function OpsTaskListPanel(props: OpsTaskListPanelProps) {
                                         : "text-red-300";
                                   const missing = Math.max(0, need - have);
                                   return (
-                                    <tr key={`tm-${task.id}-${m.type_id}`} className="border-t border-eve-border/20">
+                                    <tr key={`tm-${task.id}-${m.type_id}`} className="group border-t border-eve-border/20">
                                       {/* title so a truncated name is still
                                           readable on hover — table-fixed means
                                           truncate now actually bites. */}
-                                      <td
-                                        className="px-1.5 py-0.5 truncate text-eve-text"
-                                        title={m.type_name || `Type ${m.type_id}`}
-                                      >
-                                        {m.type_name || `Type ${m.type_id}`}
+                                      <td className="px-1.5 py-0.5 text-eve-text">
+                                        <ItemRef
+                                          typeId={m.type_id}
+                                          name={m.type_name}
+                                          iconSize={14}
+                                          market
+                                          copyName
+                                          reveal="hover"
+                                          marketLabel={t("openMarketHint")}
+                                        />
                                       </td>
                                       <td className="px-1.5 py-0.5 font-mono">{need.toLocaleString()}</td>
                                       <td className="px-1.5 py-0.5 font-mono text-eve-dim">{have.toLocaleString()}</td>

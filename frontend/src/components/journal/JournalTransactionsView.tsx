@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { CopyPrice } from "@/components/ui/CopyPrice";
+import { ItemRef } from "@/components/ui/ItemRef";
 import {
   getJournalTransactions,
   type JournalAnalyticsSource,
@@ -440,26 +442,41 @@ function TxnRow({
       : "bg-red-500/[0.06]";
 
   return (
-    <tr className={`border-t border-eve-border/50 ${tint}`}>
+    <tr className={`group border-t border-eve-border/50 ${tint}`}>
       <td className="px-2 py-1 text-eve-dim">{(row.sell_date ?? "").slice(0, 10)}</td>
       <td className="px-2 py-1">
-        <span className="flex items-center gap-1.5">
-          <img
-            src={`https://images.evetech.net/types/${row.type_id}/icon?size=32`}
-            alt=""
-            className="w-4 h-4"
-          />
-          <span className="text-eve-text">{row.type_name || `Type #${row.type_id}`}</span>
-        </span>
+        <ItemRef
+          typeId={row.type_id}
+          name={row.type_name}
+          iconSize={16}
+          market
+          copyName
+          reveal="hover"
+          marketLabel={t("openMarketHint")}
+        />
       </td>
       <td className="px-2 py-1">
         <SourceBadge source={row.source} t={t} />
       </td>
       <td className="px-2 py-1 text-right text-eve-dim tabular-nums">
-        {priced ? formatIsk(row.buy_unit_price ?? 0) : "—"}
+        {priced ? (
+          <span className="inline-flex items-center justify-end gap-1">
+            {formatIsk(row.buy_unit_price ?? 0)}
+            <CopyPrice
+              value={row.buy_unit_price ?? 0}
+              label={t("copyPrice")}
+              reveal="hover"
+            />
+          </span>
+        ) : (
+          "—"
+        )}
       </td>
       <td className="px-2 py-1 text-right text-eve-dim tabular-nums">
-        {formatIsk(row.sell_unit_price)}
+        <span className="inline-flex items-center justify-end gap-1">
+          {formatIsk(row.sell_unit_price)}
+          <CopyPrice value={row.sell_unit_price} label={t("copyPrice")} reveal="hover" />
+        </span>
       </td>
       <td className="px-2 py-1 text-right text-eve-dim tabular-nums">
         {row.matched_qty.toLocaleString()}
@@ -470,7 +487,12 @@ function TxnRow({
       <td className="px-2 py-1 text-right text-eve-dim tabular-nums">{formatIsk(row.sell_gross)}</td>
       <FeeCell isk={row.buy_fees ?? 0} base={row.cost} formatIsk={formatIsk} />
       <FeeCell isk={row.sell_broker_fee ?? 0} base={row.sell_gross} formatIsk={formatIsk} />
-      <FeeCell isk={row.sell_tax ?? 0} base={row.sell_gross} formatIsk={formatIsk} />
+      <FeeCell
+        isk={row.sell_tax ?? 0}
+        base={row.sell_gross}
+        formatIsk={formatIsk}
+        modelledHint={row.sell_tax_actual ? undefined : t("journalTxnTaxModelledHint")}
+      />
       <td
         className={`px-2 py-1 text-right tabular-nums ${
           row.marginPercent == null
@@ -495,22 +517,40 @@ function TxnRow({
   );
 }
 
-/** A fee in ISK with the rate it worked out to underneath. */
+/**
+ * A fee in ISK with the rate it worked out to underneath.
+ *
+ * `modelledHint`, when given, marks the cell as an estimate rather than a
+ * charge read back from the wallet. Marking the *modelled* ones is deliberate:
+ * within the wallet-journal archive nearly every row is a real charge, so
+ * flagging those would put a marker on almost every cell and mean nothing.
+ */
 function FeeCell({
   isk,
   base,
   formatIsk,
+  modelledHint,
 }: {
   isk: number;
   base: number;
   formatIsk: (v: number) => string;
+  modelledHint?: string;
 }) {
   const pct = base > 0 ? (isk / base) * 100 : null;
   return (
     <td className="px-2 py-1 text-right text-eve-dim tabular-nums">
       <div>{isk > 0 ? formatIsk(isk) : "—"}</div>
       {pct != null && isk > 0 && (
-        <div className="text-[9px] text-eve-dim/70">{pct.toFixed(2)}%</div>
+        <div
+          className={
+            modelledHint
+              ? "text-[9px] text-eve-dim/70 underline decoration-dotted decoration-eve-dim/50 underline-offset-2 cursor-help"
+              : "text-[9px] text-eve-dim/70"
+          }
+          title={modelledHint}
+        >
+          {pct.toFixed(2)}%
+        </div>
       )}
     </td>
   );

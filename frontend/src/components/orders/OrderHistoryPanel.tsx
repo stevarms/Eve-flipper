@@ -6,7 +6,8 @@ import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/EmptyState";
 import { Input } from "@/components/ui/input";
 import { LoadingBlock } from "@/components/ui/LoadingBlock";
-import { TypeIcon } from "@/components/ui/TypeIcon";
+import { CopyPrice } from "@/components/ui/CopyPrice";
+import { ItemRef } from "@/components/ui/ItemRef";
 import { cn } from "@/lib/utils";
 
 /**
@@ -148,24 +149,23 @@ export function OrderHistoryPanel({
                     <Badge tone={STATE_TONE[o.state] ?? "neutral"}>{o.state}</Badge>
                   </td>
                   <td className="max-w-[320px] px-2 py-1">
-                    <div className="flex items-center gap-1.5">
-                      <TypeIcon typeId={o.type_id} size={18} />
-                      <div className="min-w-0">
-                        <div className="truncate font-ui text-t-body text-fg" title={o.type_name}>
-                          {o.type_name || `Type #${o.type_id}`}
-                        </div>
-                        <div
-                          className="truncate font-ui text-t-caption text-fg-tertiary"
-                          title={o.location_name}
-                        >
-                          {o.is_buy_order ? t("charBuy") : t("charSell")} ·{" "}
-                          {o.location_name || `#${o.location_id}`}
-                        </div>
-                      </div>
-                    </div>
+                    <ItemRef
+                      typeId={o.type_id}
+                      name={o.type_name}
+                      tone="cell"
+                      market
+                      copyName
+                      marketLabel={t("openMarketHint")}
+                      subtitle={`${o.is_buy_order ? t("charBuy") : t("charSell")} · ${
+                        o.location_name || `#${o.location_id}`
+                      }`}
+                    />
                   </td>
                   <td className="px-2 py-1 text-right font-num tnum text-t-cell text-fg">
-                    {formatIsk(o.price)}
+                    <span className="inline-flex items-center justify-end gap-1">
+                      {formatIsk(o.price)}
+                      <CopyPrice value={o.price} label={t("copyPrice")} />
+                    </span>
                   </td>
                   <td className="px-2 py-1 text-right font-num tnum text-t-cell text-fg-secondary">
                     {(o.volume_total - o.volume_remain).toLocaleString()}/

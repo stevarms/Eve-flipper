@@ -4,6 +4,7 @@ import { type TranslationKey } from "../../lib/i18n";
 import type { CorpDashboard, CorpIndustryJob } from "../../lib/types";
 import { BarChart, CsvExportButton, DateRangeSelector, KpiCard } from "./shared";
 import { LoadingBlock } from "@/components/ui/LoadingBlock";
+import { ItemRef } from "@/components/ui/ItemRef";
 export function IndustrySection({
   dashboard,
   mode,
@@ -140,12 +141,17 @@ export function IndustrySection({
               </thead>
               <tbody>
                 {filtered.map(j => (
-                  <tr key={j.job_id} className="border-t border-eve-border/30 hover:bg-eve-panel/50">
+                  <tr key={j.job_id} className="group border-t border-eve-border/30 hover:bg-eve-panel/50">
                     <td className="px-2 py-1.5">
-                      <div className="flex items-center gap-2">
-                        <img src={`https://images.evetech.net/types/${j.product_type_id}/icon?size=32`} alt="" className="w-4 h-4" />
-                        <span className="text-eve-text">{j.product_name}</span>
-                      </div>
+                      <ItemRef
+                        typeId={j.product_type_id}
+                        name={j.product_name}
+                        iconSize={16}
+                        market
+                        copyName
+                        reveal="hover"
+                        marketLabel={t("openMarketHint")}
+                      />
                     </td>
                     <td className="px-2 py-1.5 text-eve-dim">{j.installer_name}</td>
                     <td className="px-2 py-1.5 text-eve-dim capitalize">{j.activity.replace(/_/g, " ")}</td>
@@ -169,10 +175,17 @@ export function IndustrySection({
           <div className="text-[10px] text-eve-dim uppercase tracking-wider mb-3">{t("corpTopProducts")}</div>
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
             {ind.top_products.slice(0, 10).map((p) => (
-              <div key={p.type_id} className="bg-eve-dark/50 border border-eve-border/50 rounded-sm p-3">
-                <div className="flex items-center gap-2 mb-1">
-                  <img src={`https://images.evetech.net/types/${p.type_id}/icon?size=32`} alt="" className="w-5 h-5" />
-                  <span className="text-xs text-eve-text font-medium truncate">{p.type_name}</span>
+              <div key={p.type_id} className="group bg-eve-dark/50 border border-eve-border/50 rounded-sm p-3">
+                <div className="mb-1">
+                  <ItemRef
+                    typeId={p.type_id}
+                    name={p.type_name}
+                    iconSize={20}
+                    market
+                    copyName
+                    reveal="hover"
+                    marketLabel={t("openMarketHint")}
+                  />
                 </div>
                 <div className="text-xs text-eve-accent font-bold">{p.runs} runs</div>
                 <div className="text-[10px] text-eve-dim">{p.jobs} jobs</div>

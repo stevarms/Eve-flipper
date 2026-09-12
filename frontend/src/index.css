@@ -1539,3 +1539,37 @@
     animation: none;
   }
 }
+
+@layer components {
+  /* Hover-reveal row actions (components/ui/rowAction.ts, ActionReveal="hover").
+     A CSS component class rather than
+     `opacity-0 group-hover:opacity-100 focus-visible:opacity-100` on the
+     element itself, for three reasons:
+
+       - the `hover: none` branch below. An opacity-0 button is still
+         hit-testable, so on a touch screen the first tap would fire an
+         invisible action.
+       - `.group:hover &` matches ANY ancestor `.group`, where Tailwind's
+         `group-hover:` matches only the nearest. Rows that nest a `group`
+         inside a `group` (the Ops cards do) keep working.
+       - `:focus-within` on the row means tabbing to the button reveals its
+         siblings too, so keyboard users see the whole action set at once.
+
+     `@apply` is compile-time substitution in this file, so none of this is
+     subject to the no-interpolated-classes rule. */
+  .action-reveal {
+    @apply opacity-0 transition-opacity duration-100;
+  }
+
+  .group:hover .action-reveal,
+  .group:focus-within .action-reveal,
+  .action-reveal:focus-visible {
+    @apply opacity-100;
+  }
+
+  @media (hover: none) {
+    .action-reveal {
+      @apply opacity-100;
+    }
+  }
+}

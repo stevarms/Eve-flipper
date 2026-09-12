@@ -71,15 +71,37 @@ func isSkillSnapshot(value float64, suggest func(int) float64) bool {
 	return false
 }
 
+// salesTaxBases is every base rate this app has ever computed a sales tax
+// snapshot from, newest first.
+//
+// Snapshot detection asks "could the formula have produced this?", so it goes
+// stale the moment the formula changes. When the base moved from 8.0 to 7.5,
+// every 3.60 already sitting in a config — written by this very resolver a
+// release earlier — stopped matching any level, would have been reclassified
+// as a rate the user typed on purpose, and would have outranked their skills
+// forever. That is precisely the frozen-at-8% bug, re-entering through its own
+// fix. Old bases stay listed so their outputs are still recognised as ours.
+var salesTaxBases = []float64{baseSalesTaxPercent, 8.0}
+
+// isSalesTaxSnapshot is isSkillSnapshot over every base in salesTaxBases.
+func isSalesTaxSnapshot(value float64) bool {
+	for _, base := range salesTaxBases {
+		if isSkillSnapshot(value, func(level int) float64 { return salesTaxAtBase(base, level) }) {
+			return true
+		}
+	}
+	return false
+}
+
 // configFeesExplicit reports the user's configured sell-side rates, sell
 // specific values winning over the generic ones, along with how much authority
 // each one carries.
 //
-// 8% / 1% is the historical fallback: 1% understates an untrained broker fee
-// (3%), but it is the number every existing figure in the app was computed
-// with, so it stays until skills or config replace it.
+// The untrained sales tax / 1% is the historical fallback: 1% understates an
+// untrained broker fee (3%), but it is the number every existing figure in the
+// app was computed with, so it stays until skills or config replace it.
 func (s *Server) configFeesExplicit(userID string) (salesTax, brokerFee configFeeRate) {
-	salesTax = configFeeRate{Value: 8.0}
+	salesTax = configFeeRate{Value: baseSalesTaxPercent}
 	brokerFee = configFeeRate{Value: 1.0}
 	cfg := s.loadConfigForUser(userID)
 	if cfg == nil {
@@ -95,7 +117,7 @@ func (s *Server) configFeesExplicit(userID string) (salesTax, brokerFee configFe
 	} else if cfg.BrokerFeePercent > 0 {
 		brokerFee = configFeeRate{Value: cfg.BrokerFeePercent, Set: true}
 	}
-	salesTax.Snapshot = salesTax.Set && isSkillSnapshot(salesTax.Value, suggestedSalesTax)
+	salesTax.Snapshot = salesTax.Set && isSalesTaxSnapshot(salesTax.Value)
 	brokerFee.Snapshot = brokerFee.Set && isSkillSnapshot(brokerFee.Value, suggestedBrokerFee)
 	return salesTax, brokerFee
 }

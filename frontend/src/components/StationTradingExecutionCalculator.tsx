@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { CopyButton } from "@/components/ui/CopyButton";
+import { OpenMarketButton } from "@/components/ui/OpenMarketButton";
 import { Modal } from "./Modal";
 import { getExecutionPlan } from "../lib/api";
 import { useI18n, type TranslationKey } from "../lib/i18n";
@@ -389,6 +391,11 @@ export function StationTradingExecutionCalculator({
       width="max-w-3xl"
     >
       <div className="p-4 flex flex-col gap-4">
+        <div className="flex items-center gap-1.5 border-b border-eve-border/50 pb-2">
+          <span className="truncate font-ui text-t-emphasis text-fg">{typeName}</span>
+          <OpenMarketButton typeId={typeID} />
+          <CopyButton text={typeName} label={t("copyItem")} />
+        </div>
         <p className="text-xs text-eve-dim">{t("execPlanStationHint")}</p>
         <div className="flex flex-wrap items-center gap-4">
           <label className="flex items-center gap-2 text-sm text-eve-dim">

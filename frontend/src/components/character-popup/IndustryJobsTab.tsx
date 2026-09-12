@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { ItemRef } from "@/components/ui/ItemRef";
 import { type TranslationKey } from "../../lib/i18n";
 import type { CharacterIndustryJob } from "../../lib/types";
 import { StatCard } from "./shared";
@@ -50,13 +51,23 @@ export function IndustryJobsTab({ jobs, formatIsk, formatDate, t }: IndustryJobs
               const progress = jobProgress(job);
               const itemName = job.product_type_name || job.blueprint_type_name || `Type #${job.product_type_id || job.blueprint_type_id}`;
               return (
-                <tr key={job.job_id} className="border-t border-eve-border/50 hover:bg-eve-panel/50">
+                <tr key={job.job_id} className="group border-t border-eve-border/50 hover:bg-eve-panel/50">
                   <td className="px-3 py-2">
                     <span className="inline-flex px-1.5 py-0.5 rounded-sm border border-eve-border bg-eve-dark text-[10px] uppercase tracking-wide text-eve-dim">
                       {activityLabel(job.activity_id)}
                     </span>
                   </td>
-                  <td className="px-3 py-2 text-eve-text max-w-[260px] truncate" title={itemName}>{itemName}</td>
+                  <td className="max-w-[260px] px-3 py-2 text-eve-text">
+                    <ItemRef
+                      typeId={job.product_type_id || job.blueprint_type_id}
+                      name={itemName}
+                      iconSize={18}
+                      market
+                      copyName
+                      reveal="hover"
+                      marketLabel={t("openMarketHint")}
+                    />
+                  </td>
                   <td className="px-3 py-2 text-eve-dim max-w-[220px] truncate" title={job.facility_name}>{job.facility_name || `#${job.facility_id}`}</td>
                   <td className="px-3 py-2 text-right font-mono text-eve-text">{job.runs.toLocaleString()}</td>
                   <td className="px-3 py-2 text-right font-mono text-eve-warning">{formatIsk(job.cost)}</td>

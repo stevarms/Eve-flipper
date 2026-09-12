@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
+import { OpenMarketButton } from "@/components/ui/OpenMarketButton";
+import { CopyButton } from "@/components/ui/CopyButton";
 import { getAlertHistory } from "@/lib/api";
 import type { AlertHistoryEntry } from "@/lib/types";
 import { useI18n } from "@/lib/i18n";
@@ -130,13 +132,27 @@ export function AlertHistoryViewer({ typeId, typeName, onClose }: Props) {
               {history.map((entry) => (
                 <div
                   key={entry.id}
-                  className="bg-eve-card border border-eve-border rounded p-3 hover:border-eve-accent/30 transition-colors"
+                  className="group bg-eve-card border border-eve-border rounded p-3 hover:border-eve-accent/30 transition-colors"
                 >
                   {/* Alert Message */}
                   <div className="flex items-start justify-between gap-2 mb-2">
                     <div className="flex-1">
-                      <div className="text-sm font-medium text-eve-text">
-                        {entry.type_name}
+                      <div className="flex items-center gap-1 text-sm font-medium text-eve-text">
+                        <span className="truncate">{entry.type_name}</span>
+                        {/* Every entry in this viewer is the same type, so the
+                            id comes from the prop rather than the row. */}
+                        <OpenMarketButton
+                          typeId={typeId ?? 0}
+                          reveal="hover"
+                          label={t("openMarketHint")}
+                        />
+                        {entry.type_name && (
+                          <CopyButton
+                            text={entry.type_name}
+                            label={t("copyItem")}
+                            reveal="hover"
+                          />
+                        )}
                       </div>
                       <div className="text-xs text-eve-dim mt-0.5">
                         {getMetricLabel(entry.alert_metric)}:{" "}

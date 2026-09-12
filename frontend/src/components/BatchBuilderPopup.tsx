@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ItemRef } from "@/components/ui/ItemRef";
 import { formatISK } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
 import { executionRowKey, revalidateRows } from "@/lib/executionRevalidation";
@@ -504,9 +505,19 @@ export function BatchBuilderPopup({
                   {batch.lines.map((line) => (
                     <tr
                       key={routeLineKey(line.row)}
-                      className="border-b border-eve-border/50 last:border-b-0"
+                      className="group border-b border-eve-border/50 last:border-b-0"
                     >
-                      <td className="px-2 py-1.5 text-eve-text">{line.row.TypeName}</td>
+                      <td className="max-w-[240px] px-2 py-1.5 text-eve-text">
+                        <ItemRef
+                          typeId={line.row.TypeID}
+                          name={line.row.TypeName}
+                          iconSize={16}
+                          market
+                          copyName
+                          reveal="hover"
+                          marketLabel={t("openMarketHint")}
+                        />
+                      </td>
                       <td className="px-2 py-1.5 text-right font-mono text-eve-text">
                         {line.units.toLocaleString()}
                       </td>

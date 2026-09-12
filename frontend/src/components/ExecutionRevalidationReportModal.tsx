@@ -1,4 +1,5 @@
 import { useCallback } from "react";
+import { ItemRef } from "@/components/ui/ItemRef";
 import { formatISK } from "@/lib/format";
 import type {
   ExecutionRevalidationReport,
@@ -203,7 +204,7 @@ export function ExecutionRevalidationReportModal({
             </thead>
             <tbody>
               {report.rows.map((row) => (
-                <tr key={row.key} className="border-b border-eve-border/50 last:border-b-0">
+                <tr key={row.key} className="group border-b border-eve-border/50 last:border-b-0">
                   <td className="px-2 py-2">
                     <span
                       className={`inline-flex items-center px-2 py-0.5 rounded-sm border font-mono text-[11px] ${statusClass(row.status)}`}
@@ -222,11 +223,17 @@ export function ExecutionRevalidationReportModal({
                       {row.avoid ? "AVOID" : "OK"}
                     </span>
                   </td>
-                  <td className="px-2 py-2 text-eve-text">
-                    <div className="font-medium">{row.row.TypeName}</div>
-                    <div className="text-[11px] text-eve-dim">
-                      {row.row.BuyStation} -&gt; {row.row.SellStation}
-                    </div>
+                  <td className="max-w-[280px] px-2 py-2 text-eve-text">
+                    <ItemRef
+                      typeId={row.row.TypeID}
+                      name={row.row.TypeName}
+                      iconSize={16}
+                      market
+                      copyName
+                      reveal="hover"
+                      marketLabel={t("openMarketHint")}
+                      subtitle={`${row.row.BuyStation} -> ${row.row.SellStation}`}
+                    />
                   </td>
                   <td className="px-2 py-2 text-right font-mono text-eve-text">
                     <div

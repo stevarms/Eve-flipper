@@ -1,4 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Copy } from "lucide-react";
+import { CopyButton } from "@/components/ui/CopyButton";
+import { CopyPrice } from "@/components/ui/CopyPrice";
+import { OpenMarketButton } from "@/components/ui/OpenMarketButton";
 import {
   getStations,
   hubAllocate,
@@ -1026,9 +1030,21 @@ export function PriceAudit({ isLoggedIn: _isLoggedIn }: Props) {
                             i % 2 === 0 ? "bg-eve-panel" : "bg-eve-dark"
                           }`}
                         >
-                          <td className="px-3 py-1.5 text-eve-text">
-                            {r.type_name ?? r.name}
-                            {sourceBadge(r.source)}
+                          <td className="max-w-[260px] px-3 py-1.5 text-eve-text">
+                            <span className="flex min-w-0 items-center gap-1">
+                              <span className="truncate">{r.type_name ?? r.name}</span>
+                              {sourceBadge(r.source)}
+                              {/* Unmatched audit lines have no type id; the
+                                  button renders nothing for those. */}
+                              <OpenMarketButton
+                                typeId={r.type_id ?? 0}
+                                label={t("openMarketHint")}
+                              />
+                              <CopyButton
+                                text={r.type_name ?? r.name}
+                                label={t("copyItem")}
+                              />
+                            </span>
                           </td>
                           <td className="px-3 py-1.5 text-right font-mono text-eve-accent">
                             {r.qty.toLocaleString()}
@@ -1037,7 +1053,10 @@ export function PriceAudit({ isLoggedIn: _isLoggedIn }: Props) {
                             {formatPrice(r.low_sell)}
                           </td>
                           <td className="px-3 py-1.5 text-right font-mono text-eve-accent">
-                            {formatPrice(r.suggested_price)}
+                            <span className="inline-flex items-center justify-end gap-1">
+                              {formatPrice(r.suggested_price)}
+                              <CopyPrice value={r.suggested_price ?? 0} label={t("copyPrice")} />
+                            </span>
                           </td>
                           <td className="px-1 py-1.5 text-center">
                             <button
@@ -1086,7 +1105,8 @@ export function PriceAudit({ isLoggedIn: _isLoggedIn }: Props) {
                     disabled={copyableCount === 0}
                     className="px-3 py-1 rounded-sm border border-eve-accent/60 text-eve-accent hover:bg-eve-accent/10 transition-colors text-xs disabled:opacity-40 disabled:cursor-not-allowed"
                   >
-                    📋 {t("priceAuditCopyBtn", { count: copyableCount })}
+                    <Copy aria-hidden="true" className="mr-1 inline h-3 w-3" />
+                    {t("priceAuditCopyBtn", { count: copyableCount })}
                   </button>
                 </div>
               </>
@@ -1156,7 +1176,7 @@ export function PriceAudit({ isLoggedIn: _isLoggedIn }: Props) {
                       onClick={() => void handleCopyBucket(bucket)}
                       className="shrink-0 px-3 py-1 rounded-sm border border-eve-accent/60 text-eve-accent hover:bg-eve-accent/10 transition-colors text-xs"
                     >
-                      📋{" "}
+                      <Copy aria-hidden="true" className="mr-1 inline h-3 w-3" />
                       {t("priceAuditCopyBucketBtn", {
                         hub: bucket.systemName,
                         count: bucket.rows.length,

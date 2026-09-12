@@ -65,6 +65,18 @@ export function KeyboardShortcutsHelp({ open, onClose }: Props) {
       ],
     },
     {
+      // Today's Run mode. Bound in RunPanel rather than through
+      // useKeyboardShortcuts because they only apply while that panel is on
+      // screen; listed here so they are discoverable rather than folklore.
+      title: t("homeTitle"),
+      rows: [
+        { keys: ["Enter"], label: t("todayOpenAndCopy") },
+        { keys: ["Q"], label: t("todayCopyQty") },
+        { keys: ["Space"], label: t("todayDone") },
+        { keys: ["S"], label: t("todaySkip") },
+      ],
+    },
+    {
       title: t("shortcutsGroupTable"),
       rows: [
         { keys: ["↑", "↓"], label: t("shortcutTableNav") },

@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+import { Copy } from "lucide-react";
 import {
   Fragment,
   memo,
@@ -28,6 +30,9 @@ import {
 } from "@/lib/scanResultsLogic";
 import { normalizeColumnPrefs } from "@/lib/tablePrefs";
 import { TypeIcon } from "@/components/ui/TypeIcon";
+import { CopyButton } from "@/components/ui/CopyButton";
+import { OpenMarketButton } from "@/components/ui/OpenMarketButton";
+import { useEveUiActions } from "@/lib/eveUiActions";
 import {
   addToWatchlist,
   clearStationTradeStates,
@@ -37,17 +42,14 @@ import {
   getGankCheck,
   getGankCheckBatch,
   getWatchlist,
-  openMarketInGame,
   rebootStationCache,
   removeFromWatchlist,
   setStationTradeState,
-  setWaypointInGame,
   type CharacterScope,
 } from "@/lib/api";
 import { useGlobalToast } from "./Toast";
 import { EmptyState, type EmptyReason } from "./EmptyState";
 import { TradeExecutionAutopilotPopup } from "./TradeExecutionAutopilotPopup";
-import { handleEveUIError } from "@/lib/handleEveUIError";
 import { BatchBuilderPopup } from "./BatchBuilderPopup";
 import { ExecutionRevalidationReportModal } from "./ExecutionRevalidationReportModal";
 import { RouteSafetyModal } from "./RouteSafetyModal";
@@ -1123,6 +1125,7 @@ export function ScanResultsTable({
   characterScope,
 }: Props) {
   const { t } = useI18n();
+  const eveUi = useEveUiActions();
   const emptyReason: EmptyReason = scanCompletedWithZero
     ? "no_results"
     : "no_scan_yet";
@@ -2821,7 +2824,7 @@ export function ScanResultsTable({
               disabled={selectedRowsForRevalidation.length === 0 || revalidating}
             />
             <ToolbarBtn
-              label="⎘"
+              label={<Copy aria-hidden="true" className="h-3 w-3" />}
               title={t("copyTable")}
               onClick={copyTable}
             />
@@ -3553,40 +3556,29 @@ export function ScanResultsTable({
               <>
                 <div className="h-px bg-eve-border my-1" />
                 <ContextItem
-                  label={`🎮 ${t("openMarket")}`}
+                  label={t("openMarket")}
                   onClick={async () => {
-                    try {
-                      await openMarketInGame(contextMenu.row.TypeID);
+                    if (await eveUi.openMarket(contextMenu.row.TypeID)) {
                       addToast(t("actionSuccess"), "success", 2000);
-                    } catch (err: any) {
-                      const { messageKey, duration } = handleEveUIError(err);
-                      addToast(t(messageKey), "error", duration);
                     }
                     setContextMenu(null);
                   }}
                 />
                 <ContextItem
-                  label={`🎯 ${t("setDestination")} (Buy)`}
+                  label={`${t("setDestination")} (Buy)`}
                   onClick={async () => {
-                    try {
-                      await setWaypointInGame(contextMenu.row.BuySystemID);
+                    if (await eveUi.setDestination(contextMenu.row.BuySystemID)) {
                       addToast(t("actionSuccess"), "success", 2000);
-                    } catch (err: any) {
-                      const { messageKey, duration } = handleEveUIError(err);
-                      addToast(t(messageKey), "error", duration);
                     }
                     setContextMenu(null);
                   }}
                 />
                 {contextMenu.row.SellSystemID !== contextMenu.row.BuySystemID && (
                   <ContextItem
-                    label={`🎯 ${t("setDestination")} (Sell)`}
+                    label={`${t("setDestination")} (Sell)`}
                     onClick={async () => {
-                      try {
-                        await setWaypointInGame(contextMenu.row.SellSystemID);
+                      if (await eveUi.setDestination(contextMenu.row.SellSystemID)) {
                         addToast(t("actionSuccess"), "success", 2000);
-                      } catch (err: any) {
-                        addToast(t("actionFailed").replace("{error}", err.message), "error", 3000);
                       }
                       setContextMenu(null);
                     }}
@@ -4045,6 +4037,11 @@ const DataRow = memo(
               <div className="flex items-center gap-1.5 min-w-0">
                 <TypeIcon typeId={ir.row.TypeID} />
                 <span className="truncate font-ui text-fg">{ir.row.TypeName}</span>
+                {/* This grid used to offer the market window only on
+                    right-click — an invisible affordance on the app's busiest
+                    table. Always visible: acting in-game is the point here. */}
+                <OpenMarketButton typeId={ir.row.TypeID} label={tFn("openMarketHint")} />
+                <CopyButton text={ir.row.TypeName} label={tFn("copyItem")} />
                 {ir.row.IsContraband && (
                   <span
                     title="Contraband item: hauling through empire space can be unsafe."
@@ -4440,7 +4437,8 @@ function ToolbarBtn({
   disabled,
   onClick,
 }: {
-  label: string;
+  /** ReactNode so icon-only toolbar buttons can pass a lucide glyph. */
+  label: ReactNode;
   title: string;
   active?: boolean;
   disabled?: boolean;

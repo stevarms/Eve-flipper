@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { CopyPrice } from "@/components/ui/CopyPrice";
+import { ItemRef } from "@/components/ui/ItemRef";
 import { formatISK } from "../../lib/format";
 import { useI18n } from "../../lib/i18n";
 import type { CrossHubArbitrage, OmegaComparison, SPFarmResult } from "../../lib/types";
@@ -78,14 +80,28 @@ export function CrossHubCard({ items }: { items: CrossHubArbitrage[] }) {
         </thead>
         <tbody>
           {items.map(item => (
-            <tr key={item.type_id} className="border-b border-eve-border/30 hover:bg-eve-hover/30 transition-colors">
-              <td className="py-1 px-2 text-eve-text">{item.item_name}</td>
+            <tr key={item.type_id} className="group border-b border-eve-border/30 hover:bg-eve-hover/30 transition-colors">
+              <td className="max-w-[220px] py-1 px-2 text-eve-text">
+                <ItemRef
+                  typeId={item.type_id}
+                  name={item.item_name}
+                  iconSize={16}
+                  market
+                  copyName
+                  marketLabel={t("openMarketHint")}
+                />
+              </td>
               <td className="py-1 px-2">
                 <span className={item.best_hub === "Jita" ? "text-eve-dim" : "text-eve-accent"}>
                   {item.best_hub}
                 </span>
               </td>
-              <td className="py-1 px-2 text-right font-mono text-eve-text">{formatISK(item.best_price)}</td>
+              <td className="py-1 px-2 text-right font-mono text-eve-text">
+                <span className="inline-flex items-center justify-end gap-1">
+                  {formatISK(item.best_price)}
+                  <CopyPrice value={item.best_price} label={t("copyPrice")} />
+                </span>
+              </td>
               <td className="py-1 px-2 text-right font-mono">
                 {item.diff_pct > 0 ? (
                   <span className="text-eve-positive">-{item.diff_pct.toFixed(1)}%</span>

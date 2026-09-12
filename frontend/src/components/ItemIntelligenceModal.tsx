@@ -1,16 +1,17 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useI18n } from "@/lib/i18n";
+import { CopyButton } from "@/components/ui/CopyButton";
+import { OpenMarketButton } from "@/components/ui/OpenMarketButton";
 import {
   AlertTriangle,
   BarChart3,
-  ExternalLink,
   Loader2,
   Package,
   Search,
   WalletCards,
 } from "lucide-react";
 import { Modal } from "./Modal";
-import { useGlobalToast } from "./Toast";
-import { getItemIntelligence, openMarketInGame, searchItems } from "../lib/api";
+import { getItemIntelligence, searchItems } from "../lib/api";
 import { formatISK, formatMargin, formatNumber } from "../lib/format";
 import type { ItemIntelligence, ItemSearchResult } from "../lib/types";
 
@@ -113,7 +114,7 @@ export function ItemIntelligenceModal({
   open,
   onClose,
 }: ItemIntelligenceModalProps) {
-  const { addToast } = useGlobalToast();
+  const { t } = useI18n();
   const inputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<ItemSearchResult[]>([]);
@@ -197,20 +198,6 @@ export function ItemIntelligenceModal({
       out.push("No archived personal transactions for this type yet.");
     return [...out, ...(intel.warnings ?? [])];
   }, [intel]);
-
-  const handleOpenMarket = async () => {
-    if (!selected) return;
-    try {
-      await openMarketInGame(selected.type_id);
-      addToast("Market window requested", "success", 1800);
-    } catch (err) {
-      addToast(
-        err instanceof Error ? err.message : "Failed to open market",
-        "error",
-        3000,
-      );
-    }
-  };
 
   return (
     <Modal
@@ -310,14 +297,14 @@ export function ItemIntelligenceModal({
                       </div>
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => void handleOpenMarket()}
-                    className="inline-flex items-center justify-center gap-2 border border-eve-accent/50 bg-eve-accent/10 px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-eve-accent hover:bg-eve-accent/20"
-                  >
-                    <ExternalLink className="h-4 w-4" aria-hidden="true" />
-                    Open market
-                  </button>
+                  <span className="flex shrink-0 items-center gap-1">
+                    <OpenMarketButton typeId={selected.type_id} size="md" />
+                    <CopyButton
+                      text={selected.type_name}
+                      label={t("copyItem")}
+                      size="md"
+                    />
+                  </span>
                 </div>
 
                 {intelLoading && !intel ? (

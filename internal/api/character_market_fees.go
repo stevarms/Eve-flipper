@@ -6,13 +6,30 @@ import (
 
 // EVE skill IDs we care about for market-fee calculation.
 const (
-	skillTypeIDAccounting       = 16622 // Accounting
-	skillTypeIDBrokerRelations  = 3446  // Broker Relations
+	skillTypeIDAccounting      = 16622 // Accounting
+	skillTypeIDBrokerRelations = 3446  // Broker Relations
 )
 
-// EVE canonical (post-March-2020 rebalance, unchanged through 2025):
-//   sales tax  = 8.0% × (1 - 0.11 × accountingLevel)   → 3.6% at L5
-//   broker fee = 3.0% - 0.3% × brokerRelationsLevel    → 1.5% at L5
+// baseSalesTaxPercent is the untrained sales tax rate, i.e. the rate at
+// Accounting 0.
+//
+// Measured, not quoted. 3157 sales in the wallet journal archive with an
+// unambiguous transaction_tax pairing all imply exactly 3.3750%, with no
+// spread, for a character ESI reports as Accounting V. That fixes the base at
+// 3.375 / (1 - 0.11×5) = 7.5. The figure that was here before, 8.0, produced
+// 3.60% and overstated the tax on every sale in the app by 6.25% relative.
+//
+// If you are about to "correct" this back to 8.0 because a wiki says so,
+// re-run the measurement against a live wallet first: pair each
+// transaction_tax journal entry with the market_transaction entry sharing its
+// timestamp and divide.
+const baseSalesTaxPercent = 7.5
+
+// EVE canonical:
+//
+//	sales tax  = 7.5% × (1 - 0.11 × accountingLevel)   → 3.375% at L5
+//	broker fee = 3.0% - 0.3% × brokerRelationsLevel    → 1.5% at L5
+//
 // (No standings adjustment in this estimate; user can tweak after.)
 func suggestedSalesTax(accountingLevel int) float64 {
 	if accountingLevel < 0 {
@@ -21,7 +38,14 @@ func suggestedSalesTax(accountingLevel int) float64 {
 	if accountingLevel > 5 {
 		accountingLevel = 5
 	}
-	return 8.0 * (1.0 - 0.11*float64(accountingLevel))
+	return salesTaxAtBase(baseSalesTaxPercent, accountingLevel)
+}
+
+// salesTaxAtBase applies the Accounting reduction to an arbitrary base rate.
+// Snapshot detection needs it for bases this app no longer uses; see
+// salesTaxBases in fee_profile.go.
+func salesTaxAtBase(base float64, accountingLevel int) float64 {
+	return base * (1.0 - 0.11*float64(accountingLevel))
 }
 
 func suggestedBrokerFee(brokerRelationsLevel int) float64 {
@@ -35,12 +59,12 @@ func suggestedBrokerFee(brokerRelationsLevel int) float64 {
 }
 
 type characterMarketFeesResponse struct {
-	CharacterID            int64   `json:"character_id"`
-	CharacterName          string  `json:"character_name"`
-	AccountingLevel        int     `json:"accounting_level"`
-	BrokerRelationsLevel   int     `json:"broker_relations_level"`
-	SuggestedSalesTaxPct   float64 `json:"suggested_sales_tax_percent"`
-	SuggestedBrokerFeePct  float64 `json:"suggested_broker_fee_percent"`
+	CharacterID           int64   `json:"character_id"`
+	CharacterName         string  `json:"character_name"`
+	AccountingLevel       int     `json:"accounting_level"`
+	BrokerRelationsLevel  int     `json:"broker_relations_level"`
+	SuggestedSalesTaxPct  float64 `json:"suggested_sales_tax_percent"`
+	SuggestedBrokerFeePct float64 `json:"suggested_broker_fee_percent"`
 }
 
 // handleAuthCharacterMarketFees returns suggested market fee percentages

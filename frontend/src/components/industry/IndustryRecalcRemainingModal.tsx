@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ItemRef } from "@/components/ui/ItemRef";
 import { Modal } from "../Modal";
 import { useI18n } from "@/lib/i18n";
 import {
@@ -192,10 +193,18 @@ export function IndustryRecalcRemainingModal({ open, onClose, projectID, onWarni
                   {data.materials.map((row) => {
                     const missing = row.missing_qty ?? 0;
                     return (
-                      <tr key={row.type_id} className="border-b border-eve-border/30">
-                        <td className="px-1.5 py-1 text-eve-text">
-                          <div className="truncate">{row.type_name || `Type ${row.type_id}`}</div>
-                          <div className="text-[10px] text-eve-dim">#{row.type_id}</div>
+                      <tr key={row.type_id} className="group border-b border-eve-border/30">
+                        <td className="max-w-[240px] px-1.5 py-1 text-eve-text">
+                          <ItemRef
+                            typeId={row.type_id}
+                            name={row.type_name}
+                            iconSize={16}
+                            market
+                            copyName
+                            reveal="hover"
+                            marketLabel={t("openMarketHint")}
+                            subtitle={`#${row.type_id}`}
+                          />
                         </td>
                         <td className="px-1.5 py-1 text-right font-mono text-eve-accent">
                           {(row.required_qty ?? 0).toLocaleString()}

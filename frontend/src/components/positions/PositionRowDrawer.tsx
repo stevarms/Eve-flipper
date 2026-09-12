@@ -2,7 +2,7 @@ import { DetailGroup, DetailRow } from "@/components/ui/DetailList";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
-import { TypeIcon } from "@/components/ui/TypeIcon";
+import { ItemRef } from "@/components/ui/ItemRef";
 import { formatISK, formatIsk, formatNumber } from "@/lib/format";
 import type { TranslationKey } from "@/lib/i18n";
 import type { PositionRow } from "@/lib/types";
@@ -68,10 +68,15 @@ export function PositionRowDrawer({
       <SheetContent
         width="w-[520px]"
         title={
-          <span className="flex items-center gap-2">
-            <TypeIcon typeId={row.type_id} size={24} />
-            <span className="truncate">{row.type_name || `#${row.type_id}`}</span>
-          </span>
+          <ItemRef
+            typeId={row.type_id}
+            name={row.type_name}
+            iconSize={24}
+            tone="title"
+            market
+            copyName
+            marketLabel={t("positionsListHint")}
+          />
         }
         description={`${formatNumber(row.qty)} × ${t(sourceKey)}`}
         footer={
@@ -101,12 +106,12 @@ export function PositionRowDrawer({
           <DetailRow label={t("positionsColAvgCost")} value={unit(row.avg_unit_cost)} />
           <DetailRow label={t("positionsDrawerCostBasis")} value={isk(row.cost_basis)} />
           {row.target_price ? (
-            <DetailRow label={t("positionsDrawerTarget")} value={unit(row.target_price)} tone="info" />
+            <DetailRow label={t("positionsDrawerTarget")} value={unit(row.target_price)} tone="info" copyValue={row.target_price} copyLabel={t("copyPrice")} />
           ) : null}
         </DetailGroup>
 
         <DetailGroup title={t("positionsDrawerMarket")}>
-          <DetailRow label={t("positionsColNow")} value={unit(row.market_price)} />
+          <DetailRow label={t("positionsColNow")} value={unit(row.market_price)} copyValue={row.market_price} copyLabel={t("copyPrice")} />
           <DetailRow label={t("positionsDrawerGross")} value={isk(gross)} />
           <DetailRow
             label={t("positionsDrawerBrokerFee", { pct: brokerFeePercent })}
@@ -129,7 +134,7 @@ export function PositionRowDrawer({
         {row.listed_qty > 0 && (
           <DetailGroup title={t("positionsDrawerListed")}>
             <DetailRow label={t("positionsColQty")} value={formatNumber(row.listed_qty)} />
-            <DetailRow label={t("positionsDrawerListedPrice")} value={unit(row.listed_price)} />
+            <DetailRow label={t("positionsDrawerListedPrice")} value={unit(row.listed_price)} copyValue={row.listed_price} copyLabel={t("copyPrice")} />
           </DetailGroup>
         )}
 

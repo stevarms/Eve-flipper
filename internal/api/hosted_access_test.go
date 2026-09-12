@@ -702,6 +702,7 @@ func TestHostedQuotaFeatureMappingClassifiesAllPostAPIRoutes(t *testing.T) {
 		"/api/auth/stockpiles/resolve":               "stockpile name resolution (SDE lookup, no ESI)",
 		"/api/auth/stockpiles/{id}/items":            "stockpile item upsert",
 		"/api/auth/station/ai/models":                "local provider model discovery, no inference",
+		"/api/auth/today/state":                     "marks one action done or skipped, no ESI",
 		"/api/ui/open-market":                        "ESI UI action",
 		"/api/ui/set-waypoint":                       "ESI UI action",
 		"/api/ui/open-contract":                      "ESI UI action",

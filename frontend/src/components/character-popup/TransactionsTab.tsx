@@ -1,4 +1,6 @@
 import { useMemo, useState } from "react";
+import { CopyPrice } from "@/components/ui/CopyPrice";
+import { ItemRef } from "@/components/ui/ItemRef";
 import { type TranslationKey } from "../../lib/i18n";
 import type { WalletTransaction } from "../../lib/types";
 import { FilterBtn } from "./shared";
@@ -66,7 +68,7 @@ export function TransactionsTab({ transactions, formatIsk, formatDate, t }: Tran
           </thead>
           <tbody>
             {filtered.slice(0, visibleCount).map((tx) => (
-              <tr key={tx.transaction_id} className="border-t border-eve-border/50 hover:bg-eve-panel/50">
+              <tr key={tx.transaction_id} className="group border-t border-eve-border/50 hover:bg-eve-panel/50">
                 <td className="px-3 py-2">
                   <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium ${
                     tx.is_buy ? "bg-eve-profit/20 text-eve-profit" : "bg-eve-error/20 text-eve-error"
@@ -74,17 +76,23 @@ export function TransactionsTab({ transactions, formatIsk, formatDate, t }: Tran
                     {tx.is_buy ? "BUY" : "SELL"}
                   </span>
                 </td>
-                <td className="px-3 py-2 text-eve-text">
-                  <div className="flex items-center gap-2">
-                    <img
-                      src={`https://images.evetech.net/types/${tx.type_id}/icon?size=32`}
-                      alt=""
-                      className="w-5 h-5"
-                    />
-                    {tx.type_name || `Type #${tx.type_id}`}
-                  </div>
+                <td className="max-w-[260px] px-3 py-2 text-eve-text">
+                  <ItemRef
+                    typeId={tx.type_id}
+                    name={tx.type_name}
+                    iconSize={20}
+                    market
+                    copyName
+                    reveal="hover"
+                    marketLabel={t("openMarketHint")}
+                  />
                 </td>
-                <td className="px-3 py-2 text-right text-eve-accent">{formatIsk(tx.unit_price)}</td>
+                <td className="px-3 py-2 text-right text-eve-accent">
+                  <span className="inline-flex items-center justify-end gap-1">
+                    {formatIsk(tx.unit_price)}
+                    <CopyPrice value={tx.unit_price} label={t("copyPrice")} reveal="hover" />
+                  </span>
+                </td>
                 <td className="px-3 py-2 text-right text-eve-dim">{tx.quantity.toLocaleString()}</td>
                 <td className="px-3 py-2 text-right text-eve-text">{formatIsk(tx.unit_price * tx.quantity)}</td>
                 <td className="px-3 py-2 text-eve-dim text-[11px] max-w-[180px] truncate" title={tx.location_name}>

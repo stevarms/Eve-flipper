@@ -1325,7 +1325,7 @@ export function ContractResultsTable({
             {isLoggedIn && (
               <>
                 <ContextItem
-                  label={`🎮 ${t("openContract")}`}
+                  label={t("openContract")}
                   onClick={async () => {
                     try {
                       await openContractInGame(contextMenu.row.ContractID);

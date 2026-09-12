@@ -1,4 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
+import { OpenMarketButton } from "@/components/ui/OpenMarketButton";
+import { CopyButton } from "@/components/ui/CopyButton";
 import { getHotZones, refreshDemandData, getRegionOpportunities } from "../lib/api";
 import { useI18n, type TranslationKey } from "../lib/i18n";
 import { formatISK as formatIskLib } from "../lib/format";
@@ -608,7 +610,7 @@ function OpportunityCard({ opportunity, formatPrice, t }: OpportunityCardProps) 
   const suggestedPrice = noSupply ? opportunity.jita_price * 1.3 : opportunity.region_price;
   
   return (
-    <div className={`p-3 border rounded-sm hover:border-eve-accent/30 transition-colors ${
+    <div className={`group p-3 border rounded-sm hover:border-eve-accent/30 transition-colors ${
       noSupply ? "bg-green-500/10 border-green-500/30" : "bg-eve-dark/50 border-eve-border/50"
     }`}>
       <div className="flex items-start justify-between gap-4">
@@ -617,6 +619,14 @@ function OpportunityCard({ opportunity, formatPrice, t }: OpportunityCardProps) 
             <span className="font-medium text-eve-text truncate" title={opportunity.type_name}>
               {opportunity.type_name || `Type #${opportunity.type_id}`}
             </span>
+            <OpenMarketButton
+              typeId={opportunity.type_id}
+              reveal="hover"
+              label={t("openMarketHint")}
+            />
+            {opportunity.type_name && (
+              <CopyButton text={opportunity.type_name} label={t("copyItem")} reveal="hover" />
+            )}
             {opportunity.data_source === "killmail" && (
               <span className="px-1.5 py-0.5 bg-blue-500/20 text-blue-400 text-[10px] rounded-sm font-medium shrink-0">
                 LIVE

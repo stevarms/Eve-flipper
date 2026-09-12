@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type DragEvent } from "react";
+import { Copy } from "lucide-react";
+import { CopyPrice } from "@/components/ui/CopyPrice";
+import { ItemRef } from "@/components/ui/ItemRef";
 import {
   getPISchematics,
   getStations,
@@ -694,7 +697,7 @@ export function PIFactory({ isLoggedIn }: Props) {
                       onClick={() => void handleCopyShopping()}
                       className="px-3 py-1 rounded-sm border border-eve-accent/60 text-eve-accent hover:bg-eve-accent/10 transition-colors text-xs"
                     >
-                      📋{" "}
+                      <Copy aria-hidden="true" className="mr-1 inline h-3 w-3" />
                       {t("priceAuditCopyBtn", {
                         count: planResp.shopping.length,
                       })}
@@ -732,8 +735,15 @@ export function PIFactory({ isLoggedIn }: Props) {
                           key={`${r.type_id}-${i}`}
                           className={`border-b border-eve-border/50 ${i % 2 === 0 ? "bg-eve-panel" : "bg-eve-dark"}`}
                         >
-                          <td className="px-2 py-1 text-eve-text">
-                            {r.type_name}
+                          <td className="max-w-[240px] px-2 py-1 text-eve-text">
+                            <ItemRef
+                              typeId={r.type_id}
+                              name={r.type_name}
+                              iconSize={16}
+                              market
+                              copyName
+                              marketLabel={t("openMarketHint")}
+                            />
                           </td>
                           <td className="px-2 py-1 text-right font-mono text-eve-dim">
                             {r.qty_per_day.toLocaleString(undefined, {
@@ -751,9 +761,14 @@ export function PIFactory({ isLoggedIn }: Props) {
                               : "—"}
                           </td>
                           <td className="px-2 py-1 text-right font-mono text-eve-dim">
-                            {r.sell_price != null
-                              ? formatISK(r.sell_price)
-                              : "—"}
+                            {r.sell_price != null ? (
+                              <span className="inline-flex items-center justify-end gap-1">
+                                {formatISK(r.sell_price)}
+                                <CopyPrice value={r.sell_price} label={t("copyPrice")} />
+                              </span>
+                            ) : (
+                              "—"
+                            )}
                           </td>
                           <td className="px-2 py-1 text-right font-mono text-eve-accent">
                             {r.cost_buffer != null

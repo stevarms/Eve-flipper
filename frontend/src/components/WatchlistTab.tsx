@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { CopyButton } from "@/components/ui/CopyButton";
+import { CopyPrice } from "@/components/ui/CopyPrice";
+import { OpenMarketButton } from "@/components/ui/OpenMarketButton";
 import type { FlipResult, WatchlistItem } from "@/lib/types";
 import {
   addToWatchlist,
@@ -566,10 +569,12 @@ export function WatchlistTab({
     switch (col.key) {
       case "type_name":
         return (
-          <>
-            {item.isAlert && <span className="mr-1 text-green-400">!</span>}
-            {item.type_name}
-          </>
+          <span className="flex min-w-0 items-center gap-1">
+            {item.isAlert && <span className="shrink-0 text-green-400">!</span>}
+            <span className="truncate">{item.type_name}</span>
+            <OpenMarketButton typeId={item.type_id} label={t("openMarketHint")} />
+            <CopyButton text={item.type_name} label={t("copyItem")} />
+          </span>
         );
       case "alert_min_margin":
         return item.enabled && item.threshold > 0 ? (
@@ -590,9 +595,23 @@ export function WatchlistTab({
       case "profit":
         return item.match ? <span className="text-green-400">{formatISK(item.match.TotalProfit)}</span> : <span className="text-eve-dim">-</span>;
       case "buy":
-        return item.match ? formatISK(item.match.BuyPrice) : "-";
+        return item.match ? (
+          <span className="inline-flex items-center justify-end gap-1">
+            {formatISK(item.match.BuyPrice)}
+            <CopyPrice value={item.match.BuyPrice} label={t("copyPrice")} />
+          </span>
+        ) : (
+          "-"
+        );
       case "sell":
-        return item.match ? formatISK(item.match.SellPrice) : "-";
+        return item.match ? (
+          <span className="inline-flex items-center justify-end gap-1">
+            {formatISK(item.match.SellPrice)}
+            <CopyPrice value={item.match.SellPrice} label={t("copyPrice")} />
+          </span>
+        ) : (
+          "-"
+        );
       case "added_at":
         return new Date(item.added_at).toLocaleDateString();
       default:

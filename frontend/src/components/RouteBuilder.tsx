@@ -1,4 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Copy } from "lucide-react";
+import { CopyButton } from "@/components/ui/CopyButton";
+import { CopyPrice } from "@/components/ui/CopyPrice";
+import { OpenMarketButton } from "@/components/ui/OpenMarketButton";
 import { findRoutes, setWaypointInGame } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 import { formatIsk, formatISKFull as formatISKFullLib } from "@/lib/format";
@@ -955,9 +959,12 @@ function RouteDetailPopup({
                   <div className="flex items-center gap-2">
                     <span className="text-eve-dim">{t("routeBuy")}:</span>
                     <span className="text-eve-text font-medium">{hop.TypeName}</span>
+                    <OpenMarketButton typeId={hop.TypeID} label={t("openMarketHint")} />
+                    <CopyButton text={hop.TypeName} label={t("copyItem")} />
                     <span className="text-eve-dim">×{hop.Units}</span>
                     <span className="text-eve-dim">@</span>
                     <span className="font-mono text-eve-text">{formatISKFull(hop.BuyPrice)} ISK</span>
+                    <CopyPrice value={hop.BuyPrice} label={t("copyPrice")} />
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="text-eve-dim">→ {t("routeDeliverTo")}:</span>
@@ -974,6 +981,7 @@ function RouteDetailPopup({
                   <div className="flex items-center gap-2">
                     <span className="text-eve-dim">{t("routeSell")}:</span>
                     <span className="font-mono text-eve-text">@ {formatISKFull(hop.SellPrice)} ISK</span>
+                    <CopyPrice value={hop.SellPrice} label={t("copyPrice")} />
                     <span className="text-eve-dim">→</span>
                     <span className="font-mono text-green-400">+{formatISKFull(hop.Profit)} ISK</span>
                     <span className="text-eve-dim">time</span>
@@ -1054,21 +1062,21 @@ function RouteDetailPopup({
               disabled={!dotlanURL}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-[11px] font-semibold uppercase tracking-wider text-eve-dim border border-eve-border bg-eve-dark/60 hover:text-eve-text hover:border-eve-accent/30 hover:bg-eve-dark transition-all disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              <span className="text-[11px] leading-none">⎘</span>
+              <Copy aria-hidden="true" className="h-3 w-3" />
               <span>DOTLAN URL</span>
             </button>
             <button
               onClick={handleCopySystems}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-[11px] font-semibold uppercase tracking-wider text-eve-dim border border-eve-border bg-eve-dark/60 hover:text-eve-text hover:border-eve-accent/30 hover:bg-eve-dark transition-all"
             >
-              <span className="text-[11px] leading-none">⎘</span>
+              <Copy aria-hidden="true" className="h-3 w-3" />
               <span>{t("copyRouteSystems")}</span>
             </button>
             <button
               onClick={handleCopyRoute}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-[11px] font-semibold uppercase tracking-wider text-eve-dark bg-eve-accent border border-eve-accent hover:bg-eve-accent-hover shadow-eve-glow transition-all"
             >
-              <span className="text-[11px] leading-none">⎘</span>
+              <Copy aria-hidden="true" className="h-3 w-3" />
               <span>{t("copyRoute")}</span>
             </button>
           </div>

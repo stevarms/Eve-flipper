@@ -1,4 +1,7 @@
 import type { Dispatch, SetStateAction } from "react";
+import { CopyButton } from "@/components/ui/CopyButton";
+import { ItemRef } from "@/components/ui/ItemRef";
+import { OpenMarketButton } from "@/components/ui/OpenMarketButton";
 import { useI18n } from "@/lib/i18n";
 import { formatISK } from "@/lib/format";
 import { useGlobalToast } from "../Toast";
@@ -351,6 +354,7 @@ function IndustryCoveragePanel({
   onRefresh?: () => void;
   onSeedLedgerDraft?: () => void;
 }) {
+  const { t } = useI18n();
   const summary = coverage?.summary;
   const materialRows = coverage
     ? [...coverage.materials]
@@ -487,10 +491,23 @@ function IndustryCoveragePanel({
                 </thead>
                 <tbody>
                   {actionRows.map((action) => (
-                    <tr key={`${action.step}-${action.action}-${action.type_id ?? 0}`} className="border-t border-eve-border/40">
+                    <tr key={`${action.step}-${action.action}-${action.type_id ?? 0}`} className="group border-t border-eve-border/40">
                       <td className="px-3 py-1.5 text-right text-eve-dim font-mono">{action.step}</td>
                       <td className="px-3 py-1.5 text-eve-text">{action.label || action.action}</td>
-                      <td className="px-3 py-1.5 text-eve-dim truncate max-w-[320px]">{action.detail || action.type_name || "-"}</td>
+                      <td className="max-w-[320px] px-3 py-1.5 text-eve-dim">
+                        <span className="flex min-w-0 items-center gap-1">
+                          <span className="truncate">{action.detail || action.type_name || "-"}</span>
+                          {/* Renders nothing when the action has no product. */}
+                          <OpenMarketButton
+                            typeId={action.type_id ?? 0}
+                            reveal="hover"
+                            label={t("openMarketHint")}
+                          />
+                          {action.type_name && (
+                            <CopyButton text={action.type_name} label={t("copyItem")} reveal="hover" />
+                          )}
+                        </span>
+                      </td>
                       <td className="px-3 py-1.5 text-right text-eve-dim">{formatQty(action.quantity ?? action.missing_qty ?? 0)}</td>
                       <td className="px-3 py-1.5 text-right">
                         <span className={`px-1.5 py-0.5 rounded-sm border uppercase ${coverageStatusClass(action.status)}`}>
@@ -522,8 +539,18 @@ function IndustryCoveragePanel({
                       <td colSpan={5} className="px-3 py-2 text-eve-dim">No material rows.</td>
                     </tr>
                   ) : materialRows.map((row) => (
-                    <tr key={row.type_id} className="border-t border-eve-border/40">
-                      <td className="px-3 py-1.5 text-eve-text truncate max-w-[220px]">{row.type_name || `#${row.type_id}`}</td>
+                    <tr key={row.type_id} className="group border-t border-eve-border/40">
+                      <td className="max-w-[220px] px-3 py-1.5 text-eve-text">
+                        <ItemRef
+                          typeId={row.type_id}
+                          name={row.type_name}
+                          iconSize={16}
+                          market
+                          copyName
+                          reveal="hover"
+                          marketLabel={t("openMarketHint")}
+                        />
+                      </td>
                       <td className="px-3 py-1.5 text-right text-eve-dim">{formatQty(row.required_qty)}</td>
                       <td className="px-3 py-1.5 text-right text-eve-dim">{formatQty(row.available_qty)}</td>
                       <td className={`px-3 py-1.5 text-right ${row.missing_qty > 0 ? "text-red-300" : "text-green-400"}`}>{formatQty(row.missing_qty)}</td>
@@ -556,10 +583,18 @@ function IndustryCoveragePanel({
                       <td colSpan={6} className="px-3 py-2 text-eve-dim">No blueprint rows.</td>
                     </tr>
                   ) : blueprintRows.map((row) => (
-                    <tr key={row.blueprint_type_id} className="border-t border-eve-border/40">
-                      <td className="px-3 py-1.5 text-eve-text truncate max-w-[220px]">
-                        <div className="truncate">{row.blueprint_name || `#${row.blueprint_type_id}`}</div>
-                        <div className="text-[9px] text-eve-dim truncate">{row.activity || "activity"}</div>
+                    <tr key={row.blueprint_type_id} className="group border-t border-eve-border/40">
+                      <td className="max-w-[220px] px-3 py-1.5 text-eve-text">
+                        <ItemRef
+                          typeId={row.blueprint_type_id}
+                          name={row.blueprint_name}
+                          iconSize={16}
+                          market
+                          copyName
+                          reveal="hover"
+                          marketLabel={t("openMarketHint")}
+                          subtitle={row.activity || "activity"}
+                        />
                       </td>
                       <td className="px-3 py-1.5 text-right text-eve-dim">{formatQty(row.required_runs)}</td>
                       <td className="px-3 py-1.5 text-right text-eve-dim">{formatQty(row.bpo_qty)}/{formatQty(row.bpc_qty)}</td>

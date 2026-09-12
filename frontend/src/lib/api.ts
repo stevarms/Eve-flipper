@@ -92,6 +92,9 @@ import type {
   HistoricalOrder,
   PositionsResponse,
   ManualPositionInput,
+  TodayPlan,
+  TodayPlanEnvelope,
+  TodayActionStatePayload,
 } from "./types";
 import type { CockpitLoadout, CockpitPreferences } from "./cockpit";
 import {
@@ -2394,6 +2397,14 @@ export interface JournalTotals {
   fees_isk: number;
   unattributed_isk: number;
   est_material_cost_isk: number;
+  // Fees as the wallet journal recorded them, for the part of the period the
+  // journal archive covers (ESI serves ~30 days, so a longer window is only
+  // partly reconciled). Broker fee and provider tax are charged when an order
+  // is placed, not when it fills, so they belong to the period and to no
+  // single row. Absent when the journal had nothing to say about the window.
+  actual_sales_tax_isk?: number;
+  actual_broker_fee_isk?: number;
+  actual_provider_tax_isk?: number;
 }
 
 export interface JournalDailyBreakdown {
@@ -2457,6 +2468,10 @@ export interface JournalLot {
   // was actually charged.
   sell_broker_fee: number;
   sell_tax: number;
+  // True when sell_tax is what CCP actually charged, recovered from the wallet
+  // journal, rather than what this app's fee model implies. The table marks
+  // the modelled ones — inside the archive window they are the exception.
+  sell_tax_actual?: boolean;
   sell_location_id?: number;
   sell_location_name?: string;
   buy_location_id?: number;
@@ -3447,4 +3462,100 @@ export async function scanStockpile(id: number): Promise<StockpileScanResult> {
     headers: { "Content-Type": "application/json" },
   });
   return handleResponse<StockpileScanResult>(res);
+}
+
+// --- Today: the ranked work order -------------------------------------
+//
+// Two calls with deliberately different costs. getTodayPlan reads one row out
+// of SQLite, so the landing screen paints before anything touches the network.
+// refreshTodayPlan rebuilds it against ESI and streams progress, which is why
+// it is a separate, explicit action rather than something a page load does.
+
+/** Read the stored plan. Instant; `plan` is null when there is none yet. */
+export async function getTodayPlan(characterId?: CharacterScope): Promise<TodayPlanEnvelope> {
+  const qp = new URLSearchParams();
+  appendCharacterScope(qp, characterId);
+  const qs = qp.toString();
+  const res = await apiFetch(`${BASE}/api/auth/today${qs ? `?${qs}` : ""}`);
+  return handleResponse<TodayPlanEnvelope>(res);
+}
+
+/**
+ * Rebuild the plan, reporting each source as it lands.
+ *
+ * Not built on `streamNdjson`: that helper is shaped for scans, which emit an
+ * array of rows, and this emits exactly one object. Flattening a plan into a
+ * one-element array to fit would put the awkwardness in the caller instead.
+ */
+export async function refreshTodayPlan(
+  onProgress: (msg: string) => void,
+  characterId?: CharacterScope,
+  signal?: AbortSignal,
+): Promise<TodayPlan> {
+  const qp = new URLSearchParams();
+  appendCharacterScope(qp, characterId);
+  const qs = qp.toString();
+
+  const res = await apiFetch(`${BASE}/api/auth/today/refresh${qs ? `?${qs}` : ""}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+    signal,
+  });
+
+  if (!res.ok) {
+    let message = "Could not build today's plan";
+    try {
+      const err = await res.json();
+      message = err.error || err.message || message;
+    } catch {
+      // Body was not JSON; the generic message stands.
+    }
+    throw new Error(message);
+  }
+  if (!res.body) throw new Error("Response body is null");
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let plan: TodayPlan | null = null;
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const msg = JSON.parse(line) as
+        | { type: "progress"; message: string }
+        | { type: "result"; data: TodayPlan }
+        | { type: "error"; message: string };
+      if (msg.type === "progress") onProgress(msg.message);
+      else if (msg.type === "result") plan = msg.data;
+      else if (msg.type === "error") throw new Error(msg.message);
+    }
+  }
+
+  if (!plan) throw new Error("The plan stream ended without a plan");
+  return plan;
+}
+
+/**
+ * Mark one action done, skipped, or neither.
+ *
+ * The projection fields travel with the mark because the plan that produced
+ * them is replaced on the next refresh — this is the only moment they can be
+ * recorded, and they are what later lets Today be measured against its own
+ * promises rather than its own optimism.
+ */
+export async function setTodayActionState(payload: TodayActionStatePayload): Promise<void> {
+  const res = await apiFetch(`${BASE}/api/auth/today/state`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  await handleResponse<{ ok: boolean }>(res);
 }

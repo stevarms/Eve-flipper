@@ -1,4 +1,5 @@
 import { formatISK } from "../../lib/format";
+import { CopyPrice } from "@/components/ui/CopyPrice";
 import { useI18n } from "../../lib/i18n";
 import type {
   ArbitragePath,
@@ -63,12 +64,18 @@ export function GlobalPriceCard({ price, indicators: ind }: { price: PLEXGlobalP
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
           <div>
             <div className="text-[10px] text-eve-dim uppercase tracking-wider mb-0.5">{t("plexBestBuy")}</div>
-            <div className="text-lg font-mono font-bold text-eve-success">{formatISK(price.buy_price)}</div>
+            <div className="flex items-center gap-1">
+              <span className="text-lg font-mono font-bold text-eve-success">{formatISK(price.buy_price)}</span>
+              <CopyPrice value={price.buy_price} label={t("copyPrice")} size="md" />
+            </div>
             <div className="text-[10px] text-eve-dim">{price.buy_orders} {t("plexOrders")}</div>
           </div>
           <div>
             <div className="text-[10px] text-eve-dim uppercase tracking-wider mb-0.5">{t("plexBestSell")}</div>
-            <div className="text-lg font-mono font-bold text-eve-error">{formatISK(price.sell_price)}</div>
+            <div className="flex items-center gap-1">
+              <span className="text-lg font-mono font-bold text-eve-error">{formatISK(price.sell_price)}</span>
+              <CopyPrice value={price.sell_price} label={t("copyPrice")} size="md" />
+            </div>
             <div className="text-[10px] text-eve-dim">{price.sell_orders} {t("plexOrders")}</div>
           </div>
           <div>

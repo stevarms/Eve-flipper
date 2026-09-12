@@ -1,7 +1,8 @@
 import { DetailGroup, DetailRow } from "@/components/ui/DetailList";
 import { Badge } from "@/components/ui/badge";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
-import { TypeIcon } from "@/components/ui/TypeIcon";
+import { ItemRef } from "@/components/ui/ItemRef";
+import { priceStep } from "@/lib/pricing";
 import { formatISK, formatNumber } from "@/lib/format";
 import type { TranslationKey } from "@/lib/i18n";
 import type { BookLevel, OrderDeskOrder } from "@/lib/types";
@@ -70,10 +71,15 @@ export function OrderRowDrawer({
       <SheetContent
         width="w-[520px]"
         title={
-          <span className="flex items-center gap-2">
-            <TypeIcon typeId={row.type_id} size={24} />
-            <span className="truncate">{row.type_name || `#${row.type_id}`}</span>
-          </span>
+          <ItemRef
+            typeId={row.type_id}
+            name={row.type_name}
+            iconSize={24}
+            tone="title"
+            market
+            copyName
+            marketLabel={t("openMarketHint")}
+          />
         }
         description={`${side} · ${row.location_name || `#${row.location_id}`}`}
       >
@@ -94,17 +100,22 @@ export function OrderRowDrawer({
         )}
 
         <DetailGroup title={t("ordersDrawerGroupPricing")}>
-          <DetailRow label={t("ordersColCurrent")} value={isk(row.price)} />
+          <DetailRow label={t("ordersColCurrent")} value={isk(row.price)} copyValue={row.price} copyLabel={t("copyPrice")} />
           <DetailRow
             label={t("ordersColBest")}
             value={row.book_available ? isk(row.best_price) : "—"}
             hint={t("ordersDrawerBestHint")}
+            copyValue={row.book_available ? row.best_price : undefined} copyLabel={t("copyPrice")}
           />
           <DetailRow
             label={t("operatorSuggestedPriceCol")}
             value={row.book_available && row.suggested_price > 0 ? isk(row.suggested_price) : "—"}
             tone={row.position === 1 ? "muted" : "info"}
             hint={t("ordersDrawerSuggestedHint")}
+            /* The one number in this drawer that gets typed back into EVE, so
+               it carries the grid step that keeps a legal undercut legal. */
+            copyValue={row.book_available ? row.suggested_price : undefined} copyLabel={t("copyPrice")}
+            copyStep={priceStep(row.suggested_price)}
           />
           <DetailRow
             label={t("ordersDrawerUndercut")}

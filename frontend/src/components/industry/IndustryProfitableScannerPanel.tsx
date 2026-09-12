@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ItemRef } from "@/components/ui/ItemRef";
 import { useI18n } from "@/lib/i18n";
 import { scanProfitableBlueprints, getStations, getStructures } from "@/lib/api";
 import { useEsiFeeImport } from "@/lib/useEsiFeeImport";
@@ -2878,7 +2879,16 @@ const ScannerRow = memo(function ScannerRow({ row, k, checked, onToggle, onView,
           );
         })()}
       </td>
-      <td className="px-2 py-1 text-eve-dim">{row.product_name}</td>
+      <td className="max-w-[240px] px-2 py-1 text-eve-dim">
+        <ItemRef
+          typeId={row.product_type_id}
+          name={row.product_name}
+          iconSize={16}
+          market
+          copyName
+          marketLabel={t("openMarketHint")}
+        />
+      </td>
       {/* Planned runs lives in its own column. It used to share the Avail cell,
           which meant selecting a row hid the one number you check the plan
           against — how many runs the blueprint can actually cover. */}

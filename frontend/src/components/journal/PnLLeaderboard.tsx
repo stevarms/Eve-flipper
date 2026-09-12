@@ -1,4 +1,7 @@
 import { useMemo, useState } from "react";
+import { CopyButton } from "@/components/ui/CopyButton";
+import { OpenMarketButton } from "@/components/ui/OpenMarketButton";
+import { TypeIcon } from "@/components/ui/TypeIcon";
 import { type TranslationKey } from "../../lib/i18n";
 import {
   NEGLIGIBLE_NET_PNL,
@@ -205,19 +208,16 @@ function LeaderboardRow({
         : 0;
 
   return (
-    <li className="border-t border-eve-border/50 first:border-t-0">
+    <li className="group border-t border-eve-border/50 first:border-t-0">
+      <div className="flex items-start">
       <button
         type="button"
         onClick={onToggle}
-        className="w-full px-3 py-2 text-left hover:bg-eve-panel/50 transition-colors"
+        className="min-w-0 flex-1 px-3 py-2 text-left hover:bg-eve-panel/50 transition-colors"
       >
         <div className="flex items-center gap-2">
           <span className="w-5 text-right text-[10px] text-eve-dim tabular-nums">{rank}</span>
-          <img
-            src={`https://images.evetech.net/types/${row.type_id}/icon?size=32`}
-            alt=""
-            className="w-5 h-5"
-          />
+          <TypeIcon typeId={row.type_id} size={20} />
           <span className="flex-1 truncate text-xs text-eve-text">
             {row.type_name || `Type #${row.type_id}`}
           </span>
@@ -246,6 +246,15 @@ function LeaderboardRow({
           </span>
         </div>
       </button>
+        {/* Outside the toggle button: a button inside a button is invalid
+            HTML, and any click would have expanded the row instead. */}
+        <span className="flex shrink-0 items-center gap-1 py-2 pr-2">
+          <OpenMarketButton typeId={row.type_id} reveal="hover" label={t("openMarketHint")} />
+          {row.type_name && (
+            <CopyButton text={row.type_name} label={t("copyItem")} reveal="hover" />
+          )}
+        </span>
+      </div>
 
       {open && (
         <div className="px-3 pb-2 pl-10 text-[10px] text-eve-dim space-y-0.5">

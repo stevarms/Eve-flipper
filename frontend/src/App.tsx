@@ -33,6 +33,7 @@ import { useGlobalToast } from "./components/Toast";
 import { Modal } from "./components/Modal";
 import { CharacterPopup } from "./components/CharacterPopup";
 import { CharacterScopeProvider } from "./components/character/CharacterScopeProvider";
+import { EveUiProvider } from "./lib/eveUiContext";
 import { CharacterScopePicker } from "./components/character/CharacterScopePicker";
 import {
   EdgeWorkspaceTab,
@@ -113,6 +114,7 @@ import type {
   ScanParams,
   StationCacheMeta,
   StationTrade,
+  TodayDeepLink,
 } from "./lib/types";
 import logo from "./assets/logo.svg";
 
@@ -374,13 +376,13 @@ function App() {
     buy_radius: 5,
     sell_radius: 10,
     min_margin: 5,
-    sales_tax_percent: 8,
+    sales_tax_percent: 7.5,
     broker_fee_percent: 0,
     split_trade_fees: false,
     buy_broker_fee_percent: 0,
     sell_broker_fee_percent: 0,
     buy_sales_tax_percent: 0,
-    sell_sales_tax_percent: 8,
+    sell_sales_tax_percent: 7.5,
     min_item_profit: 0,
     min_route_security: 0.45,
     avg_price_period: 14,
@@ -448,6 +450,25 @@ function App() {
       /* ignore */
     }
   }, []);
+
+  /* --- Row focus ----------------------------------------------------
+     Which row a tab should open on, when it was reached from somewhere that
+     already knew. Today's actions deep-link this way: landing on the Orders
+     tab is not much use if the order you came to reprice is thirty rows down.
+
+     Kept out of setTab deliberately, so the ~40 existing setTab call sites
+     stay untouched, and a tab that does not implement focus just receives a
+     prop it ignores. Consumed once: `onFocusConsumed` clears it so navigating
+     back later does not re-open a row you already dealt with. */
+  const [pendingFocus, setPendingFocus] = useState<TodayDeepLink | null>(null);
+  const navigateWithFocus = useCallback(
+    (t: Tab, focus?: TodayDeepLink) => {
+      setPendingFocus(focus ?? null);
+      setTab(t);
+    },
+    [setTab],
+  );
+  const clearPendingFocus = useCallback(() => setPendingFocus(null), []);
 
   /* --- Workspace navigation (UI overhaul phase 1) -------------------
      The workspace is derived from the active tab rather than being its own
@@ -1733,12 +1754,16 @@ function App() {
   }
 
   return (
-    <CharacterScopeProvider
-      isLoggedIn={authStatus.logged_in}
-      characters={authStatus.characters ?? []}
-      activeCharacterId={authStatus.character_id}
-      onSelectCharacter={handleSelectCharacter}
-    >
+    /* Outside CharacterScopeProvider: the row-action buttons need only the
+       boolean, and useCharacterScope() throws outside its provider (which the
+       /corp React root never mounts). See lib/eveUiContext.tsx. */
+    <EveUiProvider loggedIn={authStatus.logged_in}>
+      <CharacterScopeProvider
+        isLoggedIn={authStatus.logged_in}
+        characters={authStatus.characters ?? []}
+        activeCharacterId={authStatus.character_id}
+        onSelectCharacter={handleSelectCharacter}
+      >
       <div
         className={`cockpit-density-${effectiveCockpitDensity} h-screen flex flex-col gap-1.5 sm:gap-3 p-1.5 sm:p-4 bg-eve-dark text-eve-text select-none overflow-hidden transition-[opacity,transform,filter] duration-500 ease-out ${
           bootSplashState === "hidden"
@@ -2381,7 +2406,7 @@ function App() {
 
         <div className={tabWorkspaceClass}>
           <TabPanel active={tab === "home"}>
-            <HomeWorkspace isLoggedIn={authStatus.logged_in} onNavigate={setTab} />
+            <HomeWorkspace isLoggedIn={authStatus.logged_in} onNavigate={navigateWithFocus} />
           </TabPanel>
           <TabPanel active={tab === "radius"}>
               {tab === "radius" && showTabActionBars && (
@@ -2549,7 +2574,11 @@ function App() {
             />
           </TabPanel>
           <TabPanel active={tab === "orders"}>
-            <Orders isLoggedIn={authStatus.logged_in} />
+            <Orders
+              isLoggedIn={authStatus.logged_in}
+              focus={tab === "orders" ? pendingFocus : null}
+              onFocusConsumed={clearPendingFocus}
+            />
           </TabPanel>
           <TabPanel active={tab === "route"}>
             <RouteBuilder
@@ -3105,7 +3134,8 @@ function App() {
           </div>
         </div>
       )}
-    </CharacterScopeProvider>
+      </CharacterScopeProvider>
+    </EveUiProvider>
   );
 }
 

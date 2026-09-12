@@ -1,62 +1,50 @@
-import { useCallback, useState } from "react";
-import { Check, Copy } from "lucide-react";
-import { useGlobalToast } from "@/components/Toast";
-import { cn } from "@/lib/utils";
+import { formatGridPrice } from "@/lib/pricing";
+import { CopyButton } from "./CopyButton";
+import type { ActionReveal, ActionSize } from "./rowAction";
 
 /**
  * Copy a price to the clipboard for pasting into EVE.
  *
  * Two things this gets right that a hand-rolled button keeps getting wrong:
  *
- *  1. It writes `value.toFixed(2)` — a **plain** number. EVE's price field
- *     rejects "1.23 M" and every other formatted form, so what the user sees
- *     and what lands on the clipboard are deliberately different.
- *  2. It confirms *in place* with a check mark rather than firing a toast.
- *     Copying a price is a per-row action repeated a dozen times in a sitting;
- *     a dozen toasts is noise.
+ *  1. It writes a **plain** number. EVE's price field rejects "1.23 M" and
+ *     every other formatted form, so what the user sees and what lands on the
+ *     clipboard are deliberately different.
+ *  2. It confirms in place rather than firing a toast — see `CopyButton`.
+ *
+ * `value` is a NUMBER and always will be. That is not an oversight to be
+ * "fixed" by widening it to `number | string`: a formatted string is exactly
+ * what EVE rejects, and this narrow type is the only thing stopping
+ * `value={formatIsk(p)}` from type-checking. Strings go through `CopyButton`,
+ * which is named for text and cannot be mistaken for this. `CopyPrice.test.tsx`
+ * guards the output format.
  */
 export function CopyPrice({
   value,
+  step,
   label,
+  reveal = "always",
+  size = "sm",
   className,
 }: {
   value: number;
-  /** Accessible name and tooltip — e.g. "Copy price". */
+  /**
+   * EVE's price grid: prices carry 4 significant digits, so the smallest legal
+   * move on a 12.3M item is 10k, not 0.01. Pass `priceStep(basis)` from
+   * lib/pricing and the clipboard gets `formatGridPrice`, which — unlike
+   * `toFixed(2)` — will not round a legal 5.499 undercut up to 5.50 and back
+   * above the price it was undercutting. Omit it for a display price that is
+   * not being used to outbid anything.
+   */
+  step?: number;
+  /** Accessible name and tooltip — e.g. `t("copyPrice")`. */
   label: string;
+  reveal?: ActionReveal;
+  size?: ActionSize;
   className?: string;
 }) {
-  const [copied, setCopied] = useState(false);
-  const { addToast } = useGlobalToast();
-
-  const copy = useCallback(
-    async (e: React.MouseEvent) => {
-      // Rows are clickable (they open the detail drawer); copying must not
-      // also open it.
-      e.stopPropagation();
-      try {
-        await navigator.clipboard.writeText(value.toFixed(2));
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 1400);
-      } catch {
-        addToast("Clipboard unavailable", "error", 2500);
-      }
-    },
-    [value, addToast],
-  );
-
+  const text = step && step > 0 ? formatGridPrice(value, step) : value.toFixed(2);
   return (
-    <button
-      type="button"
-      onClick={copy}
-      aria-label={label}
-      title={label}
-      className={cn(
-        "inline-flex h-5 w-5 items-center justify-center rounded-sm transition-colors",
-        copied ? "text-profit" : "text-fg-tertiary hover:bg-surface-2 hover:text-fg",
-        className,
-      )}
-    >
-      {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-    </button>
+    <CopyButton text={text} label={label} reveal={reveal} size={size} className={className} />
   );
 }

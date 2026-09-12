@@ -40,12 +40,12 @@ const text = {
   done: "Vault is ready.",
   protectedFields: "Protected local fields",
   analyticsNote: "Market prices, dates and numeric aggregates remain queryable so charts and portfolio analytics keep working.",
-  browserEsiTitle: "In-game 🎮 buttons",
+  browserEsiTitle: "In-game action buttons",
   browserEsiBody:
-    "The 🎮 buttons that open a market, waypoint, or contract in your game client need ESI to see the game's IP. By default the browser makes those calls itself so it works even when EVE Flipper runs on a remote box. Your access token is briefly held in browser memory for the click (the refresh token stays on the server).",
+    "The in-game action buttons that open a market, waypoint, or contract in your game client need ESI to see the game's IP. By default the browser makes those calls itself so it works even when EVE Flipper runs on a remote box. Your access token is briefly held in browser memory for the click (the refresh token stays on the server).",
   browserEsiOptOutLabel: "Don't expose ESI tokens to my browser (local installs only)",
   browserEsiOptOutHint:
-    "If checked, 🎮 buttons will use the server-side path. Works when the server shares a public IP with your game client (typical local install); does not work for remote Docker deployments.",
+    "If checked, in-game action buttons will use the server-side path. Works when the server shares a public IP with your game client (typical local install); does not work for remote Docker deployments.",
 };
 
 function shouldShowVaultModal(status?: SecurityVaultStatus): boolean {

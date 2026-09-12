@@ -1,4 +1,6 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
+import { useI18n } from "@/lib/i18n";
+import { CopyButton } from "@/components/ui/CopyButton";
 import { formatISK } from "@/lib/format";
 import type {
   IndustryBlueprintPoolRecord,
@@ -62,6 +64,13 @@ const ACTIVITY_VERB: Record<string, string> = {
   research_time: "Research time efficiency",
 };
 
+/**
+ * A labelled value with a copy button.
+ *
+ * The whole value used to be the button, flashing a bespoke ⧉ → ✓ glyph. It
+ * is now the shared CopyButton, so this card's copy affordance looks and
+ * behaves like every other one in the app.
+ */
 function CopyField({
   label,
   value,
@@ -73,35 +82,14 @@ function CopyField({
   mono?: boolean;
   accent?: string;
 }) {
-  const [copied, setCopied] = useState(false);
-  const copy = () => {
-    // Clipboard access can be denied (insecure origin, permissions). Failing
-    // to flash "copied" is the whole error path — the value is still on
-    // screen to read off manually.
-    void navigator.clipboard
-      .writeText(value)
-      .then(() => {
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 1200);
-      })
-      .catch(() => undefined);
-  };
+  const { t } = useI18n();
   return (
-    <div className="flex flex-col gap-0.5 min-w-0">
+    <div className="group flex min-w-0 flex-col gap-0.5">
       <span className="text-[9px] uppercase tracking-wider text-eve-dim">{label}</span>
-      <button
-        type="button"
-        onClick={copy}
-        title={`Copy "${value}"`}
-        className="group inline-flex items-center gap-1 text-left min-w-0"
-      >
+      <span className="inline-flex min-w-0 items-center gap-1">
         <span className={`truncate text-[12px] ${mono ? "font-mono" : ""} ${accent}`}>{value}</span>
-        <span
-          className={`text-[9px] shrink-0 ${copied ? "text-emerald-300" : "text-eve-dim group-hover:text-eve-accent"}`}
-        >
-          {copied ? "✓" : "⧉"}
-        </span>
-      </button>
+        <CopyButton text={value} label={`${t("copyItem")}: ${label}`} reveal="hover" />
+      </span>
     </div>
   );
 }

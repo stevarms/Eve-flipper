@@ -4,6 +4,7 @@ import { type TranslationKey } from "../../lib/i18n";
 import type { CorpDashboard, CorpMarketOrderDetail } from "../../lib/types";
 import { CsvExportButton, KpiCard } from "./shared";
 import { LoadingBlock } from "@/components/ui/LoadingBlock";
+import { ItemRef } from "@/components/ui/ItemRef";
 export function MarketSection({
   dashboard,
   mode,
@@ -136,12 +137,17 @@ export function MarketSection({
               </thead>
               <tbody>
                 {filtered.map(o => (
-                  <tr key={o.order_id} className="border-t border-eve-border/30 hover:bg-eve-panel/50">
+                  <tr key={o.order_id} className="group border-t border-eve-border/30 hover:bg-eve-panel/50">
                     <td className="px-2 py-1.5">
-                      <div className="flex items-center gap-2">
-                        <img src={`https://images.evetech.net/types/${o.type_id}/icon?size=32`} alt="" className="w-4 h-4" />
-                        <span className="text-eve-text">{o.type_name}</span>
-                      </div>
+                      <ItemRef
+                        typeId={o.type_id}
+                        name={o.type_name}
+                        iconSize={16}
+                        market
+                        copyName
+                        reveal="hover"
+                        marketLabel={t("openMarketHint")}
+                      />
                     </td>
                     <td className="px-2 py-1.5 text-eve-dim max-w-[100px] truncate">{o.character_name}</td>
                     <td className="px-2 py-1.5">

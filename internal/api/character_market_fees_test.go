@@ -8,16 +8,20 @@ import (
 func floatEq(a, b, tol float64) bool { return math.Abs(a-b) < tol }
 
 func TestSuggestedSalesTax(t *testing.T) {
+	// The base is 7.5%, measured against 3157 unambiguously paired sales in a
+	// live wallet journal for a character ESI reports as Accounting V — every
+	// one of them exactly 3.3750%. See baseSalesTaxPercent. The table used to
+	// assert a 8.0 base, which put L5 at 3.6% and overstated tax on every sale.
 	cases := []struct {
 		level int
 		want  float64
 	}{
-		{-1, 8.0},   // clamped to 0
-		{0, 8.0},
-		{1, 7.12},
-		{3, 5.36},
-		{5, 3.6},
-		{9, 3.6}, // clamped to 5
+		{-1, 7.5}, // clamped to 0
+		{0, 7.5},
+		{1, 6.675},
+		{3, 5.025},
+		{5, 3.375},
+		{9, 3.375}, // clamped to 5
 	}
 	for _, c := range cases {
 		got := suggestedSalesTax(c.level)

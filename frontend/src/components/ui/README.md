@@ -41,5 +41,9 @@ Written when phase 1 (Station Trade) needed them — not speculatively.
 | `sheet.tsx` | Radix Dialog as a right-hand drawer — tier 2 of the disclosure rule |
 | `TypeIcon.tsx` | CCP type art with the blueprint `/bp` retry; use in every row that names an item |
 | `DetailList.tsx` | `DetailGroup` / `DetailRow` — the label/value pairs a drawer is made of |
-| `CopyPrice.tsx` | Copies a **plain** `toFixed(2)` (EVE's price field rejects formatted numbers); confirms in place, not via toast |
+| `rowAction.ts` | Shared shell for the two row actions: `ActionReveal` (`always` on act-in-game tables, `hover` on reference surfaces), sizes, and the one place the Tailwind box classes are written out |
+| `OpenMarketButton.tsx` | Opens an item's market window in EVE. **Icon-only by design** — no `children`, and `label` feeds only `aria-label`/`title`, which is what stops "List" / "Open market" growing back |
+| `CopyButton.tsx` | Copies a string. The one copy affordance; replaced 📋, ⧉ and ⎘ across six hand-rolled implementations |
+| `CopyPrice.tsx` | Copies a **plain** `toFixed(2)` (EVE's price field rejects formatted numbers); confirms in place, not via toast. `value` stays `number` on purpose — widening it to `number \| string` is what would let `formatIsk(p)` type-check. Pass `step` for EVE's 4-significant-digit grid |
+| `ItemRef.tsx` | `TypeIcon` + name + the two actions. Renders a flex `<span>`, never a `<div>`, so it works in a `<td>`, a flex row and a Radix `Dialog.Title`. Caller owns width; `ItemRef` owns `min-w-0`/`truncate` |
 | `LoadingBlock.tsx` | The one spinner. `role="status"`, three sizes, row/column/fill layouts |

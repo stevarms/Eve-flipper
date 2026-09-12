@@ -4,7 +4,6 @@ import {
   getOrderDesk,
   getOrderDisposition,
   getUndercuts,
-  openMarketInGame,
 } from "../lib/api";
 import type { CharacterMarketFees } from "../lib/api";
 import type {
@@ -15,6 +14,7 @@ import type {
   OrderDeskOrder,
   OrderDeskResponse,
   OrderDeskSettings,
+  TodayDeepLink,
 } from "../lib/types";
 import { useEsiFeeImport } from "../lib/useEsiFeeImport";
 import {
@@ -32,9 +32,10 @@ import {
   type OrdersSortLayer,
 } from "../lib/ordersPrefs";
 import { useI18n, type TranslationKey } from "../lib/i18n";
-import { useGlobalToast } from "./Toast";
-import { handleEveUIError } from "../lib/handleEveUIError";
 import { formatIsk as formatIskLib } from "../lib/format";
+import { formatGridPrice, priceStep } from "@/lib/pricing";
+import { CopyPrice } from "@/components/ui/CopyPrice";
+import { ItemRef } from "@/components/ui/ItemRef";
 import { OrderRowDrawer } from "@/components/orders/OrderRowDrawer";
 import { OrderHistoryPanel } from "@/components/orders/OrderHistoryPanel";
 import { cn } from "@/lib/utils";
@@ -59,6 +60,15 @@ import { cn } from "@/lib/utils";
 
 interface Props {
   isLoggedIn: boolean;
+  /**
+   * A row to open on, when the tab was reached from somewhere that already
+   * knew which one — Today's actions deep-link here. Null when the user
+   * navigated normally.
+   */
+  focus?: TodayDeepLink | null;
+  /** Called once the focus has been applied, so returning later does not
+   *  re-open a row that has already been dealt with. */
+  onFocusConsumed?: () => void;
 }
 
 const PRIORITY_BY_ACTION: Record<string, number> = {
@@ -173,9 +183,8 @@ function sortOrders(
   });
 }
 
-export function Orders({ isLoggedIn }: Props) {
+export function Orders({ isLoggedIn, focus, onFocusConsumed }: Props) {
   const { t, locale } = useI18n();
-  const { addToast } = useGlobalToast();
   const [data, setData] = useState<OrderDeskResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -400,6 +409,25 @@ export function Orders({ isLoggedIn }: Props) {
     ],
   );
 
+  // Open the row Today sent us to. Waits on `data` because the row has to
+  // exist in the DOM before it can be expanded or scrolled to, and the desk is
+  // several seconds of ESI away on a cold load.
+  useEffect(() => {
+    if (!focus?.order_id || !data) return;
+    const orderId = focus.order_id;
+    if (!data.orders.some((o) => o.order_id === orderId)) {
+      // The order is gone — filled or cancelled since the plan was built.
+      // Consume the focus anyway so it does not sit around waiting for a row
+      // that is never coming back.
+      onFocusConsumed?.();
+      return;
+    }
+    setExpandedOrders((prev) => new Set(prev).add(orderId));
+    const node = document.querySelector(`[data-order-id="${orderId}"]`);
+    node?.scrollIntoView({ block: "center", behavior: "smooth" });
+    onFocusConsumed?.();
+  }, [focus, data, onFocusConsumed]);
+
   const filteredRows = useMemo(() => {
     if (!data) return [] as OrderDeskOrder[];
     let rows = data.orders.slice();
@@ -440,30 +468,6 @@ export function Orders({ isLoggedIn }: Props) {
       if (next.length > 0) updatePrefs({ sort: next });
     },
     [prefs.sort, updatePrefs],
-  );
-
-  // openMarketForType mirrors the pattern used by CombinedOrdersTab /
-  // StationTrading / ScanResultsTable — surface both success ("Opened in
-  // game") and failure (401 re-login / generic error) as toasts so the
-  // user gets real feedback. Previously this button silently swallowed
-  // errors, which made ESI 401s / token issues invisible.
-  const openMarketForType = useCallback(
-    async (typeID: number) => {
-      if (!typeID) return;
-      try {
-        await openMarketInGame(typeID);
-        addToast(t("actionSuccess"), "success", 2000);
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        const { messageKey, duration } = handleEveUIError({ message });
-        if (messageKey === "actionFailed") {
-          addToast(t(messageKey, { error: message || "Unknown error" }), "error", duration);
-        } else {
-          addToast(t(messageKey), "error", duration);
-        }
-      }
-    },
-    [addToast, t],
   );
 
   if (!isLoggedIn) {
@@ -861,8 +865,6 @@ export function Orders({ isLoggedIn }: Props) {
               onToggle={() => updatePrefs({ collapsedSell: !prefs.collapsedSell })}
               settings={data.settings}
               t={t}
-              onOpenMarket={openMarketForType}
-              addToast={addToast}
               expandedOrders={expandedOrders}
               dispositions={dispositions}
               onToggleDisposition={toggleDisposition}
@@ -875,8 +877,6 @@ export function Orders({ isLoggedIn }: Props) {
               onToggle={() => updatePrefs({ collapsedBuy: !prefs.collapsedBuy })}
               settings={data.settings}
               t={t}
-              onOpenMarket={openMarketForType}
-              addToast={addToast}
               expandedOrders={expandedOrders}
               dispositions={dispositions}
               onToggleDisposition={toggleDisposition}
@@ -933,12 +933,6 @@ function SubTabs({
 }
 
 type Translate = (key: TranslationKey, params?: Record<string, string | number>) => string;
-type AddToast = (
-  text: string,
-  type?: "success" | "error" | "info",
-  duration?: number,
-) => number;
-
 /** One side of the book: a header row carrying the side's own totals, then
  *  its rows. Rendered as a tbody inside the shared table so both sections
  *  keep identical column widths — two separate tables would drift apart. */
@@ -949,8 +943,6 @@ function OrderSection({
   onToggle,
   settings,
   t,
-  onOpenMarket,
-  addToast,
   expandedOrders,
   dispositions,
   onToggleDisposition,
@@ -962,8 +954,6 @@ function OrderSection({
   onToggle: () => void;
   settings: OrderDeskSettings;
   t: Translate;
-  onOpenMarket: (typeID: number) => void;
-  addToast: AddToast;
   expandedOrders: Set<number>;
   dispositions: Record<number, DispositionState>;
   onToggleDisposition: (orderId: number) => void;
@@ -1008,8 +998,6 @@ function OrderSection({
             settings={settings}
             formatIsk={formatIsk}
             t={t}
-            onOpenMarket={onOpenMarket}
-            addToast={addToast}
             expanded={expandedOrders.has(r.order_id)}
             disposition={dispositions[r.order_id]}
             onToggleDisposition={onToggleDisposition}
@@ -1150,8 +1138,6 @@ function OrderRow({
   settings,
   formatIsk,
   t,
-  onOpenMarket,
-  addToast,
   expanded,
   disposition,
   onToggleDisposition,
@@ -1161,8 +1147,6 @@ function OrderRow({
   settings: OrderDeskSettings;
   formatIsk: (v: number) => string;
   t: Translate;
-  onOpenMarket: (typeID: number) => void;
-  addToast: AddToast;
   expanded: boolean;
   disposition?: DispositionState;
   onToggleDisposition: (orderId: number) => void;
@@ -1171,27 +1155,6 @@ function OrderRow({
   const atTop = row.position === 1;
   const priceCls = atTop ? "text-eve-dim font-mono" : "text-eve-accent font-mono";
   const hasCopyablePrice = row.book_available && row.suggested_price > 0 && !atTop;
-  const copy = () => {
-    if (!hasCopyablePrice) return;
-    void navigator.clipboard.writeText(row.suggested_price.toFixed(2));
-  };
-  // Opening the market window is almost always paired with pasting the
-  // suggested price into the modify-order dialog. Copy the price at the
-  // same time so the user doesn't need a second click on 📋.
-  const openMarketAndCopyPrice = () => {
-    if (hasCopyablePrice) {
-      void navigator.clipboard.writeText(row.suggested_price.toFixed(2));
-    }
-    onOpenMarket(row.type_id);
-  };
-  // Fallback for when 🎮 silently fails (some hosts don't deliver the
-  // UI command): copy the item name so the user can paste it into the
-  // in-game market search.
-  const copyName = () => {
-    if (!row.type_name) return;
-    void navigator.clipboard.writeText(row.type_name);
-    addToast(t("copied"), "success", 1400);
-  };
   // Thin reads amber rather than green: it is still a profit, but it is the
   // one the floor was set to catch.
   const marginCls =
@@ -1219,6 +1182,8 @@ function OrderRow({
   return (
     <>
     <tr
+      // Anchors a deep link from Today, which expands and scrolls to this row.
+      data-order-id={row.order_id}
       className="cursor-pointer border-t border-eve-border/50 hover:bg-eve-accent/5"
       onClick={(e) => {
         // Don't hijack the copy / open-market / disposition-expander buttons.
@@ -1240,26 +1205,25 @@ function OrderRow({
           <span className="text-eve-dim">—</span>
         )}
       </td>
-      <td className="px-2 py-1 text-eve-text max-w-[220px]" title={row.type_name}>
-        <div className="flex items-center gap-1.5">
-          <img
-            src={`https://images.evetech.net/types/${row.type_id}/icon?size=32`}
-            alt=""
-            className="w-4 h-4"
-          />
-          <span className="truncate">{row.type_name || `Type #${row.type_id}`}</span>
-          {row.type_name && (
-            <button
-              type="button"
-              onClick={copyName}
-              className="ml-auto shrink-0 text-[10px] px-1 py-0.5 rounded-sm border border-eve-border text-eve-dim hover:text-eve-accent hover:border-eve-accent transition-colors"
-              title={t("ordersCopyNameHint")}
-              aria-label={t("ordersCopyNameHint")}
-            >
-              📋
-            </button>
-          )}
-        </div>
+      {/* The market button lives here rather than in the suggested-price cell,
+          where it used to be skipped entirely for any order that had no
+          suggested price. It still copies that price when there is one. */}
+      <td className="px-2 py-1 text-eve-text max-w-[220px]">
+        <ItemRef
+          typeId={row.type_id}
+          name={row.type_name}
+          iconSize={16}
+          market
+          copyName
+          copyOnOpen={
+            hasCopyablePrice
+              ? {
+                  text: formatGridPrice(row.suggested_price, priceStep(row.suggested_price)),
+                }
+              : undefined
+          }
+          marketLabel={t("ordersOpenMarketHint")}
+        />
       </td>
       <td className="px-2 py-1 text-eve-dim max-w-[200px] truncate" title={row.location_name}>
         {row.location_name || `#${row.location_id}`}
@@ -1304,25 +1268,16 @@ function OrderRow({
               </span>
             )}
             <span className={priceCls}>{formatIsk(row.suggested_price)}</span>
+            {/* Already top of book — there is no price to move to. The step
+                keeps a legal sub-10-ISK undercut from rounding back above the
+                price it was undercutting. */}
             {!atTop && (
-              <button
-                type="button"
-                onClick={copy}
-                className="text-[10px] px-1 py-0.5 rounded-sm border border-eve-border text-eve-dim hover:text-eve-accent hover:border-eve-accent transition-colors"
-                title={t("operatorSuggestedPriceCopyHint")}
-              >
-                📋
-              </button>
+              <CopyPrice
+                value={row.suggested_price}
+                step={priceStep(row.suggested_price)}
+                label={t("operatorSuggestedPriceCopyHint")}
+              />
             )}
-            <button
-              type="button"
-              onClick={openMarketAndCopyPrice}
-              className="text-[10px] px-1 py-0.5 rounded-sm border border-eve-border text-eve-dim hover:text-eve-accent hover:border-eve-accent transition-colors"
-              title={t("ordersOpenMarketHint")}
-              aria-label={t("ordersOpenMarketHint")}
-            >
-              🎮
-            </button>
           </div>
         ) : (
           <span className="text-eve-dim">—</span>
