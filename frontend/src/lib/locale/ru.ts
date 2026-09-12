@@ -434,6 +434,8 @@ export const ru = {
     accumRejectTrend: "{n} в падении, а не просадке",
     accumRejectPrice: "{n} не так уж дёшевы",
     accumRejectNoData: "{n} без истории",
+    accumRejectUpside: "{n} с тонким потенциалом",
+    accumRejectNoRecord: "{n} без истории восстановления",
     accumTotals: "{capital} вложений ради {expected}",
     accumFailed: "Ошибка скана: {error}",
     todayAccumTitle: "Стоит накопить ({n})",
@@ -1975,6 +1977,8 @@ export const ru = {
       "Самая ранняя дата в вашем локальном архиве Trade Journal. ESI хранит ~30 дней; архив растёт вперёд с первого sync.",
     journalStaleSyncWarning:
       "{count} кошелёк(ов) без sync {days}+ дней. ESI хранит только 30 дней — sync или потеряете историю.",
+    journalNeverSyncedWarning:
+      "{count} кошелёк(ов) ещё ни разу не синхронизированы — нет данных о производстве и корпоративных сделках. Sync начнёт архив.",
     journalKpiTradingPL: "Trading P&L",
     journalKpiManufacturingPL: "Manufacturing P&L",
     journalKpiCombinedPL: "Combined P&L",

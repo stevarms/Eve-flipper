@@ -120,11 +120,18 @@ export function formatMargin(value: number, locale?: Locale): string {
 
 export function formatNumber(value: number, locale?: Locale): string {
   const localeStr = getLocaleString(locale);
+  // Guarded like formatISK above. These take `number`, so in a correct program
+  // this cannot fire -- but the types describe an API response, and a field the
+  // server renamed arrives as undefined while still type-checking. Throwing
+  // here takes down the entire page through the error boundary; rendering one
+  // dash does not, and the wrong-looking cell is what leads you to the cause.
+  if (value == null || Number.isNaN(value)) return "—";
   return value.toLocaleString(localeStr);
 }
 
 // Format ISK with full precision (no abbreviations)
 export function formatISKFull(value: number, locale?: Locale): string {
   const localeStr = getLocaleString(locale);
+  if (value == null || Number.isNaN(value)) return "—";
   return value.toLocaleString(localeStr, { maximumFractionDigits: 0 });
 }

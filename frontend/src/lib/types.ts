@@ -4407,10 +4407,16 @@ export interface AccumulateSummary {
   generated_at: string;
   examined: number;
   accepted: number;
+  // One counter per gate. Renaming these without updating this file is what
+  // crashed the tab: TypeScript kept accepting reads of fields the server no
+  // longer sent, and formatNumber(undefined) throws.
   rejected_thin: number;
-  rejected_price: number;
-  rejected_trend: number;
+  rejected_not_cheap: number;
+  rejected_thin_upside: number;
+  rejected_declining: number;
+  rejected_no_record: number;
   rejected_no_data: number;
+  rejected_suspect: number;
   total_capital_isk: number;
   total_expected_isk: number;
 }

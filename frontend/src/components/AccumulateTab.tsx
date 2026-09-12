@@ -12,7 +12,12 @@ import { formatISK, formatNumber } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
 import { priceStep } from "@/lib/pricing";
 import { cn } from "@/lib/utils";
-import type { AccumulateResult, AccumulateRow, TodayGrade } from "@/lib/types";
+import type {
+  AccumulateResult,
+  AccumulateRow,
+  AccumulateSummary,
+  TodayGrade,
+} from "@/lib/types";
 import { todayRelativeAge } from "./home/todayFormat";
 
 /**
@@ -204,16 +209,17 @@ export function AccumulateTab() {
                   <ChevronRight className="h-3.5 w-3.5 text-fg-tertiary" aria-hidden="true" />
                 )}
                 <span className="font-ui text-t-body font-medium text-fg">
-                  {t("accumRejectedTitle", {
-                    n: formatNumber(
-                      s.rejected_thin + s.rejected_trend + s.rejected_price + s.rejected_no_data,
-                    ),
-                  })}
+                  {t("accumRejectedTitle", { n: formatNumber(rejectedTotal(s)) })}
                 </span>
+                {/* Each gate separately: a decline and a missing track record are
+                    opposite findings, and one combined figure hid which filter
+                    was actually binding. */}
                 <span className="font-ui text-t-caption text-fg-tertiary">
                   {t("accumRejectThin", { n: formatNumber(s.rejected_thin) })} ·{" "}
-                  {t("accumRejectTrend", { n: formatNumber(s.rejected_trend) })} ·{" "}
-                  {t("accumRejectPrice", { n: formatNumber(s.rejected_price) })} ·{" "}
+                  {t("accumRejectPrice", { n: formatNumber(s.rejected_not_cheap) })} ·{" "}
+                  {t("accumRejectUpside", { n: formatNumber(s.rejected_thin_upside) })} ·{" "}
+                  {t("accumRejectTrend", { n: formatNumber(s.rejected_declining) })} ·{" "}
+                  {t("accumRejectNoRecord", { n: formatNumber(s.rejected_no_record) })} ·{" "}
                   {t("accumRejectNoData", { n: formatNumber(s.rejected_no_data) })}
                 </span>
               </button>
@@ -251,6 +257,20 @@ export function AccumulateTab() {
         </div>
       )}
     </div>
+  );
+}
+
+/** Every gate's count. Written once so adding a gate cannot leave the header
+ *  quietly under-reporting. */
+function rejectedTotal(s: AccumulateSummary): number {
+  return (
+    s.rejected_thin +
+    s.rejected_not_cheap +
+    s.rejected_thin_upside +
+    s.rejected_declining +
+    s.rejected_no_record +
+    s.rejected_no_data +
+    s.rejected_suspect
   );
 }
 

@@ -434,6 +434,8 @@ export const en = {
     accumRejectTrend: "{n} declining, not dipping",
     accumRejectPrice: "{n} not actually cheap",
     accumRejectNoData: "{n} without usable history",
+    accumRejectUpside: "{n} upside too thin after fees",
+    accumRejectNoRecord: "{n} with no record of recovering",
     accumTotals: "{capital} deployed for {expected} if they recover",
     accumFailed: "Sweep failed: {error}",
     todayAccumTitle: "Worth accumulating ({n})",
@@ -1979,6 +1981,8 @@ export const en = {
       "Oldest date represented in your local Trade Journal archive across every selected wallet. ESI only serves ~30d of history; archive grows forward from the first sync onward.",
     journalStaleSyncWarning:
       "{count} wallet(s) haven't synced in {days}+ days. ESI's rolling window is 30 days — sync soon or lose recent history.",
+    journalNeverSyncedWarning:
+      "{count} wallet(s) have never been synced, so manufacturing costs and corporation trades are missing. Syncing now starts the archive.",
     journalKpiTradingPL: "Trading P&L",
     journalKpiManufacturingPL: "Manufacturing P&L",
     journalKpiCombinedPL: "Combined P&L",
