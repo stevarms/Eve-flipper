@@ -130,3 +130,98 @@ func TestPositionContainerNameAlwaysSaysSomething(t *testing.T) {
 		t.Errorf("named container = %q", got)
 	}
 }
+
+// The 510-versus-2 case. A ledger quantity nobody holds is not just a wrong
+// row, it prices the whole phantom stack into portfolio value.
+func TestReconcilePositionRowTrustsTheHangarOverTheLedger(t *testing.T) {
+	row := PositionRow{
+		Source: "manufacture", Qty: 510, AvgUnitCost: 1000, CostBasis: 510_000,
+		Locations: []PositionLocation{{Qty: 2, LocationName: "A-ZLHX"}},
+	}
+	reconcilePositionRow(&row, true)
+
+	if row.Qty != 2 {
+		t.Errorf("qty = %d, want the 2 actually held", row.Qty)
+	}
+	if row.LedgerQty != 510 {
+		t.Errorf("ledger_qty = %d, want 510 kept for the explanation", row.LedgerQty)
+	}
+	if !row.Reconciled {
+		t.Error("want the row marked as corrected")
+	}
+	if row.Phantom {
+		t.Error("two units is not a phantom")
+	}
+	// Unit cost is per-unit and survives; the basis is rebuilt from it.
+	if row.AvgUnitCost != 1000 || row.CostBasis != 2000 {
+		t.Errorf("unit=%v basis=%v, want 1000 and 2000", row.AvgUnitCost, row.CostBasis)
+	}
+}
+
+// Listing an item removes it from the hangar and from /assets. Without adding
+// it back, every fully-listed holding reads as gone -- on the tab whose job
+// includes telling you what is on the market.
+func TestReconcilePositionRowCountsStockSittingInSellOrders(t *testing.T) {
+	row := PositionRow{
+		Source: "trade", Qty: 100, AvgUnitCost: 50, CostBasis: 5000,
+		ListedQty: 98,
+		Locations: []PositionLocation{{Qty: 2, LocationName: "Jita IV - Moon 4"}},
+	}
+	reconcilePositionRow(&row, true)
+
+	if row.Reconciled || row.Qty != 100 {
+		t.Fatalf("qty = %d (reconciled=%v), want all 100 kept: 98 listed + 2 in the hangar",
+			row.Qty, row.Reconciled)
+	}
+	if row.Phantom {
+		t.Error("a fully-listed holding is not a phantom")
+	}
+}
+
+func TestReconcilePositionRowMarksAZeroHoldingPhantom(t *testing.T) {
+	row := PositionRow{Source: "manufacture", Qty: 1277, AvgUnitCost: 500, CostBasis: 638_500}
+	reconcilePositionRow(&row, true)
+
+	if !row.Phantom {
+		t.Error("nothing held anywhere: want phantom")
+	}
+	if row.Qty != 0 || row.LedgerQty != 1277 {
+		t.Errorf("qty=%d ledger=%d, want 0 and 1277", row.Qty, row.LedgerQty)
+	}
+}
+
+// A partial asset read cannot tell "sold" from "in a hangar we could not see",
+// and guessing there would delete real stock.
+func TestReconcilePositionRowDoesNothingOnAnIncompleteRead(t *testing.T) {
+	row := PositionRow{Source: "manufacture", Qty: 510, AvgUnitCost: 1000, CostBasis: 510_000}
+	reconcilePositionRow(&row, false)
+
+	if row.Qty != 510 || row.Reconciled || row.Phantom {
+		t.Fatalf("row was altered on an incomplete read: %+v", row)
+	}
+}
+
+// Manual rows were typed by hand and never claimed to be in a hangar.
+func TestReconcilePositionRowLeavesManualRowsAlone(t *testing.T) {
+	row := PositionRow{Source: "manual", Qty: 42, AvgUnitCost: 10, CostBasis: 420}
+	reconcilePositionRow(&row, true)
+
+	if row.Qty != 42 || row.Reconciled || row.Phantom {
+		t.Fatalf("manual row was reconciled: %+v", row)
+	}
+}
+
+// Holding more than the ledger knows about is untracked stock with no cost
+// basis to price it by. Inventing one would corrupt the number the tab exists
+// to show.
+func TestReconcilePositionRowNeverCorrectsUpward(t *testing.T) {
+	row := PositionRow{
+		Source: "trade", Qty: 10, AvgUnitCost: 100, CostBasis: 1000,
+		Locations: []PositionLocation{{Qty: 900, LocationName: "Jita IV - Moon 4"}},
+	}
+	reconcilePositionRow(&row, true)
+
+	if row.Qty != 10 || row.CostBasis != 1000 || row.Reconciled {
+		t.Fatalf("row was inflated to match the hangar: %+v", row)
+	}
+}

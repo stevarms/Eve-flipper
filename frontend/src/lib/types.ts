@@ -898,6 +898,10 @@ export interface PositionRow {
   locations?: PositionLocation[];
   /** The ledger believes in this holding but no readable hangar contains it. */
   phantom?: boolean;
+  /** What the FIFO ledger thought you held, when the count was corrected down. */
+  ledger_qty?: number;
+  /** Quantity and cost basis were rebuilt from what is actually held. */
+  reconciled?: boolean;
   manual_id?: number;
   note?: string;
 
@@ -1011,6 +1015,10 @@ export interface PositionsResponse {
   phantom_count?: number;
   /** What those rows were contributing to the totals before being withheld. */
   phantom_cost_basis?: number;
+  /** Rows kept but corrected downward against your hangars. */
+  reconciled_count?: number;
+  /** Cost basis removed from the totals by those corrections. */
+  reconciled_write_off_isk?: number;
   sales_tax_percent: number;
   broker_fee_percent: number;
   total_cost_basis: number;

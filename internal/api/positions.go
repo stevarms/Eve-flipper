@@ -49,10 +49,17 @@ type PositionRow struct {
 	// character whose assets could not be read -- not an empty hangar.
 	Locations []PositionLocation `json:"locations,omitempty"`
 
-	// Phantom marks a holding the ledger believes in that no readable hangar
-	// contains. Only ever set when every asset source was read, so it is a
-	// statement about your hangars rather than about our access to them.
+	// Phantom marks a holding the ledger believes in that nothing holds. Only
+	// ever set when every asset source was read, so it is a statement about
+	// your hangars rather than about our access to them.
 	Phantom bool `json:"phantom,omitempty"`
+
+	// LedgerQty is what the FIFO ledger thought you held, kept when the count
+	// was corrected downward against your hangars. Zero when the two agreed.
+	LedgerQty int64 `json:"ledger_qty,omitempty"`
+	// Reconciled marks a row whose quantity and cost basis were rebuilt from
+	// what is actually there. The difference is LedgerQty - Qty.
+	Reconciled bool `json:"reconciled,omitempty"`
 
 	MarketPrice   float64 `json:"market_price"`
 	MarketValue   float64 `json:"market_value"`
@@ -112,6 +119,12 @@ type PositionsResponse struct {
 	// PhantomCostBasis is what those rows were contributing to the totals,
 	// which is the part that was quietly inflating portfolio value.
 	PhantomCostBasis float64 `json:"phantom_cost_basis"`
+	// ReconciledCount is rows kept but corrected downward, and
+	// ReconciledWriteOffISK the cost basis removed from the totals by those
+	// corrections. Separate from the phantom figures because a row that shrank
+	// is a different story from one that vanished.
+	ReconciledCount      int     `json:"reconciled_count"`
+	ReconciledWriteOffISK float64 `json:"reconciled_write_off_isk"`
 	// AssetsFailed means at least one hangar could not be read, so a row with
 	// no locations proves nothing. Without this flag a missing scope and
 	// genuinely missing stock look identical.
@@ -378,14 +391,9 @@ func (s *Server) buildPositions(
 		row.DaysHeld = daysSince(row.OldestDate, now)
 		row.ListedQty = listed[row.TypeID]
 		row.Locations = locations[row.TypeID]
-		// A derived row with no stock in any hangar we could fully read. The
-		// ledger reaches this state honestly -- it sees production and
-		// purchases, and only sees disposals that landed in the archive -- so
-		// output consumed by industry, reprocessed, or sold before tracking
-		// began all leave a holding nothing owns. Manual rows are exempt:
-		// they were typed by hand and never claimed to be in a hangar.
-		row.Phantom = assetsComplete && row.Source != "manual" && len(row.Locations) == 0
 		row.ListedPrice = listedPrice[row.TypeID]
+
+		reconcilePositionRow(row, assetsComplete)
 		if px, ok := prices[row.TypeID]; ok && px > 0 {
 			row.MarketPrice = px
 			row.MarketValue = px * float64(row.Qty)
@@ -401,9 +409,21 @@ func (s *Server) buildPositions(
 			// Kept out of the totals as well as the list. Leaving the cost
 			// basis in would keep inflating portfolio value by stock that does
 			// not exist, which is the more expensive half of the problem.
+			//
+			// Reported under the phantom figures rather than the reconciled
+			// ones: a row that went to zero is withheld, not corrected, and
+			// counting it in both would double-report the same ISK.
 			resp.PhantomCount++
-			resp.PhantomCostBasis += row.CostBasis
+			resp.PhantomCostBasis += row.AvgUnitCost * float64(row.LedgerQty)
+			// Cleared so the row cannot also be reported as merely corrected:
+			// it was withheld, and counting it in both figures would
+			// double-report the same ISK.
+			row.Reconciled = false
 			continue
+		}
+		if row.Reconciled {
+			resp.ReconciledCount++
+			resp.ReconciledWriteOffISK += row.AvgUnitCost * float64(row.LedgerQty-row.Qty)
 		}
 		resp.TotalCostBasis += row.CostBasis
 		resp.TotalMarketValue += row.MarketValue
@@ -611,4 +631,50 @@ func clampPercent(v float64) float64 {
 		return 100
 	}
 	return v
+}
+
+// reconcilePositionRow corrects one holding's count against what is actually
+// held, and marks it phantom when nothing is.
+//
+// Assets are ground truth for how much you have; the ledger is ground truth for
+// what a unit cost. Believing the ledger's quantity is how a row comes to report
+// 510 of something you own two of, and prices all 510 into portfolio value.
+//
+// The ledger reaches that state honestly: it sees production and purchases, and
+// only the disposals that landed in the archive. Output consumed as an industry
+// material, reprocessed, or sold before tracking began all leave stock it still
+// believes in.
+//
+// Does nothing unless every asset source was read. A partial read cannot
+// distinguish "sold" from "in a hangar we could not see", and guessing in that
+// state would delete real holdings.
+func reconcilePositionRow(row *PositionRow, assetsComplete bool) {
+	// Manual rows were typed in by hand and never claimed to be in a hangar,
+	// so there is nothing to reconcile them against.
+	if !assetsComplete || row.Source == "manual" {
+		return
+	}
+
+	var inHangars int64
+	for _, l := range row.Locations {
+		inHangars += l.Qty
+	}
+	// Stock in a sell order is added back before comparing. Listing an item
+	// removes it from the hangar and from /assets, so without this every
+	// fully-listed holding would read as gone -- the exact opposite of the
+	// truth, on the tab whose job includes telling you what is on the market.
+	have := inHangars + row.ListedQty
+
+	// Only ever downward. Holding more than the ledger knows about is untracked
+	// stock with no cost basis to price it by, and inventing one would corrupt
+	// the number this tab exists to show.
+	if have < row.Qty {
+		row.LedgerQty = row.Qty
+		row.Reconciled = true
+		row.Qty = have
+		// Unit cost is per-unit and survives untouched; the basis is rebuilt
+		// from it so the two cannot disagree.
+		row.CostBasis = row.AvgUnitCost * float64(have)
+	}
+	row.Phantom = row.Qty <= 0
 }

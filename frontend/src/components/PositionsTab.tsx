@@ -205,6 +205,14 @@ export function PositionsTab() {
           })}
         </div>
       )}
+      {(data?.reconciled_count ?? 0) > 0 && (
+        <div className="rounded-sm border border-warn/40 bg-warn/5 px-3 py-2 font-ui text-t-cell text-fg-secondary">
+          {t("positionsReconciledSummary", {
+            count: String(data?.reconciled_count ?? 0),
+            isk: formatIsk(data?.reconciled_write_off_isk ?? 0),
+          })}
+        </div>
+      )}
       {data?.assets_failed && (
         <div className="rounded-sm border border-warn/50 bg-warn/10 px-3 py-2 font-ui text-t-cell text-warn">
           {t("positionsAssetsFailed")}
@@ -404,6 +412,17 @@ function Row({
         <PositionWhere locations={row.locations} assetsFailed={assetsFailed} source={row.source} t={t} />
       </td>
       <td className="px-2 py-1 text-right font-num tnum text-t-cell text-fg-secondary">
+        {row.reconciled && row.ledger_qty ? (
+          <span
+            className="mr-1 text-t-caption text-warn-dim line-through"
+            title={t("positionsReconciledHint", {
+              ledger: formatNumber(row.ledger_qty),
+              held: formatNumber(row.qty),
+            })}
+          >
+            {formatNumber(row.ledger_qty)}
+          </span>
+        ) : null}
         {formatNumber(row.qty)}
       </td>
       <td className="px-2 py-1 text-right font-num tnum text-t-cell text-fg-secondary">

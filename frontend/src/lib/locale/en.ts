@@ -2130,6 +2130,8 @@ export const en = {
       "Nothing held yet. Buy something, or add a holding by hand for stock your wallet history can't see.",
     positionsPhantomWithheld: "{count} holding(s) worth {isk} at cost were left out: the trade ledger still counts them, but they are not in any of your hangars. Usually output consumed by industry, reprocessed, or sold before tracking began. They are excluded from the totals too, so portfolio value is not inflated by stock you do not have.",
     positionsAssetsFailed: "At least one hangar could not be read, so locations may be incomplete and nothing is being reported as missing.",
+    positionsReconciledHint: "The ledger counted {ledger}; your hangars and sell orders hold {held}. The count and cost basis shown are the real ones.",
+    positionsReconciledSummary: "{count} holding(s) were counted down to what you actually hold, removing {isk} of cost basis from the totals. The ledger only sees sales that reached the archive, so output consumed by industry or sold earlier still shows as stock until it is checked against your hangars.",
     positionsPricingFailed: "Live hub prices unavailable — showing cost basis only.",
     positionsOrdersFailed: "Couldn't read your open orders, so the listed column may be incomplete.",
     positionsKpiPositions: "Positions",
