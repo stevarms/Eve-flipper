@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"testing"
 
 	"eve-flipper/internal/esi"
@@ -225,3 +226,83 @@ func TestReconcilePositionRowNeverCorrectsUpward(t *testing.T) {
 		t.Fatalf("row was inflated to match the hangar: %+v", row)
 	}
 }
+
+// The point of the extra request: "Ammo Locker" finds the can, "Station
+// Container" describes six of them.
+func TestResolvePlacePrefersThePlayersOwnContainerName(t *testing.T) {
+	const station = int64(60003760)
+	can := esi.CharacterAsset{ItemID: 9001, TypeID: 3465, TypeName: "Station Container", LocationID: station}
+	stack := esi.CharacterAsset{ItemID: 9002, TypeID: 31716, LocationID: can.ItemID, Quantity: 40}
+
+	idx := positionAssetIndex{
+		byItemID: map[int64]esi.CharacterAsset{can.ItemID: can, stack.ItemID: stack},
+		names:    map[int64]string{can.ItemID: "Ammo Locker"},
+	}
+	_, container, _, _ := idx.resolvePlace(stack, nil)
+	if container != "Ammo Locker" {
+		t.Errorf("container = %q, want the player's own name", container)
+	}
+}
+
+// An unnamed can is absent from the names response rather than present with an
+// empty string, so the type name has to survive that.
+func TestResolvePlaceFallsBackToTheTypeNameWhenUnnamed(t *testing.T) {
+	const station = int64(60003760)
+	can := esi.CharacterAsset{ItemID: 9101, TypeID: 3465, TypeName: "Station Container", LocationID: station}
+	stack := esi.CharacterAsset{ItemID: 9102, TypeID: 31716, LocationID: can.ItemID, Quantity: 40}
+
+	idx := positionAssetIndex{
+		byItemID: map[int64]esi.CharacterAsset{can.ItemID: can, stack.ItemID: stack},
+		names:    map[int64]string{}, // renamed nothing
+	}
+	_, container, _, _ := idx.resolvePlace(stack, nil)
+	if container != "Station Container" {
+		t.Errorf("container = %q, want the type name as fallback", container)
+	}
+}
+
+// Names cost a POST per thousand ids, so only containers actually holding a
+// reported type should be asked about -- not a hauler's whole asset list.
+func TestResolveContainerNamesOnlyAsksAboutRelevantContainers(t *testing.T) {
+	const station = int64(60003760)
+	wantedCan := esi.CharacterAsset{ItemID: 1, TypeID: 3465, LocationID: station}
+	otherCan := esi.CharacterAsset{ItemID: 2, TypeID: 3465, LocationID: station}
+	wantedStack := esi.CharacterAsset{ItemID: 3, TypeID: 31716, LocationID: wantedCan.ItemID, Quantity: 5}
+	junkStack := esi.CharacterAsset{ItemID: 4, TypeID: 34, LocationID: otherCan.ItemID, Quantity: 5}
+
+	idx := newPositionAssetIndex("Test", []esi.CharacterAsset{wantedCan, otherCan, wantedStack, junkStack})
+	var asked []int64
+	idx.fetchNames = func(ids []int64) (map[int64]string, error) {
+		asked = append(asked, ids...)
+		return map[int64]string{1: "Ammo Locker"}, nil
+	}
+
+	idx.resolveContainerNames(map[int32]bool{31716: true})
+
+	if len(asked) != 1 || asked[0] != wantedCan.ItemID {
+		t.Fatalf("asked about %v, want only the can holding a wanted type", asked)
+	}
+	if idx.names[1] != "Ammo Locker" {
+		t.Errorf("name not stored: %v", idx.names)
+	}
+}
+
+// A failed names request must degrade the row to a type name, not break it.
+func TestResolveContainerNamesSurvivesAFailedRequest(t *testing.T) {
+	const station = int64(60003760)
+	can := esi.CharacterAsset{ItemID: 1, TypeID: 3465, TypeName: "Station Container", LocationID: station}
+	stack := esi.CharacterAsset{ItemID: 2, TypeID: 31716, LocationID: can.ItemID, Quantity: 5}
+
+	idx := newPositionAssetIndex("Test", []esi.CharacterAsset{can, stack})
+	idx.fetchNames = func([]int64) (map[int64]string, error) {
+		return nil, errNamesUnavailable
+	}
+	idx.resolveContainerNames(map[int32]bool{31716: true})
+
+	_, container, _, _ := idx.resolvePlace(stack, nil)
+	if container != "Station Container" {
+		t.Errorf("container = %q, want the type name after a failed lookup", container)
+	}
+}
+
+var errNamesUnavailable = fmt.Errorf("names unavailable")

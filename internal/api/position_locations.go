@@ -72,11 +72,19 @@ type PositionLocation struct {
 	CharacterName string `json:"character_name,omitempty"`
 }
 
-// positionAssetIndex is one character's assets, indexed for parent lookups.
+// positionAssetIndex is one owner's assets, indexed for parent lookups.
 type positionAssetIndex struct {
 	characterName string
 	byItemID      map[int64]esi.CharacterAsset
 	assets        []esi.CharacterAsset
+	// names is player-assigned container names by item id, absent for anything
+	// never renamed. Populated in a second pass, because it costs a POST and is
+	// only worth making for containers that actually hold something wanted.
+	names map[int64]string
+	// fetchNames asks the right endpoint for this owner -- character or corp --
+	// so the walk does not have to know which kind it is. Nil in tests and
+	// whenever names cannot be resolved.
+	fetchNames func(itemIDs []int64) (map[int64]string, error)
 }
 
 // buildPositionLocations resolves where each held type actually is.
@@ -111,7 +119,12 @@ func (s *Server) buildPositionLocations(
 			log.Printf("[POSITIONS] assets: %s: %v", sess.CharacterName, err)
 			complete = false
 		} else {
-			indexes = append(indexes, newPositionAssetIndex(sess.CharacterName, assets))
+			idx := newPositionAssetIndex(sess.CharacterName, assets)
+			charID, charToken := sess.CharacterID, token
+			idx.fetchNames = func(ids []int64) (map[int64]string, error) {
+				return s.esi.GetCharacterAssetNames(charID, ids, charToken)
+			}
+			indexes = append(indexes, idx)
 		}
 
 		// Corp hangars. Positions are built from an IncludeAll wallet scope, so
@@ -144,7 +157,12 @@ func (s *Server) buildPositionLocations(
 				TypeName:     a.TypeName,
 			})
 		}
-		indexes = append(indexes, newPositionAssetIndex(corpLabelFor(corpID), converted))
+		corpIdx := newPositionAssetIndex(corpLabelFor(corpID), converted)
+		ownerCorp, corpToken := corpID, token
+		corpIdx.fetchNames = func(ids []int64) (map[int64]string, error) {
+			return s.esi.GetCorporationAssetNames(ownerCorp, ids, corpToken)
+		}
+		indexes = append(indexes, corpIdx)
 	}
 	if len(indexes) == 0 {
 		return nil, false
@@ -160,7 +178,9 @@ func (s *Server) buildPositionLocations(
 	}
 
 	out := map[int32][]PositionLocation{}
-	for _, idx := range indexes {
+	for i := range indexes {
+		idx := &indexes[i]
+		idx.resolveContainerNames(wanted)
 		merged := map[int32]map[placeKey]int64{}
 		for _, a := range idx.assets {
 			if !wanted[a.TypeID] || a.Quantity <= 0 {
@@ -212,11 +232,59 @@ func (s *Server) buildPositionLocations(
 	return out, complete
 }
 
+// resolveContainerNames fills in player-assigned names for the containers that
+// actually hold something being reported.
+//
+// Scoped to those containers rather than every asset because this is a POST per
+// thousand ids, and a hauler's asset list is mostly ships, ammo and junk that
+// no position row will ever point at. In practice this is one small request.
+//
+// Silent on failure: a name is a convenience on top of a location that already
+// works, so losing it degrades the row to the container's type name rather than
+// the row itself.
+func (idx *positionAssetIndex) resolveContainerNames(wanted map[int32]bool) {
+	if idx.fetchNames == nil {
+		return
+	}
+	ids := map[int64]bool{}
+	for _, a := range idx.assets {
+		if !wanted[a.TypeID] || a.Quantity <= 0 {
+			continue
+		}
+		// Walk the same chain resolvePlace will, collecting the nearest
+		// enclosing container of each reported stack.
+		cur := a
+		for hop := 0; hop < 8; hop++ {
+			parent, ok := idx.byItemID[cur.LocationID]
+			if !ok {
+				break
+			}
+			ids[parent.ItemID] = true
+			break
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	list := make([]int64, 0, len(ids))
+	for id := range ids {
+		list = append(list, id)
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i] < list[j] })
+
+	names, err := idx.fetchNames(list)
+	if err != nil {
+		log.Printf("[POSITIONS] container names for %s: %v", idx.characterName, err)
+	}
+	idx.names = names
+}
+
 func newPositionAssetIndex(owner string, assets []esi.CharacterAsset) positionAssetIndex {
 	idx := positionAssetIndex{
 		characterName: owner,
 		byItemID:      make(map[int64]esi.CharacterAsset, len(assets)),
 		assets:        assets,
+		names:         map[int64]string{},
 	}
 	for _, a := range assets {
 		idx.byItemID[a.ItemID] = a
@@ -262,7 +330,13 @@ func (idx positionAssetIndex) resolvePlace(
 		// The nearest enclosing container is the useful one to name; outer
 		// hops are structure, not somewhere to look.
 		if container == "" {
-			container = positionContainerName(parent, sdeData)
+			if name := idx.names[parent.ItemID]; name != "" {
+				// What the player called it beats what it is. "Ammo Locker"
+				// finds the can; "Station Container" describes six of them.
+				container = name
+			} else {
+				container = positionContainerName(parent, sdeData)
+			}
 		}
 		cur = parent
 	}
