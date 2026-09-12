@@ -904,6 +904,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/orderbook/coverage", s.handleOrderBookCoverage)
 	mux.HandleFunc("GET /api/orderbook/stats", s.handleOrderBookStats)
 	mux.HandleFunc("POST /api/orderbook/cleanup", s.handleOrderBookCleanup)
+	// Seed the backtester with archived depth. See
+	// internal/api/fuzzwork_import.go.
+	mux.HandleFunc("POST /api/orderbook/import/fuzzwork", s.handleFuzzworkImport)
 	mux.HandleFunc("GET /api/orderbook/recording", s.handleOrderBookRecording)
 	mux.HandleFunc("POST /api/orderbook/recording", s.handleOrderBookRecording)
 	mux.HandleFunc("GET /api/orderbook/snapshots", s.handleOrderBookSnapshots)

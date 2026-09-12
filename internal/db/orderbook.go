@@ -1046,3 +1046,24 @@ func (d *DB) GetOrderBookLevels(snapshotID int64, filter OrderBookLevelFilter) (
 	}
 	return out, nil
 }
+
+// CountOrderBookSnapshotsBySource counts stored snapshots from one source.
+//
+// Exists so a bulk import can report rows it actually inserted rather than
+// calls that returned without error. RecordMarketOrderSnapshot deliberately
+// succeeds when it decides a snapshot is a duplicate or inside the recording
+// cooldown, so a caller counting successful calls over-reports -- which it did,
+// claiming three stored when one had landed.
+func (d *DB) CountOrderBookSnapshotsBySource(source string) int {
+	if d == nil || d.sql == nil {
+		return 0
+	}
+	var n int
+	if err := d.sql.QueryRow(
+		`SELECT COUNT(*) FROM orderbook_snapshots WHERE source = ?`,
+		normalizeOrderBookSource(source),
+	).Scan(&n); err != nil {
+		return 0
+	}
+	return n
+}
