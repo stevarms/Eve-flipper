@@ -2036,6 +2036,28 @@ func (d *DB) migrate() error {
 		logger.Info("DB", "Applied migration v48 (market derived cache)")
 	}
 
+	if version < 49 {
+		// The accumulate sweep's last result, one row per user and region.
+		//
+		// Stored whole rather than as a results table like flip_results and
+		// friends: nothing queries individual rows, both the tab and Today's
+		// roll-up want the same ranked payload, and a sweep is a single
+		// point-in-time verdict rather than a set of records to join against.
+		if _, err := d.sql.Exec(`
+			CREATE TABLE IF NOT EXISTS accumulate_scan (
+				user_id      TEXT    NOT NULL,
+				region_id    INTEGER NOT NULL,
+				generated_at TEXT    NOT NULL,
+				payload_json TEXT    NOT NULL,
+				PRIMARY KEY (user_id, region_id)
+			);
+			INSERT OR IGNORE INTO schema_version (version) VALUES (49);
+		`); err != nil {
+			return fmt.Errorf("migration v49: %w", err)
+		}
+		logger.Info("DB", "Applied migration v49 (accumulate scan)")
+	}
+
 	return nil
 }
 

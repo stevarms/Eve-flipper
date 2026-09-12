@@ -4350,3 +4350,84 @@ export interface TodayActionStatePayload {
   quantity?: number;
   price?: number;
 }
+
+// --- Accumulate: items near the bottom of their own year ---------------
+//
+// Mirrors internal/engine/accumulate.go. The inverse of every other scan:
+// instead of a spread right now, this asks where one price sits across a year,
+// and refuses unless the item is also liquid enough to exit and has a history
+// of dips that actually recovered.
+
+export interface AccumulateRow {
+  type_id: number;
+  type_name: string;
+  category_id?: number;
+  category_name?: string;
+
+  best_sell: number;
+  best_buy: number;
+  /** 0 = cheapest it has been all year, 100 = dearest. */
+  current_percentile: number;
+  year_low: number;
+  year_high: number;
+  year_median: number;
+  /** How far below the yearly median the entry price sits. */
+  discount_pct: number;
+
+  /** The conservative exit: the yearly median, never the peak. */
+  target_price: number;
+  /** Net of the fees paid on the way out. */
+  upside_pct: number;
+  upside_isk_per_unit: number;
+
+  /** "history" when dips in this item have measurably recovered before. */
+  recovery_basis: string;
+  recovery_reason?: string;
+  recovery_days: number;
+  recovery_episodes: number;
+  trend_pct_day: number;
+
+  avg_daily_volume: number;
+  avg_daily_isk: number;
+  days_to_unwind: number;
+
+  suggested_qty: number;
+  capital_isk: number;
+  expected_isk: number;
+
+  grade: TodayGrade;
+  why: string;
+  blockers?: string[];
+  /** Ranks accepted rows by evidence and cheapness, not by ISK. */
+  score: number;
+}
+
+export interface AccumulateSummary {
+  region_id: number;
+  generated_at: string;
+  examined: number;
+  accepted: number;
+  rejected_thin: number;
+  rejected_price: number;
+  rejected_trend: number;
+  rejected_no_data: number;
+  total_capital_isk: number;
+  total_expected_isk: number;
+}
+
+export interface AccumulateResult {
+  summary: AccumulateSummary;
+  rows: AccumulateRow[];
+  /** A bounded sample of what was turned away and why, so a short list does
+   *  not look like a broken scan. */
+  rejected?: AccumulateRow[];
+  warnings?: string[];
+}
+
+export interface AccumulateEnvelope {
+  result: AccumulateResult | null;
+  generated_at?: string;
+  region_id: number;
+  age_seconds: number;
+  stale: boolean;
+}

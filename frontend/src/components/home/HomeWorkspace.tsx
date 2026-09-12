@@ -1,11 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getTodayPlan, refreshTodayPlan, setTodayActionState } from "@/lib/api";
+import {
+  getAccumulateResult,
+  getTodayPlan,
+  refreshTodayPlan,
+  setTodayActionState,
+} from "@/lib/api";
 import { useGlobalToast } from "@/components/Toast";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/EmptyState";
 import { useI18n } from "@/lib/i18n";
 import type { MainTabId } from "@/lib/cockpit";
-import type { TodayAction, TodayDeepLink, TodayOption, TodayPlan } from "@/lib/types";
+import type {
+  AccumulateRow,
+  TodayAction,
+  TodayDeepLink,
+  TodayOption,
+  TodayPlan,
+} from "@/lib/types";
 import { ActionList } from "./ActionList";
 import { BatchBar } from "./BatchBar";
 import { CapitalBar } from "./CapitalBar";
@@ -13,6 +24,7 @@ import { NotAdvisedPanel } from "./NotAdvisedPanel";
 import { OptionsPanel } from "./OptionsPanel";
 import { RunPanel } from "./RunPanel";
 import { WaitingPanel } from "./WaitingPanel";
+import { AccumulatePanel } from "./AccumulatePanel";
 import { TodayHeader, type TodayView } from "./TodayHeader";
 
 /**
@@ -51,6 +63,10 @@ export function HomeWorkspace({ isLoggedIn, onNavigate }: HomeWorkspaceProps) {
   const [refreshing, setRefreshing] = useState(false);
   const [progress, setProgress] = useState("");
   const [marks, setMarks] = useState<LocalMarks>({});
+  // Read separately from the plan rather than embedded in it. The sweep is a
+  // different tab's output on its own schedule, and one SQLite row is cheap
+  // enough that coupling the two refreshes would buy nothing.
+  const [accumulate, setAccumulate] = useState<AccumulateRow[]>([]);
   const [view, setView] = useState<TodayView>(() => {
     try {
       return localStorage.getItem(VIEW_STORAGE_KEY) === "list" ? "list" : "run";
@@ -120,6 +136,24 @@ export function HomeWorkspace({ isLoggedIn, onNavigate }: HomeWorkspaceProps) {
       cancelled = true;
     };
   }, [isLoggedIn, runRefresh]);
+
+  // The accumulate sweep, if one has been run. Its absence is the normal cold
+  // state, so a failure here is silent rather than a toast on every load.
+  useEffect(() => {
+    let cancelled = false;
+    if (!isLoggedIn) return;
+    (async () => {
+      try {
+        const env = await getAccumulateResult();
+        if (!cancelled) setAccumulate(env.result?.rows ?? []);
+      } catch {
+        /* no sweep yet */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isLoggedIn]);
 
   const changeView = useCallback((next: TodayView) => {
     setView(next);
@@ -271,6 +305,10 @@ export function HomeWorkspace({ isLoggedIn, onNavigate }: HomeWorkspaceProps) {
           )}
 
           <WaitingPanel rows={plan.waiting ?? []} onOpen={(r) => navigateTo(r.deep_link)} />
+          <AccumulatePanel
+            rows={accumulate}
+            onOpenTab={() => navigateTo({ tab: "accumulate" })}
+          />
           <BatchBar batches={plan.batches} />
           <OptionsPanel options={plan.options} onNavigate={onOptionDetails} />
           <NotAdvisedPanel actions={plan.not_advised} onDetails={onDetails} />

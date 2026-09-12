@@ -915,6 +915,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/watchlist/{typeID}", s.handleUpdateWatchlist)
 	mux.HandleFunc("GET /api/alerts/history", s.handleGetAlertHistory)
 	mux.HandleFunc("POST /api/scan/station", s.handleScanStation)
+	// Accumulate: items near the bottom of their own year. See
+	// internal/api/accumulate.go.
+	mux.HandleFunc("POST /api/scan/accumulate", s.handleAccumulateScan)
+	mux.HandleFunc("GET /api/scan/accumulate", s.handleAccumulateResult)
 	mux.HandleFunc("POST /api/market/price-audit", s.handlePriceAudit)
 	mux.HandleFunc("POST /api/market/hub-allocate", s.handleHubAllocate)
 	mux.HandleFunc("GET /api/pi/schematics", s.handlePISchematics)

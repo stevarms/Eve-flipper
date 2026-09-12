@@ -105,6 +105,7 @@ import {
 } from "./lib/cockpit";
 import { WorkspaceRail, WorkspaceTabs } from "./components/shell/WorkspaceRail";
 import { HomeWorkspace } from "./components/home/HomeWorkspace";
+import { AccumulateTab } from "./components/AccumulateTab";
 import type {
   ContractResult,
   FlipResult,
@@ -2572,6 +2573,9 @@ function App() {
               isLoggedIn={authStatus.logged_in}
               onOpenPositions={() => setTab("positions")}
             />
+          </TabPanel>
+          <TabPanel active={tab === "accumulate"}>
+            <AccumulateTab />
           </TabPanel>
           <TabPanel active={tab === "orders"}>
             <Orders

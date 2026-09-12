@@ -238,6 +238,29 @@ func (s *Server) buildTodayPlan(
 		in.MaxInvestmentISK = cfg.MaxInvestment
 	}
 
+	// Why the DB-bound work is NOT fanned out.
+	//
+	// The database is opened with SetMaxOpenConns(1), so concurrent queries do
+	// not overlap -- they queue. Worse, the trade-journal compute interleaves
+	// SQLite reads with network calls (market prices, a per-character blueprint
+	// fetch), so a goroutine can hold the one connection across an ESI round
+	// trip. Fanning seven DB-touching sources out therefore buys no throughput
+	// and turns one slow journal pass into every other source waiting on it.
+	//
+	// So: warm the journal once, sequentially, then read the DB-only sources.
+	// Only the ESI-bound builders run concurrently, which is where concurrency
+	// actually pays.
+	progress("Reading what these items have actually made you")
+	history, daily := s.todayJournalEvidence(userID, characterID, allScope, sessions)
+	in.ItemHistory = history
+	in.DailyPnL = daily
+
+	progress("Checking your trading record")
+	in.EdgeByType = s.todayEdgeByType(userID)
+
+	progress("Loading your last station scan")
+	in.ScanTrades = s.todayLastStationScan()
+
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
@@ -348,28 +371,6 @@ func (s *Server) buildTodayPlan(
 		in.IndustryJobs = jobs
 		in.Locations = locations
 		in.Capital.WalletISK = wallet
-	})
-
-	run("Reading what these items have actually made you", func() {
-		history, daily := s.todayJournalEvidence(userID, characterID, allScope, sessions)
-		mu.Lock()
-		defer mu.Unlock()
-		in.ItemHistory = history
-		in.DailyPnL = daily
-	})
-
-	run("Checking your trading record", func() {
-		edges := s.todayEdgeByType(userID)
-		mu.Lock()
-		defer mu.Unlock()
-		in.EdgeByType = edges
-	})
-
-	run("Loading your last station scan", func() {
-		trades := s.todayLastStationScan()
-		mu.Lock()
-		defer mu.Unlock()
-		in.ScanTrades = trades
 	})
 
 	wg.Wait()
@@ -506,11 +507,10 @@ func todayTypeName(sdeData *sde.Data, typeID int32) string {
 // grading needs: what each item has actually earned, and the daily P&L series
 // behind the return rate.
 //
-// This runs the journal a second time — buildPositions already ran it for its
-// own rows. Sharing one pass would mean threading the result through
-// buildPositions' signature for the benefit of one caller, and the compute is
-// cached per (user, scope, mode, fees) inside loadTradeJournalResultFor, so
-// the second call is usually a map lookup.
+// Called before the concurrent builders on purpose: this is what warms the
+// journal cache, so buildPositions and the order desk's cost-basis pass find it
+// already computed instead of three goroutines racing for one DB connection
+// while the winner holds it across an ESI round trip.
 func (s *Server) todayJournalEvidence(
 	userID string,
 	characterID int64,

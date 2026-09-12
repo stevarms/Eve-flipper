@@ -97,6 +97,8 @@ import type {
   TodayActionStatePayload,
   HoldingRule,
   HoldingRulePercentilesResponse,
+  AccumulateEnvelope,
+  AccumulateResult,
 } from "./types";
 import type { CockpitLoadout, CockpitPreferences } from "./cockpit";
 import {
@@ -3617,4 +3619,80 @@ export async function getHoldingRulePercentiles(
 ): Promise<HoldingRulePercentilesResponse> {
   const res = await apiFetch(`${BASE}/api/auth/holding-rules/${typeId}/percentiles`);
   return handleResponse<HoldingRulePercentilesResponse>(res);
+}
+
+// --- Accumulate sweep --------------------------------------------------
+//
+// Two costs again. The GET reads the stored sweep (one row) and is what Today's
+// roll-up uses. The POST re-runs it: one region-orders fetch plus a year of
+// prices per candidate, so the first run of the day is minutes and the rest are
+// cache reads. It streams progress for that reason.
+
+/** Read the stored sweep. Omit regionId for the newest one across regions,
+ *  which is what Today wants since it has no region of its own. */
+export async function getAccumulateResult(regionId?: number): Promise<AccumulateEnvelope> {
+  const qp = new URLSearchParams();
+  if (regionId != null && regionId > 0) qp.set("region_id", String(regionId));
+  const qs = qp.toString();
+  const res = await apiFetch(`${BASE}/api/scan/accumulate${qs ? `?${qs}` : ""}`);
+  return handleResponse<AccumulateEnvelope>(res);
+}
+
+export interface AccumulateScanParams {
+  region_id?: number;
+  max_types?: number;
+  max_percentile?: number;
+  min_units_per_day?: number;
+  min_isk_per_day?: number;
+  min_upside_pct?: number;
+  max_capital_per_item?: number;
+}
+
+export async function runAccumulateScan(
+  params: AccumulateScanParams,
+  onProgress: (msg: string) => void,
+  signal?: AbortSignal,
+): Promise<AccumulateResult> {
+  const res = await apiFetch(`${BASE}/api/scan/accumulate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+    signal,
+  });
+  if (!res.ok) {
+    let message = "Could not run the sweep";
+    try {
+      const err = await res.json();
+      message = err.error || err.message || message;
+    } catch {
+      // Body was not JSON; the generic message stands.
+    }
+    throw new Error(message);
+  }
+  if (!res.body) throw new Error("Response body is null");
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result: AccumulateResult | null = null;
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const msg = JSON.parse(line) as
+        | { type: "progress"; message: string }
+        | { type: "result"; data: AccumulateResult }
+        | { type: "error"; message: string };
+      if (msg.type === "progress") onProgress(msg.message);
+      else if (msg.type === "result") result = msg.data;
+      else if (msg.type === "error") throw new Error(msg.message);
+    }
+  }
+  if (!result) throw new Error("The sweep ended without a result");
+  return result;
 }
