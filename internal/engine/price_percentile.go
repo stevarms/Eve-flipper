@@ -221,7 +221,14 @@ func rankOfSorted(sorted []float64, value float64) float64 {
 // checks the member it cares about and never has to interpret a zero.
 type MarketDerived struct {
 	Percentiles PricePercentiles `json:"percentiles"`
-	Recovery    RecoveryOutlook  `json:"recovery"`
+	// Recovery answers "is today a dip worth waiting out", over 180 days. The
+	// order desk's hold-or-cut verdict wants exactly that.
+	Recovery RecoveryOutlook `json:"recovery"`
+	// Reversion answers "does this item come back, in general", over a year.
+	// A separate question, and stacking Recovery's own dip test on top of a
+	// different cheapness test is what made the accumulate sweep return one
+	// row out of fifteen hundred. See mean_reversion.go.
+	Reversion MeanReversionProfile `json:"reversion"`
 }
 
 // CalcMarketDerived reduces one price series to both summaries.
@@ -238,5 +245,8 @@ func CalcMarketDerived(history []esi.HistoryEntry, now time.Time) MarketDerived 
 		// feeding it the full series is the point, since its caller used to
 		// hand it whatever the 90-day cache happened to hold.
 		Recovery: CalcRecoveryOutlook(history, 0),
+		// A year, matching the percentiles, so both halves of an accumulate
+		// verdict describe the same span.
+		Reversion: CalcMeanReversion(history, 0),
 	}
 }

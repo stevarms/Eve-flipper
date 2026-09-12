@@ -128,7 +128,7 @@ func CalcRecoveryOutlook(history []esi.HistoryEntry, window int) RecoveryOutlook
 		out.Reason = "price has no variation to measure"
 		return out
 	}
-	out.TrendPctDay = (math.Exp(slope) - 1) * 100
+	out.TrendPctDay = trendPercentPerDay(slope)
 
 	// A significant downward slope means the level itself is moving, so
 	// there is no trend to revert to. Checked before the dip test because
@@ -303,4 +303,11 @@ func recoveryEpisodes(points []recoveryPoint, zs []float64, threshold float64) [
 		}
 	}
 	return gaps
+}
+
+// trendPercentPerDay converts a log-linear slope into percent per day. Shared
+// with CalcMeanReversion so the two fits cannot report the same drift
+// differently.
+func trendPercentPerDay(slope float64) float64 {
+	return (math.Exp(slope) - 1) * 100
 }

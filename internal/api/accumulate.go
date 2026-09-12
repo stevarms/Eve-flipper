@@ -41,6 +41,11 @@ const (
 	// traded volume in the engine, which is the honest measure.
 	accumulateMinSellDepthISK = 20_000_000
 
+	// And this many standing orders, on either side, before an item counts as a
+	// market rather than someone's parked stock. A handful of orders is how a
+	// 20B officer module looks, and those have no traded history to judge.
+	accumulateMinOrderCount = 8
+
 	// Concurrency on the history fan-out, matching the other scanners.
 	accumulateHistoryWorkers = 10
 )
@@ -159,10 +164,16 @@ func (s *Server) runAccumulateScan(
 	candidates := accumulateCandidatesFromOrders(orders, sdeData)
 	progress(accumulateProgressMsg(len(candidates), 0, 0))
 
-	// Rank by how much is actually on offer and take the top slice. This is
-	// where a market-wide sweep becomes affordable, and it costs little:
-	// everything below the cut would have failed the traded-volume gate too.
+	// Rank by order count, not by listed ISK. See the note on
+	// AccumulateCandidate.OrderCount: depth measures what is parked, order count
+	// measures how contested a market is, and only the second correlates with an
+	// item having enough traded history to judge. Ranking a real sweep by depth
+	// spent a third of its ESI budget on items that came back "not enough price
+	// history".
 	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].OrderCount != candidates[j].OrderCount {
+			return candidates[i].OrderCount > candidates[j].OrderCount
+		}
 		return candidates[i].SellDepthISK > candidates[j].SellDepthISK
 	})
 	if len(candidates) > req.MaxTypes {
@@ -258,6 +269,7 @@ func accumulateCandidatesFromOrders(orders []esi.MarketOrder, sdeData *sde.Data)
 		bestSell  float64
 		bestBuy   float64
 		sellDepth float64
+		orders    int
 	}
 	byType := make(map[int32]*agg, 4096)
 	for _, o := range orders {
@@ -269,6 +281,7 @@ func accumulateCandidatesFromOrders(orders []esi.MarketOrder, sdeData *sde.Data)
 			a = &agg{}
 			byType[o.TypeID] = a
 		}
+		a.orders++
 		if o.IsBuyOrder {
 			if o.Price > a.bestBuy {
 				a.bestBuy = o.Price
@@ -286,11 +299,15 @@ func accumulateCandidatesFromOrders(orders []esi.MarketOrder, sdeData *sde.Data)
 		if a.bestSell <= 0 || a.sellDepth < accumulateMinSellDepthISK {
 			continue
 		}
+		if a.orders < accumulateMinOrderCount {
+			continue
+		}
 		c := engine.AccumulateCandidate{
 			TypeID:       typeID,
 			BestSell:     a.bestSell,
 			BestBuy:      a.bestBuy,
 			SellDepthISK: a.sellDepth,
+			OrderCount:   a.orders,
 		}
 		if sdeData != nil {
 			if t, ok := sdeData.Types[typeID]; ok {

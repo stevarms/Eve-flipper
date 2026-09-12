@@ -31,6 +31,17 @@ func accumulateGoodDerived() MarketDerived {
 			TrendPctDay: 0.01,
 			WindowDays:  180,
 		},
+		// What the accumulate gate actually reads: does this item come back at
+		// all, over a year, independent of whether today reads as a dip.
+		Reversion: MeanReversionProfile{
+			Basis:       RecoveryBasisHistory,
+			Episodes:    6,
+			MedianDays:  30,
+			TrendPctDay: 0.01,
+			Declining:   false,
+			WindowDays:  365,
+			TradedDays:  360,
+		},
 	}
 }
 
@@ -87,7 +98,7 @@ func TestBuildAccumulateRejectsIlliquidItemsFirst(t *testing.T) {
 		name   string
 		mutate func(*AccumulateCandidate)
 	}{
-		{"too few units", func(c *AccumulateCandidate) { c.Derived.Percentiles.AvgDailyVolume = 3 }},
+		{"too few units", func(c *AccumulateCandidate) { c.Derived.Percentiles.AvgDailyVolume = 2 }},
 		{"too little ISK", func(c *AccumulateCandidate) { c.Derived.Percentiles.AvgDailyISK = 1_000_000 }},
 	}
 	for _, tc := range cases {
@@ -109,22 +120,60 @@ func TestBuildAccumulateRejectsIlliquidItemsFirst(t *testing.T) {
 
 // The gate that separates a bargain from a dying item. Without it "buy the
 // dip" recommends everything in permanent decline, every day, all the way down.
-func TestBuildAccumulateRefusesWhenADipCannotBeToldFromADecline(t *testing.T) {
+// A falling trend means do not buy this at any price. Reported separately from
+// "we have no track record", because the two mean opposite things to a buyer.
+func TestBuildAccumulateRefusesAFallingTrend(t *testing.T) {
 	res := BuildAccumulate([]AccumulateCandidate{accumulateCandidate(func(c *AccumulateCandidate) {
-		c.Derived.Recovery = RecoveryOutlook{
-			Basis:  RecoveryBasisNone,
-			Reason: "price is in a sustained decline",
-		}
+		c.Derived.Reversion.Declining = true
+		c.Derived.Reversion.TrendPctDay = -0.42
 	})}, accumulateOpts())
 
 	if len(res.Rows) != 0 {
-		t.Fatalf("advised buying an item whose dips have never recovered: %+v", res.Rows[0])
+		t.Fatalf("advised buying an item in decline: %+v", res.Rows[0])
 	}
-	if res.Summary.RejectedTrend != 1 {
-		t.Fatalf("rejected_trend = %d, want 1", res.Summary.RejectedTrend)
+	if res.Summary.RejectedDeclining != 1 {
+		t.Fatalf("rejected_declining = %d, want 1 (%+v)", res.Summary.RejectedDeclining, res.Summary)
 	}
-	if len(res.Rejected) == 0 || res.Rejected[0].Blockers[0] != "price is in a sustained decline" {
-		t.Fatalf("the recovery engine's reason was not carried through: %+v", res.Rejected)
+	if res.Rejected[0].Grade != TodayGradeAvoid {
+		t.Errorf("grade = %q, want avoid — a decline is not merely unproven", res.Rejected[0].Grade)
+	}
+}
+
+// No track record is a different answer: we cannot tell, rather than no.
+func TestBuildAccumulateSeparatesNoTrackRecordFromDecline(t *testing.T) {
+	res := BuildAccumulate([]AccumulateCandidate{accumulateCandidate(func(c *AccumulateCandidate) {
+		c.Derived.Reversion.Episodes = 1
+	})}, accumulateOpts())
+
+	if len(res.Rows) != 0 {
+		t.Fatal("advised buying an item with no history of recovering")
+	}
+	if res.Summary.RejectedNoRecord != 1 {
+		t.Fatalf("rejected_no_record = %d, want 1 (%+v)", res.Summary.RejectedNoRecord, res.Summary)
+	}
+	if res.Summary.RejectedDeclining != 0 {
+		t.Error("counted as declining; those are different findings and must not be conflated")
+	}
+	if res.Rejected[0].Grade != TodayGradeUnproven {
+		t.Errorf("grade = %q, want unproven", res.Rejected[0].Grade)
+	}
+}
+
+// The bug that made this sweep return one row in fifteen hundred: an item
+// genuinely in the bottom quarter of its year must not be rejected merely
+// because a 180-day z-score does not also call it a dip.
+func TestBuildAccumulateDoesNotRequireRecoveryToAgreeThatTodayIsCheap(t *testing.T) {
+	res := BuildAccumulate([]AccumulateCandidate{accumulateCandidate(func(c *AccumulateCandidate) {
+		// Exactly the real-world case: RecoveryOutlook declines to call today
+		// a dip, while the yearly distribution says it is in the bottom decile.
+		c.Derived.Recovery = RecoveryOutlook{
+			Basis:  RecoveryBasisNone,
+			Reason: "price is not unusually low",
+		}
+	})}, accumulateOpts())
+
+	if len(res.Rows) != 1 {
+		t.Fatalf("rejected a cheap, liquid, mean-reverting item because a second and different cheapness test disagreed (%+v)", res.Summary)
 	}
 }
 
@@ -138,8 +187,8 @@ func TestBuildAccumulateIgnoresItemsThatAreNotCheap(t *testing.T) {
 	if len(res.Rows) != 0 {
 		t.Fatalf("accepted an item at the 70th percentile of its year")
 	}
-	if res.Summary.RejectedPrice != 1 {
-		t.Fatalf("rejected_price = %d, want 1", res.Summary.RejectedPrice)
+	if res.Summary.RejectedNotCheap != 1 {
+		t.Fatalf("rejected_not_cheap = %d, want 1", res.Summary.RejectedNotCheap)
 	}
 }
 

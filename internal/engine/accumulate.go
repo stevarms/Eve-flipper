@@ -39,7 +39,14 @@ const (
 	// Liquidity floors. Both must clear, because they fail differently: units
 	// catches items that trade in tiny numbers at high value, and ISK catches
 	// items that trade in huge numbers for nothing.
-	accumulateMinUnitsPerDay = 20.0
+	//
+	// The units floor was 20/day, which measured against a real sweep sat
+	// exactly on the median of the candidate pool and so discarded half of it
+	// on a number chosen by guess. It is now a "somebody trades this at all"
+	// bar; the ISK floor guards the other failure mode, and position size is
+	// separately capped to a fraction of the item's own turnover, which is the
+	// honest defence against not being able to exit.
+	accumulateMinUnitsPerDay = 5.0
 	accumulateMinISKPerDay   = 20_000_000.0
 
 	// A recovery has to be worth the wait after fees. Below this the trade is
@@ -61,12 +68,21 @@ type AccumulateCandidate struct {
 	CategoryName string
 
 	// BestSell is what you would pay to buy now; BestBuy what you would get
-	// selling instantly. SellDepthISK is how much sell-side inventory sits at
-	// the station, used only to rank which types are worth spending an ESI
-	// history call on.
-	BestSell     float64
-	BestBuy      float64
+	// selling instantly.
+	BestSell float64
+	BestBuy  float64
+
+	// SellDepthISK is how much sell-side inventory is listed, and OrderCount
+	// how many orders are standing on both sides.
+	//
+	// OrderCount is what candidates get ranked by, not depth. Depth measures
+	// what is *listed*, which is a terrible proxy for what changes hands: one
+	// officer module sitting at 20B outranks every mineral in the game on
+	// depth while trading twice a month. Ranking a real sweep by depth spent a
+	// third of its ESI budget on items with too little history to judge. Order
+	// count tracks how contested a market is, which is much closer to turnover.
 	SellDepthISK float64
+	OrderCount   int
 
 	Derived MarketDerived
 }
@@ -131,14 +147,21 @@ type AccumulateRow struct {
 
 // AccumulateSummary is what the header says about the run.
 type AccumulateSummary struct {
-	RegionID       int32  `json:"region_id"`
-	GeneratedAt    string `json:"generated_at"`
-	Examined       int    `json:"examined"`
-	Accepted       int    `json:"accepted"`
-	RejectedThin   int    `json:"rejected_thin"`
-	RejectedPrice  int    `json:"rejected_price"`
-	RejectedTrend  int    `json:"rejected_trend"`
-	RejectedNoData int    `json:"rejected_no_data"`
+	RegionID    int32  `json:"region_id"`
+	GeneratedAt string `json:"generated_at"`
+	Examined    int    `json:"examined"`
+	Accepted    int    `json:"accepted"`
+
+	// One counter per gate, because a single "rejected" figure hides which
+	// filter is actually binding -- which is exactly how a sweep ends up
+	// returning one row and looking broken rather than strict.
+	RejectedThin       int `json:"rejected_thin"`
+	RejectedNotCheap   int `json:"rejected_not_cheap"`
+	RejectedThinUpside int `json:"rejected_thin_upside"`
+	RejectedDeclining  int `json:"rejected_declining"`
+	RejectedNoRecord   int `json:"rejected_no_record"`
+	RejectedNoData     int `json:"rejected_no_data"`
+	RejectedSuspect    int `json:"rejected_suspect"`
 
 	TotalCapitalISK  float64 `json:"total_capital_isk"`
 	TotalExpectedISK float64 `json:"total_expected_isk"`
@@ -237,9 +260,20 @@ func BuildAccumulate(candidates []AccumulateCandidate, opts AccumulateOpts) Accu
 			out.Summary.RejectedThin++
 			out.Rejected = append(out.Rejected, row)
 		case accumulateNotCheap:
-			out.Summary.RejectedPrice++
+			// Not sampled: "this is not cheap" is the overwhelmingly common
+			// outcome and says nothing interesting about the item.
+			out.Summary.RejectedNotCheap++
+		case accumulateThinUpside:
+			out.Summary.RejectedThinUpside++
+			out.Rejected = append(out.Rejected, row)
 		case accumulateDeclining:
-			out.Summary.RejectedTrend++
+			out.Summary.RejectedDeclining++
+			out.Rejected = append(out.Rejected, row)
+		case accumulateNoRecord:
+			out.Summary.RejectedNoRecord++
+			out.Rejected = append(out.Rejected, row)
+		case accumulateSuspect:
+			out.Summary.RejectedSuspect++
 			out.Rejected = append(out.Rejected, row)
 		case accumulateNoData:
 			out.Summary.RejectedNoData++
@@ -280,7 +314,10 @@ const (
 	accumulateNoData
 	accumulateThin
 	accumulateNotCheap
+	accumulateThinUpside
 	accumulateDeclining
+	accumulateNoRecord
+	accumulateSuspect
 )
 
 // judgeAccumulate applies the gates in the order that costs least to decide
@@ -311,11 +348,17 @@ func judgeAccumulate(c AccumulateCandidate, opts AccumulateOpts, keepRate float6
 	row.CurrentPercentile = pct.CurrentPercentile
 	row.YearLow, row.YearHigh, row.YearMedian = pct.Min, pct.Max, pct.P50
 	row.AvgDailyVolume, row.AvgDailyISK = pct.AvgDailyVolume, pct.AvgDailyISK
-	row.RecoveryBasis = c.Derived.Recovery.Basis
-	row.RecoveryReason = c.Derived.Recovery.Reason
-	row.RecoveryDays = c.Derived.Recovery.MedianDays
-	row.RecoveryEpisode = c.Derived.Recovery.Episodes
-	row.TrendPctDay = c.Derived.Recovery.TrendPctDay
+	// Reversion, not Recovery. Recovery bundles its own "is today a dip"
+	// test, which is a second and different definition of cheap from the
+	// percentile one applied below; requiring both is what made this sweep
+	// reject 427 of 954 items that were genuinely in the bottom quarter of
+	// their year. See mean_reversion.go.
+	rev := c.Derived.Reversion
+	row.RecoveryBasis = rev.Basis
+	row.RecoveryReason = rev.Reason
+	row.RecoveryDays = rev.MedianDays
+	row.RecoveryEpisode = rev.Episodes
+	row.TrendPctDay = rev.TrendPctDay
 
 	if pct.P50 > 0 {
 		row.DiscountPct = (pct.P50 - c.BestSell) / pct.P50 * 100
@@ -339,7 +382,7 @@ func judgeAccumulate(c AccumulateCandidate, opts AccumulateOpts, keepRate float6
 	if pct.Min > 0 && c.BestSell < pct.Min*accumulateMinPriceRatio {
 		row.Grade = TodayGradeUnproven
 		row.Blockers = []string{"price is far below anything in its history; treat as suspect"}
-		return row, accumulateThin
+		return row, accumulateSuspect
 	}
 
 	// --- Exit target and what it is worth, after fees ---
@@ -350,20 +393,31 @@ func judgeAccumulate(c AccumulateCandidate, opts AccumulateOpts, keepRate float6
 		row.UpsidePct = row.UpsideISKPerUnit / c.BestSell * 100
 	}
 	if row.UpsidePct < opts.MinUpsidePct {
-		return row, accumulateNotCheap
+		row.Blockers = []string{fmt.Sprintf(
+			"only %.0f%% upside to its median after fees", row.UpsidePct)}
+		return row, accumulateThinUpside
 	}
 
-	// --- Has a dip in this item ever come back? ---
+	// --- Is this the kind of item that comes back? ---
 	//
-	// The gate that separates a bargain from a decline. CalcRecoveryOutlook
-	// refuses unless it found several dips that recovered and the trend is not
-	// significantly negative, so "none" here means we cannot tell -- and being
-	// unable to tell is a reason not to advise buying, not a reason to guess.
-	if c.Derived.Recovery.Basis != RecoveryBasisHistory {
+	// Two separate failures, reported separately, because they mean opposite
+	// things to a buyer: a falling trend says do not buy this at any price,
+	// while no track record says we cannot tell and you are on your own.
+	if rev.Basis != RecoveryBasisHistory {
 		row.Grade = TodayGradeUnproven
-		row.Blockers = []string{firstNonEmptyStr(
-			c.Derived.Recovery.Reason, "cannot tell a dip from a decline here")}
+		row.Blockers = []string{firstNonEmptyStr(rev.Reason, "no usable price series")}
+		return row, accumulateNoData
+	}
+	if rev.Declining {
+		row.Grade = TodayGradeAvoid
+		row.Blockers = []string{fmt.Sprintf(
+			"the trend itself is falling (%.2f%%/day); this is a decline, not a dip", rev.TrendPctDay)}
 		return row, accumulateDeclining
+	}
+	if rev.Episodes < recoveryMinEpisodes {
+		row.Grade = TodayGradeUnproven
+		row.Blockers = []string{"no track record of dips in this item recovering"}
+		return row, accumulateNoRecord
 	}
 
 	// --- Sizing ---
@@ -391,22 +445,22 @@ func judgeAccumulate(c AccumulateCandidate, opts AccumulateOpts, keepRate float6
 	// Reuses Today's vocabulary so "proven" means the same thing on both
 	// screens: real evidence behind it, not merely arithmetic that worked out.
 	switch {
-	case c.Derived.Recovery.Episodes >= 5 && pct.TradedDays >= 300:
+	case rev.Episodes >= 5 && pct.TradedDays >= 300:
 		row.Grade = TodayGradeProven
 	default:
 		row.Grade = TodayGradeLikely
 	}
 
-	row.Why = accumulateWhy(row, c.Derived.Recovery)
+	row.Why = accumulateWhy(row, rev)
 	// Cheapness, evidence and liquidity, each bounded so no single term can
 	// dominate. Deliberately not ISK-denominated -- see the field comment.
 	row.Score = clampRange(row.DiscountPct, 0, 60)/60*50 +
-		clampRange(float64(c.Derived.Recovery.Episodes), 0, 8)/8*30 +
+		clampRange(float64(rev.Episodes), 0, 8)/8*30 +
 		clampRange(math.Log10(math.Max(pct.AvgDailyISK, 1))-7, 0, 3)/3*20
 	return row, accumulateAccept
 }
 
-func accumulateWhy(row AccumulateRow, rec RecoveryOutlook) string {
+func accumulateWhy(row AccumulateRow, rec MeanReversionProfile) string {
 	parts := make([]string, 0, 4)
 	parts = append(parts, fmt.Sprintf("%.0f%% under its yearly median, at the %.0fth percentile",
 		row.DiscountPct, row.CurrentPercentile))

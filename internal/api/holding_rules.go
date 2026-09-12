@@ -145,7 +145,7 @@ func (s *Server) marketDerivedFor(regionID, typeID int32) engine.MarketDerived {
 	if s.db != nil {
 		if payload, ok := s.db.GetMarketDerived(regionID, typeID); ok {
 			var cached engine.MarketDerived
-			if err := json.Unmarshal([]byte(payload), &cached); err == nil {
+			if err := json.Unmarshal([]byte(payload), &cached); err == nil && marketDerivedComplete(cached) {
 				return cached
 			}
 		}
@@ -192,4 +192,18 @@ func sortHoldingRules(rules []db.HoldingRule) {
 			rules[j], rules[j-1] = rules[j-1], rules[j]
 		}
 	}
+}
+
+// marketDerivedComplete reports whether a cached reduction carries every member
+// the current code reads.
+//
+// Cached rows outlive the code that wrote them. When Reversion was added, every
+// existing row unmarshalled with an empty basis on that member, which the
+// accumulate gate correctly reads as "no data" -- so a sweep would have got
+// strictly worse until the day-long TTL rolled over. Treating an incomplete row
+// as a miss recomputes it on first use instead.
+//
+// Extend this whenever a member is added to engine.MarketDerived.
+func marketDerivedComplete(d engine.MarketDerived) bool {
+	return d.Percentiles.Basis != "" && d.Recovery.Basis != "" && d.Reversion.Basis != ""
 }
