@@ -88,6 +88,53 @@ func TestWalletMetaSynthesisesNeverSeenCorp(t *testing.T) {
 	}
 }
 
+// The other half of the bootstrap rule, and the bug it caused.
+//
+// Corp access is only discoverable by attempting the fetch -- a 403 means the
+// character lacks Accountant -- so the synthetic corp:* entry cannot ask
+// whether a corp wallet exists. That left anyone with no corp, or no
+// Accountant role, looking at "1 wallet has never been synced" that no amount
+// of syncing could clear, because the sidecar row it waited for could never be
+// written. A completed wallet sync is proof corp was attempted; if no corp row
+// came back, there is nothing to warn about.
+func TestWalletMetaStopsSynthesisingCorpOnceASyncHasRun(t *testing.T) {
+	database := openAPITestDB(t)
+	s := &Server{db: database}
+
+	const userID = "no-corp-user"
+	const charID = int64(6001)
+	filter := db.WalletScopeFilter{IncludeAll: true}
+
+	// Before any sync, the bootstrap entry must still fire -- otherwise a
+	// genuinely un-synced corp could never report itself.
+	if _, stale := s.walletMetaForFilter(userID, &filter); len(stale) != 1 ||
+		stale[0]["wallet_key"] != "corp:*" {
+		t.Fatalf("before syncing: got %+v, want the synthetic corp:* entry", stale)
+	}
+
+	if _, err := database.UpsertWalletTransactionsForUser(userID, charID, []esi.WalletTransaction{{
+		TransactionID: 1, Date: "2026-05-01T10:00:00Z", TypeID: 34,
+		LocationID: 60003760, UnitPrice: 5, Quantity: 10, IsBuy: true,
+	}}); err != nil {
+		t.Fatalf("seed transactions: %v", err)
+	}
+	if _, err := database.UpsertIndustryJobsForUser(userID, charID, nil); err != nil {
+		t.Fatalf("seed industry sync: %v", err)
+	}
+
+	// A sync has now demonstrably run and produced no corp row. The character
+	// is fully synced, so nothing at all should be reported.
+	_, stale := s.walletMetaForFilter(userID, &filter)
+	for _, e := range stale {
+		if e["wallet_key"] == "corp:*" {
+			t.Fatalf("corp:* still synthesised after a completed sync: %+v", stale)
+		}
+	}
+	if len(stale) != 0 {
+		t.Fatalf("got %+v, want nothing stale", stale)
+	}
+}
+
 func TestParseOwnerScope(t *testing.T) {
 	cases := []struct {
 		owner string

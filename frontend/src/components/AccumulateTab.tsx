@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ChevronDown, ChevronRight, Loader2, RefreshCw } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Loader2, RefreshCw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CopyPrice } from "@/components/ui/CopyPrice";
@@ -7,7 +7,7 @@ import { OpenMarketButton } from "@/components/ui/OpenMarketButton";
 import { TypeIcon } from "@/components/ui/TypeIcon";
 import { EmptyState } from "@/components/EmptyState";
 import { useGlobalToast } from "@/components/Toast";
-import { getAccumulateResult, runAccumulateScan } from "@/lib/api";
+import { getAccumulateResult, runAccumulateScan, setHoldingRule } from "@/lib/api";
 import { formatISK, formatNumber } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
 import { priceStep } from "@/lib/pricing";
@@ -276,6 +276,51 @@ function rejectedTotal(s: AccumulateSummary): number {
 
 function AccumRow({ row }: { row: AccumulateRow }) {
   const { t } = useI18n();
+  const { addToast } = useGlobalToast();
+  const [armed, setArmed] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  /**
+   * Carry the exit thesis forward to the moment the buy order fills.
+   *
+   * Without this the plan dies here. Accumulate works out a target -- the
+   * yearly median -- shows it, and forgets it; the stock later arrives in
+   * Positions with no memory of why it was bought, and Today, seeing unlisted
+   * inventory, tells you to sell at whatever the market is paying that day.
+   * That is precisely the trade the scan was arguing against.
+   *
+   * A holding rule is the existing machinery for "do not sell this below X",
+   * so this writes one rather than inventing a second notion of a target.
+   * Positions then shows the holding as waiting on price, and Today keeps it
+   * out of the sell queue until the target is met and surfaces it as urgent
+   * when it is.
+   */
+  const armTarget = useCallback(async () => {
+    if (saving || row.target_price <= 0) return;
+    setSaving(true);
+    try {
+      await setHoldingRule(row.type_id, {
+        target_price: row.target_price,
+        // The target is the item's own yearly median, so record the basis the
+        // way Positions' own percentile suggestions do -- a hand-typed number
+        // and a derived one should not look alike later.
+        target_percentile: 50,
+        target_basis: "percentile",
+        note: t("accumHoldNote"),
+      });
+      setArmed(true);
+      addToast(
+        t("accumHoldArmed", { name: row.type_name, price: formatISK(row.target_price) }),
+        "success",
+        3200,
+      );
+    } catch (e) {
+      addToast(e instanceof Error ? e.message : String(e), "error", 4000);
+    } finally {
+      setSaving(false);
+    }
+  }, [addToast, row.target_price, row.type_id, row.type_name, saving, t]);
+
   return (
     <tr className="border-b border-eve-border/40">
       <td className="px-2 py-1.5">
@@ -347,11 +392,36 @@ function AccumRow({ row }: { row: AccumulateRow }) {
       </td>
 
       <td className="px-2 py-1.5 text-right">
-        <OpenMarketButton
-          typeId={row.type_id}
-          copyOnOpen={{ text: row.best_sell.toFixed(2) }}
-          label={t("openMarket")}
-        />
+        <span className="inline-flex items-center gap-1">
+          <OpenMarketButton
+            typeId={row.type_id}
+            copyOnOpen={{ text: row.best_sell.toFixed(2) }}
+            label={t("openMarket")}
+          />
+          {row.target_price > 0 && (
+            <button
+              type="button"
+              onClick={() => void armTarget()}
+              disabled={saving || armed}
+              title={
+                armed
+                  ? t("accumHoldArmedHint")
+                  : t("accumHoldHint", { price: formatISK(row.target_price) })
+              }
+              aria-label={t("accumHoldSet")}
+              className={cn(
+                "inline-flex h-6 items-center gap-1 rounded-sm border px-1.5 font-ui text-t-caption transition-colors",
+                armed
+                  ? "border-profit/40 bg-profit/10 text-profit"
+                  : "border-eve-border bg-surface-2 text-fg-secondary hover:border-eve-accent/50 hover:text-eve-accent",
+                saving && "opacity-50",
+              )}
+            >
+              {armed ? <Check className="h-3 w-3" aria-hidden="true" /> : null}
+              {armed ? t("accumHoldArmedShort") : t("accumHoldSet")}
+            </button>
+          )}
+        </span>
       </td>
     </tr>
   );

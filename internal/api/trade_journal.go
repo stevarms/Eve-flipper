@@ -1425,10 +1425,18 @@ func (s *Server) walletMetaForFilter(userID string, filter *db.WalletScopeFilter
 	}
 
 	sawCorp := false
+	// Evidence that a sync has actually run for this user. Every wallet sync
+	// attempts corp wallets too, so once one has completed, the absence of a
+	// corp sidecar row means there is no corp wallet to reach -- not a sync
+	// that was never done.
+	sawAnySync := false
 	for _, m := range meta {
 		trackingSince[m.WalletKey] = m.EarliestDate
 		if strings.HasPrefix(m.WalletKey, "corp:") {
 			sawCorp = true
+		}
+		if strings.TrimSpace(m.LastSyncAt) != "" {
+			sawAnySync = true
 		}
 		// One entry per wallet, naming the kind that drove it — the wallet
 		// kind wins when both are stale, since it's the one the banner has
@@ -1457,7 +1465,16 @@ func (s *Server) walletMetaForFilter(userID string, filter *db.WalletScopeFilter
 	// can't report itself stale — the corp archives would stay empty
 	// forever. One synthetic entry breaks that; once the first sync writes
 	// real rows, the loop above takes over and this stops firing.
-	if !sawCorp && (filter.IncludeAll || len(filter.IncludeCorpDivisions) > 0) {
+	//
+	// But only before the first sync. Corp access is discovered by *trying*
+	// the fetch (see syncCorpWallets — a 403 means the character lacks
+	// Accountant), so there is no cheap way to ask whether a corp wallet
+	// exists. That left a user with no corp wallet, or no Accountant role,
+	// staring at "1 wallet has never been synced" that no amount of syncing
+	// could clear, because the row it was waiting for could never be written.
+	// A completed sync is proof corp was attempted; if no corp row came back,
+	// there is nothing there to warn about.
+	if !sawCorp && !sawAnySync && (filter.IncludeAll || len(filter.IncludeCorpDivisions) > 0) {
 		staleSyncs = append(staleSyncs, map[string]any{
 			"wallet_key":   "corp:*",
 			"kind":         "never",
