@@ -1,5 +1,66 @@
 # Changelog
 
+## v1.12.2 - 2026-09-12
+
+Positions learns where your stock actually is, and stops counting stock you do
+not have.
+
+### Assets -> Positions: where it is
+
+Rows said "1,277 Multispectrum Coating II" and nothing about where any of it
+was. You cannot sell what you cannot find, and a stack spread over three
+stations and a container is a different job from one sitting in Jita.
+
+The biggest pile now shows under the item name -- station, container, and a flag
+like CorpSAG1 when it matters -- with the full spread in the row drawer. The row
+stays aggregated across stations, because a cost basis belongs to the stack and
+splitting it would report four different average costs for the same item.
+
+- **Containers are named.** Not "Station Container" but whatever you called it.
+  Resolving that needs a separate request per owner, so it only asks about
+  containers actually holding something on the list.
+- **Corporation hangars are read too.** Positions are built from every wallet,
+  so corp-bought stock was already in the rows; without corp assets it appeared
+  as a holding with a cost basis and nowhere to be.
+- **Ship-borne stock is excluded.** A module in a fitting slot, ammo in a hold,
+  drones in a bay -- none of it is for sale, and prompting to list it is worse
+  than silence. A ship anywhere in the chain counts, so a can inside a freighter
+  is still cargo.
+
+### Fixed: the ledger was counting stock you no longer own
+
+Positions come from the FIFO trade ledger, not from your hangars: a row exists
+because a purchase or a manufacturing job was seen and enough disposals were
+not. Nothing ever confirmed the stock survived. Output consumed as an industry
+material, reprocessed, or sold before tracking began all leave a holding the
+ledger still believes in -- carrying a cost basis that inflates portfolio value.
+
+Quantities are now reconciled against what you actually hold. Assets are ground
+truth for how much; the ledger stays ground truth for what a unit cost. A row
+whose hangars hold less is counted down with its cost basis rebuilt, showing the
+old number struck through beside the real one. A row nothing holds is withheld
+from the list and from the totals, with the count and the removed cost basis
+reported on the page rather than dropped silently.
+
+Two things this had to get right. Stock sitting in a sell order is out of the
+hangar and absent from the asset list, so listed quantity is added back before
+comparing -- otherwise a fully-listed holding reads as gone. And corrections only
+ever go downward: holding more than the ledger knows about is untracked stock
+with no cost basis to price it by, and inventing one would corrupt the figure the
+tab exists to show.
+
+Nothing is reconciled unless every hangar was read successfully. A partial read
+cannot tell "sold" from "in a hangar we could not see", and the response now
+says so instead of letting a missing scope look like missing stock.
+
+### Known limits
+
+- The underlying cause of the overcount, in at least one case, is a trade
+  history split across more than one internal user record from successive
+  logins: the FIFO runs per record, so one may hold the manufacturing jobs while
+  another holds the sales that cleared them. Reconciliation corrects Positions;
+  it does not merge the records, so the Trade Journal can still under-report.
+
 ## v1.12.1 - 2026-09-12
 
 Follow-ups from using v1.12.0 in anger: a warning that could not be cleared, two
