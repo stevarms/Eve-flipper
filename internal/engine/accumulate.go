@@ -114,6 +114,20 @@ type AccumulateRow struct {
 	UpsidePct        float64 `json:"upside_pct"`
 	UpsideISKPerUnit float64 `json:"upside_isk_per_unit"`
 
+	// --- the same round trip, priced consistently (see spread.go) ---
+	//
+	// UpsidePct above pays the ask to get in and is credited a mid to get out,
+	// which is nobody's actual round trip. These two describe what placing a
+	// buy order and then a sell order is worth instead, and are filled in only
+	// when stored order books can supply a real spread. The gate still tests
+	// UpsidePct, so a measured spread can inform a decision without quietly
+	// lowering the bar for every candidate.
+	Spread SpreadProfile `json:"spread"`
+	// UpsideMakerPct is meaningless unless UpsideMakerKnown; a zero here means
+	// "not measured", not "no upside".
+	UpsideMakerPct   float64 `json:"upside_maker_pct,omitempty"`
+	UpsideMakerKnown bool    `json:"upside_maker_known,omitempty"`
+
 	// --- has this ever come back? ---
 	RecoveryBasis   string  `json:"recovery_basis"`
 	RecoveryReason  string  `json:"recovery_reason,omitempty"`

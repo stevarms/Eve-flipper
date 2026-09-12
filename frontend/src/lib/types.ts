@@ -924,6 +924,21 @@ export interface HoldingRule {
   updated_at: string;
 }
 
+/** An item's typical bid-ask gap, measured from stored order books.
+ *  Mirrors engine.SpreadProfile. */
+export interface SpreadProfile {
+  /** "orderbook" when measured, "none" otherwise. Branch on this: a zero
+   *  spread and no evidence are opposite situations. */
+  basis: "orderbook" | "none" | string;
+  reason?: string;
+  samples: number;
+  /** Relative to mid, so it compares across items of any price. */
+  median_pct: number;
+  p75_pct: number;
+  oldest_at?: string;
+  newest_at?: string;
+}
+
 /** One suggested target, from the item's own trailing year. */
 export interface HoldingRuleChoice {
   percentile: number;
@@ -4407,6 +4422,16 @@ export interface AccumulateRow {
   /** Net of the fees paid on the way out. */
   upside_pct: number;
   upside_isk_per_unit: number;
+
+  /** Typical bid-ask gap from stored order books. Mirrors engine.SpreadProfile. */
+  spread: SpreadProfile;
+  /**
+   * The same round trip priced as a maker -- buy order at the bid, sell order
+   * at the ask -- instead of the headline's ask-in / mid-out mix. Only
+   * meaningful when `upside_maker_known`; absent means unmeasured, not zero.
+   */
+  upside_maker_pct?: number;
+  upside_maker_known?: boolean;
 
   /** "history" when dips in this item have measurably recovered before. */
   recovery_basis: string;

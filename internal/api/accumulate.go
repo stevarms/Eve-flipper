@@ -48,6 +48,18 @@ const (
 
 	// Concurrency on the history fan-out, matching the other scanners.
 	accumulateHistoryWorkers = 10
+
+	// Books read per side when measuring an item's spread. A year of daily
+	// captures plus the weekly tail is well under this; the cap is there so a
+	// densely recorded item cannot pull a huge result set into memory for a
+	// figure that only needs a median.
+	accumulateSpreadMaxBooks = 800
+
+	// How far apart a bid and an ask may be captured and still count as one
+	// spread. Archived snapshots carry both sides at the same instant, so they
+	// pair at zero; this is the allowance for live-recorded books, whose two
+	// sides are written by separate passes minutes apart.
+	accumulateSpreadPairWindow = 15 * time.Minute
 )
 
 type accumulateRequest struct {
@@ -245,6 +257,14 @@ func (s *Server) runAccumulateScan(
 	}
 
 	result := engine.BuildAccumulate(candidates, opts)
+
+	// Price the survivors' round trip the way it is actually executed. ESI
+	// history has no bid and no ask, so this is the one part of the scan that
+	// needs stored order books; it runs over the handful of rows that cleared
+	// the gates rather than every candidate, which keeps it to tens of local
+	// queries instead of thousands.
+	engine.EnrichAccumulateSpreads(&result, opts, s.accumulateSpreadLookup(req.RegionID))
+
 	if len(result.Rows) == 0 {
 		result.Warnings = append(result.Warnings,
 			"Nothing cleared the gates. That is the normal outcome most days — the filters refuse an item unless it is cheap against its own year, liquid enough to exit, and has a history of dips that recovered.")
@@ -377,4 +397,44 @@ func parseInt32Param(raw string, dst *int32) {
 		}
 	}
 	*dst = int32(v)
+}
+
+// accumulateSpreadLookup measures an item's typical bid-ask gap from stored
+// order books.
+//
+// Returns an unmeasured profile for anything the archive does not cover, which
+// is the common case until a Fuzzwork import has run for the region — absent
+// evidence, reported as absent rather than as a zero spread.
+func (s *Server) accumulateSpreadLookup(regionID int32) func(int32) engine.SpreadProfile {
+	if s.db == nil {
+		return nil
+	}
+	get := s.orderBookReplayGetter()
+	now := time.Now().UTC()
+	from := now.AddDate(-1, 0, 0)
+
+	return func(typeID int32) engine.SpreadProfile {
+		side := func(which string) []engine.OrderBookReplayBook {
+			books, err := get(engine.OrderBookReplayFilter{
+				RegionID: regionID,
+				TypeID:   typeID,
+				Side:     which,
+				From:     from,
+				To:       now,
+				Limit:    accumulateSpreadMaxBooks,
+			})
+			if err != nil {
+				return nil
+			}
+			return books
+		}
+		bids := side("buy")
+		if len(bids) == 0 {
+			return engine.SpreadProfile{Basis: "none", Reason: "no stored order books for this item"}
+		}
+		// An archived snapshot carries both sides at one instant, so they pair
+		// at zero age. The tolerance is for books recorded live, where the two
+		// sides were written by separate passes.
+		return engine.CalcSpreadProfile(bids, side("sell"), accumulateSpreadPairWindow)
+	}
 }

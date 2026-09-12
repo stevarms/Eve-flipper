@@ -355,12 +355,30 @@ function AccumRow({ row }: { row: AccumulateRow }) {
       </td>
 
       <td className="px-2 py-1.5 text-right">
-        <span className="font-num tnum text-t-cell font-semibold text-profit">
+        <span
+          className="font-num tnum text-t-cell font-semibold text-profit"
+          title={t("accumUpsideHeadlineHint")}
+        >
           {row.upside_pct.toFixed(0)}%
         </span>
         <span className="ml-1 font-num tnum text-t-caption text-fg-tertiary">
           {formatISK(row.expected_isk)}
         </span>
+        {/* Priced as a maker on both legs, from stored order books. Absent for
+            anything the archive does not cover, which is the normal state
+            until a Fuzzwork import has run for the region -- so its absence
+            must read as "not measured" rather than "no better than this". */}
+        {row.upside_maker_known && row.upside_maker_pct != null && (
+          <span
+            className="mt-0.5 block font-num tnum text-t-caption text-info"
+            title={t("accumUpsideMakerHint", {
+              spread: row.spread.median_pct.toFixed(2),
+              samples: String(row.spread.samples),
+            })}
+          >
+            {t("accumUpsideMakerLabel", { pct: row.upside_maker_pct.toFixed(0) })}
+          </span>
+        )}
       </td>
 
       {/* The gate that separates a bargain from a dying item. */}
