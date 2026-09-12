@@ -1,5 +1,105 @@
 # Changelog
 
+## v1.12.1 - 2026-09-12
+
+Follow-ups from using v1.12.0 in anger: a warning that could not be cleared, two
+tables that never learned to hide the rows you do not care about, a faster way to
+reprice, and Accumulate finally remembering why it told you to buy something.
+
+### Fixed: "1 wallet has never been synced" that syncing could not clear
+
+The Trade Journal synthesises a placeholder warning when no corporation wallet
+row exists, so that a corp archive which has genuinely never been synced can
+still report itself and bootstrap. But corp access is only discoverable by
+attempting the fetch -- a 403 means the character lacks Accountant -- so that
+placeholder could not tell "never synced" from "no corp wallet to sync". Anyone
+without a corporation, or without the role, saw the warning permanently, and
+syncing could not clear it because the row it waited for could never be written.
+A completed wallet sync is proof corp was attempted, so the placeholder now fires
+only before the first sync.
+
+### Accumulate remembers the exit price
+
+The scan worked out a target -- the yearly median -- showed it, and forgot it. So
+when the buy order filled, the stock arrived in Positions with no memory of why
+it was bought, and Today, seeing unlisted inventory, would offer it for sale at
+whatever the market was paying that day: exactly the trade the scan argued
+against. Each row now has **Hold to target**, which writes a holding rule.
+Positions then shows the holding waiting on price and Today keeps it out of the
+sell queue until the target is met.
+
+### Accumulate prices the round trip the way you actually trade it
+
+The upside figure mixed two conventions: it charged the current sell-order price
+to get in, and credited the median *traded* price on the way out. Nobody
+accumulates that way -- you place a buy order and fill near the bid, then post a
+sell order and are paid near the ask. Both legs were mis-stated, in opposite
+directions, and the error was invisible.
+
+ESI cannot fix this; its history records what executed, never what was quoted.
+The Fuzzwork order-book archive carries both sides at one instant going back
+years, so each row now also shows what the recovery is worth with orders, using
+that item's own median spread measured across stored books. Shown for
+information: the filter still tests the conservative figure, so a new data source
+cannot by itself make the scan recommend more. It needs an archive import to
+appear at all, and says so by staying absent rather than showing a zero.
+
+### Two tables learned to hide what made you nothing
+
+- **Trade Journal -> Summary, per item.** This table had no filter at all, and an
+  item bought but not yet sold reports a combined P&L of exactly zero -- so on a
+  real ledger the list was mostly inventory rather than results. Now filtered by
+  default, with the hidden count on the toggle. The CSV export follows what is on
+  screen instead of quietly disagreeing with it, and an all-filtered table says
+  so rather than claiming there is no data.
+- **Assets -> Positions.** A "hide fully listed" filter for holdings with nothing
+  left to sell. Measured against tradeable quantity, so a stack with reserved
+  units -- the ships you actually fly -- hides once everything sellable is listed.
+
+Both reuse one threshold, so two tables on the same page cannot disagree about
+what counts as flat. The leaderboard's own filter, under the Journal's Analytics
+view, was renamed from "Hide flat" to "Hide 0-profit": it was unfindable rather
+than absent, reading as a third sort mode beside the ISK and ROI buttons.
+
+### Orders: Shift+C to walk the reprice queue
+
+Opens the selected order's market window with its new price already on the
+clipboard, then moves to the next row -- Shift+C, Ctrl+V, Shift+C, Ctrl+V.
+
+The walk follows the on-screen order so the cursor never jumps out of view, and
+which rows are in it is left to the existing action filter rather than a second
+hidden rule: set it to "needs action" and this steps exactly the reprice queue.
+The first press selects rather than acting, so a stray keystroke cannot open a
+market window for an order you never chose, and clicking a row moves the cursor
+there. It does not wrap at the end, because silently restarting is how you
+reprice the same order twice without noticing. Listed in the shortcuts help, on
+the grounds that an unlisted keystroke is folklore.
+
+### Fixed: primary buttons were glaring, and unreadable in light themes
+
+`primary` paired the accent fill with a foreground that inverts to white in the
+six light palettes, so the same class put white text on mid-amber -- 3.54:1 on the
+default palette, under the 4.5 floor. There is now a per-theme foreground token,
+applied to all 27 accent-filled surfaces. The fill was the other half: at full
+strength the accent measures 70% luminance in amarr dark, so primary buttons use
+the dimmed accent, cutting mean fill luminance across the twelve palettes by 48%.
+All twelve now clear AA at rest and on hover, worst case 4.65.
+
+### Also
+
+- Today's capital bar went back to four distinct hues along the axis it actually
+  describes -- idle, deployed, held, listed -- after one hue at four opacities
+  turned out to be unreadable at two pixels tall. Pairwise colour distance
+  checked in both light and dark rather than eyeballed.
+- Today's paste price is grouped with thousands separators. The clipboard still
+  gets bare digits, because EVE's price field rejects separators, and the
+  displayed value is derived from the clipboard string so the two cannot
+  disagree.
+- [docs/AUDIT_2026_09.md](docs/AUDIT_2026_09.md): a re-audit that verifies the
+  August audit's claims against the code instead of trusting them. All five of
+  its "fix first" findings were already fixed; its shared-infrastructure status
+  was wrong in both directions.
+
 ## v1.12.0 - 2026-09-12
 
 Stock you are holding on purpose stops being nagged about, a new scan finds
