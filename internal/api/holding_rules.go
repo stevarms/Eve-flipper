@@ -2,13 +2,13 @@ package api
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
 
 	"eve-flipper/internal/db"
 	"eve-flipper/internal/engine"
-	"eve-flipper/internal/esi"
 )
 
 // holding_rules.go — "hold this until it is worth X" and "these ones are not
@@ -110,10 +110,7 @@ func (s *Server) handleAuthHoldingRulePercentiles(w http.ResponseWriter, r *http
 		return
 	}
 
-	// A year is the question being asked; accept a little less rather than
-	// refetch forever for an item ESI simply has less history for.
-	history := s.marketHistoryFor(holdingRuleRegionID, typeID, 300)
-	pct := engine.CalcPricePercentiles(history, 0, time.Now().UTC())
+	pct := s.pricePercentilesFor(holdingRuleRegionID, typeID)
 
 	writeJSON(w, map[string]any{
 		"type_id":     typeID,
@@ -130,63 +127,48 @@ func (s *Server) handleAuthHoldingRulePercentiles(w http.ResponseWriter, r *http
 	})
 }
 
-// marketHistoryFor reads a type's price history, preferring the cache.
+// pricePercentilesFor answers "where does today's price sit in this item's
+// year", looking the year up rather than storing it.
 //
-// minSpanDays is what the caller needs to answer its question, and a cached
-// series shorter than that is treated as a miss even when it is inside the
-// freshness window. That is not belt-and-braces: the cache spent a long time
-// capped at 90 days on write, so entries stored before that cap was lifted are
-// fresh and useless for a question about a year. Refetching repairs them in
-// place, one type at a time, as each is actually asked about.
+// The raw history cache deliberately holds only 90 days, because the blueprint
+// scanner keeps every scanned type's series in memory at once and series
+// length multiplies by type count. So this does not read that cache at all.
+// It reads a summary cache of about a dozen derived floats; on a miss it pulls
+// the full ~390-day series straight from ESI, reduces it, stores the summary,
+// and lets the series go out of scope. Roughly 250 bytes kept instead of
+// roughly 32 KB, and nothing large is retained between calls.
 //
-// A refetch that fails falls back to whatever was cached. A short answer beats
-// no answer, and the percentile gates refuse it downstream anyway.
-func (s *Server) marketHistoryFor(regionID, typeID int32, minSpanDays int) []esi.HistoryEntry {
-	var cached []esi.HistoryEntry
+// A refusal ("too little traded history") is cached like any other answer —
+// it costs the same round trip to rediscover and is just as true tomorrow.
+func (s *Server) pricePercentilesFor(regionID, typeID int32) engine.PricePercentiles {
 	if s.db != nil {
-		if entries, ok := s.db.GetMarketHistory(regionID, typeID); ok {
-			cached = entries
-			if historySpanDays(entries) >= minSpanDays {
-				return entries
+		if payload, ok := s.db.GetPricePercentiles(regionID, typeID); ok {
+			var cached engine.PricePercentiles
+			if err := json.Unmarshal([]byte(payload), &cached); err == nil {
+				return cached
 			}
 		}
 	}
 	if s.esi == nil {
-		return cached
+		return engine.PricePercentiles{Basis: engine.PercentileBasisNone, Reason: "no market client"}
 	}
-	fresh, err := s.esi.FetchMarketHistory(regionID, typeID)
-	if err != nil || len(fresh) == 0 {
-		return cached
-	}
-	if s.db != nil {
-		s.db.SetMarketHistory(regionID, typeID, fresh)
-	}
-	return fresh
-}
 
-// historySpanDays is the number of days between the oldest and newest entry.
-// Span rather than count, because an illiquid item legitimately has gaps and
-// counting rows would send us back to ESI for a series that is already as
-// complete as it will ever be.
-func historySpanDays(entries []esi.HistoryEntry) int {
-	if len(entries) == 0 {
-		return 0
+	history, err := s.esi.FetchMarketHistory(regionID, typeID)
+	if err != nil {
+		// Not cached: a transient ESI failure is not a fact about the item,
+		// and storing it would suppress the real answer for a day.
+		return engine.PricePercentiles{Basis: engine.PercentileBasisNone, Reason: "price history unavailable"}
 	}
-	oldest, newest := "", ""
-	for _, e := range entries {
-		if oldest == "" || e.Date < oldest {
-			oldest = e.Date
-		}
-		if e.Date > newest {
-			newest = e.Date
+
+	pct := engine.CalcPricePercentiles(history, 0, time.Now().UTC())
+	if s.db != nil {
+		if payload, marshalErr := json.Marshal(pct); marshalErr == nil {
+			if setErr := s.db.SetPricePercentiles(regionID, typeID, string(payload)); setErr != nil {
+				log.Printf("[PERCENTILE] cache write %d/%d: %v", regionID, typeID, setErr)
+			}
 		}
 	}
-	from, err1 := time.Parse("2006-01-02", oldest)
-	to, err2 := time.Parse("2006-01-02", newest)
-	if err1 != nil || err2 != nil {
-		return 0
-	}
-	return int(to.Sub(from).Hours() / 24)
+	return pct
 }
 
 func holdingRuleTypeIDFromPath(w http.ResponseWriter, r *http.Request) (int32, bool) {

@@ -1968,6 +1968,38 @@ func (d *DB) migrate() error {
 		logger.Info("DB", "Applied migration v46 (holding rules)")
 	}
 
+	if version < 47 {
+		// Derived price distribution per (region, type): roughly a dozen
+		// floats standing in for a year of daily rows.
+		//
+		// The raw history cache is deliberately capped at 90 days because the
+		// blueprint scanner holds every scanned type's series in memory at once
+		// (see marketHistoryRetentionDays). A question about an annual cycle
+		// cannot be answered from 90 days, and widening the raw cache to answer
+		// it would multiply that scan's footprint by more than four.
+		//
+		// So the year is looked up from ESI when needed, reduced immediately to
+		// the summary that actually gets used, and only the summary is kept:
+		// ~250 bytes against ~32 KB of rows. Refreshed daily, because ESI's own
+		// history expires daily and a percentile does not move meaningfully
+		// inside one.
+		if _, err := d.sql.Exec(`
+			CREATE TABLE IF NOT EXISTS price_percentile_cache (
+				region_id   INTEGER NOT NULL,
+				type_id     INTEGER NOT NULL,
+				computed_at TEXT    NOT NULL,
+				payload_json TEXT   NOT NULL,
+				PRIMARY KEY (region_id, type_id)
+			);
+			CREATE INDEX IF NOT EXISTS idx_price_percentile_computed
+				ON price_percentile_cache(computed_at);
+			INSERT OR IGNORE INTO schema_version (version) VALUES (47);
+		`); err != nil {
+			return fmt.Errorf("migration v47: %w", err)
+		}
+		logger.Info("DB", "Applied migration v47 (price percentile cache)")
+	}
+
 	return nil
 }
 

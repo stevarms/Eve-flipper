@@ -53,19 +53,25 @@ func (d *DB) GetMarketHistory(regionID int32, typeID int32) ([]esi.HistoryEntry,
 // growth.
 // How much history is kept per (region, type).
 //
-// This was 90 days, which silently capped two consumers that ask for more:
-// engine.CalcRecoveryOutlook fits a 180-day trend, and engine's price
-// percentiles need a full year so an annual cycle appears exactly once (a
-// seasonal item judged against half its own pattern is judged against the
-// wrong thing). Both were quietly working on whatever 90 days happened to
-// contain.
+// 90 days is a RAM budget, not a disk one, and that is the part that is easy
+// to get wrong. The disk cost of a year would be unremarkable -- a couple of
+// million small rows. But the blueprint scanner holds every type's entries in
+// one sync.Map for the duration of a scan (industry_blueprint_scan.go), so the
+// series length multiplies by the number of types scanned: at ~5,000
+// blueprints, 90 days is roughly 36 MB and a year is roughly 160 MB, live, on
+// top of everything else the scan is holding.
 //
-// ESI serves roughly 390 days, so this keeps essentially all of what is on
-// offer plus a small margin. The cost is bounded and modest: one row per
-// traded day per (region, type), which at the ~5,000 pairs a heavy user
-// accumulates is a few hundred thousand rows -- tens of MB, against a cache
-// that already holds far larger tables.
-const marketHistoryRetentionDays = 400
+// So this stays at 90. Consumers that need a longer view do not get it by
+// widening this cache:
+//
+//   - Yearly percentiles read price_percentile_cache, which stores ~12 derived
+//     floats per (region, type) instead of ~390 rows -- some 300x smaller --
+//     and fetches the raw series from ESI on demand, uses it, and drops it.
+//   - engine.CalcRecoveryOutlook asks for a 180-day window and therefore only
+//     ever sees 90. That is a real limitation and predates this note; the fix
+//     is the same shape (persist the fit, not the series) rather than a bigger
+//     cache.
+const marketHistoryRetentionDays = 90
 
 func (d *DB) SetMarketHistory(regionID int32, typeID int32, entries []esi.HistoryEntry) {
 	tx, err := d.sql.Begin()
