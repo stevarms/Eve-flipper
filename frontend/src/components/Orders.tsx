@@ -35,6 +35,9 @@ import { useI18n, type TranslationKey } from "../lib/i18n";
 import { formatIsk as formatIskLib } from "../lib/format";
 import { formatGridPrice, priceStep } from "@/lib/pricing";
 import { CopyPrice } from "@/components/ui/CopyPrice";
+import { useKeyboardShortcuts } from "@/lib/useKeyboardShortcuts";
+import { useEveUiActions } from "@/lib/eveUiActions";
+import { useOptionalToast } from "@/components/Toast";
 import { ItemRef } from "@/components/ui/ItemRef";
 import { OrderRowDrawer } from "@/components/orders/OrderRowDrawer";
 import { OrderHistoryPanel } from "@/components/orders/OrderHistoryPanel";
@@ -201,6 +204,7 @@ export function Orders({ isLoggedIn, focus, onFocusConsumed }: Props) {
   const [expandedOrders, setExpandedOrders] = useState<Set<number>>(new Set());
   const [dispositions, setDispositions] = useState<Record<number, DispositionState>>({});
   const [inspected, setInspected] = useState<OrderDeskOrder | null>(null);
+  const [selectedOrderID, setSelectedOrderID] = useState<number | null>(null);
   // Active / History. History was only ever reachable inside the character
   // modal; the tab is the single order surface now, so it lives here.
   const [subTab, setSubTab] = useState<"active" | "history">("active");
@@ -454,6 +458,100 @@ export function Orders({ isLoggedIn, focus, onFocusConsumed }: Props) {
     () => sortOrders(filteredRows.filter((r) => r.is_buy_order), prefs.sort),
     [filteredRows, prefs.sort],
   );
+
+  /**
+   * Repricing loop: Shift+C opens the selected order's market window with its
+   * new price already on the clipboard, then moves to the next row. The hands
+   * never leave the pattern Shift+C, Ctrl+V, Shift+C, Ctrl+V.
+   *
+   * The walk order is the on-screen order -- sells, then buys -- so the
+   * selection never jumps somewhere the eye is not. Which rows are in the walk
+   * is the existing action filter's job rather than a second hidden rule: set
+   * it to "needs action" and this steps the reprice queue exactly.
+   */
+  const walkRows = useMemo(() => [...sellRows, ...buyRows], [sellRows, buyRows]);
+
+  const { openMarket } = useEveUiActions();
+  const { addToast } = useOptionalToast();
+
+  // A ref so the handler can read the current row without being rebuilt on
+  // every selection change, which would tear down and re-add the key listener.
+  const walkRef = useRef<{ rows: OrderDeskOrder[]; selected: number | null }>({
+    rows: [],
+    selected: null,
+  });
+  walkRef.current = { rows: walkRows, selected: selectedOrderID };
+
+  const selectRow = useCallback((orderID: number | null) => {
+    setSelectedOrderID(orderID);
+    if (orderID == null) return;
+    // Keep the selection visible; the list is long and the loop is blind
+    // otherwise.
+    requestAnimationFrame(() => {
+      document
+        .querySelector(`[data-order-id="${orderID}"]`)
+        ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
+  }, []);
+
+  const stepReprice = useCallback(() => {
+    const { rows, selected } = walkRef.current;
+    if (rows.length === 0) return;
+
+    const at = selected == null ? -1 : rows.findIndex((r) => r.order_id === selected);
+    // Nothing selected yet: the first press selects rather than acting, so a
+    // stray keypress cannot open a market window for an order you never chose.
+    if (at < 0) {
+      selectRow(rows[0].order_id);
+      return;
+    }
+
+    const row = rows[at];
+    const price =
+      row.book_available && row.suggested_price > 0 && row.position !== 1
+        ? formatGridPrice(row.suggested_price, priceStep(row.suggested_price))
+        : null;
+
+    void (async () => {
+      // useEveUiActions owns the not-logged-in and failure toasts.
+      const ok = await openMarket(row.type_id);
+      if (!ok) return;
+      if (price) {
+        try {
+          await navigator.clipboard.writeText(price);
+        } catch {
+          // Insecure context or a refused clipboard. The market window still
+          // opened, so this is not a failure worth interrupting the loop for.
+        }
+      }
+      // Advance only once the window actually opened, so a failed call leaves
+      // the selection where it was and the next press retries the same row.
+      if (at + 1 < rows.length) {
+        selectRow(rows[at + 1].order_id);
+      } else {
+        // Deliberately does not wrap: silently restarting is how you reprice
+        // the same order twice without noticing.
+        addToast(t("ordersRepriceWalkEnd"), "info", 2200);
+      }
+    })();
+  }, [addToast, openMarket, selectRow, t]);
+
+  // Selection must not survive the row disappearing under it -- a filter
+  // change or a refresh that drops the order would otherwise leave the walk
+  // pointing at nothing and silently restart from the top.
+  useEffect(() => {
+    if (selectedOrderID == null) return;
+    if (!walkRows.some((r) => r.order_id === selectedOrderID)) setSelectedOrderID(null);
+  }, [walkRows, selectedOrderID]);
+
+  useKeyboardShortcuts([
+    {
+      key: "c",
+      modifiers: ["shift"],
+      handler: stepReprice,
+      description: "Open market for the selected order and advance",
+    },
+  ]);
 
   const toggleSort = useCallback(
     (k: OrdersSortKey, additive: boolean) => {
@@ -869,6 +967,8 @@ export function Orders({ isLoggedIn, focus, onFocusConsumed }: Props) {
               dispositions={dispositions}
               onToggleDisposition={toggleDisposition}
               onInspect={setInspected}
+              selectedOrderID={selectedOrderID}
+              onSelect={selectRow}
             />
             <OrderSection
               title={t("ordersSectionBuy")}
@@ -881,6 +981,8 @@ export function Orders({ isLoggedIn, focus, onFocusConsumed }: Props) {
               dispositions={dispositions}
               onToggleDisposition={toggleDisposition}
               onInspect={setInspected}
+              selectedOrderID={selectedOrderID}
+              onSelect={selectRow}
             />
           </table>
         )}
@@ -947,6 +1049,8 @@ function OrderSection({
   dispositions,
   onToggleDisposition,
   onInspect,
+  selectedOrderID,
+  onSelect,
 }: {
   title: string;
   rows: OrderDeskOrder[];
@@ -958,6 +1062,8 @@ function OrderSection({
   dispositions: Record<number, DispositionState>;
   onToggleDisposition: (orderId: number) => void;
   onInspect: (row: OrderDeskOrder) => void;
+  selectedOrderID: number | null;
+  onSelect: (orderId: number) => void;
 }) {
   const notional = rows.reduce((sum, r) => sum + r.notional, 0);
   const needsAction = rows.filter(needsAttention).length;
@@ -1002,6 +1108,8 @@ function OrderSection({
             disposition={dispositions[r.order_id]}
             onToggleDisposition={onToggleDisposition}
             onInspect={onInspect}
+            selected={r.order_id === selectedOrderID}
+            onSelect={onSelect}
           />
         ))}
     </tbody>
@@ -1142,6 +1250,8 @@ function OrderRow({
   disposition,
   onToggleDisposition,
   onInspect,
+  selected,
+  onSelect,
 }: {
   row: OrderDeskOrder;
   settings: OrderDeskSettings;
@@ -1151,6 +1261,8 @@ function OrderRow({
   disposition?: DispositionState;
   onToggleDisposition: (orderId: number) => void;
   onInspect: (row: OrderDeskOrder) => void;
+  selected: boolean;
+  onSelect: (orderId: number) => void;
 }) {
   const atTop = row.position === 1;
   const priceCls = atTop ? "text-eve-dim font-mono" : "text-eve-accent font-mono";
@@ -1184,10 +1296,17 @@ function OrderRow({
     <tr
       // Anchors a deep link from Today, which expands and scrolls to this row.
       data-order-id={row.order_id}
-      className="cursor-pointer border-t border-eve-border/50 hover:bg-eve-accent/5"
+      aria-selected={selected}
+      className={
+        "cursor-pointer border-t border-eve-border/50 hover:bg-eve-accent/5" +
+        (selected ? " bg-eve-accent/10 shadow-[inset_3px_0_0_0_rgb(var(--eve-accent))]" : "")
+      }
       onClick={(e) => {
         // Don't hijack the copy / open-market / disposition-expander buttons.
         if ((e.target as HTMLElement).closest("button, a")) return;
+        // Clicking moves the reprice cursor here too, so Shift+C continues
+        // from the row you are looking at rather than the top of the list.
+        onSelect(row.order_id);
         onInspect(row);
       }}
     >

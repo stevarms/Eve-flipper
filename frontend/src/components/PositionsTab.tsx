@@ -54,6 +54,27 @@ const formatUnitPrice = (value: number) =>
 
 type SortKey = "unrealized" | "value" | "age" | "item";
 
+/**
+ * True when there is nothing left to sell on this holding.
+ *
+ * Measured against tradeable quantity, not total: reserved units are the ships
+ * you actually fly, held back on purpose, so a stack of six with two reserved
+ * and four listed has no outstanding work and should hide with the rest. Using
+ * qty here would keep every reserved holding permanently visible, which is the
+ * opposite of what the filter is for.
+ *
+ * The fallback covers rows cached before reserved quantities existed, where
+ * tradeable_qty arrives as 0 alongside a real qty -- the same reading
+ * internal/engine/today.go applies for the same reason.
+ */
+function isFullyListed(row: PositionRow): boolean {
+  const reserved = row.reserved_qty ?? 0;
+  let tradeable = row.tradeable_qty;
+  if (tradeable === 0 && reserved === 0) tradeable = row.qty;
+  if (tradeable <= 0) return true; // nothing sellable at all
+  return row.listed_qty >= tradeable;
+}
+
 export function PositionsTab() {
   const { t, locale } = useI18n();
   const { scope } = useCharacterScope();
@@ -65,6 +86,7 @@ export function PositionsTab() {
   const [inspected, setInspected] = useState<PositionRow | null>(null);
   const [adding, setAdding] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>("unrealized");
+  const [hideFullyListed, setHideFullyListed] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -83,7 +105,8 @@ export function PositionsTab() {
   }, [load]);
 
   const rows = useMemo(() => {
-    const list = [...(data?.rows ?? [])];
+    let list = [...(data?.rows ?? [])];
+    if (hideFullyListed) list = list.filter((r) => !isFullyListed(r));
     list.sort((a, b) => {
       switch (sortKey) {
         case "value":
@@ -97,7 +120,14 @@ export function PositionsTab() {
       }
     });
     return list;
-  }, [data, sortKey]);
+  }, [data, hideFullyListed, sortKey]);
+
+  // Stated on the toggle: a filter you cannot see the effect of reads as a
+  // bug the first time a holding you expected is absent.
+  const hiddenFullyListed = useMemo(
+    () => (data?.rows ?? []).filter(isFullyListed).length,
+    [data],
+  );
 
   const removeManual = useCallback(
     async (manualID: number) => {
@@ -134,6 +164,21 @@ export function PositionsTab() {
             <option value="age">{t("positionsColAge")}</option>
             <option value="item">{t("colItem")}</option>
           </select>
+          <label className="inline-flex h-8 cursor-pointer select-none items-center gap-1.5 rounded-sm border border-eve-border bg-surface-1 px-2 font-ui text-t-body text-fg-secondary hover:text-fg">
+            <input
+              id="positions-hide-fully-listed"
+              type="checkbox"
+              checked={hideFullyListed}
+              onChange={(e) => setHideFullyListed(e.target.checked)}
+              className="accent-eve-accent"
+            />
+            {t("positionsHideFullyListed")}
+            {hideFullyListed && hiddenFullyListed > 0 && (
+              <span className="font-num tnum text-t-caption text-fg-tertiary">
+                ({hiddenFullyListed})
+              </span>
+            )}
+          </label>
           <Button variant="primary" size="md" onClick={() => setAdding(true)}>
             <Plus className="mr-1 h-3.5 w-3.5" />
             {t("positionsAdd")}

@@ -1897,6 +1897,8 @@ export const en = {
     ordersFeesNoEsi:
       "Could not read your skill levels from ESI, so these are defaults rather than your real rates. Edit them, or press ↻ to try again.",
     ordersFeesResyncHint: "Re-read sales tax and broker fee from ESI skill levels.",
+    ordersShortcutRepriceWalk: "Open market for the selected order, copy its new price, and move to the next",
+    ordersRepriceWalkEnd: "End of list — nothing further to reprice",
     ordersOpenMarketHint:
       "Open this item's market window in the running EVE client and copy the suggested price to the clipboard (uses the ESI open-window scope). Requires the client to be running and logged in on the same character.",
     // Disposition panel — the three plans priced against one horizon.
@@ -2102,6 +2104,7 @@ export const en = {
     // Assets → Positions
     positionsSubtitle:
       "Everything you're holding that you paid for. Auto-derived FIFO from your transactions, plus anything you added by hand. Prices are best sell at Jita 4-4; profit is net of broker fee and sales tax.",
+    positionsHideFullyListed: "Hide fully listed",
     positionsSortBy: "Sort by",
     positionsAdd: "Add holding",
     positionsRefresh: "Refresh",

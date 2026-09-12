@@ -77,6 +77,15 @@ export function KeyboardShortcutsHelp({ open, onClose }: Props) {
       ],
     },
     {
+      // Orders' repricing walk. Listed here because the whole value of the
+      // shortcut is not having to know it exists -- an unlisted keystroke is
+      // folklore, which is how the backtest window went unfound for months.
+      title: t("tabOrders"),
+      rows: [
+        { keys: ["Shift", "C"], label: t("ordersShortcutRepriceWalk") },
+      ],
+    },
+    {
       title: t("shortcutsGroupTable"),
       rows: [
         { keys: ["↑", "↓"], label: t("shortcutTableNav") },
