@@ -115,6 +115,10 @@ func (e *ESICorpProvider) GetJournal(division int, days int) ([]CorpJournalEntry
 			Description   string  `json:"description"`
 			FirstPartyID  int64   `json:"first_party_id"`
 			SecondPartyID int64   `json:"second_party_id"`
+			Tax           float64 `json:"tax"`
+			TaxReceiverID int64   `json:"tax_receiver_id"`
+			ContextID     int64   `json:"context_id"`
+			ContextIDType string  `json:"context_id_type"`
 		}
 		if err := json.Unmarshal(page, &entry); err != nil {
 			continue
@@ -134,6 +138,10 @@ func (e *ESICorpProvider) GetJournal(division int, days int) ([]CorpJournalEntry
 			Description:   entry.Description,
 			FirstPartyID:  entry.FirstPartyID,
 			SecondPartyID: entry.SecondPartyID,
+			Tax:           entry.Tax,
+			TaxReceiverID: entry.TaxReceiverID,
+			ContextID:     entry.ContextID,
+			ContextIDType: entry.ContextIDType,
 		})
 	}
 
@@ -249,16 +257,19 @@ func (e *ESICorpProvider) GetMembers() ([]CorpMember, error) {
 func (e *ESICorpProvider) GetIndustryJobs() ([]CorpIndustryJob, error) {
 	url := fmt.Sprintf("https://esi.evetech.net/latest/corporations/%d/industry/jobs/?datasource=tranquility&include_completed=true", e.corporationID)
 	var raw []struct {
-		JobID           int32  `json:"job_id"`
-		InstallerID     int64  `json:"installer_id"`
-		ActivityID      int    `json:"activity_id"`
-		BlueprintTypeID int32  `json:"blueprint_type_id"`
-		ProductTypeID   int32  `json:"product_type_id"`
-		Status          string `json:"status"`
-		Runs            int32  `json:"runs"`
-		StartDate       string `json:"start_date"`
-		EndDate         string `json:"end_date"`
-		FacilityID      int64  `json:"facility_id"`
+		JobID           int64   `json:"job_id"`
+		InstallerID     int64   `json:"installer_id"`
+		ActivityID      int     `json:"activity_id"`
+		BlueprintTypeID int32   `json:"blueprint_type_id"`
+		ProductTypeID   int32   `json:"product_type_id"`
+		Status          string  `json:"status"`
+		Runs            int32   `json:"runs"`
+		SuccessfulRuns  int32   `json:"successful_runs"`
+		Cost            float64 `json:"cost"`
+		StartDate       string  `json:"start_date"`
+		EndDate         string  `json:"end_date"`
+		CompletedDate   string  `json:"completed_date"`
+		FacilityID      int64   `json:"facility_id"`
 	}
 	if err := e.client.AuthGetJSON(url, e.accessToken, &raw); err != nil {
 		return nil, fmt.Errorf("corp industry: %w", err)
@@ -292,14 +303,18 @@ func (e *ESICorpProvider) GetIndustryJobs() ([]CorpIndustryJob, error) {
 			JobID:           j.JobID,
 			InstallerID:     j.InstallerID,
 			InstallerName:   installerNames[j.InstallerID],
+			ActivityID:      int32(j.ActivityID),
 			Activity:        activity,
 			BlueprintTypeID: j.BlueprintTypeID,
 			ProductTypeID:   j.ProductTypeID,
 			ProductName:     e.typeName(j.ProductTypeID),
 			Status:          j.Status,
 			Runs:            j.Runs,
+			SuccessfulRuns:  j.SuccessfulRuns,
+			Cost:            j.Cost,
 			StartDate:       j.StartDate,
 			EndDate:         j.EndDate,
+			CompletedDate:   j.CompletedDate,
 			LocationID:      j.FacilityID,
 			LocationName:    e.client.StationName(j.FacilityID),
 		}

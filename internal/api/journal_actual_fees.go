@@ -125,9 +125,11 @@ func actualFeesFromJournal(entries []db.ArchivedJournalEntry) actualFees {
 			out.SalesTaxISK += tax
 			at(e).taxes = append(at(e).taxes, tax)
 		case journalRefMarketTransact:
-			// Sells only: a buy moves ISK out and is not taxed. Corp journal
-			// rows are archived without context_id, so they never pair and
-			// fall back to the modelled rate.
+			// Sells only: a buy moves ISK out and is not taxed. ESI omits
+			// context_id on transaction_tax rows for characters and corps
+			// alike, which is why taxes pair by (wallet, date, sorted amount)
+			// rather than by id; the sale row is the one that must carry a
+			// context_id, since that is the transaction the rate belongs to.
 			if e.Amount <= 0 || e.ContextID == 0 {
 				continue
 			}

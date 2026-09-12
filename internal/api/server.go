@@ -945,6 +945,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/security/vault/lock", s.handleSecurityVaultLock)
 	mux.HandleFunc("POST /api/security/vault/reset", s.handleSecurityVaultReset)
 	mux.HandleFunc("GET /api/auth/character", s.handleAuthCharacter)
+	mux.HandleFunc("GET /api/auth/owners", s.handleAuthOwners)
 	mux.HandleFunc("GET /api/auth/location", s.handleAuthLocation)
 	mux.HandleFunc("GET /api/auth/pi/planets", s.handleAuthPIPlanets)
 	mux.HandleFunc("GET /api/auth/undercuts", s.handleAuthUndercuts)
@@ -5561,14 +5562,40 @@ func (s *Server) handleAuthCharacter(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, err.Error())
 		return
 	}
-	selectedSessions, err := s.authSessionsForScope(userID, characterID, allScope, true)
-	if err != nil {
-		if strings.Contains(err.Error(), "not logged in") {
-			writeError(w, 401, err.Error())
-		} else {
-			writeError(w, 400, err.Error())
-		}
+	// `owner` wins when present: it is the only param that can name a
+	// corporation. Clients send both, so older callers are unaffected.
+	owner, hasOwner, ownerErr := parseOwnerScope(r)
+	if ownerErr != nil {
+		writeError(w, 400, ownerErr.Error())
 		return
+	}
+	if hasOwner {
+		characterID, allScope = 0, false
+		if owner.AllCharacters {
+			allScope = true
+		} else if len(owner.Characters) == 1 {
+			characterID = owner.Characters[0]
+		}
+	}
+
+	var selectedSessions []*auth.Session
+	if hasOwner && !owner.hasChars() {
+		// Corporation-only: nothing to fetch per character, but the request
+		// still has to be authenticated to read that user's archive.
+		if s.sessions == nil || s.sessions.GetForUser(userID) == nil {
+			writeError(w, 401, "not logged in")
+			return
+		}
+	} else {
+		selectedSessions, err = s.authSessionsForScope(userID, characterID, allScope, true)
+		if err != nil {
+			if strings.Contains(err.Error(), "not logged in") {
+				writeError(w, 401, err.Error())
+			} else {
+				writeError(w, 400, err.Error())
+			}
+			return
+		}
 	}
 
 	fetchOne := func(sess *auth.Session) (*charInfo, error) {
@@ -5703,13 +5730,13 @@ func (s *Server) handleAuthCharacter(w http.ResponseWriter, r *http.Request) {
 		}
 		collected = append(collected, info)
 	}
-	if len(collected) == 0 {
+	if len(collected) == 0 && len(selectedSessions) > 0 {
 		writeError(w, 401, "failed to fetch character data")
 		return
 	}
 
 	var result charInfo
-	if allScope {
+	if allScope || len(collected) != 1 {
 		result = charInfo{
 			CharacterID:   0,
 			CharacterName: "All Characters",
@@ -5727,15 +5754,33 @@ func (s *Server) handleAuthCharacter(w http.ResponseWriter, r *http.Request) {
 			result.Assets = append(result.Assets, part.Assets...)
 			result.IndustryJobs = append(result.IndustryJobs, part.IndustryJobs...)
 		}
+		if hasOwner {
+			result.CharacterName = owner.displayName()
+		}
 	} else {
 		result = *collected[0]
 	}
 	if s.db != nil {
-		if archivedTxns, archiveErr := s.db.ListArchivedWalletTransactions(userID, characterIDsForSessions(selectedSessions), time.Time{}, 100000); archiveErr == nil && len(archivedTxns) > len(result.Transactions) {
+		var archivedTxns []esi.WalletTransaction
+		var archiveErr error
+		if hasOwner {
+			archivedTxns, archiveErr = s.db.ListArchivedWalletTransactionsForScope(
+				userID, s.walletScopeFilterForOwner(userID, owner, selectedSessions), time.Time{}, 100000)
+		} else {
+			archivedTxns, archiveErr = s.db.ListArchivedWalletTransactions(
+				userID, characterIDsForSessions(selectedSessions), time.Time{}, 100000)
+		}
+		// The live fetch above has already been upserted into the archive, so
+		// the archive is a superset whenever it returned anything at all — and
+		// for an owner scope it is the only source that covers corp wallets.
+		if archiveErr == nil && len(archivedTxns) > 0 && (hasOwner || len(archivedTxns) > len(result.Transactions)) {
 			s.enrichWalletTransactionTypeNames(archivedTxns)
 			result.Transactions = archivedTxns
 		} else if archiveErr != nil {
 			log.Printf("[AUTH] Character transactions archive read error: %v", archiveErr)
+		}
+		if hasOwner {
+			stampOwnerNames(result.Transactions, s.ownerNamesForUser(userID))
 		}
 	}
 

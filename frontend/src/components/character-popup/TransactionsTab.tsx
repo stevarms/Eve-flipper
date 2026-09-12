@@ -32,6 +32,17 @@ export function TransactionsTab({ transactions, formatIsk, formatDate, t }: Tran
     return items;
   }, [sorted, filter, search]);
 
+  // Only worth a column when the list actually mixes owners — a single
+  // character's transactions would just get a column repeating its own name.
+  const showOwner = useMemo(() => {
+    const seen = new Set<string>();
+    for (const tx of transactions) {
+      if (tx.wallet_key) seen.add(tx.wallet_key);
+      if (seen.size > 1) return true;
+    }
+    return false;
+  }, [transactions]);
+
   if (transactions.length === 0) {
     return <div className="text-center text-eve-dim py-8">{t("charNoTransactions")}</div>;
   }
@@ -63,12 +74,16 @@ export function TransactionsTab({ transactions, formatIsk, formatDate, t }: Tran
               <th className="px-3 py-2 text-right">{t("charQty")}</th>
               <th className="px-3 py-2 text-right">{t("charTotal")}</th>
               <th className="px-3 py-2 text-left">{t("charLocation")}</th>
+              {showOwner && <th className="px-3 py-2 text-left">{t("charOwnerColumn")}</th>}
               <th className="px-3 py-2 text-left">{t("charDate")}</th>
             </tr>
           </thead>
           <tbody>
             {filtered.slice(0, visibleCount).map((tx) => (
-              <tr key={tx.transaction_id} className="group border-t border-eve-border/50 hover:bg-eve-panel/50">
+              <tr
+                key={tx.wallet_key ? `${tx.wallet_key}:${tx.transaction_id}` : tx.transaction_id}
+                className="group border-t border-eve-border/50 hover:bg-eve-panel/50"
+              >
                 <td className="px-3 py-2">
                   <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium ${
                     tx.is_buy ? "bg-eve-profit/20 text-eve-profit" : "bg-eve-error/20 text-eve-error"
@@ -98,6 +113,14 @@ export function TransactionsTab({ transactions, formatIsk, formatDate, t }: Tran
                 <td className="px-3 py-2 text-eve-dim text-[11px] max-w-[180px] truncate" title={tx.location_name}>
                   {tx.location_name || `#${tx.location_id}`}
                 </td>
+                {showOwner && (
+                  <td
+                    className="px-3 py-2 text-eve-dim text-[11px] max-w-[140px] truncate"
+                    title={tx.owner_name || tx.wallet_key}
+                  >
+                    {tx.owner_name || tx.wallet_key || "—"}
+                  </td>
+                )}
                 <td className="px-3 py-2 text-eve-dim text-[11px]">{formatDate(tx.date)}</td>
               </tr>
             ))}

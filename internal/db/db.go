@@ -2058,6 +2058,32 @@ func (d *DB) migrate() error {
 		logger.Info("DB", "Applied migration v49 (accumulate scan)")
 	}
 
+	if version < 50 {
+		// Corp industry jobs land in industry_jobs_archive keyed by their
+		// *installer* character, not by the corporation — job IDs are
+		// globally unique and the PK is (user_id, character_id, job_id), so
+		// the same job seen from the character endpoint and from the corp
+		// endpoint upserts into one row and cannot be counted twice.
+		// corporation_id is provenance only.
+		if err := d.ensureTableColumn("industry_jobs_archive", "corporation_id", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return fmt.Errorf("migration v50 add industry_jobs_archive.corporation_id: %w", err)
+		}
+		// Industry freshness has to be tracked apart from wallet freshness:
+		// several endpoints stamp transaction_synced_at without doing any
+		// industry work, so it can never be used to tell whether industry
+		// jobs have ever been pulled.
+		if err := d.ensureTableColumn("corp_wallet_archive_sync", "industry_synced_at", "TEXT NOT NULL DEFAULT ''"); err != nil {
+			return fmt.Errorf("migration v50 add corp_wallet_archive_sync.industry_synced_at: %w", err)
+		}
+		if err := d.ensureTableColumn("corp_wallet_archive_sync", "industry_live_count", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return fmt.Errorf("migration v50 add corp_wallet_archive_sync.industry_live_count: %w", err)
+		}
+		if _, err := d.sql.Exec(`INSERT OR IGNORE INTO schema_version (version) VALUES (50);`); err != nil {
+			return fmt.Errorf("migration v50: %w", err)
+		}
+		logger.Info("DB", "Applied migration v50 (corp industry jobs + per-kind sync freshness)")
+	}
+
 	return nil
 }
 

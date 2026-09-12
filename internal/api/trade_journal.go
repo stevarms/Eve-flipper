@@ -203,29 +203,43 @@ func (s *Server) syncOneCharacter(userID string, sess *auth.Session) journalSync
 		return stat
 	}
 
+	// Every fetch and every archive write reports into stat.Error. A write
+	// that fails is exactly as invisible to the user as a fetch that fails,
+	// and both used to be logged and dropped — which is how an empty
+	// industry archive looked identical to a character with no jobs.
+	fail := func(format string, args ...any) {
+		if stat.Error == "" {
+			stat.Error = fmt.Sprintf(format, args...)
+		}
+	}
+
 	// Wallet transactions
 	if txns, err := s.esi.GetWalletTransactions(sess.CharacterID, token); err == nil {
 		s.enrichWalletTransactionTypeNames(txns)
 		if _, aerr := s.db.UpsertWalletTransactionsForUser(userID, sess.CharacterID, txns); aerr != nil {
 			log.Printf("[TradeJournal] wallet tx archive %s: %v", sess.CharacterName, aerr)
+			fail("wallet archive: %v", aerr)
 		}
 		stat.LiveTxnRows = len(txns)
 		if len(txns) >= 2500 {
 			stat.LimitHit = true
 		}
-	} else if stat.Error == "" {
-		stat.Error = fmt.Sprintf("wallet: %v", err)
+	} else {
+		fail("wallet: %v", err)
 	}
 
 	// Wallet journal
 	if entries, err := s.esi.GetWalletJournal(sess.CharacterID, token); err == nil {
 		if _, aerr := s.db.UpsertWalletJournalForUser(userID, sess.CharacterID, entries); aerr != nil {
 			log.Printf("[TradeJournal] wallet journal archive %s: %v", sess.CharacterName, aerr)
+			fail("journal archive: %v", aerr)
 		}
 		stat.LiveJournalRows = len(entries)
 		if len(entries) >= 2500 {
 			stat.LimitHit = true
 		}
+	} else {
+		fail("journal: %v", err)
 	}
 
 	// Industry jobs (include completed for the archive)
@@ -241,8 +255,11 @@ func (s *Server) syncOneCharacter(userID string, sess *auth.Session) journalSync
 		}
 		if _, aerr := s.db.UpsertIndustryJobsForUser(userID, sess.CharacterID, delivered); aerr != nil {
 			log.Printf("[TradeJournal] industry archive %s: %v", sess.CharacterName, aerr)
+			fail("industry archive: %v", aerr)
 		}
 		stat.LiveIndustryRows = len(delivered)
+	} else {
+		fail("industry: %v", err)
 	}
 
 	return stat
@@ -250,18 +267,36 @@ func (s *Server) syncOneCharacter(userID string, sess *auth.Session) journalSync
 
 // syncCorpWallets iterates the corp divisions the user has access to and
 // syncs each into the corp archive. Access is determined lazily by trying
-// the wallet fetch — 403s (missing Accountant role) are silently skipped.
+// the wallet fetch — a 403 means that character lacks the Accountant /
+// Junior Accountant role.
+//
+// Every session is tried, not just the first: nine characters can sit in
+// several corporations, and stopping at the first one silently hid the rest.
+// Corporations already synced in this pass are skipped, so the extra
+// sessions cost one cheap corp-id lookup each.
 func (s *Server) syncCorpWallets(userID string, sessions []*auth.Session, filter *db.WalletScopeFilter) []journalSyncWalletStat {
 	out := []journalSyncWalletStat{}
-	// Find the first session whose character has a corp; use their token for
-	// the corp calls.
+	// Reasons collected from characters that couldn't reach a corp wallet.
+	// They're only reported if *nothing* synced — otherwise they're noise
+	// from alts that legitimately lack the role.
+	skipped := []string{}
+	syncedCorps := map[int32]bool{}
 	for _, sess := range sessions {
 		token, err := s.sessions.EnsureValidTokenForUserCharacter(s.sso, userID, sess.CharacterID)
 		if err != nil {
+			skipped = append(skipped, fmt.Sprintf("%s: token: %v", sess.CharacterName, err))
 			continue
 		}
 		corpID, err := s.esi.GetCharacterCorporationID(sess.CharacterID)
-		if err != nil || corpID <= 0 {
+		if err != nil {
+			skipped = append(skipped, fmt.Sprintf("%s: corporation lookup: %v", sess.CharacterName, err))
+			continue
+		}
+		if corpID <= 0 {
+			skipped = append(skipped, fmt.Sprintf("%s: no corporation", sess.CharacterName))
+			continue
+		}
+		if syncedCorps[corpID] {
 			continue
 		}
 		s.mu.RLock()
@@ -270,9 +305,13 @@ func (s *Server) syncCorpWallets(userID string, sessions []*auth.Session, filter
 		provider := corp.NewESICorpProvider(s.esi, sdeData, token, corpID, sess.CharacterID)
 		wallets, err := provider.GetWallets()
 		if err != nil {
-			// Skip this character — probably lacks role. Try the next session.
+			// Usually a 403: this character lacks Accountant /
+			// Junior Accountant. Another character in the same corp may
+			// still have it, so keep going.
+			skipped = append(skipped, fmt.Sprintf("%s: corp %d wallets: %v", sess.CharacterName, corpID, err))
 			continue
 		}
+		syncedCorps[corpID] = true
 		for _, wallet := range wallets {
 			if !filterAllowsCorpDiv(filter, int64(corpID), wallet.Division) {
 				continue
@@ -283,32 +322,74 @@ func (s *Server) syncCorpWallets(userID string, sessions []*auth.Session, filter
 				Division:      wallet.Division,
 				SyncedAt:      time.Now().UTC().Format(time.RFC3339),
 			}
+			fail := func(format string, args ...any) {
+				if stat.Error == "" {
+					stat.Error = fmt.Sprintf(format, args...)
+				}
+			}
 			if txns, err := provider.GetTransactions(wallet.Division); err == nil {
 				if _, aerr := s.db.UpsertCorpWalletTransactionsForUser(userID, int64(corpID), wallet.Division, txns); aerr != nil {
 					log.Printf("[TradeJournal] corp %d div %d tx archive: %v", corpID, wallet.Division, aerr)
+					fail("corp txn archive: %v", aerr)
 				}
 				stat.LiveTxnRows = len(txns)
 				if len(txns) >= 2500 {
 					stat.LimitHit = true
 				}
-			} else if stat.Error == "" {
-				stat.Error = fmt.Sprintf("corp txns: %v", err)
+			} else {
+				fail("corp txns: %v", err)
 			}
 			if entries, err := provider.GetJournal(wallet.Division, 0); err == nil {
 				if _, aerr := s.db.UpsertCorpWalletJournalForUser(userID, int64(corpID), wallet.Division, entries); aerr != nil {
 					log.Printf("[TradeJournal] corp %d div %d journal archive: %v", corpID, wallet.Division, aerr)
+					fail("corp journal archive: %v", aerr)
 				}
 				stat.LiveJournalRows = len(entries)
 				if len(entries) >= 2500 {
 					stat.LimitHit = true
 				}
+			} else {
+				fail("corp journal: %v", err)
 			}
 			out = append(out, stat)
 		}
-		// Only sync corp for the first character with a valid token — a corp
-		// is a single set of wallets, not per-character. Break after the
-		// first successful pass.
-		break
+
+		// Corp industry is corp-wide rather than per-division, so it runs
+		// once per corporation, after the wallet rows exist for the sidecar
+		// stamp to land on.
+		industryStat := journalSyncWalletStat{
+			WalletKind:    "corporation",
+			CorporationID: int64(corpID),
+			SyncedAt:      time.Now().UTC().Format(time.RFC3339),
+		}
+		if jobs, err := provider.GetIndustryJobs(); err == nil {
+			finished := make([]corp.CorpIndustryJob, 0, len(jobs))
+			for _, j := range jobs {
+				if j.Status == "delivered" || j.Status == "cancelled" {
+					finished = append(finished, j)
+				}
+			}
+			if _, aerr := s.db.UpsertCorpIndustryJobsForUser(userID, int64(corpID), finished); aerr != nil {
+				log.Printf("[TradeJournal] corp %d industry archive: %v", corpID, aerr)
+				industryStat.Error = fmt.Sprintf("corp industry archive: %v", aerr)
+			}
+			industryStat.LiveIndustryRows = len(finished)
+		} else {
+			industryStat.Error = fmt.Sprintf("corp industry: %v", err)
+		}
+		out = append(out, industryStat)
+	}
+
+	// Nothing reached a corp wallet at all. Say why — a silent zero-row
+	// result is indistinguishable from "this account has no corp activity",
+	// and the answer is almost always a missing Accountant role.
+	if len(out) == 0 && len(skipped) > 0 {
+		out = append(out, journalSyncWalletStat{
+			WalletKind: "corporation",
+			SyncedAt:   time.Now().UTC().Format(time.RFC3339),
+			Error: "no corp wallet was readable (corp wallet access needs the Director, Accountant or Junior Accountant role): " +
+				strings.Join(skipped, "; "),
+		})
 	}
 	return out
 }
@@ -1056,7 +1137,11 @@ func (s *Server) computeTradeJournalResult(userID string, filter *db.WalletScope
 		return nil, err
 	}
 	actual := actualFeesFromJournal(journalEntries)
-	jobs, err := s.db.ListArchivedIndustryJobsForUser(userID, filter.IncludeCharacters, time.Time{})
+	// Scope-aware, not character-aware. Passing filter.IncludeCharacters here
+	// meant a corp-only scope sent an empty slice, which the DB layer reads
+	// as "every character" — so selecting one corp wallet silently mixed in
+	// every character's manufacturing and inflated the cost basis.
+	jobs, err := s.db.ListArchivedIndustryJobsForScope(userID, *filter, time.Time{})
 	if err != nil {
 		return nil, err
 	}
@@ -1298,7 +1383,16 @@ func (s *Server) buildMEResolver(userID string, sdeData *sde.Data, filter *db.Wa
 }
 
 // walletMetaForFilter returns per-wallet-key `tracking_since` (min archive
-// date) and stale-sync warnings (>20d) for the scoped wallets.
+// date) and stale-sync warnings for the scoped wallets.
+//
+// Staleness is judged per kind, not off a single timestamp. The wallet-
+// transaction timestamp is stamped by seven endpoints that do no industry or
+// corp work at all (the character popup, the wallet tab, the order desk, the
+// ledger, …), so simply opening the app keeps it fresh forever. Gating the
+// journal's auto-sync on that one column is why the industry and corp
+// archives were still empty after months of use: the sync it was supposed to
+// trigger had never run once. A blank timestamp counts as stale for the same
+// reason — "never synced" is the case that most needs syncing.
 func (s *Server) walletMetaForFilter(userID string, filter *db.WalletScopeFilter) (map[string]string, []map[string]any) {
 	trackingSince := map[string]string{}
 	staleSyncs := []map[string]any{}
@@ -1311,20 +1405,65 @@ func (s *Server) walletMetaForFilter(userID string, filter *db.WalletScopeFilter
 	}
 	now := time.Now().UTC()
 	staleAt := 20 * 24 * time.Hour
+
+	// stale reports whether a sidecar timestamp needs a resync, and how old
+	// it is. Unparseable is treated the same as blank: we can't prove it's
+	// current, so sync.
+	stale := func(ts string) (bool, int) {
+		if strings.TrimSpace(ts) == "" {
+			return true, 0
+		}
+		t, err := time.Parse(time.RFC3339, ts)
+		if err != nil {
+			return true, 0
+		}
+		age := now.Sub(t)
+		if age > staleAt {
+			return true, int(age.Hours() / 24)
+		}
+		return false, int(age.Hours() / 24)
+	}
+
+	sawCorp := false
 	for _, m := range meta {
 		trackingSince[m.WalletKey] = m.EarliestDate
-		if m.LastSyncAt != "" {
-			if t, err := time.Parse(time.RFC3339, m.LastSyncAt); err == nil {
-				age := now.Sub(t)
-				if age > staleAt {
-					staleSyncs = append(staleSyncs, map[string]any{
-						"wallet_key":   m.WalletKey,
-						"last_sync_at": m.LastSyncAt,
-						"days_ago":     int(age.Hours() / 24),
-					})
-				}
-			}
+		if strings.HasPrefix(m.WalletKey, "corp:") {
+			sawCorp = true
 		}
+		// One entry per wallet, naming the kind that drove it — the wallet
+		// kind wins when both are stale, since it's the one the banner has
+		// always talked about.
+		walletStale, walletDays := stale(m.LastSyncAt)
+		industryStale, industryDays := stale(m.IndustrySyncAt)
+		if !walletStale && !industryStale {
+			continue
+		}
+		kind, lastSync, days := "industry", m.IndustrySyncAt, industryDays
+		if walletStale {
+			kind, lastSync, days = "wallet", m.LastSyncAt, walletDays
+		}
+		if strings.TrimSpace(lastSync) == "" {
+			kind = "never"
+		}
+		staleSyncs = append(staleSyncs, map[string]any{
+			"wallet_key":   m.WalletKey,
+			"kind":         kind,
+			"last_sync_at": lastSync,
+			"days_ago":     days,
+		})
+	}
+
+	// A corp division that has never been synced has no sidecar row, so it
+	// can't report itself stale — the corp archives would stay empty
+	// forever. One synthetic entry breaks that; once the first sync writes
+	// real rows, the loop above takes over and this stops firing.
+	if !sawCorp && (filter.IncludeAll || len(filter.IncludeCorpDivisions) > 0) {
+		staleSyncs = append(staleSyncs, map[string]any{
+			"wallet_key":   "corp:*",
+			"kind":         "never",
+			"last_sync_at": "",
+			"days_ago":     0,
+		})
 	}
 	return trackingSince, staleSyncs
 }

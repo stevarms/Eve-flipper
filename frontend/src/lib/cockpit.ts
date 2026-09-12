@@ -377,6 +377,15 @@ export const CHARACTER_SCOPED_TABS = new Set<MainTabId>([
   "optimizer",
 ]);
 
+/**
+ * The subset of the above whose data can also be owned by a corporation, and
+ * which therefore offer the corporation entries in the scope picker. A
+ * corporation is meaningless to PI planets, risk and the optimizer, so on
+ * those tabs a stored corp selection falls back to all characters rather than
+ * quietly showing something else than the pill claims.
+ */
+export const CORP_SCOPED_TABS = new Set<MainTabId>(["transactions"]);
+
 /** Which workspace owns a tab. Every MainTabId appears in exactly one. */
 export function workspaceForTab(tab: MainTabId): WorkspaceId {
   for (const ws of WORKSPACE_IDS) {

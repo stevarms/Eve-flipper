@@ -563,6 +563,17 @@ var industryProducts = []struct {
 	{2488, 2488, "100MN Afterburner II", "manufacturing"},
 }
 
+// demoActivityIDs maps the activity names the demo catalogue uses back to
+// ESI's numeric activity ids, mirroring the table in the live provider.
+var demoActivityIDs = map[string]int32{
+	"manufacturing":                   1,
+	"researching_time_efficiency":     3,
+	"researching_material_efficiency": 4,
+	"copying":                         5,
+	"invention":                       8,
+	"reaction":                        9,
+}
+
 func (d *DemoCorpProvider) GetIndustryJobs() ([]CorpIndustryJob, error) {
 	rng := rand.New(rand.NewSource(424242 + 5000))
 
@@ -579,7 +590,7 @@ func (d *DemoCorpProvider) GetIndustryJobs() ([]CorpIndustryJob, error) {
 	}
 
 	var jobs []CorpIndustryJob
-	jobID := int32(1000)
+	jobID := int64(1000)
 
 	for day := 59; day >= 0; day-- {
 		date := d.now.AddDate(0, 0, -day)
@@ -606,18 +617,31 @@ func (d *DemoCorpProvider) GetIndustryJobs() ([]CorpIndustryJob, error) {
 			}
 
 			jobID++
+			// A delivered job has a completion date and a run count that may
+			// be short of what was installed; anything still running has
+			// neither.
+			completedDate := ""
+			successfulRuns := int32(0)
+			if status == "delivered" {
+				completedDate = endDate.Format(time.RFC3339)
+				successfulRuns = runs
+			}
 			jobs = append(jobs, CorpIndustryJob{
 				JobID:           jobID,
 				InstallerID:     installer.CharacterID,
 				InstallerName:   installer.Name,
+				ActivityID:      demoActivityIDs[prod.activity],
 				Activity:        prod.activity,
 				BlueprintTypeID: prod.bpTypeID,
 				ProductTypeID:   prod.productID,
 				ProductName:     prod.productName,
 				Status:          status,
 				Runs:            runs,
+				SuccessfulRuns:  successfulRuns,
+				Cost:            float64(runs) * (50_000 + rng.Float64()*450_000),
 				StartDate:       startDate.Format(time.RFC3339),
 				EndDate:         endDate.Format(time.RFC3339),
+				CompletedDate:   completedDate,
 				LocationID:      60003760,
 				LocationName:    "Y-2ANO - Void Horizons Production Facility",
 			})

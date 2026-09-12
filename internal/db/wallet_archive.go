@@ -355,6 +355,105 @@ func (d *DB) GetCharacterPrivateMetricsForUser(userID string, characterID int64)
 	return out, nil
 }
 
+// ListArchivedWalletTransactionsForScope returns archived transactions for any
+// mix of characters and corporation divisions, newest first, each row stamped
+// with the WalletKey it came from.
+//
+// It is the owner-aware sibling of ListArchivedWalletTransactions: same char
+// query, plus the corp table, merged and re-sorted in Go rather than UNIONed,
+// because the two tables have different column counts (the same reason
+// queryArchivedTxns splits them).
+//
+// A filter naming neither characters nor divisions returns nothing. Empty is
+// the honest answer to "show me these zero owners" — the DB-layer convention
+// where an empty character list means "everyone" is exactly the leak this
+// avoids.
+func (d *DB) ListArchivedWalletTransactionsForScope(userID string, filter WalletScopeFilter, since time.Time, limit int) ([]esi.WalletTransaction, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil, fmt.Errorf("user id is required")
+	}
+	charScope, charArgs, corpScope, corpArgs, hasAny := buildWalletScopeSQL(filter)
+	if !hasAny {
+		return []esi.WalletTransaction{}, nil
+	}
+	sinceStr := ""
+	if !since.IsZero() {
+		sinceStr = since.UTC().Format(time.RFC3339)
+	}
+
+	out := []esi.WalletTransaction{}
+	// Each half takes the full limit; the merged slice is trimmed below, so a
+	// lopsided owner mix can still fill the result.
+	appendRows := func(query string, args []any, corp bool) error {
+		if sinceStr != "" {
+			query += " AND date >= ?"
+			args = append(args, sinceStr)
+		}
+		query += " ORDER BY date DESC, transaction_id DESC"
+		if limit > 0 {
+			query += " LIMIT ?"
+			args = append(args, limit)
+		}
+		rows, err := d.sql.Query(query, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var row esi.WalletTransaction
+			var isBuy int
+			var owner, division int64
+			if corp {
+				if err := rows.Scan(&owner, &division, &row.TransactionID, &row.Date, &row.TypeID,
+					&row.LocationID, &row.UnitPrice, &row.Quantity, &isBuy, &row.TypeName, &row.LocationName); err != nil {
+					return err
+				}
+				row.WalletKey = fmt.Sprintf("corp:%d:%d", owner, division)
+			} else {
+				if err := rows.Scan(&owner, &row.TransactionID, &row.Date, &row.TypeID,
+					&row.LocationID, &row.UnitPrice, &row.Quantity, &isBuy, &row.TypeName, &row.LocationName); err != nil {
+					return err
+				}
+				row.WalletKey = fmt.Sprintf("char:%d", owner)
+			}
+			row.IsBuy = isBuy != 0
+			out = append(out, row)
+		}
+		return rows.Err()
+	}
+
+	if charScope != "" {
+		q := `SELECT character_id, transaction_id, date, type_id, location_id,
+			unit_price, quantity, is_buy, type_name, location_name
+		FROM wallet_transactions_archive
+		WHERE user_id = ? AND ` + charScope
+		if err := appendRows(q, append([]any{userID}, charArgs...), false); err != nil {
+			return nil, err
+		}
+	}
+	if corpScope != "" {
+		q := `SELECT corporation_id, division, transaction_id, date, type_id, location_id,
+			unit_price, quantity, is_buy, type_name, location_name
+		FROM corp_wallet_transactions_archive
+		WHERE user_id = ? AND ` + corpScope
+		if err := appendRows(q, append([]any{userID}, corpArgs...), true); err != nil {
+			return nil, err
+		}
+	}
+
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Date != out[j].Date {
+			return out[i].Date > out[j].Date
+		}
+		return out[i].TransactionID > out[j].TransactionID
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 // ListArchivedWalletTransactions returns archived transactions for selected characters.
 func (d *DB) ListArchivedWalletTransactions(userID string, characterIDs []int64, since time.Time, limit int) ([]esi.WalletTransaction, error) {
 	args := []interface{}{strings.TrimSpace(userID)}

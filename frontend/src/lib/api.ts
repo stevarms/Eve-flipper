@@ -1969,6 +1969,80 @@ function appendCharacterScope(params: URLSearchParams, characterId?: CharacterSc
   params.set("character_id", String(characterId));
 }
 
+/**
+ * Who a view is showing data for. Deliberately *not* folded into
+ * CharacterScope: that type is consumed by eleven tools and a long tail of
+ * endpoints (PI planets, risk, optimizer, order desk, ledger…) for which a
+ * corporation means nothing. Only surfaces that can genuinely express corp
+ * ownership — the Transactions tab, for now — read an OwnerScope; everything
+ * else keeps taking the CharacterScope this collapses to.
+ */
+export type OwnerScope =
+  | { kind: "character"; characterId: number }
+  | { kind: "all-characters" }
+  | { kind: "corporation"; corporationId: number }
+  | { kind: "all-corporations" }
+  | { kind: "everything" };
+
+/**
+ * The CharacterScope an OwnerScope degrades to for consumers that cannot
+ * express a corporation. Every corp-bearing form becomes "all", because the
+ * honest superset of "some corp wallet" in character terms is "all
+ * characters" — a single character would be strictly wrong.
+ */
+export function characterScopeFromOwner(owner: OwnerScope): CharacterScope {
+  return owner.kind === "character" ? owner.characterId : "all";
+}
+
+/** Wire form of an OwnerScope, matching parseOwnerScope on the server. */
+export function ownerScopeParam(owner: OwnerScope): string {
+  switch (owner.kind) {
+    case "character":
+      return `char:${owner.characterId}`;
+    case "all-characters":
+      return "characters";
+    case "corporation":
+      return `corp:${owner.corporationId}`;
+    case "all-corporations":
+      return "corps";
+    case "everything":
+      return "all";
+  }
+}
+
+/**
+ * Stable identity for an OwnerScope, used for storage and for comparing the
+ * active selection. It differs from the wire form in one place: "everything"
+ * is spelled out rather than sent as "all", because a stored bare "all" is a
+ * legacy value that meant all *characters* and must keep meaning that.
+ */
+export function ownerScopeKey(owner: OwnerScope): string {
+  return owner.kind === "everything" ? "everything" : ownerScopeParam(owner);
+}
+
+export interface OwnerCorporation {
+  corporation_id: number;
+  corporation_name: string;
+  /** Wallet divisions with archived rows. Selecting a corporation takes all
+   *  of them — a division partitions a wallet, it is not a separate owner. */
+  divisions: number[];
+}
+
+export interface OwnersResponse {
+  characters: { id: number; name: string }[];
+  corporations: OwnerCorporation[];
+}
+
+/**
+ * The owners the picker may offer. Corporations come from what has actually
+ * been archived, which is by construction the set whose wallets some
+ * character of yours has the roles to read — so no roles fan-out is needed.
+ */
+export async function getAuthOwners(): Promise<OwnersResponse> {
+  const res = await apiFetch(`${BASE}/api/auth/owners`);
+  return handleResponse<OwnersResponse>(res);
+}
+
 export async function getAuthStatus(): Promise<AuthStatus> {
   const res = await apiFetch(`${BASE}/api/auth/status`);
   return handleResponse<AuthStatus>(res);
@@ -2113,9 +2187,14 @@ export async function deleteAuthCharacter(characterId: number): Promise<AuthStat
   return handleResponse<AuthStatus>(res);
 }
 
-export async function getCharacterInfo(characterId?: CharacterScope): Promise<CharacterInfo> {
+/**
+ * `owner` is additive: when present the server reads it and ignores the
+ * character params, so both are sent and older callers keep working.
+ */
+export async function getCharacterInfo(characterId?: CharacterScope, owner?: OwnerScope): Promise<CharacterInfo> {
   const params = new URLSearchParams();
   appendCharacterScope(params, characterId);
+  if (owner) params.set("owner", ownerScopeParam(owner));
   const query = params.toString();
   const res = await apiFetch(`${BASE}/api/auth/character${query ? `?${query}` : ""}`);
   return handleResponse<CharacterInfo>(res);
@@ -2426,6 +2505,12 @@ export interface JournalStaleSync {
   wallet_key: string;
   last_sync_at: string;
   days_ago: number;
+  /**
+   * Which kind of data drove the warning. "never" means the wallet has no
+   * sync timestamp at all, so days_ago is 0 and meaningless — the banner
+   * has to say something different for it.
+   */
+  kind?: "wallet" | "industry" | "never";
 }
 
 export interface JournalSummaryResponse {

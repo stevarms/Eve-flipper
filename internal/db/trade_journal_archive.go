@@ -95,6 +95,9 @@ type ArchivedIndustryJob struct {
 	SuccessfulRuns  int32
 	ProductTypeName string
 	ExternalJobID   int64
+	// CorporationID is provenance: non-zero when the job was seen on the
+	// corporation endpoint. The job is still keyed by its installer.
+	CorporationID int64
 }
 
 // WalletScopeFilter selects which wallets to UNION into the compute input.
@@ -252,6 +255,10 @@ func (d *DB) UpsertCorpWalletJournalForUser(userID string, corporationID int64, 
 			amount = excluded.amount,
 			balance = excluded.balance,
 			description = excluded.description,
+			tax = excluded.tax,
+			tax_receiver_id = excluded.tax_receiver_id,
+			context_id = excluded.context_id,
+			context_id_type = excluded.context_id_type,
 			last_seen_at = excluded.last_seen_at
 	`)
 	if err != nil {
@@ -273,10 +280,10 @@ func (d *DB) UpsertCorpWalletJournalForUser(userID string, corporationID int64, 
 			row.Balance,
 			"", // reason (not in corp shape)
 			row.Description,
-			0.0, // tax (not in corp shape)
-			0,   // tax_receiver_id
-			0,   // context_id
-			"",  // context_id_type
+			row.Tax,
+			row.TaxReceiverID,
+			row.ContextID,
+			row.ContextIDType,
 			now,
 			now,
 		); err != nil {
@@ -385,6 +392,106 @@ func (d *DB) UpsertIndustryJobsForUser(userID string, characterID int64, jobs []
 			industry_live_count = excluded.industry_live_count,
 			updated_at = excluded.updated_at
 	`, userID, characterID, now, len(jobs), now); err != nil {
+		return stats, err
+	}
+
+	return stats, tx.Commit()
+}
+
+// UpsertCorpIndustryJobsForUser archives corporation industry jobs into the
+// same table as character jobs, keyed by the job's *installer* character.
+//
+// That keying is what makes double-counting impossible rather than merely
+// unlikely: job IDs are globally unique across EVE and the archive PK is
+// (user_id, character_id, job_id), so a job that appears on both the
+// character endpoint and the corp endpoint lands on one row either way.
+// corporation_id is provenance only, and the CASE guard below stops a later
+// character-side upsert of the same job from blanking it.
+func (d *DB) UpsertCorpIndustryJobsForUser(userID string, corporationID int64, jobs []corp.CorpIndustryJob) (IndustryJobArchiveWriteStats, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" || corporationID <= 0 {
+		return IndustryJobArchiveWriteStats{}, fmt.Errorf("invalid corp industry job archive scope")
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	stats := IndustryJobArchiveWriteStats{
+		LiveRows: len(jobs),
+		LimitHit: len(jobs) >= industryJobsArchiveSoftLimit,
+		SyncedAt: now,
+	}
+
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return stats, err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO industry_jobs_archive (
+			user_id, character_id, corporation_id, job_id, activity_id,
+			blueprint_type_id, product_type_id, runs, install_cost, status,
+			start_date, end_date, completed_date, successful_runs,
+			product_type_name, first_seen_at, last_seen_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(user_id, character_id, job_id) DO UPDATE SET
+			corporation_id = CASE WHEN excluded.corporation_id != 0 THEN excluded.corporation_id ELSE industry_jobs_archive.corporation_id END,
+			activity_id = excluded.activity_id,
+			blueprint_type_id = excluded.blueprint_type_id,
+			product_type_id = excluded.product_type_id,
+			runs = excluded.runs,
+			install_cost = excluded.install_cost,
+			status = excluded.status,
+			start_date = excluded.start_date,
+			end_date = excluded.end_date,
+			completed_date = excluded.completed_date,
+			successful_runs = excluded.successful_runs,
+			product_type_name = CASE WHEN excluded.product_type_name != '' THEN excluded.product_type_name ELSE industry_jobs_archive.product_type_name END,
+			last_seen_at = excluded.last_seen_at
+	`)
+	if err != nil {
+		return stats, err
+	}
+	defer stmt.Close()
+
+	written := 0
+	for _, job := range jobs {
+		// No installer means no key we can dedupe on, and a corp job always
+		// has one — skip rather than invent a synthetic owner.
+		if job.JobID == 0 || job.InstallerID <= 0 {
+			continue
+		}
+		if _, err := stmt.Exec(
+			userID,
+			int64(job.InstallerID),
+			corporationID,
+			job.JobID,
+			job.ActivityID,
+			job.BlueprintTypeID,
+			job.ProductTypeID,
+			job.Runs,
+			job.Cost,
+			job.Status,
+			job.StartDate,
+			job.EndDate,
+			job.CompletedDate,
+			job.SuccessfulRuns,
+			job.ProductName,
+			now,
+			now,
+		); err != nil {
+			return stats, err
+		}
+		written++
+	}
+	stats.LiveRows = written
+
+	// Corp industry is corp-wide, not per-division, so stamp every division
+	// row we already track for this corp. If none exists yet the sync hasn't
+	// reached the wallets and the next pass will stamp it.
+	if _, err := tx.Exec(`
+		UPDATE corp_wallet_archive_sync
+		SET industry_synced_at = ?, industry_live_count = ?, updated_at = ?
+		WHERE user_id = ? AND corporation_id = ?
+	`, now, written, now, userID, corporationID); err != nil {
 		return stats, err
 	}
 
@@ -514,7 +621,8 @@ func (d *DB) queryArchivedJournal(userID string, filter WalletScopeFilter, since
 		}
 	}
 	if corpScope != "" {
-		q := `SELECT corporation_id, division, entry_id, date, ref_type, amount
+		q := `SELECT corporation_id, division, entry_id, date, ref_type, amount,
+			tax, context_id, context_id_type
 			FROM corp_wallet_journal_archive
 			WHERE user_id = ? AND ` + corpScope
 		args := append([]any{userID}, corpArgs...)
@@ -542,19 +650,73 @@ func (d *DB) ListArchivedIndustryJobsForUser(userID string, characterIDs []int64
 	if userID == "" {
 		return nil, fmt.Errorf("empty userID")
 	}
-	q := `SELECT character_id, job_id, activity_id, blueprint_type_id,
-		product_type_id, runs, install_cost, status, start_date, end_date,
-		completed_date, successful_runs, product_type_name, external_job_id
-		FROM industry_jobs_archive WHERE user_id = ?`
+	where := ""
 	args := []any{userID}
 	if len(characterIDs) > 0 {
 		placeholders := strings.Repeat("?,", len(characterIDs))
 		placeholders = placeholders[:len(placeholders)-1]
-		q += " AND character_id IN (" + placeholders + ")"
+		where = " AND character_id IN (" + placeholders + ")"
 		for _, id := range characterIDs {
 			args = append(args, id)
 		}
 	}
+	return d.listArchivedIndustryJobs(userID, where, args, since)
+}
+
+// ListArchivedIndustryJobsForScope is the wallet-scope-aware reader.
+//
+// ListArchivedIndustryJobsForUser treats an empty character list as "every
+// character", which is the right default for a character-only caller but
+// wrong for a scoped one: selecting only a corp wallet would quietly pull in
+// every character's manufacturing jobs and inflate the cost basis. Here an
+// empty scope means an empty result.
+func (d *DB) ListArchivedIndustryJobsForScope(userID string, filter WalletScopeFilter, since time.Time) ([]ArchivedIndustryJob, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil, fmt.Errorf("empty userID")
+	}
+	if filter.IncludeAll {
+		return d.listArchivedIndustryJobs(userID, "", []any{userID}, since)
+	}
+
+	clauses := []string{}
+	args := []any{userID}
+	if len(filter.IncludeCharacters) > 0 {
+		ph := strings.Repeat("?,", len(filter.IncludeCharacters))
+		clauses = append(clauses, "character_id IN ("+ph[:len(ph)-1]+")")
+		for _, id := range filter.IncludeCharacters {
+			args = append(args, id)
+		}
+	}
+	if len(filter.IncludeCorpDivisions) > 0 {
+		// Corp industry is corp-wide; divisions partition the wallet, not
+		// the factory. Dedupe to one clause per corporation.
+		seen := map[int64]bool{}
+		corpIDs := []int64{}
+		for _, dv := range filter.IncludeCorpDivisions {
+			if !seen[dv.CorporationID] {
+				seen[dv.CorporationID] = true
+				corpIDs = append(corpIDs, dv.CorporationID)
+			}
+		}
+		ph := strings.Repeat("?,", len(corpIDs))
+		clauses = append(clauses, "corporation_id IN ("+ph[:len(ph)-1]+")")
+		for _, id := range corpIDs {
+			args = append(args, id)
+		}
+	}
+	if len(clauses) == 0 {
+		return []ArchivedIndustryJob{}, nil
+	}
+	return d.listArchivedIndustryJobs(userID, " AND ("+strings.Join(clauses, " OR ")+")", args, since)
+}
+
+func (d *DB) listArchivedIndustryJobs(userID, where string, args []any, since time.Time) ([]ArchivedIndustryJob, error) {
+	q := `SELECT character_id, job_id, activity_id, blueprint_type_id,
+		product_type_id, runs, install_cost, status, start_date, end_date,
+		completed_date, successful_runs, product_type_name, external_job_id,
+		corporation_id
+		FROM industry_jobs_archive WHERE user_id = ?` + where
 	if !since.IsZero() {
 		q += " AND (completed_date >= ? OR start_date >= ?)"
 		s := since.UTC().Format(time.RFC3339)
@@ -577,6 +739,7 @@ func (d *DB) ListArchivedIndustryJobsForUser(userID string, characterIDs []int64
 			&j.ProductTypeID, &j.Runs, &j.InstallCost, &j.Status,
 			&j.StartDate, &j.EndDate, &j.CompletedDate,
 			&j.SuccessfulRuns, &j.ProductTypeName, &j.ExternalJobID,
+			&j.CorporationID,
 		); err != nil {
 			return nil, err
 		}
@@ -693,6 +856,7 @@ func readCorpJournalRows(rows *sql.Rows, out *[]ArchivedJournalEntry) error {
 		var r ArchivedJournalEntry
 		if err := rows.Scan(
 			&r.CorporationID, &r.Division, &r.EntryID, &r.Date, &r.RefType, &r.Amount,
+			&r.Tax, &r.ContextID, &r.ContextIDType,
 		); err != nil {
 			return err
 		}
@@ -751,9 +915,9 @@ type LinkCandidateLedgerJob struct {
 
 // IndustryLedgerJobME is a link-lookup row used by buildMEResolver.
 type IndustryLedgerJobME struct {
-	LedgerJobID    int64
-	ExternalJobID  int64
-	ME             int32
+	LedgerJobID   int64
+	ExternalJobID int64
+	ME            int32
 	// TE isn't consumed by the FIFO engine (v1 skips manufacturing time
 	// bonuses), but keep it here for future use.
 }
@@ -764,6 +928,11 @@ type WalletArchiveMeta struct {
 	WalletKey    string `json:"wallet_key"`
 	EarliestDate string `json:"earliest_date,omitempty"`
 	LastSyncAt   string `json:"last_sync_at,omitempty"`
+	// IndustrySyncAt is when industry jobs were last pulled for this wallet.
+	// It's tracked separately from LastSyncAt because seven unrelated
+	// endpoints stamp the wallet-transaction timestamp without doing any
+	// industry work — so a fresh LastSyncAt says nothing about industry.
+	IndustrySyncAt string `json:"industry_sync_at,omitempty"`
 }
 
 // ListUnlinkedLedgerJobsForUser returns every ledger IndustryJob with
@@ -864,7 +1033,7 @@ func (d *DB) ListWalletArchiveMetaForUser(userID string, filter WalletScopeFilte
 	out := []WalletArchiveMeta{}
 	if filter.IncludeAll || len(filter.IncludeCharacters) > 0 {
 		q := `
-			SELECT s.character_id, s.transaction_synced_at,
+			SELECT s.character_id, s.transaction_synced_at, s.industry_synced_at,
 				(SELECT MIN(date) FROM wallet_transactions_archive
 				 WHERE user_id = s.user_id AND character_id = s.character_id)
 			FROM wallet_archive_sync s
@@ -883,12 +1052,14 @@ func (d *DB) ListWalletArchiveMetaForUser(userID string, filter WalletScopeFilte
 		if err == nil {
 			for rows.Next() {
 				var charID int64
-				var syncedAt, earliest string
-				if err := rows.Scan(&charID, &syncedAt, &earliest); err == nil {
+				var syncedAt, industrySyncedAt string
+				var earliest sql.NullString
+				if err := rows.Scan(&charID, &syncedAt, &industrySyncedAt, &earliest); err == nil {
 					out = append(out, WalletArchiveMeta{
-						WalletKey:    fmt.Sprintf("char:%d", charID),
-						LastSyncAt:   syncedAt,
-						EarliestDate: earliest,
+						WalletKey:      fmt.Sprintf("char:%d", charID),
+						LastSyncAt:     syncedAt,
+						IndustrySyncAt: industrySyncedAt,
+						EarliestDate:   earliest.String,
 					})
 				}
 			}
@@ -897,7 +1068,7 @@ func (d *DB) ListWalletArchiveMetaForUser(userID string, filter WalletScopeFilte
 	}
 	if filter.IncludeAll || len(filter.IncludeCorpDivisions) > 0 {
 		q := `
-			SELECT s.corporation_id, s.division, s.transaction_synced_at,
+			SELECT s.corporation_id, s.division, s.transaction_synced_at, s.industry_synced_at,
 				(SELECT MIN(date) FROM corp_wallet_transactions_archive
 				 WHERE user_id = s.user_id AND corporation_id = s.corporation_id AND division = s.division)
 			FROM corp_wallet_archive_sync s
@@ -909,12 +1080,14 @@ func (d *DB) ListWalletArchiveMetaForUser(userID string, filter WalletScopeFilte
 			for rows.Next() {
 				var corpID int64
 				var div int
-				var syncedAt, earliest string
-				if err := rows.Scan(&corpID, &div, &syncedAt, &earliest); err == nil {
+				var syncedAt, industrySyncedAt string
+				var earliest sql.NullString
+				if err := rows.Scan(&corpID, &div, &syncedAt, &industrySyncedAt, &earliest); err == nil {
 					out = append(out, WalletArchiveMeta{
-						WalletKey:    fmt.Sprintf("corp:%d:%d", corpID, div),
-						LastSyncAt:   syncedAt,
-						EarliestDate: earliest,
+						WalletKey:      fmt.Sprintf("corp:%d:%d", corpID, div),
+						LastSyncAt:     syncedAt,
+						IndustrySyncAt: industrySyncedAt,
+						EarliestDate:   earliest.String,
 					})
 				}
 			}

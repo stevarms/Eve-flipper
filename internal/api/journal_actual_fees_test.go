@@ -195,3 +195,31 @@ func TestActualFeesEmptyInput(t *testing.T) {
 		t.Error("empty journal produced sales tax")
 	}
 }
+
+// Corp sales were structurally unable to produce an actual rate: the corp
+// journal writer hardcoded tax and context_id to zero and the reader did not
+// even select those columns, so every corp sale fell into Unresolved and was
+// priced at the modelled rate. With the fields carried through, a corp wallet
+// pairs exactly like a character one — and must not pair across wallets.
+func TestActualFeesPairsCorpSales(t *testing.T) {
+	got := actualFeesFromJournal([]db.ArchivedJournalEntry{
+		sale("corp:98000001:2", "2026-09-01T12:00:00Z", 10_000_000, 9001),
+		tax("corp:98000001:2", "2026-09-01T12:00:00Z", 337_500),
+		sale("char:1", "2026-09-01T12:00:00Z", 1_000_000, 9002),
+		tax("char:1", "2026-09-01T12:00:00Z", 33_750),
+	})
+	corpRate, ok := got.rate(9001)
+	if !ok {
+		t.Fatal("a corp sale with a real context_id and tax must resolve to an actual rate")
+	}
+	if !floatEq(corpRate, 3.375, 1e-9) {
+		t.Errorf("corp rate = %.4f, want 3.375", corpRate)
+	}
+	charRate, ok := got.rate(9002)
+	if !ok || !floatEq(charRate, 3.375, 1e-9) {
+		t.Errorf("char rate = %.4f (ok=%v), want 3.375 — wallets must pair independently", charRate, ok)
+	}
+	if got.Paired != 2 || got.Unresolved != 0 {
+		t.Errorf("Paired/Unresolved = %d/%d, want 2/0", got.Paired, got.Unresolved)
+	}
+}

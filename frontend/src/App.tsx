@@ -86,6 +86,7 @@ import {
   getEffectiveCockpitDensity,
   getVisibleMainTabs,
   CHARACTER_SCOPED_TABS,
+  CORP_SCOPED_TABS,
   isCockpitQuickActionVisible,
   isMainTabId,
   loadCockpitPreferences,
@@ -1764,6 +1765,7 @@ function App() {
         characters={authStatus.characters ?? []}
         activeCharacterId={authStatus.character_id}
         onSelectCharacter={handleSelectCharacter}
+        corpCapable={CORP_SCOPED_TABS.has(tab)}
       >
       <div
         className={`cockpit-density-${effectiveCockpitDensity} h-screen flex flex-col gap-1.5 sm:gap-3 p-1.5 sm:p-4 bg-eve-dark text-eve-text select-none overflow-hidden transition-[opacity,transform,filter] duration-500 ease-out ${

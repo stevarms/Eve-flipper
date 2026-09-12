@@ -55,6 +55,11 @@ type WalletTransaction struct {
 	// Enriched fields
 	TypeName     string `json:"type_name,omitempty"`
 	LocationName string `json:"location_name,omitempty"`
+	// Provenance, set only by readers whose list can mix owners. "char:<id>"
+	// or "corp:<corp>:<division>", the same WalletKey the journal uses;
+	// OwnerName is the resolved display name for it.
+	WalletKey string `json:"wallet_key,omitempty"`
+	OwnerName string `json:"owner_name,omitempty"`
 }
 
 // WalletJournalEntry represents a character wallet journal entry.

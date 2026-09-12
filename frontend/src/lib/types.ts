@@ -1738,6 +1738,10 @@ export interface WalletTransaction {
   is_buy: boolean;
   type_name?: string;
   location_name?: string;
+  /** "char:<id>" or "corp:<corp>:<division>" — set only when the list can mix
+   *  owners (i.e. when the request carried an owner scope). */
+  wallet_key?: string;
+  owner_name?: string;
 }
 
 export interface CharacterAsset {

@@ -622,13 +622,18 @@ export function TradeJournal({ isLoggedIn, visitToken, onOpenPositions }: Props)
         </div>
       </div>
 
-      {/* Stale sync warning */}
+      {/* Stale sync warning. A never-synced wallet has days_ago = 0, so the
+          "haven't synced in 0+ days" phrasing would be nonsense — it gets its
+          own line. Aged wallets win when both are present, since losing
+          history is the more urgent of the two. */}
       {staleSyncs.length > 0 && (
         <div className="rounded-sm border border-red-500/50 bg-red-500/10 px-3 py-2 text-xs text-red-300">
-          {t("journalStaleSyncWarning", {
-            count: staleSyncs.length,
-            days: Math.max(...staleSyncs.map((s) => s.days_ago)),
-          })}
+          {staleSyncs.some((s) => s.days_ago > 0)
+            ? t("journalStaleSyncWarning", {
+                count: staleSyncs.filter((s) => s.days_ago > 0).length,
+                days: Math.max(...staleSyncs.map((s) => s.days_ago)),
+              })
+            : t("journalNeverSyncedWarning", { count: staleSyncs.length })}
         </div>
       )}
 

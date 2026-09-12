@@ -20,7 +20,13 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { getCharacterInfo, type CharacterScope } from "../../lib/api";
+import {
+  characterScopeFromOwner,
+  getCharacterInfo,
+  ownerScopeKey,
+  type CharacterScope,
+  type OwnerScope,
+} from "../../lib/api";
 import { formatIsk as formatIskLib } from "../../lib/format";
 import type { AuthCharacter, CharacterInfo } from "../../lib/types";
 
@@ -51,6 +57,9 @@ export interface CharacterScopeValue {
   scope: CharacterScope;
   /** Switching to a character also makes it the active ESI character. */
   selectScope: (scope: CharacterScope) => Promise<void>;
+  /** The full owner selection. `scope` is this collapsed to characters. */
+  ownerScope: OwnerScope;
+  selectOwnerScope: (owner: OwnerScope) => Promise<void>;
   scopeBusy: boolean;
   scopeError: string | null;
   characters: AuthCharacter[];
@@ -62,6 +71,10 @@ export interface CharacterScopeValue {
   /** Idempotent — marks this subtree as needing CharacterInfo. */
   requestData: () => void;
   refresh: () => void;
+  /** Whether the active tab honours a corporation selection at all. */
+  corpCapable: boolean;
+  /** True when a corp selection is stored but the active tab ignores it. */
+  ownerScopeIgnored: boolean;
   formatIsk: (value: number) => string;
   formatNumber: (value: number) => string;
   formatDate: (dateStr: string) => string;
@@ -69,21 +82,41 @@ export interface CharacterScopeValue {
 
 const CharacterScopeContext = createContext<CharacterScopeValue | null>(null);
 
-function readStoredScope(): CharacterScope | null {
+/**
+ * Reads the persisted owner selection, still under the original key. Values
+ * written by earlier builds were a bare `"all"` or a character id, so those
+ * two shapes have to keep parsing — a user upgrading must not lose (or worse,
+ * silently change) which character they were looking at.
+ */
+export function readStoredScope(raw: string | null): OwnerScope | null {
+  if (!raw) return null;
+  if (raw === "all") return { kind: "all-characters" };
+  if (raw === "characters") return { kind: "all-characters" };
+  if (raw === "corps") return { kind: "all-corporations" };
+  if (raw === "everything") return { kind: "everything" };
+  if (raw.startsWith("char:")) {
+    const id = Number(raw.slice(5));
+    return Number.isFinite(id) && id > 0 ? { kind: "character", characterId: id } : null;
+  }
+  if (raw.startsWith("corp:")) {
+    const id = Number(raw.slice(5));
+    return Number.isFinite(id) && id > 0 ? { kind: "corporation", corporationId: id } : null;
+  }
+  const id = Number(raw);
+  return Number.isFinite(id) && id > 0 ? { kind: "character", characterId: id } : null;
+}
+
+function loadStoredScope(): OwnerScope | null {
   try {
-    const raw = localStorage.getItem(SCOPE_STORAGE_KEY);
-    if (!raw) return null;
-    if (raw === "all") return "all";
-    const id = Number(raw);
-    return Number.isFinite(id) && id > 0 ? id : null;
+    return readStoredScope(localStorage.getItem(SCOPE_STORAGE_KEY));
   } catch {
     return null;
   }
 }
 
-function writeStoredScope(scope: CharacterScope) {
+function writeStoredScope(owner: OwnerScope) {
   try {
-    localStorage.setItem(SCOPE_STORAGE_KEY, String(scope));
+    localStorage.setItem(SCOPE_STORAGE_KEY, ownerScopeKey(owner));
   } catch {
     // ignore
   }
@@ -95,6 +128,8 @@ interface ProviderProps {
   characters: AuthCharacter[];
   activeCharacterId?: number;
   onSelectCharacter: (characterId: number) => Promise<void>;
+  /** Set by the active tab: does a corporation selection mean anything here? */
+  corpCapable?: boolean;
 }
 
 export function CharacterScopeProvider({
@@ -103,8 +138,29 @@ export function CharacterScopeProvider({
   characters,
   activeCharacterId,
   onSelectCharacter,
+  corpCapable = false,
 }: ProviderProps) {
-  const [scope, setScope] = useState<CharacterScope>(() => readStoredScope() ?? activeCharacterId ?? "all");
+  const [storedOwner, setStoredOwner] = useState<OwnerScope>(
+    () =>
+      loadStoredScope() ??
+      (activeCharacterId ? { kind: "character", characterId: activeCharacterId } : { kind: "all-characters" }),
+  );
+
+  // What the current tab actually gets. A corp selection carried over from
+  // Transactions must not silently reshape PI or Risk, so it degrades here
+  // rather than at each consumer.
+  const ownerScope = useMemo<OwnerScope>(
+    () =>
+      corpCapable || storedOwner.kind === "character" || storedOwner.kind === "all-characters"
+        ? storedOwner
+        : { kind: "all-characters" },
+    [corpCapable, storedOwner],
+  );
+  const ownerScopeIgnored = ownerScope !== storedOwner;
+  const scope = characterScopeFromOwner(ownerScope);
+  const setScope = useCallback((next: CharacterScope) => {
+    setStoredOwner(next === "all" ? { kind: "all-characters" } : { kind: "character", characterId: next });
+  }, []);
   const [scopeBusy, setScopeBusy] = useState(false);
   const [scopeError, setScopeError] = useState<string | null>(null);
   const [data, setData] = useState<CharacterInfo | null>(null);
@@ -123,18 +179,18 @@ export function CharacterScopeProvider({
     if (characters.length === 0) return;
     if (characters.some((c) => c.character_id === scope)) return;
     setScope(activeCharacterId ?? "all");
-  }, [scope, characters, activeCharacterId, isLoggedIn]);
+  }, [scope, characters, activeCharacterId, isLoggedIn, setScope]);
 
   useEffect(() => {
-    writeStoredScope(scope);
-  }, [scope]);
+    writeStoredScope(storedOwner);
+  }, [storedOwner]);
 
   useEffect(() => {
     if (!wanted || !isLoggedIn) return;
     let cancelled = false;
     setLoading(true);
     setError(null);
-    getCharacterInfo(scope)
+    getCharacterInfo(scope, ownerScope)
       .then((info) => {
         if (cancelled) return;
         setData(info);
@@ -149,7 +205,7 @@ export function CharacterScopeProvider({
     return () => {
       cancelled = true;
     };
-  }, [wanted, isLoggedIn, scope, reloadToken]);
+  }, [wanted, isLoggedIn, scope, ownerScope, reloadToken]);
 
   const requestData = useCallback(() => {
     setWanted(true);
@@ -159,31 +215,41 @@ export function CharacterScopeProvider({
     setReloadToken((n) => n + 1);
   }, []);
 
-  const selectScope = useCallback(
-    async (next: CharacterScope) => {
-      if (next === scope) return;
-      if (next === "all") {
-        setScope("all");
+  const selectOwnerScope = useCallback(
+    async (next: OwnerScope) => {
+      if (ownerScopeKey(next) === ownerScopeKey(storedOwner)) return;
+      // Only a single-character selection changes the active ESI character;
+      // every other owner form is a pure read filter.
+      if (next.kind !== "character") {
+        setStoredOwner(next);
         return;
       }
       setScopeBusy(true);
       setScopeError(null);
       try {
-        await onSelectCharacter(next);
-        setScope(next);
+        await onSelectCharacter(next.characterId);
+        setStoredOwner(next);
       } catch (e: any) {
         setScopeError(e?.message || "Failed to switch character");
       } finally {
         setScopeBusy(false);
       }
     },
-    [scope, onSelectCharacter],
+    [storedOwner, onSelectCharacter],
+  );
+
+  const selectScope = useCallback(
+    (next: CharacterScope) =>
+      selectOwnerScope(next === "all" ? { kind: "all-characters" } : { kind: "character", characterId: next }),
+    [selectOwnerScope],
   );
 
   const value = useMemo<CharacterScopeValue>(
     () => ({
       scope,
       selectScope,
+      ownerScope,
+      selectOwnerScope,
       scopeBusy,
       scopeError,
       characters,
@@ -193,11 +259,29 @@ export function CharacterScopeProvider({
       error,
       requestData,
       refresh,
+      corpCapable,
+      ownerScopeIgnored,
       formatIsk,
       formatNumber,
       formatDate,
     }),
-    [scope, selectScope, scopeBusy, scopeError, characters, isLoggedIn, data, loading, error, requestData, refresh],
+    [
+      scope,
+      selectScope,
+      ownerScope,
+      selectOwnerScope,
+      scopeBusy,
+      scopeError,
+      characters,
+      isLoggedIn,
+      data,
+      loading,
+      error,
+      requestData,
+      refresh,
+      corpCapable,
+      ownerScopeIgnored,
+    ],
   );
 
   return <CharacterScopeContext.Provider value={value}>{children}</CharacterScopeContext.Provider>;

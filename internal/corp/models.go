@@ -27,6 +27,13 @@ type CorpJournalEntry struct {
 	SecondPartyID   int64   `json:"second_party_id,omitempty"`
 	FirstPartyName  string  `json:"first_party_name,omitempty"`  // enriched
 	SecondPartyName string  `json:"second_party_name,omitempty"` // enriched
+	// Fee fields. ContextID on a market_transaction row holds the real
+	// transaction_id, which is the hard link the Trade Journal uses to
+	// attach the tax CCP actually charged to the sale it belongs to.
+	Tax           float64 `json:"tax,omitempty"`
+	TaxReceiverID int64   `json:"tax_receiver_id,omitempty"`
+	ContextID     int64   `json:"context_id,omitempty"`
+	ContextIDType string  `json:"context_id_type,omitempty"`
 }
 
 // CorpTransaction mirrors ESI GET /corporations/{id}/wallets/{division}/transactions/.
@@ -63,19 +70,27 @@ type CorpMember struct {
 
 // CorpIndustryJob mirrors ESI GET /corporations/{id}/industry/jobs/.
 type CorpIndustryJob struct {
-	JobID           int32  `json:"job_id"`
+	// JobID is int64: ESI job IDs are globally unique and already past the
+	// int32 range, and the archive keys on them.
+	JobID           int64  `json:"job_id"`
 	InstallerID     int64  `json:"installer_id"`
 	InstallerName   string `json:"installer_name,omitempty"` // enriched
-	Activity        string `json:"activity"`                 // manufacturing, researching_time_efficiency, etc.
+	ActivityID      int32  `json:"activity_id"`
+	Activity        string `json:"activity"` // manufacturing, researching_time_efficiency, etc.
 	BlueprintTypeID int32  `json:"blueprint_type_id"`
 	ProductTypeID   int32  `json:"product_type_id"`
 	ProductName     string `json:"product_name,omitempty"` // enriched from SDE
 	Status          string `json:"status"`                 // active, delivered, cancelled, paused, ready
 	Runs            int32  `json:"runs"`
-	StartDate       string `json:"start_date"`
-	EndDate         string `json:"end_date"`
-	LocationID      int64  `json:"location_id"`
-	LocationName    string `json:"location_name,omitempty"` // enriched
+	// SuccessfulRuns is what actually came out (invention can fail); Cost is
+	// the install fee. Both feed the Trade Journal's manufactured cost basis.
+	SuccessfulRuns int32   `json:"successful_runs,omitempty"`
+	Cost           float64 `json:"cost,omitempty"`
+	StartDate      string  `json:"start_date"`
+	EndDate        string  `json:"end_date"`
+	CompletedDate  string  `json:"completed_date,omitempty"`
+	LocationID     int64   `json:"location_id"`
+	LocationName   string  `json:"location_name,omitempty"` // enriched
 }
 
 // CorpMiningEntry mirrors ESI GET /corporation/{id}/mining/observers/{observer_id}/.
