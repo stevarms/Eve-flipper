@@ -2117,6 +2117,8 @@ export const en = {
     // Assets → Positions
     positionsSubtitle:
       "Everything you're holding that you paid for. Auto-derived FIFO from your transactions, plus anything you added by hand. Prices are best sell at Jita 4-4; profit is net of broker fee and sales tax.",
+    positionsNotInAssets: "Not in your assets",
+    positionsNotInAssetsHint: "The ledger says you still hold this, but it is not in any hangar we can see. Usually it was consumed as an industry material, reprocessed, or sold before the archive started tracking — so the cost basis here is stale. Check the item in game before trusting the value.",
     positionsMoreLocations: "+{count} more",
     positionsHideFullyListed: "Hide fully listed",
     positionsSortBy: "Sort by",

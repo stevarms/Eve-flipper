@@ -1,6 +1,8 @@
 package api
 
 import (
+	"fmt"
+	"log"
 	"sort"
 	"strings"
 
@@ -27,6 +29,20 @@ import (
 // The journal knows where each lot was *bought*, which is where it usually
 // still is and occasionally is not — and "usually" is not good enough for a
 // field whose only job is to stop you hunting.
+//
+// That difference turns this into a reconciliation check, which was not the
+// original intent and is the more valuable half. A position exists because the
+// FIFO ledger saw a buy and has not seen enough sells; nothing ever confirmed
+// the stock is still there. Items consumed as industry materials, reprocessed,
+// or sold before the archive's window all leave a holding the ledger still
+// believes in. When assets are readable and the type is absent from them, that
+// is worth saying out loud rather than rendering as a blank cell.
+//
+// Which makes the difference between "we could not read your assets" and "your
+// assets do not contain this" load-bearing. Both produced an empty list in the
+// first cut, so a missing scope looked exactly like missing stock. The response
+// now carries AssetsFailed alongside the existing PricingFailed / OrdersFailed,
+// and every read failure is logged rather than swallowed.
 
 // PositionLocation is one place some of a holding sits.
 type PositionLocation struct {
@@ -61,43 +77,73 @@ type positionAssetIndex struct {
 
 // buildPositionLocations resolves where each held type actually is.
 //
-// Returns a map keyed by type id. A type absent from the map has no asset
-// coverage — a manual row, or a character whose assets could not be read — and
-// the UI must say nothing rather than imply the hangar is empty.
+// Returns the per-type breakdown and whether every asset source was read. When
+// ok is false the caller must not treat an absent type as missing stock: some
+// hangar simply could not be seen.
 func (s *Server) buildPositionLocations(
 	userID string,
 	sessions []*auth.Session,
 	sdeData *sde.Data,
 	wanted map[int32]bool,
-) map[int32][]PositionLocation {
+) (map[int32][]PositionLocation, bool) {
 	if len(sessions) == 0 || len(wanted) == 0 {
-		return nil
+		return nil, false
 	}
+	complete := true
 
-	indexes := make([]positionAssetIndex, 0, len(sessions))
+	indexes := make([]positionAssetIndex, 0, len(sessions)+1)
+	seenCorp := map[int32]bool{}
 	for _, sess := range sessions {
 		token, err := s.sessions.EnsureValidTokenForUserCharacter(s.sso, userID, sess.CharacterID)
 		if err != nil {
+			log.Printf("[POSITIONS] assets: token for %s: %v", sess.CharacterName, err)
+			complete = false
 			continue
 		}
 		assets, err := s.esi.GetCharacterAssets(sess.CharacterID, token)
 		if err != nil {
-			// One character's assets failing must not blank the others'. The
-			// map simply carries less.
+			// One character's assets failing must not blank the others', but
+			// it does mean absence no longer proves anything.
+			log.Printf("[POSITIONS] assets: %s: %v", sess.CharacterName, err)
+			complete = false
+		} else {
+			indexes = append(indexes, newPositionAssetIndex(sess.CharacterName, assets))
+		}
+
+		// Corp hangars. Positions are built from an IncludeAll wallet scope, so
+		// corp-bought stock is already in the rows; without this it would be a
+		// holding with a cost basis and nowhere to be, which reads as a phantom.
+		corpID, corpErr := s.esi.GetCharacterCorporationID(sess.CharacterID)
+		if corpErr != nil || corpID <= 0 || seenCorp[corpID] {
 			continue
 		}
-		idx := positionAssetIndex{
-			characterName: sess.CharacterName,
-			byItemID:      make(map[int64]esi.CharacterAsset, len(assets)),
-			assets:        assets,
+		seenCorp[corpID] = true
+		corpAssets, corpAssetErr := s.esi.GetCorporationAssets(corpID, token)
+		if corpAssetErr != nil {
+			// Usually a 403: this character lacks the role. Another character
+			// in the same corp may have it, but we have already marked the
+			// corp seen, so retry through the next session instead.
+			log.Printf("[POSITIONS] corp assets: corp %d via %s: %v", corpID, sess.CharacterName, corpAssetErr)
+			delete(seenCorp, corpID)
+			continue
 		}
-		for _, a := range assets {
-			idx.byItemID[a.ItemID] = a
+		converted := make([]esi.CharacterAsset, 0, len(corpAssets))
+		for _, a := range corpAssets {
+			converted = append(converted, esi.CharacterAsset{
+				ItemID:       a.ItemID,
+				TypeID:       a.TypeID,
+				LocationID:   a.LocationID,
+				LocationType: a.LocationType,
+				LocationFlag: a.LocationFlag,
+				Quantity:     a.Quantity,
+				IsSingleton:  a.IsSingleton,
+				TypeName:     a.TypeName,
+			})
 		}
-		indexes = append(indexes, idx)
+		indexes = append(indexes, newPositionAssetIndex(corpLabelFor(corpID), converted))
 	}
 	if len(indexes) == 0 {
-		return nil
+		return nil, false
 	}
 
 	// Keyed on everything that distinguishes a place, so two stacks in the same
@@ -153,7 +199,26 @@ func (s *Server) buildPositionLocations(
 		})
 		out[typeID] = rows
 	}
-	return out
+	return out, complete
+}
+
+func newPositionAssetIndex(owner string, assets []esi.CharacterAsset) positionAssetIndex {
+	idx := positionAssetIndex{
+		characterName: owner,
+		byItemID:      make(map[int64]esi.CharacterAsset, len(assets)),
+		assets:        assets,
+	}
+	for _, a := range assets {
+		idx.byItemID[a.ItemID] = a
+	}
+	return idx
+}
+
+// corpLabelFor names the corp holding a stack. The id rather than a fetched
+// name: this is a per-row suffix, and a corporation lookup per position row to
+// prettify it is not worth the calls.
+func corpLabelFor(corpID int32) string {
+	return fmt.Sprintf("Corp %d", corpID)
 }
 
 // resolvePlace walks an asset up to the station it ultimately sits in, naming

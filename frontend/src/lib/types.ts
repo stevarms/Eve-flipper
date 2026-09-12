@@ -999,6 +999,12 @@ export interface PositionsResponse {
   rows: PositionRow[];
   pricing_failed: boolean;
   orders_failed: boolean;
+  /**
+   * At least one hangar could not be read, so an empty `locations` proves
+   * nothing. Without this a missing scope and genuinely missing stock look
+   * identical.
+   */
+  assets_failed?: boolean;
   sales_tax_percent: number;
   broker_fee_percent: number;
   total_cost_basis: number;

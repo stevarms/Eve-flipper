@@ -242,6 +242,7 @@ export function PositionsTab() {
                   key={`${row.source}-${row.manual_id ?? 0}-${row.type_id}`}
                   row={row}
                   onInspect={setInspected}
+                  assetsFailed={!!data?.assets_failed}
                   t={t}
                 />
               ))}
@@ -283,12 +284,31 @@ export function PositionsTab() {
  */
 function PositionWhere({
   locations,
+  assetsFailed,
+  source,
   t,
 }: {
   locations?: PositionLocation[];
+  assetsFailed: boolean;
+  source: string;
   t: ReturnType<typeof useI18n>["t"];
 }) {
-  if (!locations || locations.length === 0) return null;
+  if (!locations || locations.length === 0) {
+    // Three different situations, and only one of them is worth flagging.
+    // A manual row was typed in by hand and never claimed to be in a hangar,
+    // and an unreadable hangar proves nothing either way -- saying "not in
+    // your assets" in either case would be an accusation we cannot support.
+    if (source === "manual" || assetsFailed) return null;
+    return (
+      <div
+        className="mt-0.5 flex min-w-0 items-center gap-1 font-ui text-t-caption text-warn-dim"
+        title={t("positionsNotInAssetsHint")}
+      >
+        <MapPin className="h-3 w-3 shrink-0" aria-hidden="true" />
+        <span className="truncate">{t("positionsNotInAssets")}</span>
+      </div>
+    );
+  }
   const [first, ...rest] = locations;
   return (
     <div
@@ -338,10 +358,12 @@ function shortLocationName(name: string): string {
 function Row({
   row,
   onInspect,
+  assetsFailed,
   t,
 }: {
   row: PositionRow;
   onInspect: (row: PositionRow) => void;
+  assetsFailed: boolean;
   t: ReturnType<typeof useI18n>["t"];
 }) {
   const priced = row.market_price > 0;
@@ -363,7 +385,7 @@ function Row({
           marketLabel={t("positionsListHint")}
           subtitle={row.source === "manual" ? t("positionsSourceManual") : undefined}
         />
-        <PositionWhere locations={row.locations} t={t} />
+        <PositionWhere locations={row.locations} assetsFailed={assetsFailed} source={row.source} t={t} />
       </td>
       <td className="px-2 py-1 text-right font-num tnum text-t-cell text-fg-secondary">
         {formatNumber(row.qty)}

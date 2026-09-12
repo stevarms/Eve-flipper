@@ -101,6 +101,10 @@ type PositionsResponse struct {
 	Rows             []PositionRow `json:"rows"`
 	PricingFailed    bool          `json:"pricing_failed"`
 	OrdersFailed     bool          `json:"orders_failed"`
+	// AssetsFailed means at least one hangar could not be read, so a row with
+	// no locations proves nothing. Without this flag a missing scope and
+	// genuinely missing stock look identical.
+	AssetsFailed bool `json:"assets_failed"`
 	SalesTaxPercent  float64       `json:"sales_tax_percent"`
 	BrokerFeePercent float64       `json:"broker_fee_percent"`
 	TotalCostBasis   float64       `json:"total_cost_basis"`
@@ -335,12 +339,16 @@ func (s *Server) buildPositions(
 	s.mu.RLock()
 	sdeForAssets := s.sdeData
 	s.mu.RUnlock()
-	locations := s.buildPositionLocations(userID, sessions, sdeForAssets, seen)
+	locations, assetsComplete := s.buildPositionLocations(userID, sessions, sdeForAssets, seen)
 
 	now := time.Now().UTC()
 	resp := PositionsResponse{
 		PricingFailed:    pricingFailed,
 		OrdersFailed:     ordersFailed,
+		// No sessions at all is not an asset failure -- manual-only rows are a
+		// supported state, and flagging it would put a warning on a page that
+		// is working exactly as intended.
+		AssetsFailed: len(sessions) > 0 && !assetsComplete,
 		SalesTaxPercent:  salesTax,
 		BrokerFeePercent: brokerFee,
 		GeneratedAt:      now.Format(time.RFC3339),
