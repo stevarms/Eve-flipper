@@ -124,7 +124,7 @@ recorder declines a snapshot that duplicates one already held and a file can
 contain none of your types -- a low number is usually correct rather than a
 failure.
 
-### Fixed: white text on the accent buttons in every light theme
+### Fixed: primary buttons were a glaring fill with unreadable text
 
 `primary` was `bg-eve-accent text-eve-dark`. In the six dark palettes eve-dark
 is near-black and that reads fine; the light palettes invert it to pure white,
@@ -132,9 +132,17 @@ so the same pair rendered white on a mid-amber fill. Measured against WCAG,
 classic light came to 3.54:1, amarr 3.76 and gallente 4.43, all under the 4.5
 floor for body text -- and classic light is the default. There is now an
 `--eve-on-accent` token per theme, set to whichever of black or white actually
-wins the contrast, and every one of the twelve themes clears AA with 4.74 as the
-worst case. Applied to all 27 accent-filled surfaces, not just the one that was
-reported, since they all carried the same pair.
+wins the contrast, applied to all 27 accent-filled surfaces rather than just the
+one reported, since they all carried the same pair.
+
+The fill was the other half of it. At full strength the accent is very bright
+for an element the size of a button -- amarr dark measures 70% luminance --
+and it had been called glaring twice. Primary buttons now use the dimmed accent,
+which keeps the hue while cutting mean fill luminance across the twelve palettes
+by 48%. That needs its own foreground token: six palettes flip between black and
+white between the two fills, which is also why hover brightens by 5% rather than
+going to the full accent -- in those six no single foreground clears AA against
+both. Every theme now passes at rest and on hover, worst case 4.65.
 
 ### Fixed: the Today capital bar was four shades of the same colour
 

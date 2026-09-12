@@ -20,7 +20,12 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        primary: "bg-eve-accent text-eve-on-accent hover:bg-eve-accent-hover",
+        /* accent-dim rather than accent: at full strength the accent is a
+           very bright fill for an element this size -- amarr dark measures
+           70% luminance -- and it was reported as glaring twice. Hover
+           brightens by 5%, the most that keeps every palette above the AA
+           floor against its own foreground. */
+        primary: "bg-eve-accent-dim text-eve-on-accent-dim hover:brightness-105",
         secondary: "bg-surface-3 text-fg hover:bg-surface-2 border border-eve-border",
         ghost: "text-fg-secondary hover:bg-surface-2 hover:text-fg",
         outline: "border border-eve-border bg-transparent text-fg hover:bg-surface-2",

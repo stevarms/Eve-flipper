@@ -31,6 +31,10 @@ const config: Config = {
              eve-dark: the light palettes invert that to white, which put
              white text on a mid-amber button at 3.5:1. */
           "on-accent": v("on-accent"),
+          /* Foreground for the dimmed accent fill. Six palettes flip
+             between black and white between accent and accent-dim, so
+             this cannot be folded into on-accent. */
+          "on-accent-dim": v("on-accent-dim"),
           text: v("text"),
           dim: v("dim"),
           success: v("success"),

@@ -80,6 +80,7 @@
   --eve-accent-hover: 240 165 0;
   --eve-accent-dim: 179 116 0;
   --eve-on-accent: 13 13 13;
+  --eve-on-accent-dim: 0 0 0;
   --eve-text: 192 192 192;
   --eve-dim: 140 140 140;
   --eve-success: 0 180 80;
@@ -104,6 +105,7 @@
   --eve-accent-hover: 106 180 255;
   --eve-accent-dim: 42 108 192;
   --eve-on-accent: 13 13 13;
+  --eve-on-accent-dim: 255 255 255;
   --eve-text: 184 200 216;
   --eve-dim: 106 122 138;
   --eve-success: 0 180 80;
@@ -128,6 +130,7 @@
   --eve-accent-hover: 255 224 64;
   --eve-accent-dim: 192 160 0;
   --eve-on-accent: 13 13 13;
+  --eve-on-accent-dim: 0 0 0;
   --eve-text: 208 200 176;
   --eve-dim: 138 128 104;
   --eve-success: 0 180 80;
@@ -152,6 +155,7 @@
   --eve-accent-hover: 240 96 80;
   --eve-accent-dim: 168 48 32;
   --eve-on-accent: 13 13 13;
+  --eve-on-accent-dim: 255 255 255;
   --eve-text: 200 176 176;
   --eve-dim: 138 106 106;
   --eve-success: 0 180 80;
@@ -176,6 +180,7 @@
   --eve-accent-hover: 80 216 112;
   --eve-accent-dim: 40 144 64;
   --eve-on-accent: 13 13 13;
+  --eve-on-accent-dim: 0 0 0;
   --eve-text: 176 200 176;
   --eve-dim: 106 138 106;
   --eve-success: 64 192 96;
@@ -200,6 +205,7 @@
   --eve-accent-hover: 191 160 255;
   --eve-accent-dim: 124 92 192;
   --eve-on-accent: 13 13 13;
+  --eve-on-accent-dim: 255 255 255;
   --eve-text: 192 184 208;
   --eve-dim: 122 106 138;
   --eve-success: 0 180 80;
@@ -225,6 +231,7 @@
   --eve-accent-hover: 160 101 0;
   --eve-accent-dim: 138 88 0;
   --eve-on-accent: 0 0 0;
+  --eve-on-accent-dim: 255 255 255;
   --eve-text: 42 42 42;
   --eve-dim: 106 106 106;
   --eve-success: 0 138 58;
@@ -248,6 +255,7 @@
   --eve-accent-hover: 10 90 160;
   --eve-accent-dim: 24 96 168;
   --eve-on-accent: 255 255 255;
+  --eve-on-accent-dim: 255 255 255;
   --eve-text: 42 42 42;
   --eve-dim: 106 106 106;
   --eve-success: 0 138 58;
@@ -271,6 +279,7 @@
   --eve-accent-hover: 136 106 0;
   --eve-accent-dim: 122 98 0;
   --eve-on-accent: 0 0 0;
+  --eve-on-accent-dim: 255 255 255;
   --eve-text: 42 42 42;
   --eve-dim: 106 106 106;
   --eve-success: 0 138 58;
@@ -294,6 +303,7 @@
   --eve-accent-hover: 160 40 24;
   --eve-accent-dim: 136 32 24;
   --eve-on-accent: 255 255 255;
+  --eve-on-accent-dim: 255 255 255;
   --eve-text: 42 42 42;
   --eve-dim: 106 106 106;
   --eve-success: 0 138 58;
@@ -317,6 +327,7 @@
   --eve-accent-hover: 16 112 40;
   --eve-accent-dim: 10 96 32;
   --eve-on-accent: 0 0 0;
+  --eve-on-accent-dim: 255 255 255;
   --eve-text: 42 42 42;
   --eve-dim: 106 106 106;
   --eve-success: 26 138 58;
@@ -340,6 +351,7 @@
   --eve-accent-hover: 106 72 168;
   --eve-accent-dim: 90 60 144;
   --eve-on-accent: 255 255 255;
+  --eve-on-accent-dim: 255 255 255;
   --eve-text: 42 42 42;
   --eve-dim: 106 106 106;
   --eve-success: 0 138 58;
