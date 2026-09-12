@@ -2000,6 +2000,42 @@ func (d *DB) migrate() error {
 		logger.Info("DB", "Applied migration v47 (price percentile cache)")
 	}
 
+	if version < 48 {
+		// Widen the percentile cache into a general "facts derived from a
+		// year of prices" cache.
+		//
+		// The percentile summary and the recovery fit are two answers to the
+		// same expensive question -- give me this item's price series -- and
+		// computing them separately meant two ESI round trips for one fetch's
+		// worth of data. They now share a row.
+		//
+		// Recovery in particular needed this. engine.CalcRecoveryOutlook fits a
+		// 180-day trend, and its caller read the 90-day raw cache: on a cache
+		// hit it saw 90 days and on a miss it saw the full ~390 that ESI
+		// returns, so the quality of a hold-or-cut verdict depended on whether
+		// something else had warmed the cache. Sourcing it here makes it
+		// consistently the full window.
+		//
+		// The old table is dropped rather than migrated: it is a cache, it was
+		// a day old, and it rebuilds on demand.
+		if _, err := d.sql.Exec(`
+			DROP TABLE IF EXISTS price_percentile_cache;
+			CREATE TABLE IF NOT EXISTS market_derived_cache (
+				region_id    INTEGER NOT NULL,
+				type_id      INTEGER NOT NULL,
+				computed_at  TEXT    NOT NULL,
+				payload_json TEXT    NOT NULL,
+				PRIMARY KEY (region_id, type_id)
+			);
+			CREATE INDEX IF NOT EXISTS idx_market_derived_computed
+				ON market_derived_cache(computed_at);
+			INSERT OR IGNORE INTO schema_version (version) VALUES (48);
+		`); err != nil {
+			return fmt.Errorf("migration v48: %w", err)
+		}
+		logger.Info("DB", "Applied migration v48 (market derived cache)")
+	}
+
 	return nil
 }
 

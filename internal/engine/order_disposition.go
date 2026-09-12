@@ -69,6 +69,16 @@ type DispositionInput struct {
 	Home      DispositionVenue
 	Elsewhere []DispositionVenue
 
+	// RecoveryOverride is a fit computed elsewhere from the full ~390-day
+	// series, which is what this needs and what Home.History does not carry:
+	// the raw history cache holds 90 days, and CalcRecoveryOutlook asks for a
+	// 180-day window. Without this the verdict silently depended on whether
+	// something else had warmed that cache -- 90 days on a hit, the full
+	// series on a miss, so the same order could be told to hold or to cut
+	// depending on scan order. Nil falls back to Home.History, which keeps
+	// the engine usable standalone and keeps existing tests honest.
+	RecoveryOverride *RecoveryOutlook
+
 	UnitVolumeM3         float64
 	ShipRateISKPerM3Jump float64
 
@@ -206,7 +216,11 @@ func ComputeOrderDisposition(in DispositionInput) DispositionResult {
 	}
 
 	// --- HOLD --------------------------------------------------------
-	out.Recovery = CalcRecoveryOutlook(in.Home.History, 0)
+	if in.RecoveryOverride != nil {
+		out.Recovery = *in.RecoveryOverride
+	} else {
+		out.Recovery = CalcRecoveryOutlook(in.Home.History, 0)
+	}
 	if out.Recovery.Basis == RecoveryBasisHistory {
 		// Once the price is back at trend we would be relisting near the
 		// top of the book, so the fill walk is the queue-free one. Both

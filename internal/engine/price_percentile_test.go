@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"encoding/json"
 	"math"
 	"testing"
 	"time"
@@ -220,5 +221,108 @@ func TestPercentileOfSortedEdges(t *testing.T) {
 	}
 	if got := percentileOfSorted(nil, 50); got != 0 {
 		t.Errorf("empty distribution = %.1f, want 0", got)
+	}
+}
+
+// --- MarketDerived -----------------------------------------------------
+
+// One series, both answers. The point of pairing them is that they need the
+// same expensive input, so a caller never has to fetch a year twice.
+func TestCalcMarketDerivedAnswersBothFromOneSeries(t *testing.T) {
+	h := percentileHistory(400, func(i int) float64 {
+		// A gentle wave: enough variation for a trend fit to have residuals,
+		// stable enough that it is a dip pattern rather than a decline.
+		return 100 + 8*math.Sin(float64(i)/18)
+	}, 40)
+
+	d := CalcMarketDerived(h, percentileNow)
+
+	if d.Percentiles.Basis != PercentileBasisHistory {
+		t.Fatalf("percentiles basis = %q (%s)", d.Percentiles.Basis, d.Percentiles.Reason)
+	}
+	if d.Percentiles.P75 <= d.Percentiles.P50 {
+		t.Errorf("p75 %.2f is not above p50 %.2f", d.Percentiles.P75, d.Percentiles.P50)
+	}
+	// Recovery gets its own 180-day window off the same series. It may
+	// legitimately refuse on this shape, but it must have *looked* -- a basis
+	// of "" would mean it never ran.
+	if d.Recovery.Basis != RecoveryBasisHistory && d.Recovery.Basis != RecoveryBasisNone {
+		t.Errorf("recovery basis = %q, want history or none", d.Recovery.Basis)
+	}
+	if d.Recovery.WindowDays <= 0 {
+		t.Error("recovery reports no window, so it was not given the series")
+	}
+}
+
+// The bug this pairing exists to kill: recovery used to read a 90-day cache
+// while asking for 180 days, so the verdict depended on cache state. Feeding
+// it a full series must produce a materially better-evidenced fit than
+// feeding it 90 days of the same data.
+func TestCalcMarketDerivedRecoverySeesMoreThanNinetyDays(t *testing.T) {
+	full := percentileHistory(400, func(i int) float64 {
+		return 100 + 10*math.Sin(float64(i)/25)
+	}, 40)
+	// What the 90-day cache would have handed it.
+	truncated := full[len(full)-90:]
+
+	fromFull := CalcRecoveryOutlook(full, 0)
+	fromTruncated := CalcRecoveryOutlook(truncated, 0)
+
+	if fromFull.Samples <= fromTruncated.Samples {
+		t.Fatalf("full series gave %d samples, truncated gave %d — the fix changes nothing",
+			fromFull.Samples, fromTruncated.Samples)
+	}
+	// 180 days is the documented window, so a full series should reach it
+	// while 90 days of history cannot.
+	if fromFull.Samples < 150 {
+		t.Errorf("full series only reached %d samples, want most of the 180-day window", fromFull.Samples)
+	}
+	if fromTruncated.Samples > 95 {
+		t.Errorf("truncated series reached %d samples, expected ~90", fromTruncated.Samples)
+	}
+}
+
+func TestCalcMarketDerivedRefusesBothOnEmptyHistory(t *testing.T) {
+	d := CalcMarketDerived(nil, percentileNow)
+	if d.Percentiles.Basis != PercentileBasisNone {
+		t.Errorf("percentiles basis = %q, want none", d.Percentiles.Basis)
+	}
+	if d.Recovery.Basis != RecoveryBasisNone {
+		t.Errorf("recovery basis = %q, want none", d.Recovery.Basis)
+	}
+	// Both must say why, or the UI has nothing to show in place of a number.
+	if d.Percentiles.Reason == "" || d.Recovery.Reason == "" {
+		t.Errorf("a refusal carried no reason: %+v", d)
+	}
+}
+
+// The whole cache design rests on this: the reduction has to survive JSON,
+// because that is how it is stored and read back.
+func TestMarketDerivedSurvivesJSONRoundTrip(t *testing.T) {
+	h := percentileHistory(400, func(i int) float64 { return 100 + float64(i%23) }, 40)
+	before := CalcMarketDerived(h, percentileNow)
+
+	payload, err := json.Marshal(before)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// A few hundred bytes is the premise -- if this ever balloons, the
+	// series has leaked into the payload.
+	if len(payload) > 2000 {
+		t.Errorf("payload is %d bytes; the point is to store a summary, not a series", len(payload))
+	}
+
+	var after MarketDerived
+	if err := json.Unmarshal(payload, &after); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if after.Percentiles.P75 != before.Percentiles.P75 ||
+		after.Percentiles.CurrentPercentile != before.Percentiles.CurrentPercentile ||
+		after.Percentiles.AvgDailyVolume != before.Percentiles.AvgDailyVolume {
+		t.Errorf("percentiles changed across the round trip")
+	}
+	if after.Recovery.Basis != before.Recovery.Basis ||
+		after.Recovery.ZScore != before.Recovery.ZScore {
+		t.Errorf("recovery changed across the round trip")
 	}
 }

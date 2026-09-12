@@ -123,6 +123,15 @@ func (s *Server) handleAuthOrderDisposition(w http.ResponseWriter, r *http.Reque
 	in.Home = home
 	in.Elsewhere = elsewhere
 
+	// The hold plan turns on a 180-day trend fit, and home.History comes from
+	// the raw cache, which holds 90 days. Sourcing the fit from the derived
+	// cache -- always computed off the full ~390-day series -- is what stops
+	// the same order being told to hold or to cut depending on whether some
+	// other scan had warmed the history cache first.
+	if recovery := s.marketDerivedFor(order.RegionID, order.TypeID).Recovery; recovery.Basis != "" {
+		in.RecoveryOverride = &recovery
+	}
+
 	basisWG.Wait()
 	writeJSON(w, engine.ComputeOrderDisposition(in))
 }

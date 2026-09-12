@@ -110,7 +110,7 @@ func (s *Server) handleAuthHoldingRulePercentiles(w http.ResponseWriter, r *http
 		return
 	}
 
-	pct := s.pricePercentilesFor(holdingRuleRegionID, typeID)
+	pct := s.marketDerivedFor(holdingRuleRegionID, typeID).Percentiles
 
 	writeJSON(w, map[string]any{
 		"type_id":     typeID,
@@ -127,48 +127,53 @@ func (s *Server) handleAuthHoldingRulePercentiles(w http.ResponseWriter, r *http
 	})
 }
 
-// pricePercentilesFor answers "where does today's price sit in this item's
-// year", looking the year up rather than storing it.
+// marketDerivedFor answers both of the questions that need an item's full
+// price series, from one lookup.
 //
 // The raw history cache deliberately holds only 90 days, because the blueprint
-// scanner keeps every scanned type's series in memory at once and series
-// length multiplies by type count. So this does not read that cache at all.
-// It reads a summary cache of about a dozen derived floats; on a miss it pulls
-// the full ~390-day series straight from ESI, reduces it, stores the summary,
-// and lets the series go out of scope. Roughly 250 bytes kept instead of
-// roughly 32 KB, and nothing large is retained between calls.
+// scanner keeps every scanned type's series in memory at once and series length
+// multiplies by type count. So this does not read that cache. It reads a
+// summary cache of a few hundred bytes; on a miss it pulls the full ~390-day
+// series straight from ESI, reduces it to percentiles plus a recovery fit,
+// stores the reductions, and lets the series go out of scope.
 //
-// A refusal ("too little traded history") is cached like any other answer —
-// it costs the same round trip to rediscover and is just as true tomorrow.
-func (s *Server) pricePercentilesFor(regionID, typeID int32) engine.PricePercentiles {
+// A refusal ("too little traded history") is cached like any other answer -- it
+// costs the same round trip to rediscover and is just as true tomorrow. A
+// transient ESI failure is not cached, because that is not a fact about the
+// item and caching it would suppress the real answer for a day.
+func (s *Server) marketDerivedFor(regionID, typeID int32) engine.MarketDerived {
 	if s.db != nil {
-		if payload, ok := s.db.GetPricePercentiles(regionID, typeID); ok {
-			var cached engine.PricePercentiles
+		if payload, ok := s.db.GetMarketDerived(regionID, typeID); ok {
+			var cached engine.MarketDerived
 			if err := json.Unmarshal([]byte(payload), &cached); err == nil {
 				return cached
 			}
 		}
 	}
 	if s.esi == nil {
-		return engine.PricePercentiles{Basis: engine.PercentileBasisNone, Reason: "no market client"}
+		return engine.MarketDerived{
+			Percentiles: engine.PricePercentiles{Basis: engine.PercentileBasisNone, Reason: "no market client"},
+			Recovery:    engine.RecoveryOutlook{Basis: engine.RecoveryBasisNone, Reason: "no market client"},
+		}
 	}
 
 	history, err := s.esi.FetchMarketHistory(regionID, typeID)
 	if err != nil {
-		// Not cached: a transient ESI failure is not a fact about the item,
-		// and storing it would suppress the real answer for a day.
-		return engine.PricePercentiles{Basis: engine.PercentileBasisNone, Reason: "price history unavailable"}
+		return engine.MarketDerived{
+			Percentiles: engine.PricePercentiles{Basis: engine.PercentileBasisNone, Reason: "price history unavailable"},
+			Recovery:    engine.RecoveryOutlook{Basis: engine.RecoveryBasisNone, Reason: "price history unavailable"},
+		}
 	}
 
-	pct := engine.CalcPricePercentiles(history, 0, time.Now().UTC())
+	derived := engine.CalcMarketDerived(history, time.Now().UTC())
 	if s.db != nil {
-		if payload, marshalErr := json.Marshal(pct); marshalErr == nil {
-			if setErr := s.db.SetPricePercentiles(regionID, typeID, string(payload)); setErr != nil {
-				log.Printf("[PERCENTILE] cache write %d/%d: %v", regionID, typeID, setErr)
+		if payload, marshalErr := json.Marshal(derived); marshalErr == nil {
+			if setErr := s.db.SetMarketDerived(regionID, typeID, string(payload)); setErr != nil {
+				log.Printf("[DERIVED] cache write %d/%d: %v", regionID, typeID, setErr)
 			}
 		}
 	}
-	return pct
+	return derived
 }
 
 func holdingRuleTypeIDFromPath(w http.ResponseWriter, r *http.Request) (int32, bool) {

@@ -207,3 +207,36 @@ func rankOfSorted(sorted []float64, value float64) float64 {
 	mid := (float64(below) + float64(atOrBelow)) / 2
 	return clampRange(mid/float64(n)*100, 0, 100)
 }
+
+// MarketDerived is everything worth keeping from one fetch of an item's price
+// series.
+//
+// The two members answer different questions that happen to need the same
+// expensive input, so they are computed together and cached together:
+// percentiles say where today sits in the item's year, and the recovery
+// outlook says whether a low price is a dip that has come back before or a
+// decline that has not.
+//
+// Both carry their own Basis field and refuse rather than guess, so a caller
+// checks the member it cares about and never has to interpret a zero.
+type MarketDerived struct {
+	Percentiles PricePercentiles `json:"percentiles"`
+	Recovery    RecoveryOutlook  `json:"recovery"`
+}
+
+// CalcMarketDerived reduces one price series to both summaries.
+//
+// The series is read twice and then dropped. That is the whole point: the
+// caller can fetch ~390 days, call this, and retain a few hundred bytes
+// instead of tens of kilobytes per item — which is what makes examining
+// thousands of items affordable.
+func CalcMarketDerived(history []esi.HistoryEntry, now time.Time) MarketDerived {
+	return MarketDerived{
+		// A year, so an annual cycle appears exactly once.
+		Percentiles: CalcPricePercentiles(history, 0, now),
+		// 180 days, its own documented window. Passing 0 takes that default;
+		// feeding it the full series is the point, since its caller used to
+		// hand it whatever the 90-day cache happened to hold.
+		Recovery: CalcRecoveryOutlook(history, 0),
+	}
+}
