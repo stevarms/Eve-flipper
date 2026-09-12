@@ -296,6 +296,15 @@ func (s *Server) buildTodayPlan(
 				MarketPrice: p.MarketPrice, NetProceeds: p.NetProceeds,
 				UnrealizedISK: p.UnrealizedISK, UnrealizedPct: p.UnrealizedPct,
 				ListedQty: p.ListedQty, DaysHeld: p.DaysHeld,
+				// The holding rule, already resolved by buildPositions, so
+				// Today and the Positions tab cannot disagree about what is
+				// for sale.
+				TradeableQty:      p.TradeableQty,
+				ReservedQty:       p.ReservedQty,
+				TargetPrice:       p.TargetPrice,
+				TargetMet:         p.TargetMet,
+				TargetProgressPct: p.TargetProgressPct,
+				TargetPercentile:  p.TargetPercentile,
 			})
 		}
 		mu.Lock()

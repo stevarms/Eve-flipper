@@ -6,6 +6,7 @@ import { ItemRef } from "@/components/ui/ItemRef";
 import { formatISK, formatIsk, formatNumber } from "@/lib/format";
 import type { TranslationKey } from "@/lib/i18n";
 import type { PositionRow } from "@/lib/types";
+import { HoldingRuleEditor } from "./HoldingRuleEditor";
 
 /**
  * Tier 2 for Positions (docs/UI_DESIGN_SYSTEM.md §4).
@@ -45,6 +46,7 @@ export function PositionRowDrawer({
   brokerFeePercent,
   onClose,
   onDelete,
+  onRuleSaved,
   t,
   locale,
 }: {
@@ -53,6 +55,8 @@ export function PositionRowDrawer({
   brokerFeePercent: number;
   onClose: () => void;
   onDelete: (manualID: number) => void;
+  /** A holding rule was stored or cleared; the tab refetches. */
+  onRuleSaved: (typeId: number) => void;
   t: (key: TranslationKey, params?: Record<string, string | number>) => string;
   locale: string;
 }) {
@@ -97,6 +101,16 @@ export function PositionRowDrawer({
 
         <DetailGroup title={t("positionsDrawerHolding")}>
           <DetailRow label={t("positionsColQty")} value={formatNumber(row.qty)} />
+          {row.reserved_qty ? (
+            <DetailRow
+              label={t("holdingRuleReserved")}
+              value={t("holdingRuleTradeable", {
+                n: formatNumber(row.tradeable_qty),
+                total: formatNumber(row.qty),
+              })}
+              tone="warn"
+            />
+          ) : null}
           <DetailRow label={t("positionsDrawerSource")} value={t(sourceKey)} />
           <DetailRow label={t("positionsDrawerOldest")} value={stamp(row.oldest_date, locale)} />
           <DetailRow label={t("positionsColAge")} value={t("positionsAgeDays", { n: row.days_held })} />
@@ -106,7 +120,19 @@ export function PositionRowDrawer({
           <DetailRow label={t("positionsColAvgCost")} value={unit(row.avg_unit_cost)} />
           <DetailRow label={t("positionsDrawerCostBasis")} value={isk(row.cost_basis)} />
           {row.target_price ? (
-            <DetailRow label={t("positionsDrawerTarget")} value={unit(row.target_price)} tone="info" copyValue={row.target_price} copyLabel={t("copyPrice")} />
+            <DetailRow
+              label={t("positionsDrawerTarget")}
+              value={
+                row.target_met
+                  ? `${unit(row.target_price)} · ${t("holdingRuleTargetMet")}`
+                  : `${unit(row.target_price)} · ${t("holdingRuleProgress", {
+                      pct: String(Math.round(row.target_progress_pct ?? 0)),
+                    })}`
+              }
+              tone={row.target_met ? "profit" : "info"}
+              copyValue={row.target_price}
+              copyLabel={t("copyPrice")}
+            />
           ) : null}
         </DetailGroup>
 
@@ -137,6 +163,8 @@ export function PositionRowDrawer({
             <DetailRow label={t("positionsDrawerListedPrice")} value={unit(row.listed_price)} copyValue={row.listed_price} copyLabel={t("copyPrice")} />
           </DetailGroup>
         )}
+
+        <HoldingRuleEditor row={row} onSaved={onRuleSaved} />
 
         {row.note && (
           <DetailGroup title={t("positionsDrawerNote")}>

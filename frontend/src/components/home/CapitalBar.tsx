@@ -12,6 +12,12 @@ import type { TodayCapital, TodayPerformance } from "@/lib/types";
  * turns it into ISK: idle capital has a daily cost, and stating it is the
  * whole argument for doing anything on this page.
  *
+ * The bar is one hue at four weights, not four colours. Semantic colour has
+ * to mean something (docs/UI_DESIGN_SYSTEM.md §2) and these segments are
+ * parts of a single quantity — painting "in sell orders" green would claim
+ * a profit that has not happened. Weight runs solid to faint as capital gets
+ * further from being spendable, so the eye reads deployment, not verdict.
+ *
  * Return per day is the compounding rate. It is the one number on the screen
  * worth maximising, which is why it gets the display size.
  */
@@ -32,11 +38,13 @@ export function CapitalBar({
 }) {
   const { t } = useI18n();
 
+  // One hue, four weights. See the note at the top of this file: these are
+  // proportions of a single quantity, not four states with their own valence.
   const segments: Segment[] = [
-    { key: "free", label: t("todayFree"), value: capital.wallet_isk, className: "bg-warn" },
-    { key: "buy", label: t("todayInBuyOrders"), value: capital.buy_order_isk, className: "bg-info" },
-    { key: "inv", label: t("todayInventory"), value: capital.inventory_isk, className: "bg-eve-accent" },
-    { key: "sell", label: t("todayInSellOrders"), value: capital.sell_order_isk, className: "bg-profit" },
+    { key: "free", label: t("todayFree"), value: capital.wallet_isk, className: "bg-eve-accent" },
+    { key: "buy", label: t("todayInBuyOrders"), value: capital.buy_order_isk, className: "bg-eve-accent/60" },
+    { key: "inv", label: t("todayInventory"), value: capital.inventory_isk, className: "bg-eve-accent/35" },
+    { key: "sell", label: t("todayInSellOrders"), value: capital.sell_order_isk, className: "bg-eve-accent/20" },
   ];
   const total = capital.total_isk;
 
@@ -80,7 +88,7 @@ export function CapitalBar({
         <p
           className={cn(
             "mt-2 font-ui text-t-body",
-            capital.idle_pct >= 25 ? "text-warn" : "text-fg-secondary",
+            capital.idle_pct >= 25 ? "text-warn-dim" : "text-fg-secondary",
           )}
         >
           {capital.verdict}

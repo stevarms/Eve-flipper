@@ -951,6 +951,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/auth/positions", s.handleAuthPositions)
 	mux.HandleFunc("POST /api/auth/positions", s.handleAuthPositionSave)
 	mux.HandleFunc("DELETE /api/auth/positions/{id}", s.handleAuthPositionDelete)
+	// Holding rules: hold-until-price and reserved units. Primary surface is
+	// Assets -> Positions; see internal/api/holding_rules.go.
+	mux.HandleFunc("GET /api/auth/holding-rules", s.handleAuthHoldingRules)
+	mux.HandleFunc("PUT /api/auth/holding-rules/{typeID}", s.handleAuthHoldingRuleSave)
+	mux.HandleFunc("DELETE /api/auth/holding-rules/{typeID}", s.handleAuthHoldingRuleDelete)
+	mux.HandleFunc("GET /api/auth/holding-rules/{typeID}/percentiles", s.handleAuthHoldingRulePercentiles)
 	mux.HandleFunc("GET /api/auth/orders/desk/disposition", s.handleAuthOrderDisposition)
 	mux.HandleFunc("GET /api/auth/station/trade-states", s.handleAuthGetStationTradeStates)
 	mux.HandleFunc("POST /api/auth/station/trade-states/set", s.handleAuthSetStationTradeState)

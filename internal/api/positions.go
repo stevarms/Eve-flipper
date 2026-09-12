@@ -55,9 +55,40 @@ type PositionRow struct {
 	ListedPrice float64 `json:"listed_price"`
 
 	// Manual-entry fields, zero/empty for derived rows.
-	ManualID    int64   `json:"manual_id,omitempty"`
+	ManualID int64  `json:"manual_id,omitempty"`
+	Note     string `json:"note,omitempty"`
+
+	// --- Holding rule (holding_rules, keyed by type) ---
+	//
+	// The two reasons a thing you own is not for sale today. Both apply to
+	// derived and manual rows alike, which is why they are keyed by type
+	// rather than carried on the position.
+
+	// TargetPrice is the unit price at or above which you want to sell.
+	// Zero means the holding trades normally.
 	TargetPrice float64 `json:"target_price,omitempty"`
-	Note        string  `json:"note,omitempty"`
+	// TargetPercentile is the trailing-year percentile the target came from,
+	// zero when it was typed in. TargetBasis is "percentile" or "manual".
+	TargetPercentile float64 `json:"target_percentile,omitempty"`
+	TargetBasis      string  `json:"target_basis,omitempty"`
+	// TargetMet is whether the market has reached the target. False with a
+	// target set is the "waiting" state; there is no third option, so the UI
+	// never has to infer it from a price comparison of its own.
+	TargetMet bool `json:"target_met,omitempty"`
+	// TargetProgressPct is how far the current price has come toward the
+	// target, 0-100, for the progress readout. Zero when there is no target
+	// or no price to compare against.
+	TargetProgressPct float64 `json:"target_progress_pct,omitempty"`
+
+	// ReservedQty is units held back from trading entirely -- the ships you
+	// actually fly. TradeableQty is Qty less that, and is what every
+	// sell-side figure on this row is computed from.
+	ReservedQty  int64 `json:"reserved_qty,omitempty"`
+	TradeableQty int64 `json:"tradeable_qty"`
+
+	// RuleNote is the holding rule's note, distinct from Note above, which
+	// belongs to a manual entry.
+	RuleNote string `json:"rule_note,omitempty"`
 }
 
 // PositionsResponse wraps the rows with the caveats the header has to state.
@@ -331,6 +362,8 @@ func (s *Server) buildPositions(
 		resp.TotalUnrealized += row.UnrealizedISK
 	}
 
+	applyHoldingRules(rows, s.holdingRulesFor(userID))
+
 	// Biggest unrealized swing first — the rows worth a decision today.
 	sort.SliceStable(rows, func(i, j int) bool {
 		return math.Abs(rows[i].UnrealizedISK) > math.Abs(rows[j].UnrealizedISK)
@@ -457,4 +490,64 @@ func (s *Server) handleAuthPositionDelete(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, map[string]any{"ok": true})
+}
+
+// holdingRulesFor reads the user's per-type selling constraints.
+func (s *Server) holdingRulesFor(userID string) map[int32]db.HoldingRule {
+	if s.db == nil {
+		return map[int32]db.HoldingRule{}
+	}
+	return s.db.GetHoldingRules(userID)
+}
+
+// applyHoldingRules stamps each row with its rule and derives the two figures
+// that depend on it.
+//
+// TradeableQty is always set, rule or not, so every consumer can read one
+// field instead of remembering to subtract. That matters because the
+// subtraction is the whole point: a position of six Gnosis with two reserved
+// is a position of four as far as selling is concerned, and a caller that
+// forgets would quietly advise selling the ships being flown.
+func applyHoldingRules(rows []PositionRow, rules map[int32]db.HoldingRule) {
+	for i := range rows {
+		row := &rows[i]
+		row.TradeableQty = row.Qty
+
+		rule, ok := rules[row.TypeID]
+		if !ok {
+			continue
+		}
+
+		if rule.ReservedQty > 0 {
+			row.ReservedQty = rule.ReservedQty
+			row.TradeableQty = row.Qty - rule.ReservedQty
+			if row.TradeableQty < 0 {
+				// Reserved more than is held: the position shrank since the
+				// rule was set. Nothing is for sale, which is the safe read.
+				row.TradeableQty = 0
+			}
+		}
+
+		row.RuleNote = rule.Note
+		if rule.TargetPrice <= 0 {
+			continue
+		}
+		row.TargetPrice = rule.TargetPrice
+		row.TargetPercentile = rule.TargetPercentile
+		row.TargetBasis = rule.TargetBasis
+		if row.MarketPrice > 0 {
+			row.TargetMet = row.MarketPrice >= rule.TargetPrice
+			row.TargetProgressPct = clampPercent(row.MarketPrice / rule.TargetPrice * 100)
+		}
+	}
+}
+
+func clampPercent(v float64) float64 {
+	if math.IsNaN(v) || v < 0 {
+		return 0
+	}
+	if v > 100 {
+		return 100
+	}
+	return v
 }

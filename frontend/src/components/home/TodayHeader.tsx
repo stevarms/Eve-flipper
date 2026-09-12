@@ -100,7 +100,7 @@ export function TodayHeader({
       )}
 
       {!refreshing && stale && age && (
-        <p className="w-full font-ui text-t-caption text-warn">
+        <p className="w-full font-ui text-t-caption text-warn-dim">
           {t("todayPlanStale", { age })}
         </p>
       )}

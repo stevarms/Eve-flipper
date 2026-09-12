@@ -867,8 +867,74 @@ export interface PositionRow {
   listed_qty: number;
   listed_price: number;
   manual_id?: number;
-  target_price?: number;
   note?: string;
+
+  // --- Holding rule (per type, see HoldingRule) ---
+  /** Unit price at or above which you want to sell. 0 = trades normally. */
+  target_price?: number;
+  /** Trailing-year percentile the target came from; 0 when hand-typed. */
+  target_percentile?: number;
+  target_basis?: "percentile" | "manual" | string;
+  /** Decided server-side against the same hub price the row is quoted in,
+   *  so the UI never re-derives it from a possibly different price. */
+  target_met?: boolean;
+  /** How far the current price has come toward the target, 0-100. */
+  target_progress_pct?: number;
+  /** Units held back from trading entirely - the ships you actually fly. */
+  reserved_qty?: number;
+  /** qty less reserved_qty. Every sell-side figure reads this, not qty. */
+  tradeable_qty: number;
+  /** The holding rule's note, distinct from `note` (a manual entry's). */
+  rule_note?: string;
+}
+
+/** Per-type selling constraints. Set on Assets -> Positions; Today only
+ *  reflects them. */
+export interface HoldingRule {
+  type_id: number;
+  target_price: number;
+  target_percentile: number;
+  target_basis: string;
+  reserved_qty: number;
+  note: string;
+  updated_at: string;
+}
+
+/** One suggested target, from the item's own trailing year. */
+export interface HoldingRuleChoice {
+  percentile: number;
+  price: number;
+  label: string;
+}
+
+/** Where an item's price sits in its own year. Mirrors
+ *  engine.PricePercentiles. */
+export interface PricePercentiles {
+  basis: "history" | "none" | string;
+  reason?: string;
+  window_days: number;
+  samples: number;
+  traded_days: number;
+  p10: number;
+  p25: number;
+  p50: number;
+  p75: number;
+  p90: number;
+  p95: number;
+  min: number;
+  max: number;
+  current: number;
+  /** 0 = cheapest it has been all year, 100 = dearest. */
+  current_percentile: number;
+  avg_daily_volume: number;
+  avg_daily_isk: number;
+}
+
+export interface HoldingRulePercentilesResponse {
+  type_id: number;
+  region_id: number;
+  percentiles: PricePercentiles;
+  choices: HoldingRuleChoice[];
 }
 
 export interface PositionsResponse {
@@ -4230,6 +4296,22 @@ export interface TodayBudget {
   beyond_isk_7d: number;
 }
 
+/** A holding parked behind a target price. Not an action - there is nothing
+ *  to do about it today - but visible so held stock is not silently absent. */
+export interface TodayWaitingRow {
+  type_id: number;
+  type_name: string;
+  qty: number;
+  reserved_qty?: number;
+  target_price: number;
+  market_price: number;
+  target_progress_pct: number;
+  target_percentile?: number;
+  /** What waiting is worth if the target is reached. */
+  upside_isk: number;
+  deep_link: TodayDeepLink;
+}
+
 export interface TodayPlan {
   generated_at: string;
   capital: TodayCapital;
@@ -4237,6 +4319,7 @@ export interface TodayPlan {
   actions: TodayAction[];
   not_advised: TodayAction[];
   options: TodayOption[];
+  waiting: TodayWaitingRow[];
   batches: TodayBatch[];
   timing: TodayTiming;
   budget: TodayBudget;

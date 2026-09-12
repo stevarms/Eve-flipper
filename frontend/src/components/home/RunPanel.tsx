@@ -247,7 +247,7 @@ export function RunPanel({
             {formatISK(action.downside_isk_7d)}
           </span>
           <span className="text-fg-tertiary"> {t("todayRealisticCase")} · </span>
-          <span className={cn("font-num tnum", action.at_risk_isk > 0 ? "text-warn" : "text-fg-tertiary")}>
+          <span className={cn("font-num tnum", action.at_risk_isk > 0 ? "text-fg-secondary" : "text-fg-tertiary")}>
             {action.at_risk_isk > 0
               ? `${formatISK(action.at_risk_isk)} ${t("todayAtRisk")}`
               : t("todayNothingAtRisk")}

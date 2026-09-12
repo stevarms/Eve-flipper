@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"math"
+	"strings"
 	"testing"
 	"time"
 )
@@ -544,5 +545,161 @@ func TestBuildTodayPlanBatchesCarryOnlyAdvisedRows(t *testing.T) {
 		if item.TypeID == 2 {
 			t.Fatal("a blocked row reached the multibuy batch, bypassing the grading entirely")
 		}
+	}
+}
+
+// --- Holding rules -----------------------------------------------------
+
+func todayHeldPosition(overrides func(*TodayPosition)) TodayPosition {
+	p := TodayPosition{
+		TypeID: 3756, TypeName: "Gnosis", Qty: 6, TradeableQty: 6,
+		AvgUnitCost: 60e6, CostBasis: 360e6,
+		MarketPrice: 71.4e6, UnrealizedISK: 40e6, UnrealizedPct: 11,
+		StationID: 60003760, StationName: "Jita IV-4",
+	}
+	if overrides != nil {
+		overrides(&p)
+	}
+	return p
+}
+
+func todayPlanWithPosition(p TodayPosition) TodayPlan {
+	return BuildTodayPlan(TodayInputs{
+		Now:         todayTestNow,
+		Capital:     TodayCapitalInput{WalletISK: 1e9},
+		Positions:   []TodayPosition{p},
+		ItemHistory: todayTestGoodHistory(p.TypeID),
+	}, TodayOpts{})
+}
+
+// The Gnosis case: held for a seasonal spike, so it must stop being the top
+// thing the queue tells you to sell.
+func TestBuildTodayPlanDoesNotAdviseSellingBelowTarget(t *testing.T) {
+	plan := todayPlanWithPosition(todayHeldPosition(func(p *TodayPosition) {
+		p.TargetPrice = 92e6
+		p.TargetMet = false
+		p.TargetProgressPct = 77.6
+	}))
+
+	for _, a := range plan.Actions {
+		if a.Kind == TodayActionList {
+			t.Fatalf("advised listing below target: %q", a.Headline)
+		}
+	}
+	if len(plan.Waiting) != 1 {
+		t.Fatalf("waiting rows = %d, want 1 - a held item must stay visible, not vanish", len(plan.Waiting))
+	}
+	w := plan.Waiting[0]
+	if w.TargetPrice != 92e6 || w.MarketPrice != 71.4e6 {
+		t.Fatalf("waiting row = %+v", w)
+	}
+	// Waiting is only worth anything if the page can say what for.
+	if w.UpsideISK <= 0 {
+		t.Fatal("waiting row reports no upside, so the page cannot say why you are holding")
+	}
+	if w.DeepLink.Tab != "positions" {
+		t.Fatalf("waiting row links to %q, want the tab where the rule is set", w.DeepLink.Tab)
+	}
+}
+
+// And the moment it is reached, it should be the most urgent thing on the
+// sell side -- the price that produced it can go away.
+func TestBuildTodayPlanSurfacesAReachedTargetUrgently(t *testing.T) {
+	plan := todayPlanWithPosition(todayHeldPosition(func(p *TodayPosition) {
+		p.TargetPrice = 92e6
+		p.MarketPrice = 94.5e6
+		p.TargetMet = true
+		p.TargetProgressPct = 100
+	}))
+
+	a, ok := todayFindAction(t, plan.Actions, 3756)
+	if !ok {
+		t.Fatalf("no action once the target was met; waiting=%d", len(plan.Waiting))
+	}
+	if a.Kind != TodayActionList {
+		t.Fatalf("kind = %q, want list", a.Kind)
+	}
+	if a.Urgency != "now" {
+		t.Fatalf("urgency = %q, want now", a.Urgency)
+	}
+	if !strings.Contains(strings.ToLower(a.Headline), "target hit") {
+		t.Fatalf("headline = %q, want it to say the target was reached", a.Headline)
+	}
+	if len(plan.Waiting) != 0 {
+		t.Fatal("still listed as waiting after the target was met")
+	}
+}
+
+// Reserved units are the ships being flown. Advising their sale is the one
+// mistake this feature exists to prevent.
+func TestBuildTodayPlanNeverOffersReservedUnits(t *testing.T) {
+	plan := todayPlanWithPosition(todayHeldPosition(func(p *TodayPosition) {
+		p.Qty = 6
+		p.ReservedQty = 2
+		p.TradeableQty = 4
+	}))
+
+	a, ok := todayFindAction(t, plan.Actions, 3756)
+	if !ok {
+		t.Fatal("no list action for a partly-reserved holding")
+	}
+	if a.Quantity != 4 {
+		t.Fatalf("quantity = %d, want 4 (6 held less 2 reserved)", a.Quantity)
+	}
+	if !strings.Contains(a.Why, "reserved") {
+		t.Fatalf("why = %q, want it to explain the smaller quantity", a.Why)
+	}
+}
+
+// Reserving everything means there is nothing to sell, and no row at all.
+func TestBuildTodayPlanSkipsAFullyReservedHolding(t *testing.T) {
+	plan := todayPlanWithPosition(todayHeldPosition(func(p *TodayPosition) {
+		p.Qty = 2
+		p.ReservedQty = 2
+		p.TradeableQty = 0
+	}))
+
+	if _, ok := todayFindAction(t, plan.Actions, 3756); ok {
+		t.Fatal("advised selling a holding that is entirely reserved")
+	}
+	if len(plan.Waiting) != 0 {
+		t.Fatal("a fully reserved holding is not waiting on a price; it is simply not stock")
+	}
+}
+
+// Listed units come off the tradeable count, not the held count, or a
+// reserved holding that is already partly listed would be double-counted.
+func TestBuildTodayPlanNetsListedAgainstTradeableNotHeld(t *testing.T) {
+	plan := todayPlanWithPosition(todayHeldPosition(func(p *TodayPosition) {
+		p.Qty = 10
+		p.ReservedQty = 4
+		p.TradeableQty = 6
+		p.ListedQty = 5
+	}))
+
+	a, ok := todayFindAction(t, plan.Actions, 3756)
+	if !ok {
+		t.Fatal("no action for a partly listed, partly reserved holding")
+	}
+	if a.Quantity != 1 {
+		t.Fatalf("quantity = %d, want 1 (10 held, 4 reserved, 5 already listed)", a.Quantity)
+	}
+}
+
+// An older cached plan predates TradeableQty. It must not read as "nothing is
+// sellable" just because a field it never had is zero.
+func TestBuildTodayPlanFallsBackWhenTradeableQtyIsUnset(t *testing.T) {
+	plan := todayPlanWithPosition(todayHeldPosition(func(p *TodayPosition) {
+		p.Qty = 6
+		p.TradeableQty = 0
+		p.ReservedQty = 0
+	}))
+
+	a, ok := todayFindAction(t, plan.Actions, 3756)
+	if !ok {
+		t.Fatal("a position with no tradeable figure was dropped entirely")
+	}
+	if a.Quantity != 6 {
+		t.Fatalf("quantity = %d, want the full 6", a.Quantity)
 	}
 }

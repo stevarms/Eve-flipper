@@ -95,6 +95,8 @@ import type {
   TodayPlan,
   TodayPlanEnvelope,
   TodayActionStatePayload,
+  HoldingRule,
+  HoldingRulePercentilesResponse,
 } from "./types";
 import type { CockpitLoadout, CockpitPreferences } from "./cockpit";
 import {
@@ -3558,4 +3560,61 @@ export async function setTodayActionState(payload: TodayActionStatePayload): Pro
     body: JSON.stringify(payload),
   });
   await handleResponse<{ ok: boolean }>(res);
+}
+
+// --- Holding rules -----------------------------------------------------
+//
+// "Hold this until it is worth X" and "these ones are not stock". Set on
+// Assets -> Positions, which is the tab that already asks whether to sell a
+// holding today; Today only reflects the answer.
+
+export async function getHoldingRules(): Promise<HoldingRule[]> {
+  const res = await apiFetch(`${BASE}/api/auth/holding-rules`);
+  const data = await handleResponse<{ rules?: HoldingRule[] }>(res);
+  return data.rules ?? [];
+}
+
+/**
+ * Store a rule for one type. Returns what was actually stored, which may be
+ * empty: a rule that constrains nothing is deleted server-side, so echoing
+ * the request back would claim a target exists after it was cleared.
+ */
+export async function setHoldingRule(
+  typeId: number,
+  rule: {
+    target_price?: number;
+    target_percentile?: number;
+    target_basis?: string;
+    reserved_qty?: number;
+    note?: string;
+  },
+): Promise<HoldingRule> {
+  const res = await apiFetch(`${BASE}/api/auth/holding-rules/${typeId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(rule),
+  });
+  return handleResponse<HoldingRule>(res);
+}
+
+export async function deleteHoldingRule(typeId: number): Promise<void> {
+  const res = await apiFetch(`${BASE}/api/auth/holding-rules/${typeId}`, { method: "DELETE" });
+  await handleResponse<{ ok: boolean }>(res);
+}
+
+/**
+ * Suggested targets from the item's own trailing year.
+ *
+ * Five named percentiles rather than a continuous slider: the distribution
+ * they come from is not sent (a year of daily prices per item would dwarf the
+ * payload), and "typical / strong / rare / peak" is enough to express an
+ * intent. `percentiles.basis === "none"` means the item has too little traded
+ * history to suggest anything, and the editor must fall back to a typed price
+ * rather than offer a number built from nothing.
+ */
+export async function getHoldingRulePercentiles(
+  typeId: number,
+): Promise<HoldingRulePercentilesResponse> {
+  const res = await apiFetch(`${BASE}/api/auth/holding-rules/${typeId}/percentiles`);
+  return handleResponse<HoldingRulePercentilesResponse>(res);
 }

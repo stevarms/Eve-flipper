@@ -49,7 +49,24 @@ func (d *DB) GetMarketHistory(regionID int32, typeID int32) ([]esi.HistoryEntry,
 }
 
 // SetMarketHistory stores market history entries in the cache.
-// Only entries from the last 90 days are stored to bound database growth.
+// Entries older than marketHistoryRetentionDays are dropped to bound database
+// growth.
+// How much history is kept per (region, type).
+//
+// This was 90 days, which silently capped two consumers that ask for more:
+// engine.CalcRecoveryOutlook fits a 180-day trend, and engine's price
+// percentiles need a full year so an annual cycle appears exactly once (a
+// seasonal item judged against half its own pattern is judged against the
+// wrong thing). Both were quietly working on whatever 90 days happened to
+// contain.
+//
+// ESI serves roughly 390 days, so this keeps essentially all of what is on
+// offer plus a small margin. The cost is bounded and modest: one row per
+// traded day per (region, type), which at the ~5,000 pairs a heavy user
+// accumulates is a few hundred thousand rows -- tens of MB, against a cache
+// that already holds far larger tables.
+const marketHistoryRetentionDays = 400
+
 func (d *DB) SetMarketHistory(regionID int32, typeID int32, entries []esi.HistoryEntry) {
 	tx, err := d.sql.Begin()
 	if err != nil {
@@ -66,8 +83,7 @@ func (d *DB) SetMarketHistory(regionID int32, typeID int32, entries []esi.Histor
 	}
 	defer stmt.Close()
 
-	// Only keep last 90 days of data
-	cutoff := time.Now().AddDate(0, 0, -90).Format("2006-01-02")
+	cutoff := time.Now().AddDate(0, 0, -marketHistoryRetentionDays).Format("2006-01-02")
 	for _, e := range entries {
 		if e.Date >= cutoff {
 			stmt.Exec(regionID, typeID, e.Date, e.Average, e.Highest, e.Lowest, e.Volume, e.OrderCount)
@@ -83,15 +99,15 @@ func (d *DB) SetMarketHistory(regionID int32, typeID int32, entries []esi.Histor
 	tx.Commit()
 }
 
-// CleanupOldHistory removes market history data older than 90 days and
-// meta entries that haven't been refreshed in over 30 days.
+// CleanupOldHistory removes market history older than the retention window
+// and meta entries that haven't been refreshed in over 30 days.
 // Should be called periodically (e.g. on startup or daily) to prevent
 // unbounded SQLite database growth.
 func (d *DB) CleanupOldHistory() {
-	cutoffDate := time.Now().AddDate(0, 0, -90).Format("2006-01-02")
+	cutoffDate := time.Now().AddDate(0, 0, -marketHistoryRetentionDays).Format("2006-01-02")
 	cutoffMeta := time.Now().AddDate(0, 0, -30).Format(time.RFC3339)
 
-	// Delete history rows older than 90 days
+	// Delete history rows past the retention window
 	res, err := d.sql.Exec("DELETE FROM market_history WHERE date < ?", cutoffDate)
 	if err != nil {
 		log.Printf("[DB] CleanupOldHistory: history delete error: %v", err)

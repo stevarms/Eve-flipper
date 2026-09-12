@@ -12,6 +12,7 @@ import { CapitalBar } from "./CapitalBar";
 import { NotAdvisedPanel } from "./NotAdvisedPanel";
 import { OptionsPanel } from "./OptionsPanel";
 import { RunPanel } from "./RunPanel";
+import { WaitingPanel } from "./WaitingPanel";
 import { TodayHeader, type TodayView } from "./TodayHeader";
 
 /**
@@ -230,7 +231,7 @@ export function HomeWorkspace({ isLoggedIn, onNavigate }: HomeWorkspaceProps) {
           <CapitalBar capital={plan.capital} performance={plan.performance} />
 
           {plan.warnings?.map((warning) => (
-            <p key={warning} className="font-ui text-t-caption text-warn">
+            <p key={warning} className="font-ui text-t-caption text-warn-dim">
               {warning}
             </p>
           ))}
@@ -269,6 +270,7 @@ export function HomeWorkspace({ isLoggedIn, onNavigate }: HomeWorkspaceProps) {
             />
           )}
 
+          <WaitingPanel rows={plan.waiting ?? []} onOpen={(r) => navigateTo(r.deep_link)} />
           <BatchBar batches={plan.batches} />
           <OptionsPanel options={plan.options} onNavigate={onOptionDetails} />
           <NotAdvisedPanel actions={plan.not_advised} onDetails={onDetails} />

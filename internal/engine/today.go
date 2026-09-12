@@ -259,6 +259,31 @@ type TodayBatch struct {
 	DownsideISK7d       float64          `json:"downside_isk_7d"`
 }
 
+// TodayWaitingRow is a holding parked behind a target price.
+//
+// Not an action, on purpose. There is nothing to do about it today, and
+// putting it in the queue as a zero-value row would be noise. It exists so
+// that stock deliberately held back is visible rather than silently missing --
+// "why is my Gnosis not in the list" has to have an answer on the page.
+type TodayWaitingRow struct {
+	TypeID   int32  `json:"type_id"`
+	TypeName string `json:"type_name"`
+
+	Qty         int64 `json:"qty"`
+	ReservedQty int64 `json:"reserved_qty,omitempty"`
+
+	TargetPrice       float64 `json:"target_price"`
+	MarketPrice       float64 `json:"market_price"`
+	TargetProgressPct float64 `json:"target_progress_pct"`
+	TargetPercentile  float64 `json:"target_percentile,omitempty"`
+
+	// UpsideISK is what waiting is worth if the target is reached: the gap
+	// between the target and today's price across the tradeable units.
+	UpsideISK float64 `json:"upside_isk"`
+
+	DeepLink TodayDeepLink `json:"deep_link"`
+}
+
 // TodayTiming is the session-level answer to "is today a good day". Filled
 // once the order desk publishes its day-of-week profile.
 type TodayTiming struct {
@@ -287,8 +312,11 @@ type TodayPlan struct {
 	// NotAdvised carries what was held back and why. Visible on purpose: a
 	// risk model the user cannot audit is one they will stop believing.
 	NotAdvised []TodayAction `json:"not_advised"`
-	Options    []TodayOption `json:"options"`
-	Batches    []TodayBatch  `json:"batches"`
+	Options []TodayOption `json:"options"`
+	// Waiting is stock parked behind a target price. A summary only -- the
+	// rules are set on Assets -> Positions, which is where the holding lives.
+	Waiting []TodayWaitingRow `json:"waiting"`
+	Batches []TodayBatch      `json:"batches"`
 	Timing     TodayTiming   `json:"timing"`
 	Budget     TodayBudget   `json:"budget"`
 	Warnings   []string      `json:"warnings,omitempty"`
@@ -300,11 +328,26 @@ type TodayPlan struct {
 // stays free of the api package (which imports it) and the whole model can
 // be exercised from a table test with no fixtures.
 
-// TodayPosition is held stock, from the FIFO positions view.
+// TodayPosition is held stock, from the FIFO positions view, already
+// stamped with its holding rule by the api layer.
 type TodayPosition struct {
 	TypeID        int32
 	TypeName      string
 	Qty           int64
+	// TradeableQty is Qty less any reserved units -- the ships being flown.
+	// Every sell-side figure reads this rather than Qty, which is the whole
+	// point of the reserve: a position of six with two reserved is a position
+	// of four as far as selling is concerned.
+	TradeableQty int64
+	ReservedQty  int64
+	// TargetPrice is the price at or above which selling is wanted. Zero
+	// means the holding trades normally. TargetMet is decided upstream
+	// against the same hub price the row is quoted in, so the engine never
+	// re-derives it from a possibly different price.
+	TargetPrice       float64
+	TargetMet         bool
+	TargetProgressPct float64
+	TargetPercentile  float64
 	AvgUnitCost   float64
 	CostBasis     float64
 	MarketPrice   float64
@@ -413,6 +456,7 @@ func BuildTodayPlan(in TodayInputs, opts TodayOpts) TodayPlan {
 		Actions:     []TodayAction{},
 		NotAdvised:  []TodayAction{},
 		Options:     []TodayOption{},
+		Waiting:     []TodayWaitingRow{},
 		Batches:     []TodayBatch{},
 		Timing:      TodayTiming{BestWeekday: -1},
 	}
@@ -433,7 +477,9 @@ func BuildTodayPlan(in TodayInputs, opts TodayOpts) TodayPlan {
 	var all []TodayAction
 	all = append(all, todayDeskActions(in, now, dailyReturn)...)
 	all = append(all, todayBuyActions(in, now)...)
-	all = append(all, todayListActions(in, now)...)
+	listActions, waiting := todayListActions(in, now)
+	all = append(all, listActions...)
+	plan.Waiting = waiting
 	all = append(all, todayDeliverActions(in, now)...)
 	all = append(all, todayPIActions(in, now)...)
 
@@ -976,14 +1022,46 @@ func todayScanRiskReason(t StationTrade) string {
 
 // --- Listing held stock ------------------------------------------------
 
-func todayListActions(in TodayInputs, now time.Time) []TodayAction {
+func todayListActions(in TodayInputs, now time.Time) ([]TodayAction, []TodayWaitingRow) {
 	out := make([]TodayAction, 0, len(in.Positions))
+	waiting := make([]TodayWaitingRow, 0)
+
 	for _, p := range in.Positions {
-		unlisted := p.Qty - p.ListedQty
-		if unlisted <= 0 || p.Qty <= 0 {
+		// Reserved units are not stock. Fall back to Qty only when the api
+		// layer did not stamp a tradeable figure, so an older cached plan
+		// does not read as "nothing is sellable".
+		tradeable := p.TradeableQty
+		if tradeable == 0 && p.ReservedQty == 0 {
+			tradeable = p.Qty
+		}
+		if tradeable <= 0 {
 			continue
 		}
-		share := float64(unlisted) / float64(p.Qty)
+
+		// A target that has not been reached is the whole reason this
+		// holding is not in the queue. Say so somewhere rather than just
+		// dropping it.
+		if p.TargetPrice > 0 && !p.TargetMet {
+			waiting = append(waiting, TodayWaitingRow{
+				TypeID:            p.TypeID,
+				TypeName:          p.TypeName,
+				Qty:               tradeable,
+				ReservedQty:       p.ReservedQty,
+				TargetPrice:       p.TargetPrice,
+				MarketPrice:       p.MarketPrice,
+				TargetProgressPct: p.TargetProgressPct,
+				TargetPercentile:  p.TargetPercentile,
+				UpsideISK:         math.Max(0, p.TargetPrice-p.MarketPrice) * float64(tradeable),
+				DeepLink:          TodayDeepLink{Tab: "positions", TypeID: p.TypeID},
+			})
+			continue
+		}
+
+		unlisted := tradeable - p.ListedQty
+		if unlisted <= 0 {
+			continue
+		}
+		share := float64(unlisted) / float64(tradeable)
 
 		// Undercut the hub's best ask by one legal step, so the paste is a
 		// price that takes top of book rather than one that joins a queue.
@@ -992,6 +1070,17 @@ func todayListActions(in TodayInputs, now time.Time) []TodayAction {
 		expected := p.UnrealizedISK * share
 		downside := expected * todayListDownsideFactor
 
+		// A holding whose target has just been reached is the one thing on
+		// this page that is genuinely time-sensitive on the sell side: it is
+		// the moment you have been waiting for, and the price that produced
+		// it can go away.
+		headline := fmt.Sprintf("List %s at %s", todayQty(unlisted), todayPrice(ask))
+		urgency := "today"
+		if p.TargetPrice > 0 && p.TargetMet {
+			headline = fmt.Sprintf("Target hit — list %s at %s", todayQty(unlisted), todayPrice(ask))
+			urgency = "now"
+		}
+
 		a := TodayAction{
 			ID:            todayActionID(TodayActionList, p.TypeID, p.StationID, 0),
 			Kind:          TodayActionList,
@@ -999,7 +1088,7 @@ func todayListActions(in TodayInputs, now time.Time) []TodayAction {
 			TypeName:      p.TypeName,
 			LocationID:    p.StationID,
 			LocationName:  p.StationName,
-			Headline:      fmt.Sprintf("List %s at %s", todayQty(unlisted), todayPrice(ask)),
+			Headline:      headline,
 			Why:           todayListWhy(p, unlisted),
 			CurrentPrice:  p.MarketPrice,
 			PastePrice:    ask,
@@ -1008,7 +1097,7 @@ func todayListActions(in TodayInputs, now time.Time) []TodayAction {
 			ExpectedISK7d: expected,
 			DownsideISK7d: downside,
 			EstSeconds:    todaySecondsList,
-			Urgency:       "today",
+			Urgency:       urgency,
 			DeepLink:      TodayDeepLink{Tab: "positions", TypeID: p.TypeID, StationID: p.StationID},
 		}
 
@@ -1026,7 +1115,7 @@ func todayListActions(in TodayInputs, now time.Time) []TodayAction {
 		a.Reliability = gradeTodayAction(ev)
 		out = append(out, a)
 	}
-	return out
+	return out, waiting
 }
 
 func todayListWhy(p TodayPosition, unlisted int64) string {
@@ -1039,6 +1128,12 @@ func todayListWhy(p TodayPosition, unlisted int64) string {
 	}
 	if p.ListedQty > 0 {
 		parts = append(parts, fmt.Sprintf("%s of %s still unlisted", todayQty(unlisted), todayQty(p.Qty)))
+	}
+	if p.ReservedQty > 0 {
+		parts = append(parts, fmt.Sprintf("%s reserved, not for sale", todayQty(p.ReservedQty)))
+	}
+	if p.TargetPrice > 0 && p.TargetMet {
+		parts = append(parts, fmt.Sprintf("target of %s reached", todayPrice(p.TargetPrice)))
 	}
 	return strings.Join(parts, " · ")
 }

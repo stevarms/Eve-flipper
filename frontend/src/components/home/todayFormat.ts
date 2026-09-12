@@ -25,11 +25,19 @@ export const TODAY_GRADE_WHY: Record<TodayGrade, TranslationKey> = {
   avoid: "todayGradeWhyAvoid",
 };
 
-/** Grades are status, so they take Badge tones rather than ad-hoc colours. */
-export const TODAY_GRADE_TONE: Record<TodayGrade, "profit" | "info" | "warn" | "loss"> = {
+/**
+ * Grades are the one place on Today where colour carries a verdict, so they
+ * are the one place that spends semantic colour.
+ *
+ * `unproven` is neutral rather than amber on purpose: it means "we cannot
+ * tell", which is an absence of evidence and not a hazard. Amber there put
+ * two thirds of a cold-start queue in warning colours and left nothing for
+ * `avoid` to escalate to.
+ */
+export const TODAY_GRADE_TONE: Record<TodayGrade, "profit" | "info" | "neutral" | "loss"> = {
   proven: "profit",
   likely: "info",
-  unproven: "warn",
+  unproven: "neutral",
   avoid: "loss",
 };
 

@@ -211,6 +211,7 @@ export function PositionsTab() {
         brokerFeePercent={data?.broker_fee_percent ?? 0}
         onClose={() => setInspected(null)}
         onDelete={(id) => void removeManual(id)}
+        onRuleSaved={() => void load()}
         t={t}
         locale={locale}
       />
@@ -297,13 +298,36 @@ function Row({
         {t("positionsAgeDays", { n: row.days_held })}
       </td>
       <td className="px-2 py-1 text-right">
-        {row.listed_qty > 0 ? (
-          <Badge tone="accent" title={t("positionsListedHint")}>
-            {t("positionsListed", { n: formatNumber(row.listed_qty) })}
-          </Badge>
-        ) : (
-          <span className="text-fg-tertiary">—</span>
-        )}
+        {/* Status, most decision-relevant first. A holding behind a target is
+            the reason it is absent from Today's queue, so it has to be legible
+            here rather than only inside the drawer. */}
+        <span className="inline-flex flex-wrap items-center justify-end gap-1">
+          {row.target_price ? (
+            row.target_met ? (
+              <Badge tone="profit">{t("holdingRuleTargetMet")}</Badge>
+            ) : (
+              <Badge tone="info" title={t("holdingRuleTargetHint")}>
+                {t("holdingRuleWaiting", { price: formatIsk(row.target_price) })}
+              </Badge>
+            )
+          ) : null}
+          {row.reserved_qty ? (
+            <Badge tone="neutral" title={t("holdingRuleReservedHint")}>
+              {t("holdingRuleTradeable", {
+                n: formatNumber(row.tradeable_qty),
+                total: formatNumber(row.qty),
+              })}
+            </Badge>
+          ) : null}
+          {row.listed_qty > 0 ? (
+            <Badge tone="accent" title={t("positionsListedHint")}>
+              {t("positionsListed", { n: formatNumber(row.listed_qty) })}
+            </Badge>
+          ) : null}
+          {!row.target_price && !row.reserved_qty && row.listed_qty <= 0 && (
+            <span className="text-fg-tertiary">—</span>
+          )}
+        </span>
       </td>
     </tr>
   );

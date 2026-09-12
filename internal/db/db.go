@@ -1931,6 +1931,43 @@ func (d *DB) migrate() error {
 		logger.Info("DB", "Applied migration v45 (today plan + action state)")
 	}
 
+	if version < 46 {
+		// Per-type holding rules: the two reasons a thing you own should not
+		// be sold today.
+		//
+		// A target price says "hold this until it is worth what I think it is
+		// worth" — a seasonal item waiting on an event, a dip waiting to
+		// recover. Until the market reaches it, Today has no business telling
+		// you to list.
+		//
+		// A reserved quantity says "these are not stock" — the ships you
+		// actually fly. It is a count rather than a flag because owning six
+		// and flying two is the normal case, and a flag would make the other
+		// four invisible.
+		//
+		// Keyed by type rather than by position id so a rule survives the FIFO
+		// engine recomputing your holdings, and so it applies to derived and
+		// hand-entered rows alike. manual_positions.target_price predates this
+		// and only ever reached manual rows; nothing consumed it.
+		if _, err := d.sql.Exec(`
+			CREATE TABLE IF NOT EXISTS holding_rules (
+				user_id           TEXT    NOT NULL,
+				type_id           INTEGER NOT NULL,
+				target_price      REAL    NOT NULL DEFAULT 0,
+				target_percentile REAL    NOT NULL DEFAULT 0,
+				target_basis      TEXT    NOT NULL DEFAULT '',
+				reserved_qty      INTEGER NOT NULL DEFAULT 0,
+				note              TEXT    NOT NULL DEFAULT '',
+				updated_at        TEXT    NOT NULL DEFAULT '',
+				PRIMARY KEY (user_id, type_id)
+			);
+			INSERT OR IGNORE INTO schema_version (version) VALUES (46);
+		`); err != nil {
+			return fmt.Errorf("migration v46: %w", err)
+		}
+		logger.Info("DB", "Applied migration v46 (holding rules)")
+	}
+
 	return nil
 }
 
