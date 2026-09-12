@@ -119,6 +119,18 @@ describe("RunPanel", () => {
     }
   });
 
+  // The reader and the clipboard get different strings on purpose. Rendering
+  // the bare digits makes 1237000 and 12370000 the same shape at a glance;
+  // copying the grouped ones gives EVE a price it cannot parse. Both
+  // directions are one careless edit away, so both are pinned.
+  it("shows the price grouped while copying it bare", async () => {
+    renderPanel({ paste_price: 1_237_000 });
+    expect(await screen.findByText("1,237,000")).toBeInTheDocument();
+    await waitFor(() => expect(clipboard.length).toBeGreaterThan(0));
+    expect(clipboard).toContain("1237000");
+    for (const text of clipboard) expect(text).not.toContain(",");
+  });
+
   // A refused clipboard must not be reported as a successful one. Claiming a
   // price is ready to paste when it is not is worse than saying nothing.
   it("does not claim the clipboard holds the price when the write was refused", async () => {

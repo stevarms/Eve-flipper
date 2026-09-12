@@ -1177,7 +1177,7 @@ export function TradeExecutionAutopilotPopup({
             type="button"
             onClick={handleCalculate}
             disabled={loading}
-            className="px-3 py-1.5 bg-eve-accent text-eve-dark border border-eve-accent font-semibold uppercase tracking-wider text-xs disabled:opacity-50"
+            className="px-3 py-1.5 bg-eve-accent text-eve-on-accent border border-eve-accent font-semibold uppercase tracking-wider text-xs disabled:opacity-50"
           >
             {loading ? "Calculating..." : "Recalculate"}
           </button>

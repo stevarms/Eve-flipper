@@ -74,7 +74,7 @@ export function TodayHeader({
               className={cn(
                 "px-2 py-1 font-ui text-t-caption",
                 view === v
-                  ? "bg-eve-accent text-eve-dark"
+                  ? "bg-eve-accent text-eve-on-accent"
                   : "bg-surface-2 text-fg-secondary hover:bg-surface-3",
               )}
             >

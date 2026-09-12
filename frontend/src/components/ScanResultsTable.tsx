@@ -2872,7 +2872,7 @@ export function ScanResultsTable({
               title="Open item filter (category · group · security)"
             >
               ⚙ Filters{activeCount > 0 && (
-                <span className="ml-1 px-1 rounded-full bg-eve-accent text-eve-dark text-[9px] font-bold">{activeCount}</span>
+                <span className="ml-1 px-1 rounded-full bg-eve-accent text-eve-on-accent text-[9px] font-bold">{activeCount}</span>
               )}
             </button>
           );

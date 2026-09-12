@@ -426,7 +426,7 @@ function IndustryCoveragePanel({
             type="button"
             onClick={onRefresh}
             disabled={!isLoggedIn || loading || !onRefresh}
-            className="h-7 shrink-0 px-3 text-[10px] font-semibold uppercase tracking-wider rounded-sm bg-eve-accent text-eve-dark hover:bg-eve-accent-hover disabled:bg-eve-input disabled:text-eve-dim disabled:cursor-not-allowed"
+            className="h-7 shrink-0 px-3 text-[10px] font-semibold uppercase tracking-wider rounded-sm bg-eve-accent text-eve-on-accent hover:bg-eve-accent-hover disabled:bg-eve-input disabled:text-eve-dim disabled:cursor-not-allowed"
           >
             {loading ? "Checking" : "Check assets+BPs"}
           </button>

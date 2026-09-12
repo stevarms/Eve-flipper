@@ -64,10 +64,31 @@ export const TODAY_URGENCY_LABEL: Record<TodayUrgency, TranslationKey> = {
  * magnitude suffix — either of which EVE's price field rejects. Deliberately
  * not `formatIsk`: what the user reads and what lands on the clipboard are
  * different strings, which is the same split `CopyPrice` enforces.
+ *
+ * This is the clipboard half of that split. For the readable half see
+ * `todayPasteDisplay` — never render this one directly, because 1237000 and
+ * 12370000 are the same shape at a glance and picking the wrong one is a real
+ * order at ten times the price.
  */
 export function todayPasteText(price: number): string {
   if (!Number.isFinite(price) || price <= 0) return "";
   return formatGridPrice(price, priceStep(price));
+}
+
+/**
+ * The same price, grouped for reading.
+ *
+ * Exactly the digits `todayPasteText` produces with separators inserted between
+ * them — derived from that string rather than reformatted from the number, so
+ * the two can never round differently and show a price the clipboard does not
+ * hold. Decimals are left ungrouped and untouched.
+ */
+export function todayPasteDisplay(price: number): string {
+  const raw = todayPasteText(price);
+  if (!raw) return "";
+  const [whole, fraction] = raw.split(".");
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return fraction ? `${grouped}.${fraction}` : grouped;
 }
 
 /** Minutes, rounded for a human. Never "0 min" for work that remains. */

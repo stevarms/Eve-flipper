@@ -390,7 +390,7 @@ export function PresetPicker({ params, onApply, tab, builtinPresets, align = "le
                   <button
                     onClick={handleSave}
                     disabled={!saveName.trim()}
-                    className="flex-1 px-2 py-1 text-xs bg-eve-accent text-eve-dark rounded-sm hover:bg-eve-accent-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
+                    className="flex-1 px-2 py-1 text-xs bg-eve-accent text-eve-on-accent rounded-sm hover:bg-eve-accent-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
                   >
                     {t("presetSaveBtn" as TranslationKey) || "Save"}
                   </button>

@@ -3124,7 +3124,7 @@ export function StationTrading({
                 ${
                   scanning
                     ? "bg-eve-error/80 text-white hover:bg-eve-error"
-                    : "bg-eve-accent text-eve-dark hover:bg-eve-accent-hover shadow-eve-glow"
+                    : "bg-eve-accent text-eve-on-accent hover:bg-eve-accent-hover shadow-eve-glow"
                 }
                 disabled:bg-eve-input disabled:text-eve-dim disabled:cursor-not-allowed disabled:shadow-none`}
             >

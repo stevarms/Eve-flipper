@@ -650,7 +650,7 @@ export function RouteBuilder({ params, onChange, loadedResults, isLoggedIn = fal
                 className={`px-5 py-1.5 rounded-sm text-xs font-semibold uppercase tracking-wider transition-all
                   ${scanning
                     ? "bg-eve-error/80 text-white hover:bg-eve-error"
-                    : "bg-eve-accent text-eve-dark hover:bg-eve-accent-hover shadow-eve-glow"
+                    : "bg-eve-accent text-eve-on-accent hover:bg-eve-accent-hover shadow-eve-glow"
                   }
                   disabled:bg-eve-input disabled:text-eve-dim disabled:cursor-not-allowed disabled:shadow-none`}
               >
@@ -1074,7 +1074,7 @@ function RouteDetailPopup({
             </button>
             <button
               onClick={handleCopyRoute}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-[11px] font-semibold uppercase tracking-wider text-eve-dark bg-eve-accent border border-eve-accent hover:bg-eve-accent-hover shadow-eve-glow transition-all"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-[11px] font-semibold uppercase tracking-wider text-eve-on-accent bg-eve-accent border border-eve-accent hover:bg-eve-accent-hover shadow-eve-glow transition-all"
             >
               <Copy aria-hidden="true" className="h-3 w-3" />
               <span>{t("copyRoute")}</span>

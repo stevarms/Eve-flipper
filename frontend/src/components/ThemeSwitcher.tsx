@@ -204,7 +204,7 @@ export function ThemeSwitcher({
       </button>
 
       {toast && (
-        <div className="absolute right-0 top-[calc(100%+6px)] z-[60] px-3 py-1.5 rounded-sm bg-eve-accent text-eve-dark text-[11px] font-medium whitespace-nowrap shadow-lg">
+        <div className="absolute right-0 top-[calc(100%+6px)] z-[60] px-3 py-1.5 rounded-sm bg-eve-accent text-eve-on-accent text-[11px] font-medium whitespace-nowrap shadow-lg">
           {toast}
         </div>
       )}

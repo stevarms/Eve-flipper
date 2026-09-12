@@ -124,6 +124,40 @@ recorder declines a snapshot that duplicates one already held and a file can
 contain none of your types -- a low number is usually correct rather than a
 failure.
 
+### Fixed: white text on the accent buttons in every light theme
+
+`primary` was `bg-eve-accent text-eve-dark`. In the six dark palettes eve-dark
+is near-black and that reads fine; the light palettes invert it to pure white,
+so the same pair rendered white on a mid-amber fill. Measured against WCAG,
+classic light came to 3.54:1, amarr 3.76 and gallente 4.43, all under the 4.5
+floor for body text -- and classic light is the default. There is now an
+`--eve-on-accent` token per theme, set to whichever of black or white actually
+wins the contrast, and every one of the twelve themes clears AA with 4.74 as the
+worst case. Applied to all 27 accent-filled surfaces, not just the one that was
+reported, since they all carried the same pair.
+
+### Fixed: the Today capital bar was four shades of the same colour
+
+The four segments were one hue at 100/60/35/20% opacity, on the argument that
+they are parts of a single quantity and semantic colour has to mean something.
+At two pixels tall, 35% and 20% of the same amber are the same grey, and a
+legend nobody can read is worse than a colour that slightly overstates its case.
+They are now four distinct hues chosen along the axis the bar actually
+describes -- idle, deployed, held, listed -- so wallet cash takes the warn tone
+because idle capital is exactly what the verdict underneath complains about, and
+stock already listed takes the profit tone as the closest thing to money. Muted
+amber rather than full, which was called out as too bright, and the bar is
+taller.
+
+### Fixed: Today's paste price had no thousands separators
+
+1237000 and 12370000 are the same shape at a glance, which is a real order at
+ten times the price. The displayed price is now grouped. The clipboard is not:
+EVE's price field rejects separators, so the two are deliberately different
+strings, with the display derived from the clipboard digits rather than
+reformatted from the number so they cannot disagree. Both directions are pinned
+by tests.
+
 ### Fixed: the hold-or-cut verdict depended on cache state
 
 `CalcRecoveryOutlook` fits a 180-day trend to decide whether an underwater order

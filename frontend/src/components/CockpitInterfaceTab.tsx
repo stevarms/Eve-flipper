@@ -130,7 +130,7 @@ function TemplateCard({
           type="button"
           onClick={onApply}
           disabled={layoutLocked || busy}
-          className="h-8 rounded-sm bg-eve-accent px-3 text-[11px] font-semibold uppercase tracking-wider text-eve-dark transition-colors hover:bg-eve-accent-hover disabled:opacity-40"
+          className="h-8 rounded-sm bg-eve-accent px-3 text-[11px] font-semibold uppercase tracking-wider text-eve-on-accent transition-colors hover:bg-eve-accent-hover disabled:opacity-40"
         >
           Apply
         </button>
@@ -890,7 +890,7 @@ export function CockpitInterfaceTab({
                     type="button"
                     onClick={() => void createLoadout()}
                     disabled={Boolean(loadoutBusy)}
-                    className="px-3 py-1.5 bg-eve-accent text-eve-dark rounded-sm text-xs font-semibold uppercase tracking-wider disabled:opacity-40"
+                    className="px-3 py-1.5 bg-eve-accent text-eve-on-accent rounded-sm text-xs font-semibold uppercase tracking-wider disabled:opacity-40"
                   >
                     Create
                   </button>
@@ -994,7 +994,7 @@ export function CockpitInterfaceTab({
                         type="button"
                         onClick={() => void applyProfilePreset(preset)}
                         disabled={Boolean(loadoutBusy) || prefs.layoutLocked}
-                        className="h-8 flex-1 rounded-sm bg-eve-accent px-3 text-[11px] font-semibold uppercase tracking-wider text-eve-dark transition-colors hover:bg-eve-accent-hover disabled:opacity-40"
+                        className="h-8 flex-1 rounded-sm bg-eve-accent px-3 text-[11px] font-semibold uppercase tracking-wider text-eve-on-accent transition-colors hover:bg-eve-accent-hover disabled:opacity-40"
                       >
                         Apply
                       </button>
@@ -1064,7 +1064,7 @@ export function CockpitInterfaceTab({
                           <button
                             type="button"
                             onClick={() => setActivePage(suggestion.page)}
-                            className="px-3 py-1.5 bg-eve-accent text-eve-dark rounded-sm text-xs font-semibold uppercase tracking-wider"
+                            className="px-3 py-1.5 bg-eve-accent text-eve-on-accent rounded-sm text-xs font-semibold uppercase tracking-wider"
                           >
                             {suggestion.actionLabel}
                           </button>
@@ -1158,7 +1158,7 @@ export function CockpitInterfaceTab({
                     type="button"
                     onClick={() => bindCurrentCharacter({ loadoutId: activeLoadoutID })}
                     disabled={!activeCharacterId}
-                    className="px-3 py-1.5 bg-eve-accent text-eve-dark rounded-sm text-xs font-semibold uppercase tracking-wider disabled:opacity-40"
+                    className="px-3 py-1.5 bg-eve-accent text-eve-on-accent rounded-sm text-xs font-semibold uppercase tracking-wider disabled:opacity-40"
                   >
                     Bind current loadout
                   </button>
@@ -1265,7 +1265,7 @@ export function CockpitInterfaceTab({
                   type="button"
                   onClick={resetCockpitToDefault}
                   disabled={prefs.layoutLocked}
-                  className="h-9 shrink-0 rounded-sm bg-eve-accent px-4 text-xs font-semibold uppercase tracking-wider text-eve-dark transition-colors hover:bg-eve-accent-hover disabled:opacity-40"
+                  className="h-9 shrink-0 rounded-sm bg-eve-accent px-4 text-xs font-semibold uppercase tracking-wider text-eve-on-accent transition-colors hover:bg-eve-accent-hover disabled:opacity-40"
                 >
                   Reset to default
                 </button>
@@ -1319,7 +1319,7 @@ export function CockpitInterfaceTab({
                     type="button"
                     onClick={resetCockpitToDefault}
                     disabled={prefs.layoutLocked}
-                    className="px-3 py-1.5 bg-eve-accent text-eve-dark hover:bg-eve-accent-hover rounded-sm text-xs font-semibold uppercase tracking-wider disabled:opacity-40"
+                    className="px-3 py-1.5 bg-eve-accent text-eve-on-accent hover:bg-eve-accent-hover rounded-sm text-xs font-semibold uppercase tracking-wider disabled:opacity-40"
                   >
                     Reset to default
                   </button>
@@ -1826,7 +1826,7 @@ export function CockpitInterfaceTab({
               Workspace packs include cockpit loadouts, theme and scan parameters only. They do not export ESI tokens, cookies, wallet history, orders, assets, journal trades or local database rows.
             </div>
             <div className="flex flex-wrap gap-2">
-              <button type="button" onClick={() => void generateActiveExport()} className="px-3 py-1.5 bg-eve-accent text-eve-dark rounded-sm text-xs font-semibold uppercase tracking-wider">
+              <button type="button" onClick={() => void generateActiveExport()} className="px-3 py-1.5 bg-eve-accent text-eve-on-accent rounded-sm text-xs font-semibold uppercase tracking-wider">
                 Export active loadout
               </button>
               <button type="button" onClick={() => void generatePackExport()} className="px-3 py-1.5 border border-eve-accent/70 text-eve-accent hover:bg-eve-accent/10 rounded-sm text-xs font-semibold uppercase tracking-wider">

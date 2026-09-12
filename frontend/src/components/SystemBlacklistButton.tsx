@@ -108,7 +108,7 @@ export function SystemBlacklistButton({ value, onChange, compact = false }: Prop
               <path d="M8.8 8.8l6.4 6.4" />
             </svg>
             {selectedCount > 0 && (
-              <span className="absolute -top-1 -right-1 min-w-[14px] h-[14px] px-[2px] rounded-full bg-eve-accent text-eve-dark text-[9px] font-mono leading-[14px] text-center">
+              <span className="absolute -top-1 -right-1 min-w-[14px] h-[14px] px-[2px] rounded-full bg-eve-accent text-eve-on-accent text-[9px] font-mono leading-[14px] text-center">
                 {selectedCount > 99 ? "99+" : selectedCount}
               </span>
             )}
@@ -211,7 +211,7 @@ export function SystemBlacklistButton({ value, onChange, compact = false }: Prop
             <button
               type="button"
               onClick={apply}
-              className="px-3 py-1.5 text-xs rounded-sm bg-eve-accent text-eve-dark hover:bg-eve-accent-hover transition-colors font-medium"
+              className="px-3 py-1.5 text-xs rounded-sm bg-eve-accent text-eve-on-accent hover:bg-eve-accent-hover transition-colors font-medium"
             >
               {t("systemBlacklistApply")}
             </button>

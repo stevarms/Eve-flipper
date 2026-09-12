@@ -27,6 +27,10 @@ const config: Config = {
           accent: v("accent"),
           "accent-hover": v("accent-hover"),
           "accent-dim": v("accent-dim"),
+          /* Foreground for filled accent surfaces. Not the same as
+             eve-dark: the light palettes invert that to white, which put
+             white text on a mid-amber button at 3.5:1. */
+          "on-accent": v("on-accent"),
           text: v("text"),
           dim: v("dim"),
           success: v("success"),

@@ -9,7 +9,7 @@ import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import type { TodayAction } from "@/lib/types";
 import { RiskChip } from "./RiskChip";
-import { TODAY_KIND_LABEL, todayMinutes, todayPasteText } from "./todayFormat";
+import { TODAY_KIND_LABEL, todayMinutes, todayPasteDisplay, todayPasteText } from "./todayFormat";
 
 /**
  * One action at a time, with the price already on the clipboard.
@@ -58,6 +58,8 @@ export function RunPanel({
   const busy = useRef(false);
 
   const priceText = action.paste_price ? todayPasteText(action.paste_price) : "";
+  // What the eye reads; priceText is what the clipboard carries.
+  const priceDisplay = action.paste_price ? todayPasteDisplay(action.paste_price) : "";
   const qtyText = action.quantity ? String(action.quantity) : "";
 
   const copy = useCallback(async (text: string, holding: ClipboardHolds) => {
@@ -202,7 +204,7 @@ export function RunPanel({
             <>
               <dt className="font-ui text-t-caption text-fg-tertiary">{t("todayPasteThis")}</dt>
               <dd className="flex flex-wrap items-baseline gap-2">
-                <span className="font-num tnum text-t-title font-semibold text-fg">{priceText}</span>
+                <span className="font-num tnum text-t-title font-semibold text-fg">{priceDisplay}</span>
                 <span
                   className={cn(
                     "font-ui text-t-caption",

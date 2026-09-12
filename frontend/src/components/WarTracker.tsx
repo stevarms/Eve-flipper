@@ -92,7 +92,7 @@ export function WarTracker({ onError, onOpenRegionArbitrage }: WarTrackerProps) 
           <button
             onClick={handleRefresh}
             disabled={refreshing || loading}
-            className="px-3 py-1.5 text-xs bg-eve-accent text-eve-dark rounded-sm hover:bg-eve-accent-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            className="px-3 py-1.5 text-xs bg-eve-accent text-eve-on-accent rounded-sm hover:bg-eve-accent-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             {refreshing ? t("refreshing") || "Refreshing…" : t("scan") || "Scan"}
           </button>
@@ -223,7 +223,7 @@ export function WarTracker({ onError, onOpenRegionArbitrage }: WarTrackerProps) 
           <EmptyState reason="no_data" titleOverride={t("noDataYet") || "No data yet"} />
           <button
             onClick={handleRefresh}
-            className="mt-2 px-4 py-2 text-sm bg-eve-accent text-eve-dark rounded-sm hover:bg-eve-accent-hover transition-colors"
+            className="mt-2 px-4 py-2 text-sm bg-eve-accent text-eve-on-accent rounded-sm hover:bg-eve-accent-hover transition-colors"
           >
             {t("loadRegionData") || "Load Region Data"}
           </button>
@@ -567,7 +567,7 @@ function RegionDetailPopup({ region, onClose, onOpenArbitrage, formatISK }: Regi
           <div className="p-3 flex flex-wrap gap-2">
             <button
               onClick={onOpenArbitrage}
-              className="flex-1 px-4 py-2 bg-eve-accent text-eve-dark font-semibold rounded-sm hover:bg-eve-accent-hover transition-colors text-sm"
+              className="flex-1 px-4 py-2 bg-eve-accent text-eve-on-accent font-semibold rounded-sm hover:bg-eve-accent-hover transition-colors text-sm"
             >
               🔍 {t("findArbitrageOpportunities") || "Find Arbitrage in Region"}
             </button>

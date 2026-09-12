@@ -129,7 +129,7 @@ export function ConfirmDialog({
             className={`px-4 py-1.5 text-xs font-semibold rounded-sm transition-colors
               ${variant === "danger"
                 ? "bg-eve-error/80 text-white hover:bg-eve-error"
-                : "bg-eve-accent text-eve-dark hover:bg-eve-accent-hover"
+                : "bg-eve-accent text-eve-on-accent hover:bg-eve-accent-hover"
               }`}
           >
             {confirmText}

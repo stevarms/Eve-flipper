@@ -10,7 +10,7 @@ import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import type { TodayAction } from "@/lib/types";
 import { RiskChip } from "./RiskChip";
-import { TODAY_KIND_LABEL, todayMinutes, todayPasteText } from "./todayFormat";
+import { TODAY_KIND_LABEL, todayMinutes, todayPasteDisplay, todayPasteText } from "./todayFormat";
 
 /**
  * The whole queue at once, for surveying rather than working.
@@ -104,6 +104,7 @@ function ActionRow({
 }) {
   const { t } = useI18n();
   const priceText = action.paste_price ? todayPasteText(action.paste_price) : "";
+  const priceDisplay = action.paste_price ? todayPasteDisplay(action.paste_price) : "";
 
   return (
     <li
@@ -129,7 +130,7 @@ function ActionRow({
 
       {priceText ? (
         <span className="inline-flex items-center gap-1.5">
-          <span className="font-num tnum text-t-cell text-fg">{priceText}</span>
+          <span className="font-num tnum text-t-cell text-fg">{priceDisplay}</span>
           {/* The exact digits EVE accepts, not the formatted display value. */}
           <CopyButton text={priceText} label={t("todayPasteThis")} />
         </span>

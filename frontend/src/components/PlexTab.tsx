@@ -295,7 +295,7 @@ export function PlexTab({ isLoggedIn = false, activeCharacterId, taxProfile, onT
         <button
           onClick={fetchData}
           disabled={loading}
-          className="px-3 py-1.5 rounded-sm text-xs font-semibold uppercase tracking-wider bg-eve-accent text-eve-dark hover:bg-eve-accent-hover shadow-eve-glow disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+          className="px-3 py-1.5 rounded-sm text-xs font-semibold uppercase tracking-wider bg-eve-accent text-eve-on-accent hover:bg-eve-accent-hover shadow-eve-glow disabled:opacity-50 disabled:cursor-not-allowed transition-all"
         >
           {loading ? t("plexLoading") : t("plexRefresh")}
         </button>

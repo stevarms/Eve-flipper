@@ -3067,7 +3067,7 @@ export function IndustryTab({ onError, isLoggedIn = false }: Props) {
               className={`px-5 py-1.5 rounded-sm text-xs font-semibold uppercase tracking-wider transition-all
                 ${analyzing
                   ? "bg-eve-error/80 text-white hover:bg-eve-error"
-                  : "bg-eve-accent text-eve-dark hover:bg-eve-accent-hover shadow-eve-glow"
+                  : "bg-eve-accent text-eve-on-accent hover:bg-eve-accent-hover shadow-eve-glow"
                 }
                 disabled:bg-eve-input disabled:text-eve-dim disabled:cursor-not-allowed disabled:shadow-none`}
             >
