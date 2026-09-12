@@ -66,6 +66,8 @@ interface DailyEntryLike {
 }
 
 const DEFAULT_PERIOD: PeriodPreset = 30;
+import { NEGLIGIBLE_NET_PNL } from "@/lib/journalLeaderboard";
+
 const FIFO_STORAGE_KEY = "trade_journal.fifo_mode";
 const CHART_LAYOUT_STORAGE_KEY = "trade_journal.chart_layout";
 
@@ -236,6 +238,10 @@ export function TradeJournal({ isLoggedIn, visitToken, onOpenPositions }: Props)
     | "buys_qty";
   const [sortKey, setSortKey] = useState<SortKey>("combined_profit");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  // On by default: a row that made nothing answers no question this table is
+  // asked, and an unsold holding reports a combined P&L of exactly zero, so
+  // the untouched list is mostly inventory rather than results.
+  const [hideFlat, setHideFlat] = useState(true);
 
   const controllerRef = useRef<AbortController | null>(null);
 
@@ -344,8 +350,17 @@ export function TradeJournal({ isLoggedIn, visitToken, onOpenPositions }: Props)
     setDrawerMfg([]);
   };
 
+  // Rows the filter is holding back. Counted from the unfiltered set so the
+  // toggle can say what it costs you to leave it on.
+  const flatRowCount = useMemo(
+    () => byType.filter((r) => Math.abs(r.combined_profit) < NEGLIGIBLE_NET_PNL).length,
+    [byType],
+  );
+
   const sortedRows = useMemo(() => {
-    const rows = [...byType];
+    const rows = hideFlat
+      ? byType.filter((r) => Math.abs(r.combined_profit) >= NEGLIGIBLE_NET_PNL)
+      : [...byType];
     rows.sort((a, b) => {
       let av: number | string, bv: number | string;
       if (sortKey === "type_name") {
@@ -362,7 +377,7 @@ export function TradeJournal({ isLoggedIn, visitToken, onOpenPositions }: Props)
       return sortDir === "asc" ? cmp : -cmp;
     });
     return rows;
-  }, [byType, sortKey, sortDir]);
+  }, [byType, hideFlat, sortKey, sortDir]);
 
   const toggleSort = (k: SortKey) => {
     if (sortKey === k) setSortDir(sortDir === "asc" ? "desc" : "asc");
@@ -866,6 +881,27 @@ export function TradeJournal({ isLoggedIn, visitToken, onOpenPositions }: Props)
           view === "summary" ? "" : "hidden"
         }`}
       >
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-eve-border px-2 py-1.5">
+          <span className="text-[10px] uppercase tracking-wider text-eve-dim">
+            {t("journalPerItemTitle")}
+          </span>
+          <label
+            className="inline-flex cursor-pointer select-none items-center gap-1.5 text-[11px] text-eve-dim hover:text-eve-text"
+            title={t("journalHideFlatHint", { amount: formatIsk(NEGLIGIBLE_NET_PNL) })}
+          >
+            <input
+              id="journal-hide-flat"
+              type="checkbox"
+              checked={hideFlat}
+              onChange={(e) => setHideFlat(e.target.checked)}
+              className="accent-eve-accent"
+            />
+            {t("journalHideFlat")}
+            {flatRowCount > 0 && (
+              <span className="font-mono text-eve-dim/80">({flatRowCount})</span>
+            )}
+          </label>
+        </div>
         {loading && (
           <div className="p-4 text-center text-eve-dim text-xs">
             {t("journalLoading")}
@@ -873,7 +909,10 @@ export function TradeJournal({ isLoggedIn, visitToken, onOpenPositions }: Props)
         )}
         {!loading && sortedRows.length === 0 && (
           <div className="p-4 text-center text-eve-dim text-xs">
-            {t("journalNoData")}
+            {/* Everything filtered out is a different problem from no data, and
+                telling someone "no data" when they have rows would send them
+                looking for a sync that is not missing. */}
+            {hideFlat && flatRowCount > 0 ? t("journalAllFlat") : t("journalNoData")}
           </div>
         )}
         {!loading && sortedRows.length > 0 && (
