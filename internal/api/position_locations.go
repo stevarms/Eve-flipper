@@ -44,6 +44,10 @@ import (
 // now carries AssetsFailed alongside the existing PricingFailed / OrdersFailed,
 // and every read failure is logged rather than swallowed.
 
+// sdeShipCategoryID is the SDE category for ships. Anything whose ancestor
+// chain passes through one is aboard a hull rather than in stock.
+const sdeShipCategoryID = int32(6)
+
 // PositionLocation is one place some of a holding sits.
 type PositionLocation struct {
 	Qty int64 `json:"qty"`
@@ -162,7 +166,13 @@ func (s *Server) buildPositionLocations(
 			if !wanted[a.TypeID] || a.Quantity <= 0 {
 				continue
 			}
-			stationID, container, flag := idx.resolvePlace(a, sdeData)
+			stationID, container, flag, inShip := idx.resolvePlace(a, sdeData)
+			// Anything aboard a hull is equipment, not stock. A module in a
+			// fitting slot, ammo in a hold, drones in a bay -- none of it is
+			// for sale, and prompting to list it is worse than silence.
+			if inShip {
+				continue
+			}
 			k := placeKey{
 				locationID: stationID,
 				container:  container,
@@ -232,7 +242,7 @@ func corpLabelFor(corpID int32) string {
 func (idx positionAssetIndex) resolvePlace(
 	a esi.CharacterAsset,
 	sdeData *sde.Data,
-) (stationID int64, container string, flag string) {
+) (stationID int64, container string, flag string, inShip bool) {
 	flag = normalizePositionFlag(a.LocationFlag)
 	cur := a
 	// A generous bound rather than a trusted one: ESI has produced cyclic
@@ -241,7 +251,13 @@ func (idx positionAssetIndex) resolvePlace(
 		parent, ok := idx.byItemID[cur.LocationID]
 		if !ok {
 			// The parent is not an asset, so it is a station or structure.
-			return cur.LocationID, container, flag
+			return cur.LocationID, container, flag, inShip
+		}
+		// Anywhere in the chain, not just the immediate parent: a can inside a
+		// freighter is still cargo, and ammo in a drone bay is two hops from
+		// the hull.
+		if isShipType(parent.TypeID, sdeData) {
+			inShip = true
 		}
 		// The nearest enclosing container is the useful one to name; outer
 		// hops are structure, not somewhere to look.
@@ -250,7 +266,20 @@ func (idx positionAssetIndex) resolvePlace(
 		}
 		cur = parent
 	}
-	return cur.LocationID, container, flag
+	return cur.LocationID, container, flag, inShip
+}
+
+// isShipType reports whether a type is a hull.
+//
+// Without the SDE loaded this returns false, which keeps the stack visible.
+// Showing something that turns out to be in a cargo hold is a smaller error
+// than hiding stock because the type table had not finished loading.
+func isShipType(typeID int32, sdeData *sde.Data) bool {
+	if sdeData == nil {
+		return false
+	}
+	t, ok := sdeData.Types[typeID]
+	return ok && t != nil && t.CategoryID == sdeShipCategoryID
 }
 
 func positionContainerName(parent esi.CharacterAsset, sdeData *sde.Data) string {

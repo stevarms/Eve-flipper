@@ -896,6 +896,8 @@ export interface PositionRow {
    * not be read -- not an empty hangar.
    */
   locations?: PositionLocation[];
+  /** The ledger believes in this holding but no readable hangar contains it. */
+  phantom?: boolean;
   manual_id?: number;
   note?: string;
 
@@ -1005,6 +1007,10 @@ export interface PositionsResponse {
    * identical.
    */
   assets_failed?: boolean;
+  /** Rows withheld as stock the ledger believes in but no hangar holds. */
+  phantom_count?: number;
+  /** What those rows were contributing to the totals before being withheld. */
+  phantom_cost_basis?: number;
   sales_tax_percent: number;
   broker_fee_percent: number;
   total_cost_basis: number;

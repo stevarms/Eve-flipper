@@ -49,6 +49,11 @@ type PositionRow struct {
 	// character whose assets could not be read -- not an empty hangar.
 	Locations []PositionLocation `json:"locations,omitempty"`
 
+	// Phantom marks a holding the ledger believes in that no readable hangar
+	// contains. Only ever set when every asset source was read, so it is a
+	// statement about your hangars rather than about our access to them.
+	Phantom bool `json:"phantom,omitempty"`
+
 	MarketPrice   float64 `json:"market_price"`
 	MarketValue   float64 `json:"market_value"`
 	NetProceeds   float64 `json:"net_proceeds"`
@@ -101,6 +106,12 @@ type PositionsResponse struct {
 	Rows             []PositionRow `json:"rows"`
 	PricingFailed    bool          `json:"pricing_failed"`
 	OrdersFailed     bool          `json:"orders_failed"`
+	// PhantomCount is how many rows were withheld as stock the ledger still
+	// believes in but no hangar holds. Reported so the omission is visible.
+	PhantomCount int `json:"phantom_count"`
+	// PhantomCostBasis is what those rows were contributing to the totals,
+	// which is the part that was quietly inflating portfolio value.
+	PhantomCostBasis float64 `json:"phantom_cost_basis"`
 	// AssetsFailed means at least one hangar could not be read, so a row with
 	// no locations proves nothing. Without this flag a missing scope and
 	// genuinely missing stock look identical.
@@ -238,7 +249,10 @@ func (s *Server) handleAuthPositions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := s.buildPositions(userID, characterID, allScope, positionFeeOverrideFromQuery(r))
+	// ?include_phantom=1 brings back stock the ledger believes in but no
+	// hangar holds -- for reconciling the ledger, not for trading from.
+	includePhantom := r.URL.Query().Get("include_phantom") == "1"
+	resp, err := s.buildPositions(userID, characterID, allScope, positionFeeOverrideFromQuery(r), includePhantom)
 	if err != nil {
 		writeStatusError(w, err)
 		return
@@ -254,6 +268,7 @@ func (s *Server) buildPositions(
 	characterID int64,
 	allScope bool,
 	feeOverride positionFeeOverride,
+	includePhantom bool,
 ) (PositionsResponse, error) {
 	// Manual rows are readable with no EVE session at all — that is the
 	// whole point of them, and it keeps the tab useful before SSO.
@@ -363,6 +378,13 @@ func (s *Server) buildPositions(
 		row.DaysHeld = daysSince(row.OldestDate, now)
 		row.ListedQty = listed[row.TypeID]
 		row.Locations = locations[row.TypeID]
+		// A derived row with no stock in any hangar we could fully read. The
+		// ledger reaches this state honestly -- it sees production and
+		// purchases, and only sees disposals that landed in the archive -- so
+		// output consumed by industry, reprocessed, or sold before tracking
+		// began all leave a holding nothing owns. Manual rows are exempt:
+		// they were typed by hand and never claimed to be in a hangar.
+		row.Phantom = assetsComplete && row.Source != "manual" && len(row.Locations) == 0
 		row.ListedPrice = listedPrice[row.TypeID]
 		if px, ok := prices[row.TypeID]; ok && px > 0 {
 			row.MarketPrice = px
@@ -375,9 +397,30 @@ func (s *Server) buildPositions(
 				row.UnrealizedPct = row.UnrealizedISK / row.CostBasis * 100
 			}
 		}
+		if row.Phantom {
+			// Kept out of the totals as well as the list. Leaving the cost
+			// basis in would keep inflating portfolio value by stock that does
+			// not exist, which is the more expensive half of the problem.
+			resp.PhantomCount++
+			resp.PhantomCostBasis += row.CostBasis
+			continue
+		}
 		resp.TotalCostBasis += row.CostBasis
 		resp.TotalMarketValue += row.MarketValue
 		resp.TotalUnrealized += row.UnrealizedISK
+	}
+
+	// Dropped rather than flagged-and-shown: a list you have to mentally filter
+	// is not a list. The count and cost basis are reported so the omission is
+	// visible, and includePhantom brings them back for anyone reconciling.
+	if !includePhantom {
+		kept := rows[:0]
+		for _, row := range rows {
+			if !row.Phantom {
+				kept = append(kept, row)
+			}
+		}
+		rows = kept
 	}
 
 	applyHoldingRules(rows, s.holdingRulesFor(userID))

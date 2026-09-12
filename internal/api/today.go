@@ -306,7 +306,9 @@ func (s *Server) buildTodayPlan(
 	})
 
 	run("Pricing what you are holding", func() {
-		pos, posErr := s.buildPositions(userID, characterID, allScope, positionFeeOverride{})
+		// Never phantoms: Today exists to say what to do, and it cannot ask
+		// you to list stock that is not there.
+		pos, posErr := s.buildPositions(userID, characterID, allScope, positionFeeOverride{}, false)
 		if posErr != nil {
 			log.Printf("[TODAY] positions: %v", posErr)
 			return

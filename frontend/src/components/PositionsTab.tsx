@@ -194,6 +194,22 @@ export function PositionsTab() {
           {error}
         </div>
       )}
+      {/* Withheld stock, stated. Dropping rows silently would be the same
+          mistake as showing them: the point is that they are not real, and that
+          the ledger and your hangar disagree by a knowable amount. */}
+      {(data?.phantom_count ?? 0) > 0 && (
+        <div className="rounded-sm border border-warn/40 bg-warn/5 px-3 py-2 font-ui text-t-cell text-fg-secondary">
+          {t("positionsPhantomWithheld", {
+            count: String(data?.phantom_count ?? 0),
+            isk: formatIsk(data?.phantom_cost_basis ?? 0),
+          })}
+        </div>
+      )}
+      {data?.assets_failed && (
+        <div className="rounded-sm border border-warn/50 bg-warn/10 px-3 py-2 font-ui text-t-cell text-warn">
+          {t("positionsAssetsFailed")}
+        </div>
+      )}
       {data?.pricing_failed && (
         <div className="rounded-sm border border-warn/50 bg-warn/10 px-3 py-2 font-ui text-t-cell text-warn">
           {t("positionsPricingFailed")}

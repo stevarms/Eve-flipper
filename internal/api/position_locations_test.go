@@ -20,7 +20,7 @@ func TestResolvePlaceWalksOutToTheStation(t *testing.T) {
 		stack.ItemID: stack,
 	}}
 
-	gotStation, container, flag := idx.resolvePlace(stack, nil)
+	gotStation, container, flag, inShip := idx.resolvePlace(stack, nil)
 	if gotStation != station {
 		t.Errorf("station = %d, want %d — a container's item id must not be reported as a location", gotStation, station)
 	}
@@ -29,6 +29,9 @@ func TestResolvePlaceWalksOutToTheStation(t *testing.T) {
 	}
 	if flag != "" {
 		t.Errorf("flag = %q, want empty: Unlocked is noise", flag)
+	}
+	if inShip {
+		t.Error("a station container is not a ship")
 	}
 }
 
@@ -44,7 +47,7 @@ func TestResolvePlaceNamesTheNearestContainerButKeepsWalking(t *testing.T) {
 		ship.ItemID: ship, can.ItemID: can, stack.ItemID: stack,
 	}}
 
-	gotStation, container, _ := idx.resolvePlace(stack, nil)
+	gotStation, container, _, _ := idx.resolvePlace(stack, nil)
 	if gotStation != station {
 		t.Errorf("station = %d, want %d", gotStation, station)
 	}
@@ -62,12 +65,15 @@ func TestResolvePlaceReportsNoContainerForHangarStock(t *testing.T) {
 	stack := esi.CharacterAsset{ItemID: 8001, TypeID: 31716, LocationID: station, LocationFlag: "Hangar", Quantity: 900}
 	idx := positionAssetIndex{byItemID: map[int64]esi.CharacterAsset{stack.ItemID: stack}}
 
-	gotStation, container, flag := idx.resolvePlace(stack, nil)
+	gotStation, container, flag, inShip := idx.resolvePlace(stack, nil)
 	if gotStation != station {
 		t.Errorf("station = %d, want %d", gotStation, station)
 	}
 	if container != "" || flag != "" {
 		t.Errorf("container=%q flag=%q, want both empty for plain hangar stock", container, flag)
+	}
+	if inShip {
+		t.Error("hangar stock is not aboard a ship")
 	}
 }
 

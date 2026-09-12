@@ -2128,6 +2128,8 @@ export const en = {
     positionsLoading: "Pricing your holdings…",
     positionsEmptyHint:
       "Nothing held yet. Buy something, or add a holding by hand for stock your wallet history can't see.",
+    positionsPhantomWithheld: "{count} holding(s) worth {isk} at cost were left out: the trade ledger still counts them, but they are not in any of your hangars. Usually output consumed by industry, reprocessed, or sold before tracking began. They are excluded from the totals too, so portfolio value is not inflated by stock you do not have.",
+    positionsAssetsFailed: "At least one hangar could not be read, so locations may be incomplete and nothing is being reported as missing.",
     positionsPricingFailed: "Live hub prices unavailable — showing cost basis only.",
     positionsOrdersFailed: "Couldn't read your open orders, so the listed column may be incomplete.",
     positionsKpiPositions: "Positions",
