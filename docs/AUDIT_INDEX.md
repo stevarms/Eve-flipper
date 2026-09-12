@@ -1,5 +1,17 @@
 # EVE Flipper — Audit Index (August 2026)
 
+> **STATUS: partly superseded — verified 2026-09-12 against v1.12.0.**
+>
+> All five "Cross-cutting top findings" below are **fixed**, and the Phase 3
+> status is wrong in both directions. Read
+> [AUDIT_2026_09.md](AUDIT_2026_09.md) first; it carries the verified status of
+> each item with file and line evidence. The four thematic docs remain useful as
+> reference for *what* each subsystem does — it is the action list here that has
+> aged.
+>
+> Still open as of v1.12.0: duplicate trade-hub lists (now four copies),
+> `finalizeFlipScanResults`, and both NDJSON migrations (half-done on each side).
+
 Read-only audit pass across four dimensions. The four thematic docs live
 alongside this file; this index is the entry point and the prioritized
 action list.
