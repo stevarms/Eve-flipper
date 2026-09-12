@@ -335,6 +335,30 @@ export interface OrderBookCleanupPlan {
   newest_remaining: string;
 }
 
+/**
+ * What a Fuzzwork backfill did, or would do.
+ *
+ * Mirrors `fuzzworkImportResult` in internal/api/fuzzwork_import.go field for
+ * field. `stored` is counted from the table rather than from calls that
+ * returned no error, because the recorder succeeds when it decides not to
+ * write -- so `fetched` and `stored` legitimately disagree and both are shown.
+ */
+export interface FuzzworkImportResult {
+  region_id: number;
+  interest_types: number;
+  planned: number;
+  fetched: number;
+  stored: number;
+  skipped: number;
+  failed: number;
+  orders_kept: number;
+  oldest_capture?: string;
+  newest_capture?: string;
+  /** What a non-dry run would transfer. Stated before it is spent. */
+  estimated_bytes: number;
+  warnings?: string[];
+}
+
 export type PaperTradeStatus =
   | "planned"
   | "bought"

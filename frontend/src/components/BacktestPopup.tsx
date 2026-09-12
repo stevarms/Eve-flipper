@@ -14,6 +14,7 @@ import {
   cleanupOrderBook,
   getOrderBookRecording,
   getOrderBookStats,
+  importFuzzworkOrderbooks,
   runFlipBacktest,
   setOrderBookRecording,
 } from "@/lib/api";
@@ -21,6 +22,7 @@ import type {
   FlipBacktestEquityPoint,
   FlipBacktestResult,
   FlipResult,
+  FuzzworkImportResult,
   OrderBookCleanupPlan,
   OrderBookCoverageResult,
   OrderBookRecordingSettings,
@@ -34,7 +36,7 @@ import { useAchievements } from "./achievements";
 type QuantityMode = "scan" | "fixed" | "budget";
 type BuyPriceSource = "history" | "scan";
 type StrategyMode = "hold" | "instant_flip";
-type InstantPriceMode = "scan_spread" | "history_pair" | "recorded_orderbook";
+type InstantPriceMode = "scan_spread" | "history_pair" | "recorded_orderbook" | "station_maker";
 type CooldownMode = "manual" | "route_time";
 type RouteSafetyMode = "manual" | "auto";
 
@@ -42,6 +44,16 @@ interface Props {
   open: boolean;
   onClose: () => void;
   rows: FlipResult[];
+  /**
+   * Which execution model the rows describe.
+   *
+   * "haul" is the original: two markets, taker on both legs. "station" is one
+   * venue and a maker on both legs, which is a different simulation rather than
+   * a setting -- so the variant locks the mode instead of offering it. Every
+   * control that only means something when the two legs are in different places
+   * is hidden rather than shown inert.
+   */
+  variant?: "haul" | "station";
   salesTaxPercent?: number;
   brokerFeePercent?: number;
   splitTradeFees?: boolean;
@@ -56,6 +68,7 @@ export function BacktestPopup({
   open,
   onClose,
   rows,
+  variant = "haul",
   salesTaxPercent = 0,
   brokerFeePercent = 0,
   splitTradeFees = false,
@@ -70,8 +83,13 @@ export function BacktestPopup({
   const [holdDays, setHoldDays] = useState(7);
   const [windowDays, setWindowDays] = useState(90);
   const [maxRows, setMaxRows] = useState(100);
-  const [strategyMode, setStrategyMode] = useState<StrategyMode>("hold");
-  const [instantPriceMode, setInstantPriceMode] = useState<InstantPriceMode>("scan_spread");
+  const stationMode = variant === "station";
+  const [strategyMode, setStrategyMode] = useState<StrategyMode>(
+    stationMode ? "instant_flip" : "hold",
+  );
+  const [instantPriceMode, setInstantPriceMode] = useState<InstantPriceMode>(
+    stationMode ? "station_maker" : "scan_spread",
+  );
   const [entrySpacingDays, setEntrySpacingDays] = useState(1);
   const [travelCooldownDays, setTravelCooldownDays] = useState(1);
   const [orderbookCooldownMinutes, setOrderbookCooldownMinutes] = useState(60);
@@ -114,7 +132,8 @@ export function BacktestPopup({
   const [orderbookRecordingError, setOrderbookRecordingError] = useState("");
 
   const rowsForBacktest = useMemo(() => rows.slice(0, maxRows), [maxRows, rows]);
-  const recordedBookMode = strategyMode === "instant_flip" && instantPriceMode === "recorded_orderbook";
+  const recordedBookMode =
+    stationMode || (strategyMode === "instant_flip" && instantPriceMode === "recorded_orderbook");
 
   useEffect(() => {
     if (!open) return;
@@ -294,19 +313,32 @@ export function BacktestPopup({
             past market data and reports what the strategy would have made.
           </span>{" "}
           Nothing here touches the live market or your wallet.
-          <div className="mt-1">
-            Start with <span className="text-eve-text">Mode</span>: <em>Hold cycle</em> buys and sells
-            days apart, so it tests a price move; <em>Instant flip</em> buys and sells at once, so it
-            tests a spread. Then set <span className="text-eve-text">Window days</span> for how far back
-            to look.
-          </div>
+          {stationMode ? (
+            <div className="mt-1">
+              This replays <em>station trading</em>: a buy order posted at the best bid and a
+              sell order posted at the best ask, at one station, against the real order
+              books recorded at that moment. You are the one being crossed, so the spread
+              is your margin. Set <span className="text-eve-text">Window days</span> for
+              how far back to look.
+            </div>
+          ) : (
+            <div className="mt-1">
+              Start with <span className="text-eve-text">Mode</span>: <em>Hold cycle</em> buys and sells
+              days apart, so it tests a price move; <em>Instant flip</em> buys and sells at once, so it
+              tests a spread. Then set <span className="text-eve-text">Window days</span> for how far back
+              to look.
+            </div>
+          )}
           <div className="mt-1">
             The three that decide whether the result is believable are{" "}
             <span className="text-eve-text">Volume %</span>,{" "}
             <span className="text-eve-text">Buy markup %</span> and{" "}
-            <span className="text-eve-text">Sell haircut %</span> — they charge the strategy for not
-            getting perfect fills at perfect prices. Leaving them at their most generous is how a
-            backtest flatters a strategy that would have lost money.
+            <span className="text-eve-text">Sell haircut %</span> —{" "}
+            {stationMode
+              ? "how much of the item's daily flow you claim, and the tick you give away on each side to sit at the front of the queue. A spread you can see is not a spread you can capture, and these are where that shows up."
+              : "they charge the strategy for not getting perfect fills at perfect prices."}{" "}
+            Leaving them at their most generous is how a backtest flatters a strategy that
+            would have lost money.
           </div>
           <div className="mt-1 text-eve-dim/80">
             Hover any label for what it does.
@@ -314,6 +346,7 @@ export function BacktestPopup({
         </div>
 
         <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-3">
+          {!stationMode && (
           <SelectControl
             label="Mode"
             hint="Hold cycle: buy on one day and sell the same items HOLD DAYS later, priced from daily history — you are testing a price move. Instant flip: buy and sell at the same moment — you are testing a spread."
@@ -324,7 +357,8 @@ export function BacktestPopup({
               ["instant_flip", "Instant flip"],
             ]}
           />
-          {strategyMode === "instant_flip" && (
+          )}
+          {!stationMode && strategyMode === "instant_flip" && (
             <SelectControl
               label="Price model"
               hint="Where an instant flip's two prices come from. Scan spread reuses this row's current numbers for every simulated day, so it tests one spread over and over. History pair takes both legs from daily average history. Recorded book replays real stored order books, and is the only mode that models depth."
@@ -337,7 +371,9 @@ export function BacktestPopup({
               ]}
             />
           )}
-          {strategyMode === "hold" ? (
+          {stationMode ? (
+            <NumberControl label="Cooldown min" hint="Minutes before another cycle in the same item may start. At archive cadence there is a snapshot every half hour, and without this the simulation would book a fresh round trip on every one of them." min={1} max={10080} value={orderbookCooldownMinutes} onChange={setOrderbookCooldownMinutes} />
+          ) : strategyMode === "hold" ? (
             <NumberControl label="Hold days" hint="How long each position is held. The exit price is the target market's daily average that many days after entry." min={1} max={90} value={holdDays} onChange={setHoldDays} />
           ) : instantPriceMode === "recorded_orderbook" && cooldownMode === "manual" ? (
             <NumberControl label="Cooldown min" hint="Minutes to wait after one trade before the next can start. Without it the simulation fires round trips faster than you could physically have made them." min={1} max={10080} value={orderbookCooldownMinutes} onChange={setOrderbookCooldownMinutes} />
@@ -346,10 +382,10 @@ export function BacktestPopup({
           ) : (
             <NumberControl label="Cooldown days" hint="Days of travel charged between trades, so hauling time counts against the strategy instead of being free." min={1} max={30} value={travelCooldownDays} onChange={setTravelCooldownDays} />
           )}
-          {strategyMode === "instant_flip" && instantPriceMode === "recorded_orderbook" && (
+          {(stationMode || (strategyMode === "instant_flip" && instantPriceMode === "recorded_orderbook")) && (
             <NumberControl label="Max age min" hint="How far apart the buy-side and sell-side order books may have been captured and still be paired into one trade. Snapshots imported from the archive carry both sides at the same instant, so they pair at zero age." min={1} max={1440} value={orderbookMaxAgeMinutes} onChange={setOrderbookMaxAgeMinutes} />
           )}
-          {strategyMode === "instant_flip" && instantPriceMode === "recorded_orderbook" && (
+          {!stationMode && strategyMode === "instant_flip" && instantPriceMode === "recorded_orderbook" && (
             <SelectControl
               label="Cooldown"
               hint="Manual uses the fixed minutes you set. Route time estimates it from the real jump count, your cargo hold and how many trips the quantity needs."
@@ -361,7 +397,7 @@ export function BacktestPopup({
               ]}
             />
           )}
-          {strategyMode === "instant_flip" && instantPriceMode === "recorded_orderbook" && cooldownMode === "route_time" && (
+          {!stationMode && strategyMode === "instant_flip" && instantPriceMode === "recorded_orderbook" && cooldownMode === "route_time" && (
             <>
               <NumberControl label="Cargo m3" hint="Hold size, used to work out how many trips a position takes. More trips means a longer cooldown and fewer trades in the window." min={0} max={10_000_000} value={routeCargoCapacity} onChange={setRouteCargoCapacity} />
               <NumberControl label="Min/jump" hint="Minutes per jump including align and warp. Roughly 1 for an interceptor, 2 for a hauler, 4 or more for a freighter." min={0.1} max={60} step={0.1} value={routeMinutesPerJump} onChange={setRouteMinutesPerJump} />
@@ -385,7 +421,9 @@ export function BacktestPopup({
           )}
           <NumberControl label="Window days" hint="How many trailing days of history to simulate over. Longer gives a better sample but reaches back into different market conditions." min={7} max={365} value={windowDays} onChange={setWindowDays} />
           <NumberControl label="Max rows" hint="How many scan rows to include, taken from the top of the current sort. Each is simulated independently." min={1} max={500} value={maxRows} onChange={setMaxRows} />
-          <NumberControl label="Entry every" hint="Open a new position every N days across the window. 1 tests the strategy daily; higher models trading less often. With Non-overlap on, this is forced up to Hold days." min={1} max={30} value={entrySpacingDays} onChange={setEntrySpacingDays} />
+          {!stationMode && (
+            <NumberControl label="Entry every" hint="Open a new position every N days across the window. 1 tests the strategy daily; higher models trading less often. With Non-overlap on, this is forced up to Hold days." min={1} max={30} value={entrySpacingDays} onChange={setEntrySpacingDays} />
+          )}
           <SelectControl
             label="Qty mode"
             hint="Scan qty uses the quantity the scan suggested for each row. Fixed buys the same number of units everywhere. Budget spends a set amount of ISK per trade, so cheaper items get more units."
@@ -415,14 +453,49 @@ export function BacktestPopup({
           {quantityMode === "budget" && (
             <NumberControl label="Budget ISK" hint="ISK to spend per trade. The quantity is whatever that buys at the entry price." min={1_000_000} max={10_000_000_000_000} step={1_000_000} value={budgetISK} onChange={setBudgetISK} />
           )}
-          <NumberControl label="Volume %" hint="What share of a day's traded volume you assume you could have captured. 100% assumes you were every trade that day, which is optimistic on anything liquid; 10-25% is a more defensible read. Trades needing more than this are partial, or dropped if Skip unfillable is on." min={1} max={100} value={volumeFillFraction} onChange={setVolumeFillFraction} />
-          <NumberControl label="Buy markup %" hint="Raises every assumed buy price, charging the strategy for paying up rather than getting the exact historical average." min={0} max={100} value={buyPriceMarkup} onChange={setBuyPriceMarkup} />
-          <NumberControl label="Sell haircut %" hint="Lowers every assumed sell price, charging the strategy for undercutting to actually get filled. This and Buy markup are how you stop a backtest assuming perfect execution." min={0} max={100} value={sellPriceHaircut} onChange={setSellPriceHaircut} />
+          <NumberControl
+            label="Volume %"
+            hint={
+              stationMode
+                ? "What share of the item's daily flow you assume you captured. As a maker you consume nothing and take nothing — you wait, and what arrives is a day's trading, so this caps quantity rather than the order book does. 100% assumes every buyer and seller met you instead of each other."
+                : "What share of a day's traded volume you assume you could have captured. 100% assumes you were every trade that day, which is optimistic on anything liquid; 10-25% is a more defensible read. Trades needing more than this are partial, or dropped if Skip unfillable is on."
+            }
+            min={1}
+            max={100}
+            value={volumeFillFraction}
+            onChange={setVolumeFillFraction}
+          />
+          <NumberControl
+            label="Buy markup %"
+            hint={
+              stationMode
+                ? "How far above the best bid you must post to get queue priority. Zero assumes you joined the front of the queue for free and were still filled, which is the optimistic case on anything competitive."
+                : "Raises every assumed buy price, charging the strategy for paying up rather than getting the exact historical average."
+            }
+            min={0}
+            max={100}
+            value={buyPriceMarkup}
+            onChange={setBuyPriceMarkup}
+          />
+          <NumberControl
+            label="Sell haircut %"
+            hint={
+              stationMode
+                ? "How far below the best ask you must post to get queue priority. Together with Buy markup this is what a competitive item costs you: raise both and a thin spread stops being a trade at all, which is the honest outcome."
+                : "Lowers every assumed sell price, charging the strategy for undercutting to actually get filled. This and Buy markup are how you stop a backtest assuming perfect execution."
+            }
+            min={0}
+            max={100}
+            value={sellPriceHaircut}
+            onChange={setSellPriceHaircut}
+          />
           <NumberControl label="Min ROI %" hint="Discards simulated trades returning less than this, modelling that you would only have taken the good ones. Set it high and the result flatters the strategy by hiding trades you would have taken in practice." min={-100} max={1000} value={minROI} onChange={setMinROI} />
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
-          <CheckControl label="Skip unfillable" hint="Drop trades where that day's volume, after the Volume % share, could not cover the quantity. Off, they are kept and flagged as only partially fillable." checked={skipUnfillable} onChange={setSkipUnfillable} />
+          {!stationMode && (
+            <CheckControl label="Skip unfillable" hint="Drop trades where that day's volume, after the Volume % share, could not cover the quantity. Off, they are kept and flagged as only partially fillable." checked={skipUnfillable} onChange={setSkipUnfillable} />
+          )}
           {strategyMode === "hold" && (
             <>
               <CheckControl label="Non-overlap entries" hint="Never hold two positions in the same item at once, by forcing Entry every up to Hold days. Off, positions stack and the strategy quietly needs far more capital than one position's worth." checked={nonOverlapping} onChange={setNonOverlapping} />
@@ -464,9 +537,9 @@ export function BacktestPopup({
                 item has. Say so here rather than letting an empty result look
                 like a verdict on the strategy. */}
             <div className="rounded-sm border border-eve-border bg-eve-panel/60 px-3 py-2 leading-relaxed text-eve-dim">
-              This mode replays order books that were stored earlier, so it can only
-              cover items and regions you have snapshots for — recorded live while the
-              app was running, or imported from an archive. Press{" "}
+              This replays order books that were stored earlier, so it can only cover
+              items and regions you have snapshots for — recorded live while the app was
+              running, or backfilled from the archive below. Press{" "}
               <span className="text-eve-text">Check coverage</span> first: if a row has
               no stored books, it produces no trades, and that is missing data rather
               than a bad strategy.
@@ -832,6 +905,8 @@ function OrderbookMaintenancePanel({
             {recordingError}
           </div>
         )}
+
+        <FuzzworkImportPanel onImported={onRefresh} />
         {statsError && (
           <div className="border border-red-500/50 bg-red-950/30 text-red-300 rounded-sm px-3 py-2">
             {statsError}
@@ -921,6 +996,216 @@ function OrderbookMaintenancePanel({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Backfill stored order books from the Fuzzwork archive.
+ *
+ * Sits under the recording toggle because the two are the same question asked
+ * in opposite directions: recording collects books from now on, this one
+ * reaches backwards. Recording alone means the replay can never test a market
+ * you did not already sit through, which is the usual reason the recorded-book
+ * backtest comes back empty.
+ *
+ * Two steps on purpose. A plan is a few gigabytes of bandwidth from a service
+ * run for free, so the cost is stated and accepted before it is spent rather
+ * than discovered halfway through.
+ */
+function FuzzworkImportPanel({ onImported }: { onImported: () => void }) {
+  const [regionID, setRegionID] = useState(10000002);
+  const [dailyDays, setDailyDays] = useState(90);
+  const [weeklyDays, setWeeklyDays] = useState(365);
+  const [maxFiles, setMaxFiles] = useState(200);
+  const [plan, setPlan] = useState<FuzzworkImportResult | null>(null);
+  const [result, setResult] = useState<FuzzworkImportResult | null>(null);
+  const [busy, setBusy] = useState<"" | "estimate" | "import">("");
+  const [progress, setProgress] = useState("");
+  const [error, setError] = useState("");
+  const abortRef = useRef<AbortController | null>(null);
+
+  // Any change to the window invalidates the quoted cost, and an Import button
+  // still offering to fetch the previous plan's file count would be lying.
+  useEffect(() => {
+    setPlan(null);
+    setResult(null);
+  }, [regionID, dailyDays, weeklyDays, maxFiles]);
+
+  useEffect(() => () => abortRef.current?.abort(), []);
+
+  const run = async (dryRun: boolean) => {
+    if (busy) return;
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setBusy(dryRun ? "estimate" : "import");
+    setError("");
+    setProgress("");
+    if (!dryRun) setResult(null);
+    try {
+      const out = await importFuzzworkOrderbooks(
+        {
+          region_id: regionID,
+          daily_days: dailyDays,
+          weekly_days: weeklyDays,
+          max_files: maxFiles,
+          dry_run: dryRun,
+        },
+        setProgress,
+        controller.signal,
+      );
+      if (dryRun) {
+        setPlan(out);
+      } else {
+        setResult(out);
+        setPlan(null);
+        onImported();
+      }
+    } catch (e) {
+      if (controller.signal.aborted) setError("Import stopped.");
+      else setError(e instanceof Error ? e.message : "Import failed");
+    } finally {
+      setBusy("");
+      setProgress("");
+      abortRef.current = null;
+    }
+  };
+
+  return (
+    <div className="border border-eve-border/60 bg-eve-dark/40 rounded-sm px-3 py-2 space-y-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="text-eve-dim uppercase tracking-wide text-[10px]">
+          Backfill from archive
+        </div>
+        {busy === "import" && (
+          <button
+            type="button"
+            onClick={() => abortRef.current?.abort()}
+            className="px-2 py-1 rounded-sm border border-eve-border bg-eve-panel text-eve-text font-semibold uppercase tracking-wide"
+          >
+            Stop
+          </button>
+        )}
+      </div>
+
+      <div className="text-[10px] text-eve-dim leading-relaxed">
+        ESI never serves historical order books, so replay can only reach back to
+        the day you switched recording on. market.fuzzwork.co.uk has archived the
+        whole game&apos;s book roughly every half hour since mid-2023. Only the
+        types you already trade, watch, stock or plan are kept, so this does not
+        import a whole region.
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <SelectControl
+          label="Region"
+          hint="Which region's books to backfill. One at a time -- each region is a separate pass over the same files."
+          value={String(regionID)}
+          onChange={(v) => setRegionID(Number(v))}
+          options={[
+            ["10000002", "The Forge (Jita)"],
+            ["10000043", "Domain (Amarr)"],
+            ["10000032", "Sinq Laison (Dodixie)"],
+            ["10000030", "Heimatar (Rens)"],
+          ]}
+        />
+        <NumberControl
+          label="Daily days"
+          hint="How far back to take one snapshot per day. This is the range where fill simulation actually happens, so it gets the dense sampling."
+          min={0}
+          max={365}
+          value={dailyDays}
+          onChange={setDailyDays}
+        />
+        <NumberControl
+          label="Weekly days"
+          hint="How far back to continue at one snapshot per week, after the daily range ends. Enough to show seasonal shape; a short-lived event can fall between samples entirely."
+          min={0}
+          max={1095}
+          value={weeklyDays}
+          onChange={setWeeklyDays}
+        />
+        <NumberControl
+          label="Max files"
+          hint="Hard ceiling on files fetched regardless of the window asked for. Each is about 27 MB from a service run for free."
+          min={1}
+          max={200}
+          value={maxFiles}
+          onChange={setMaxFiles}
+        />
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={() => void run(true)}
+          disabled={!!busy}
+          className="px-3 py-1.5 rounded-sm border border-eve-border bg-eve-panel text-eve-text font-semibold uppercase tracking-wide disabled:opacity-50"
+        >
+          {busy === "estimate" ? "Checking..." : "Estimate"}
+        </button>
+        {plan && (
+          <button
+            type="button"
+            onClick={() => void run(false)}
+            disabled={!!busy}
+            className="px-3 py-1.5 rounded-sm bg-eve-accent text-black font-semibold uppercase tracking-wide disabled:opacity-50"
+          >
+            {busy === "import"
+              ? "Importing..."
+              : "Import " + formatWhole(plan.planned) + " files (" + formatBytes(plan.estimated_bytes) + ")"}
+          </button>
+        )}
+        {plan && !busy && (
+          <span className="text-[10px] text-eve-dim">
+            Minutes, not seconds -- one file at a time, on purpose.
+          </span>
+        )}
+      </div>
+
+      {progress && <div className="font-mono text-eve-accent">{progress}</div>}
+
+      {error && (
+        <div className="border border-red-500/50 bg-red-950/30 text-red-300 rounded-sm px-3 py-2">
+          {error}
+        </div>
+      )}
+
+      {plan && !result && (
+        <div className="text-[10px] text-eve-dim">
+          {formatWhole(plan.planned)} snapshots covering {formatWhole(plan.interest_types)} of
+          your types. Nothing has been downloaded yet.
+        </div>
+      )}
+
+      {result && (
+        <div className="space-y-1">
+          <div className="font-mono">
+            Stored {formatWhole(result.stored)} of {formatWhole(result.fetched)} fetched
+            {result.orders_kept > 0 && " / " + formatWhole(result.orders_kept) + " orders kept"}
+          </div>
+          {/* Fetched and stored disagreeing is normal, not a fault: the recorder
+              declines a snapshot that duplicates one already held, and a file
+              can simply contain none of your types in this region. Saying so
+              stops a low number reading as a failed import. */}
+          <div className="text-[10px] text-eve-dim">
+            {result.skipped > 0 &&
+              formatWhole(result.skipped) + " skipped (already held, or none of your types). "}
+            {result.failed > 0 && formatWhole(result.failed) + " failed. "}
+            {result.oldest_capture &&
+              "Now covering " +
+                formatCapture(result.oldest_capture) +
+                " to " +
+                formatCapture(result.newest_capture ?? "") +
+                "."}
+          </div>
+          {(result.warnings ?? []).map((warning) => (
+            <div key={warning} className="text-[10px] text-amber-300">
+              {warning}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

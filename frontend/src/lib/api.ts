@@ -42,6 +42,7 @@ import type {
   IndustryTaskRecord,
   IndustryTaskStatus,
   ItemIntelligence,
+  FuzzworkImportResult,
   ItemSearchResult,
   OptimizerDiagnostic,
   OrderBookCleanupPlan,
@@ -626,7 +627,11 @@ export async function findRoutes(
 export async function runFlipBacktest(params: {
   rows: FlipResult[];
   strategy_mode?: "hold" | "instant_flip";
-  instant_price_mode?: "scan_spread" | "history_pair" | "recorded_orderbook";
+  /**
+   * "station_maker" is a separate simulation, not a pricing tweak: one venue,
+   * maker on both legs. The server routes it before the taker replay.
+   */
+  instant_price_mode?: "scan_spread" | "history_pair" | "recorded_orderbook" | "station_maker";
   hold_days?: number;
   window_days?: number;
   max_rows?: number;
@@ -729,6 +734,80 @@ export async function cleanupOrderBook(params: {
     body: JSON.stringify(params),
   });
   return handleResponse<OrderBookCleanupPlan>(res);
+}
+
+/**
+ * Backfill stored order books from the Fuzzwork archive.
+ *
+ * ESI never serves historical books, so without this the replay can only reach
+ * back to whenever recording was switched on -- which is why the recorded-book
+ * backtest so often has nothing to work with.
+ *
+ * Streams NDJSON because the work is minutes long and per-file: a plan of 130
+ * snapshots is several GB, and a progress bar is the difference between waiting
+ * and assuming it hung. Hand-rolled rather than built on `streamNdjson` for the
+ * same reason `refreshTodayPlan` is -- that helper expects an array of rows and
+ * this emits one object.
+ *
+ * Call it with `dry_run` first: the result states the file count and transfer
+ * size without downloading anything.
+ */
+export async function importFuzzworkOrderbooks(
+  params: {
+    region_id?: number;
+    daily_days?: number;
+    weekly_days?: number;
+    max_files?: number;
+    dry_run?: boolean;
+  },
+  onProgress: (msg: string) => void,
+  signal?: AbortSignal,
+): Promise<FuzzworkImportResult> {
+  const res = await apiFetch(`${BASE}/api/orderbook/import/fuzzwork`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+    signal,
+  });
+
+  if (!res.ok) {
+    let message = "Could not import from the archive";
+    try {
+      const err = await res.json();
+      message = err.error || err.message || message;
+    } catch {
+      // Body was not JSON; the generic message stands.
+    }
+    throw new Error(message);
+  }
+  if (!res.body) throw new Error("Response body is null");
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let out: FuzzworkImportResult | null = null;
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const msg = JSON.parse(line) as
+        | { type: "progress"; message: string }
+        | { type: "result"; data: FuzzworkImportResult }
+        | { type: "error"; message: string };
+      if (msg.type === "progress") onProgress(msg.message);
+      else if (msg.type === "result") out = msg.data;
+      else if (msg.type === "error") throw new Error(msg.message);
+    }
+  }
+
+  if (!out) throw new Error("The import stream ended without a result");
+  return out;
 }
 
 export interface PaperTradesResponse {

@@ -171,6 +171,22 @@ func (s *Server) handleBacktestFlips(w http.ResponseWriter, r *http.Request) {
 
 	params := backtestParamsFromRequest(req)
 
+	// Station trading is a maker strategy at one venue, so it gets its own
+	// replay rather than a flag on this one. Running it through the hauling
+	// path would buy at the ask and sell at the bid of the same station, which
+	// loses money on every item by construction -- see
+	// internal/engine/backtest_station_maker.go.
+	if req.InstantPriceMode == "station_maker" {
+		if s.db == nil {
+			writeError(w, http.StatusServiceUnavailable, "orderbook database not ready")
+			return
+		}
+		result := engine.BuildStationMakerReplayBacktest(
+			req.Rows, backtestParamsFromRequest(req), s.orderBookReplayGetter())
+		writeJSON(w, result)
+		return
+	}
+
 	if req.StrategyMode == "instant_flip" && req.InstantPriceMode == "recorded_orderbook" {
 		if s.db == nil {
 			writeError(w, http.StatusServiceUnavailable, "orderbook database not ready")
@@ -216,6 +232,14 @@ func (s *Server) handleOrderBookCoverage(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusServiceUnavailable, "orderbook database not ready")
 		return
 	}
-	result := engine.BuildOrderBookReplayCoverage(req.Rows, backtestParamsFromRequest(req), s.orderBookReplayGetter())
+	params := backtestParamsFromRequest(req)
+	if params.InstantPriceMode == "station_maker" {
+		// Coverage asks whether snapshots exist for these type/venue pairs,
+		// which does not depend on how they would be traded. Normalizing keeps
+		// it out of the engine's "unknown mode" fallback.
+		params.StrategyMode = "instant_flip"
+		params.InstantPriceMode = "recorded_orderbook"
+	}
+	result := engine.BuildOrderBookReplayCoverage(req.Rows, params, s.orderBookReplayGetter())
 	writeJSON(w, result)
 }

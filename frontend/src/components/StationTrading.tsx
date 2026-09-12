@@ -32,6 +32,7 @@ import { useI18n, type TranslationKey } from "@/lib/i18n";
 import { MetricTooltip } from "./Tooltip";
 import { EmptyState } from "./EmptyState";
 import { TradeExecutionAutopilotPopup } from "./TradeExecutionAutopilotPopup";
+import { BacktestPopup } from "./BacktestPopup";
 import { useGlobalToast } from "./Toast";
 import { handleEveUIError } from "@/lib/handleEveUIError";
 import { useAchievements } from "./achievements";
@@ -512,6 +513,11 @@ function stationTradeToFlipResult(
     DailyVolume: Number(row.DailyVolume ?? 0),
     Velocity: 0,
     PriceTrend: 0,
+    // What can actually be bought and sold per day as a maker. The station
+    // backtest caps each simulated cycle on the lesser of the two, because a
+    // maker waits for flow instead of consuming the book.
+    S2BPerDay: Number(row.S2BPerDay ?? 0),
+    BfSPerDay: Number(row.BfSPerDay ?? 0),
     BuyCompetitors: Number(row.BuyOrderCount ?? 0),
     SellCompetitors: Number(row.SellOrderCount ?? 0),
     DailyProfit: Number(row.DailyProfit ?? row.RealizableDailyProfit ?? totalProfit),
@@ -715,6 +721,7 @@ export function StationTrading({
     Record<string, HiddenTradeEntry>
   >({});
   const [showHiddenRows, setShowHiddenRows] = useState(false);
+  const [backtestOpen, setBacktestOpen] = useState(false);
   const [ignoredModalOpen, setIgnoredModalOpen] = useState(false);
   const [ignoredSearch, setIgnoredSearch] = useState("");
   const [ignoredTab, setIgnoredTab] = useState<HiddenFilterTab>("all");
@@ -2601,6 +2608,17 @@ export function StationTrading({
   );
   const closeExecPlan = useCallback(() => setExecPlanRow(null), []);
 
+  // What the backtest replays: whatever is currently on screen, in the order
+  // shown, converted to the shape the engine takes. Same rows the user is
+  // looking at, so the result answers a question they actually asked.
+  const backtestRows = useMemo(
+    () =>
+      displayRows
+        .map((row) => stationTradeToFlipResult(row, regionId, systemId, params.system_name || ""))
+        .filter((row): row is FlipResult => row !== null),
+    [displayRows, params.system_name, regionId, systemId],
+  );
+
   return (
     <div className="flex-1 flex flex-col min-h-0">
       {/* Settings Panel - unified design */}
@@ -3188,6 +3206,15 @@ export function StationTrading({
               title="Open hidden rows manager"
             >
               Ignored ({hiddenCounts.total + ignoredCategoryIds.size})
+            </button>
+            <button
+              type="button"
+              onClick={() => setBacktestOpen(true)}
+              disabled={backtestRows.length === 0}
+              className="px-2 py-0.5 rounded-sm border border-eve-border/60 bg-eve-dark/40 text-[11px] hover:border-eve-accent/50 hover:text-eve-accent transition-colors disabled:opacity-40"
+              title="Paper backtest these rows against recorded order books"
+            >
+              BT
             </button>
             <button
               type="button"
@@ -4607,6 +4634,23 @@ export function StationTrading({
           </div>
         </>
       )}
+
+      {/* variant="station" is not a preference. Running these rows through the
+          hauling replay would buy at the ask and sell at the bid of the same
+          station, which loses money on every item by construction. */}
+      <BacktestPopup
+        open={backtestOpen}
+        onClose={() => setBacktestOpen(false)}
+        rows={backtestRows}
+        variant="station"
+        salesTaxPercent={splitTradeFees ? undefined : salesTaxPercent}
+        brokerFeePercent={splitTradeFees ? undefined : brokerFee}
+        splitTradeFees={splitTradeFees}
+        buyBrokerFeePercent={splitTradeFees ? buyBrokerFeePercent : undefined}
+        sellBrokerFeePercent={splitTradeFees ? sellBrokerFeePercent : undefined}
+        buySalesTaxPercent={splitTradeFees ? buySalesTaxPercent : undefined}
+        sellSalesTaxPercent={splitTradeFees ? sellSalesTaxPercent : undefined}
+      />
 
       <TradeExecutionAutopilotPopup
         open={execPlanRow !== null}

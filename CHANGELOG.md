@@ -75,6 +75,55 @@ written from what the simulation actually does with it.
   mode that could silently have nothing to work with, and an empty result read as
   a verdict on the strategy rather than as missing data.
 
+### Station Trading can be backtested, with its own execution model
+
+Station Trading had no backtest at all -- the BT button lived in the scan-results
+table, which only Radius and Regional Trade use. It has one now, and it runs a
+different simulation rather than the same one with different settings.
+
+- **Why a separate model.** The existing recorded-book replay is a taker on both
+  legs: it buys from the lowest asks at the source and sells into the highest
+  bids at the destination. Correct for hauling, and structurally incapable of
+  profit at a single station, where the ask is above the bid by definition.
+  Measured against real recorded books, a Tritanium row through that path paired
+  twelve snapshots and rejected all twelve, best case -0.26%. The same row and
+  the same snapshots through the maker model return nine trades at +0.5%.
+- **What it models.** A buy order posted at the best bid and a sell order posted
+  at the best ask, so the spread is your margin instead of your cost. Buy markup
+  and sell haircut keep their direction but change mechanism: they are now the
+  tick you give away to reach the front of the queue. Raise both on a thin item
+  and it stops being a trade, which is the honest answer.
+- **Quantity comes from flow, not depth.** A maker consumes nothing -- they wait,
+  and what arrives is a day's trading. Each cycle is capped by the lesser of what
+  the item can be bought and sold at per day, scaled by Volume %. Sizing a maker
+  strategy against visible depth is how a backtest concludes you could have
+  bought out Jita every morning. An item with no flow evidence produces no
+  trades rather than a trade sized off the book.
+- **Queue depth is reported, not absorbed.** Each trade carries the volume that
+  was resting in front of your order. "You were behind 2.6 million units" is the
+  honest reason a spread you can see is not a spread you can capture.
+- Controls that only mean something with two markets -- hold days, entry spacing,
+  route time, cargo, jump time, safety -- are hidden rather than shown inert, and
+  a row whose two venues differ is skipped with a warning instead of silently
+  simulated.
+
+### The archive backfill has a button
+
+`POST /api/orderbook/import/fuzzwork` shipped in this release without any UI,
+which made recorded-book backtests quietly unusable: the mode needs stored
+snapshots, and the only way to create them was to have had recording switched on
+already. It now sits under the recording toggle in the backtest window's
+Orderbook DB panel, which is the same question asked in the other direction --
+that switch collects books from now on, this one reaches backwards.
+
+Two steps, because a plan is a few gigabytes from a service run for free:
+Estimate reports the file count and transfer size without downloading anything,
+and only then does an Import button appear stating both. It streams progress per
+file and can be stopped. Stored and fetched are reported separately, since the
+recorder declines a snapshot that duplicates one already held and a file can
+contain none of your types -- a low number is usually correct rather than a
+failure.
+
 ### Fixed: the hold-or-cut verdict depended on cache state
 
 `CalcRecoveryOutlook` fits a 180-day trend to decide whether an underwater order
@@ -118,7 +167,11 @@ happened. It now always sees the full window.
 
 - Accumulate's buy candidates and Today's are drawn from saved scans, so their
   prices are as fresh as the last sweep.
-- The Fuzzwork import is API-only; there is no button for it yet.
+- Only The Forge is backfilled by default; the Flipper and Regional Trade scans
+  cross regions, so far-leg depth stays missing until each is imported.
+- The station backtest models joining the front of the queue. It does not
+  model waiting in one, so an item where you would sit behind millions of
+  units still reports the trade -- with that queue depth alongside it.
 - Row prose on Today and Accumulate is generated server-side in English; only the
   surrounding chrome is translated.
 - Skillbooks have no notion of NPC seeding, so a "discount" on one can reflect a
