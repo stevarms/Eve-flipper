@@ -116,6 +116,28 @@ export function PositionRowDrawer({
           <DetailRow label={t("positionsColAge")} value={t("positionsAgeDays", { n: row.days_held })} />
         </DetailGroup>
 
+        {/* The grid can only show the biggest pile. This is the whole spread,
+            which is what tells you whether selling is one trip or four. */}
+        {row.locations && row.locations.length > 0 && (
+          <DetailGroup title={t("positionsDrawerWhere")}>
+            {row.locations.map((l, i) => (
+              <DetailRow
+                key={`${l.location_id}-${l.container_name ?? ""}-${l.flag ?? ""}-${i}`}
+                label={l.location_name}
+                value={[
+                  formatNumber(l.qty),
+                  l.container_name ? `· ${l.container_name}` : "",
+                  l.flag ? `· ${l.flag}` : "",
+                  l.character_name ? `· ${l.character_name}` : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+                tone={l.flag === "Fitted" ? "warn" : undefined}
+              />
+            ))}
+          </DetailGroup>
+        )}
+
         <DetailGroup title={t("positionsDrawerCost")}>
           <DetailRow label={t("positionsColAvgCost")} value={unit(row.avg_unit_cost)} />
           <DetailRow label={t("positionsDrawerCostBasis")} value={isk(row.cost_basis)} />

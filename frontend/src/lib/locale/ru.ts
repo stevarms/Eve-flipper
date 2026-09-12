@@ -2115,6 +2115,7 @@ export const ru = {
     // Активы → Позиции
     positionsSubtitle:
       "Всё, что вы держите и за что заплатили. FIFO по вашим транзакциям плюс позиции, добавленные вручную. Цена — лучший sell в Jita 4-4; прибыль — за вычетом брокерской комиссии и налога.",
+    positionsMoreLocations: "+{count} \u0435\u0449\u0451",
     positionsHideFullyListed: "Скрыть полностью выставленные",
     positionsSortBy: "Сортировка",
     positionsAdd: "Добавить позицию",
@@ -2143,6 +2144,7 @@ export const ru = {
     positionsSourceManufacture: "Произведено",
     positionsSourceOrphan: "Без источника",
     positionsSourceManual: "Вручную",
+    positionsDrawerWhere: "Где находится",
     positionsDrawerHolding: "Позиция",
     positionsDrawerSource: "Источник",
     positionsDrawerOldest: "Старейший лот",

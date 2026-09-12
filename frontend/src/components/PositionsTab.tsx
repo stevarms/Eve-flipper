@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Plus } from "lucide-react";
+import { MapPin, Plus } from "lucide-react";
 import { deleteManualPosition, getPositions } from "../lib/api";
-import type { PositionRow, PositionsResponse } from "../lib/types";
+import type { PositionLocation, PositionRow, PositionsResponse } from "../lib/types";
 import { useI18n } from "../lib/i18n";
 import { formatIsk as formatIskLib, formatNumber } from "../lib/format";
 import { useGlobalToast } from "./Toast";
@@ -271,6 +271,70 @@ export function PositionsTab() {
   );
 }
 
+/**
+ * Where a holding is, in one line.
+ *
+ * Renders nothing when locations are absent, which means no asset coverage -- a
+ * manual row, or a character whose assets would not read -- rather than an
+ * empty hangar. A stack inside a container names it, because "in Jita" and "in
+ * Jita, in the can" are different errands. The rest of the breakdown is in the
+ * row drawer; a row is scanned, not studied, and four stations inline would
+ * push the numbers off the line.
+ */
+function PositionWhere({
+  locations,
+  t,
+}: {
+  locations?: PositionLocation[];
+  t: ReturnType<typeof useI18n>["t"];
+}) {
+  if (!locations || locations.length === 0) return null;
+  const [first, ...rest] = locations;
+  return (
+    <div
+      className="mt-0.5 flex min-w-0 items-center gap-1 font-ui text-t-caption text-fg-tertiary"
+      title={locations.map(describeLocation).join("\n")}
+    >
+      <MapPin className="h-3 w-3 shrink-0" aria-hidden="true" />
+      <span className="truncate">
+        {shortLocationName(first.location_name)}
+        {first.container_name && (
+          <span className="text-fg-secondary"> · {first.container_name}</span>
+        )}
+        {first.flag && <span className="text-warn-dim"> · {first.flag}</span>}
+      </span>
+      {rest.length > 0 && (
+        <span className="shrink-0">
+          {t("positionsMoreLocations", { count: String(rest.length) })}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** One location as a line of plain text, for tooltips and the drawer. */
+export function describeLocation(l: PositionLocation): string {
+  return [
+    `${l.qty.toLocaleString()} × ${l.location_name}`,
+    l.container_name ? `(${l.container_name})` : "",
+    l.flag ? `[${l.flag}]` : "",
+    l.character_name ? `— ${l.character_name}` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+/**
+ * Station names are long and the front identifies them: "Jita IV - Moon 4 -
+ * Caldari Navy Assembly Plant" is Jita IV-4 to anyone who plays. Trim the
+ * owner-corporation tail, never the system.
+ */
+function shortLocationName(name: string): string {
+  if (!name) return "";
+  const parts = name.split(" - ");
+  return parts.length <= 2 ? name : parts.slice(0, 2).join(" - ");
+}
+
 function Row({
   row,
   onInspect,
@@ -299,6 +363,7 @@ function Row({
           marketLabel={t("positionsListHint")}
           subtitle={row.source === "manual" ? t("positionsSourceManual") : undefined}
         />
+        <PositionWhere locations={row.locations} t={t} />
       </td>
       <td className="px-2 py-1 text-right font-num tnum text-t-cell text-fg-secondary">
         {formatNumber(row.qty)}

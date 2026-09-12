@@ -2117,6 +2117,7 @@ export const en = {
     // Assets → Positions
     positionsSubtitle:
       "Everything you're holding that you paid for. Auto-derived FIFO from your transactions, plus anything you added by hand. Prices are best sell at Jita 4-4; profit is net of broker fee and sales tax.",
+    positionsMoreLocations: "+{count} more",
     positionsHideFullyListed: "Hide fully listed",
     positionsSortBy: "Sort by",
     positionsAdd: "Add holding",
@@ -2145,6 +2146,7 @@ export const en = {
     positionsSourceManufacture: "Built",
     positionsSourceOrphan: "Unmatched",
     positionsSourceManual: "Added by hand",
+    positionsDrawerWhere: "Where it is",
     positionsDrawerHolding: "Holding",
     positionsDrawerSource: "Source",
     positionsDrawerOldest: "Oldest lot",

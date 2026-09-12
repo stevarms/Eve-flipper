@@ -890,6 +890,12 @@ export interface PositionRow {
   unrealized_pct: number;
   listed_qty: number;
   listed_price: number;
+  /**
+   * Where the holding physically is, biggest pile first. Absent means no asset
+   * coverage for this type -- a manual row, or a character whose assets could
+   * not be read -- not an empty hangar.
+   */
+  locations?: PositionLocation[];
   manual_id?: number;
   note?: string;
 
@@ -910,6 +916,19 @@ export interface PositionRow {
   tradeable_qty: number;
   /** The holding rule's note, distinct from `note` (a manual entry's). */
   rule_note?: string;
+}
+
+/** One place some of a holding sits. Mirrors api.PositionLocation. */
+export interface PositionLocation {
+  qty: number;
+  location_id: number;
+  /** May read "Structure {id}" when a private structure cannot be resolved. */
+  location_name: string;
+  /** Set when the stack is inside a container rather than loose in the hangar. */
+  container_name?: string;
+  /** ESI location_flag, with Hangar and fitting slots normalised away. */
+  flag?: string;
+  character_name?: string;
 }
 
 /** Per-type selling constraints. Set on Assets -> Positions; Today only

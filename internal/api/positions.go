@@ -44,6 +44,11 @@ type PositionRow struct {
 	// Live pricing. MarketPrice is zero when the hub has no sell order for
 	// the type, in which case the value/unrealized fields stay zero and the
 	// UI shows "no price" rather than a fabricated loss.
+	// Locations is where the holding physically sits, biggest pile first.
+	// Empty means no asset coverage for this type -- a manual row, or a
+	// character whose assets could not be read -- not an empty hangar.
+	Locations []PositionLocation `json:"locations,omitempty"`
+
 	MarketPrice   float64 `json:"market_price"`
 	MarketValue   float64 `json:"market_value"`
 	NetProceeds   float64 `json:"net_proceeds"`
@@ -327,6 +332,10 @@ func (s *Server) buildPositions(
 	}
 	prices, pricingFailed := s.fetchHubSellPrices(typeIDs)
 	listed, listedPrice, ordersFailed := s.fetchListedSellQuantities(userID, sessions, seen)
+	s.mu.RLock()
+	sdeForAssets := s.sdeData
+	s.mu.RUnlock()
+	locations := s.buildPositionLocations(userID, sessions, sdeForAssets, seen)
 
 	now := time.Now().UTC()
 	resp := PositionsResponse{
@@ -345,6 +354,7 @@ func (s *Server) buildPositions(
 		row := &rows[i]
 		row.DaysHeld = daysSince(row.OldestDate, now)
 		row.ListedQty = listed[row.TypeID]
+		row.Locations = locations[row.TypeID]
 		row.ListedPrice = listedPrice[row.TypeID]
 		if px, ok := prices[row.TypeID]; ok && px > 0 {
 			row.MarketPrice = px
