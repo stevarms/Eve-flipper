@@ -28,6 +28,7 @@ import type {
 } from "@/lib/types";
 import { formatISK, formatMargin } from "@/lib/format";
 import { Modal } from "./Modal";
+import { Tooltip } from "./Tooltip";
 import { useAchievements } from "./achievements";
 
 type QuantityMode = "scan" | "fixed" | "budget";
@@ -284,9 +285,38 @@ export function BacktestPopup({
   return (
     <Modal open={open} onClose={onClose} title="Paper Backtest" width="max-w-7xl" allowFullscreen>
       <div className="p-4 space-y-4 text-xs text-eve-text">
+        {/* Orientation, because the control grid alone does not say what this
+            screen is for. Every label carries its own tooltip; this says which
+            three settings actually decide whether the answer means anything. */}
+        <div className="rounded-sm border border-eve-border bg-eve-panel/60 px-3 py-2 leading-relaxed text-eve-dim">
+          <span className="text-eve-text">
+            Replays the {rowsForBacktest.length} selected {rowsForBacktest.length === 1 ? "row" : "rows"} against
+            past market data and reports what the strategy would have made.
+          </span>{" "}
+          Nothing here touches the live market or your wallet.
+          <div className="mt-1">
+            Start with <span className="text-eve-text">Mode</span>: <em>Hold cycle</em> buys and sells
+            days apart, so it tests a price move; <em>Instant flip</em> buys and sells at once, so it
+            tests a spread. Then set <span className="text-eve-text">Window days</span> for how far back
+            to look.
+          </div>
+          <div className="mt-1">
+            The three that decide whether the result is believable are{" "}
+            <span className="text-eve-text">Volume %</span>,{" "}
+            <span className="text-eve-text">Buy markup %</span> and{" "}
+            <span className="text-eve-text">Sell haircut %</span> — they charge the strategy for not
+            getting perfect fills at perfect prices. Leaving them at their most generous is how a
+            backtest flatters a strategy that would have lost money.
+          </div>
+          <div className="mt-1 text-eve-dim/80">
+            Hover any label for what it does.
+          </div>
+        </div>
+
         <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-3">
           <SelectControl
             label="Mode"
+            hint="Hold cycle: buy on one day and sell the same items HOLD DAYS later, priced from daily history — you are testing a price move. Instant flip: buy and sell at the same moment — you are testing a spread."
             value={strategyMode}
             onChange={(v) => setStrategyMode(v as StrategyMode)}
             options={[
@@ -297,6 +327,7 @@ export function BacktestPopup({
           {strategyMode === "instant_flip" && (
             <SelectControl
               label="Price model"
+              hint="Where an instant flip's two prices come from. Scan spread reuses this row's current numbers for every simulated day, so it tests one spread over and over. History pair takes both legs from daily average history. Recorded book replays real stored order books, and is the only mode that models depth."
               value={instantPriceMode}
               onChange={(v) => setInstantPriceMode(v as InstantPriceMode)}
               options={[
@@ -307,20 +338,21 @@ export function BacktestPopup({
             />
           )}
           {strategyMode === "hold" ? (
-            <NumberControl label="Hold days" min={1} max={90} value={holdDays} onChange={setHoldDays} />
+            <NumberControl label="Hold days" hint="How long each position is held. The exit price is the target market's daily average that many days after entry." min={1} max={90} value={holdDays} onChange={setHoldDays} />
           ) : instantPriceMode === "recorded_orderbook" && cooldownMode === "manual" ? (
-            <NumberControl label="Cooldown min" min={1} max={10080} value={orderbookCooldownMinutes} onChange={setOrderbookCooldownMinutes} />
+            <NumberControl label="Cooldown min" hint="Minutes to wait after one trade before the next can start. Without it the simulation fires round trips faster than you could physically have made them." min={1} max={10080} value={orderbookCooldownMinutes} onChange={setOrderbookCooldownMinutes} />
           ) : instantPriceMode === "recorded_orderbook" ? (
-            <NumberControl label="Min cooldown" min={0} max={10080} value={routeMinCooldownMinutes} onChange={setRouteMinCooldownMinutes} />
+            <NumberControl label="Min cooldown" hint="Floor on the route-derived cooldown, in minutes, so even a one-jump hop costs you something." min={0} max={10080} value={routeMinCooldownMinutes} onChange={setRouteMinCooldownMinutes} />
           ) : (
-            <NumberControl label="Cooldown days" min={1} max={30} value={travelCooldownDays} onChange={setTravelCooldownDays} />
+            <NumberControl label="Cooldown days" hint="Days of travel charged between trades, so hauling time counts against the strategy instead of being free." min={1} max={30} value={travelCooldownDays} onChange={setTravelCooldownDays} />
           )}
           {strategyMode === "instant_flip" && instantPriceMode === "recorded_orderbook" && (
-            <NumberControl label="Max age min" min={1} max={1440} value={orderbookMaxAgeMinutes} onChange={setOrderbookMaxAgeMinutes} />
+            <NumberControl label="Max age min" hint="How far apart the buy-side and sell-side order books may have been captured and still be paired into one trade. Snapshots imported from the archive carry both sides at the same instant, so they pair at zero age." min={1} max={1440} value={orderbookMaxAgeMinutes} onChange={setOrderbookMaxAgeMinutes} />
           )}
           {strategyMode === "instant_flip" && instantPriceMode === "recorded_orderbook" && (
             <SelectControl
               label="Cooldown"
+              hint="Manual uses the fixed minutes you set. Route time estimates it from the real jump count, your cargo hold and how many trips the quantity needs."
               value={cooldownMode}
               onChange={(v) => setCooldownMode(v as CooldownMode)}
               options={[
@@ -331,11 +363,12 @@ export function BacktestPopup({
           )}
           {strategyMode === "instant_flip" && instantPriceMode === "recorded_orderbook" && cooldownMode === "route_time" && (
             <>
-              <NumberControl label="Cargo m3" min={0} max={10_000_000} value={routeCargoCapacity} onChange={setRouteCargoCapacity} />
-              <NumberControl label="Min/jump" min={0.1} max={60} step={0.1} value={routeMinutesPerJump} onChange={setRouteMinutesPerJump} />
-              <NumberControl label="Dock min" min={0} max={120} step={0.5} value={routeDockMinutes} onChange={setRouteDockMinutes} />
+              <NumberControl label="Cargo m3" hint="Hold size, used to work out how many trips a position takes. More trips means a longer cooldown and fewer trades in the window." min={0} max={10_000_000} value={routeCargoCapacity} onChange={setRouteCargoCapacity} />
+              <NumberControl label="Min/jump" hint="Minutes per jump including align and warp. Roughly 1 for an interceptor, 2 for a hauler, 4 or more for a freighter." min={0.1} max={60} step={0.1} value={routeMinutesPerJump} onChange={setRouteMinutesPerJump} />
+              <NumberControl label="Dock min" hint="Fixed minutes per trip for docking, loading and undocking, on top of jump time." min={0} max={120} step={0.5} value={routeDockMinutes} onChange={setRouteDockMinutes} />
               <SelectControl
                 label="Safety"
+                hint="Manual multiplies the travel estimate by a number you pick. Auto risk derives the penalty from the route's actual security, so a lowsec leg costs more time than a highsec one."
                 value={routeSafetyMode}
                 onChange={(v) => setRouteSafetyMode(v as RouteSafetyMode)}
                 options={[
@@ -344,17 +377,18 @@ export function BacktestPopup({
                 ]}
               />
               {routeSafetyMode === "manual" ? (
-                <NumberControl label="Safety x" min={0.1} max={10} step={0.1} value={routeSafetyMultiplier} onChange={setRouteSafetyMultiplier} />
+                <NumberControl label="Safety x" hint="Multiplier on the travel estimate. 1 is no penalty; 1.5 assumes trips take half again as long as the raw jump maths says." min={0.1} max={10} step={0.1} value={routeSafetyMultiplier} onChange={setRouteSafetyMultiplier} />
               ) : (
-                <NumberControl label="Min sec" min={0} max={1} step={0.05} value={routeMinSecurity} onChange={setRouteMinSecurity} />
+                <NumberControl label="Min sec" hint="Lowest security status the route may use. Higher keeps you safer, which usually means more jumps and a longer cooldown." min={0} max={1} step={0.05} value={routeMinSecurity} onChange={setRouteMinSecurity} />
               )}
             </>
           )}
-          <NumberControl label="Window days" min={7} max={365} value={windowDays} onChange={setWindowDays} />
-          <NumberControl label="Max rows" min={1} max={500} value={maxRows} onChange={setMaxRows} />
-          <NumberControl label="Entry every" min={1} max={30} value={entrySpacingDays} onChange={setEntrySpacingDays} />
+          <NumberControl label="Window days" hint="How many trailing days of history to simulate over. Longer gives a better sample but reaches back into different market conditions." min={7} max={365} value={windowDays} onChange={setWindowDays} />
+          <NumberControl label="Max rows" hint="How many scan rows to include, taken from the top of the current sort. Each is simulated independently." min={1} max={500} value={maxRows} onChange={setMaxRows} />
+          <NumberControl label="Entry every" hint="Open a new position every N days across the window. 1 tests the strategy daily; higher models trading less often. With Non-overlap on, this is forced up to Hold days." min={1} max={30} value={entrySpacingDays} onChange={setEntrySpacingDays} />
           <SelectControl
             label="Qty mode"
+            hint="Scan qty uses the quantity the scan suggested for each row. Fixed buys the same number of units everywhere. Budget spends a set amount of ISK per trade, so cheaper items get more units."
             value={quantityMode}
             onChange={(v) => setQuantityMode(v as QuantityMode)}
             options={[
@@ -366,6 +400,7 @@ export function BacktestPopup({
           {(strategyMode === "hold" || instantPriceMode === "history_pair") && (
             <SelectControl
               label="Buy price"
+              hint="History prices each entry at the source market's daily average on that day, which is what makes this a backtest. Scan price reuses today's scanned price for every simulated entry — faster, but it stops being a test of the past."
               value={buyPriceSource}
               onChange={(v) => setBuyPriceSource(v as BuyPriceSource)}
               options={[
@@ -375,23 +410,23 @@ export function BacktestPopup({
             />
           )}
           {quantityMode === "fixed" && (
-            <NumberControl label="Fixed qty" min={1} max={1_000_000_000} value={fixedQuantity} onChange={setFixedQuantity} />
+            <NumberControl label="Fixed qty" hint="Units bought per trade, the same for every row regardless of price." min={1} max={1_000_000_000} value={fixedQuantity} onChange={setFixedQuantity} />
           )}
           {quantityMode === "budget" && (
-            <NumberControl label="Budget ISK" min={1_000_000} max={10_000_000_000_000} step={1_000_000} value={budgetISK} onChange={setBudgetISK} />
+            <NumberControl label="Budget ISK" hint="ISK to spend per trade. The quantity is whatever that buys at the entry price." min={1_000_000} max={10_000_000_000_000} step={1_000_000} value={budgetISK} onChange={setBudgetISK} />
           )}
-          <NumberControl label="Volume %" min={1} max={100} value={volumeFillFraction} onChange={setVolumeFillFraction} />
-          <NumberControl label="Buy markup %" min={0} max={100} value={buyPriceMarkup} onChange={setBuyPriceMarkup} />
-          <NumberControl label="Sell haircut %" min={0} max={100} value={sellPriceHaircut} onChange={setSellPriceHaircut} />
-          <NumberControl label="Min ROI %" min={-100} max={1000} value={minROI} onChange={setMinROI} />
+          <NumberControl label="Volume %" hint="What share of a day's traded volume you assume you could have captured. 100% assumes you were every trade that day, which is optimistic on anything liquid; 10-25% is a more defensible read. Trades needing more than this are partial, or dropped if Skip unfillable is on." min={1} max={100} value={volumeFillFraction} onChange={setVolumeFillFraction} />
+          <NumberControl label="Buy markup %" hint="Raises every assumed buy price, charging the strategy for paying up rather than getting the exact historical average." min={0} max={100} value={buyPriceMarkup} onChange={setBuyPriceMarkup} />
+          <NumberControl label="Sell haircut %" hint="Lowers every assumed sell price, charging the strategy for undercutting to actually get filled. This and Buy markup are how you stop a backtest assuming perfect execution." min={0} max={100} value={sellPriceHaircut} onChange={setSellPriceHaircut} />
+          <NumberControl label="Min ROI %" hint="Discards simulated trades returning less than this, modelling that you would only have taken the good ones. Set it high and the result flatters the strategy by hiding trades you would have taken in practice." min={-100} max={1000} value={minROI} onChange={setMinROI} />
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
-          <CheckControl label="Skip unfillable" checked={skipUnfillable} onChange={setSkipUnfillable} />
+          <CheckControl label="Skip unfillable" hint="Drop trades where that day's volume, after the Volume % share, could not cover the quantity. Off, they are kept and flagged as only partially fillable." checked={skipUnfillable} onChange={setSkipUnfillable} />
           {strategyMode === "hold" && (
             <>
-              <CheckControl label="Non-overlap entries" checked={nonOverlapping} onChange={setNonOverlapping} />
-              <CheckControl label="Include open MTM" checked={includeOpenTrades} onChange={setIncludeOpenTrades} />
+              <CheckControl label="Non-overlap entries" hint="Never hold two positions in the same item at once, by forcing Entry every up to Hold days. Off, positions stack and the strategy quietly needs far more capital than one position's worth." checked={nonOverlapping} onChange={setNonOverlapping} />
+              <CheckControl label="Include open MTM" hint="Include positions whose sell date falls past the end of the window, valued at the last known price. Off is the conservative reading: only trades that actually closed inside the window count." checked={includeOpenTrades} onChange={setIncludeOpenTrades} />
             </>
           )}
           <button
@@ -403,14 +438,19 @@ export function BacktestPopup({
             {loading ? "Running..." : "Run"}
           </button>
           {recordedBookMode && (
-            <button
-              type="button"
-              onClick={() => void checkCoverage()}
-              disabled={coverageLoading || rowsForBacktest.length === 0}
-              className="px-3 py-1.5 rounded-sm border border-eve-border bg-eve-panel text-eve-text font-semibold uppercase tracking-wide disabled:opacity-50"
+            <Tooltip
+              maxWidth="340px"
+              content="Press this before Run. It reports which of your rows actually have stored order books to replay, so an empty result reads as missing data rather than as a strategy that does not work."
             >
-              {coverageLoading ? "Checking..." : "Check coverage"}
-            </button>
+              <button
+                type="button"
+                onClick={() => void checkCoverage()}
+                disabled={coverageLoading || rowsForBacktest.length === 0}
+                className="px-3 py-1.5 rounded-sm border border-eve-border bg-eve-panel text-eve-text font-semibold uppercase tracking-wide disabled:opacity-50"
+              >
+                {coverageLoading ? "Checking..." : "Check coverage"}
+              </button>
+            </Tooltip>
           )}
           <div className="text-eve-dim">
             {rowsForBacktest.length} / {rows.length} rows
@@ -418,7 +458,21 @@ export function BacktestPopup({
         </div>
 
         {recordedBookMode && (
-          <CoveragePanel coverage={coverage} error={coverageError} loading={coverageLoading} />
+          <>
+            {/* This mode is the only one that can silently have nothing to work
+                with, because it needs stored books rather than history every
+                item has. Say so here rather than letting an empty result look
+                like a verdict on the strategy. */}
+            <div className="rounded-sm border border-eve-border bg-eve-panel/60 px-3 py-2 leading-relaxed text-eve-dim">
+              This mode replays order books that were stored earlier, so it can only
+              cover items and regions you have snapshots for — recorded live while the
+              app was running, or imported from an archive. Press{" "}
+              <span className="text-eve-text">Check coverage</span> first: if a row has
+              no stored books, it produces no trades, and that is missing data rather
+              than a bad strategy.
+            </div>
+            <CoveragePanel coverage={coverage} error={coverageError} loading={coverageLoading} />
+          </>
         )}
         {recordedBookMode && (
           <OrderbookMaintenancePanel
@@ -1092,6 +1146,7 @@ function formatCapture(value: string): string {
 
 function NumberControl({
   label,
+  hint,
   min,
   max,
   step = 1,
@@ -1099,6 +1154,7 @@ function NumberControl({
   onChange,
 }: {
   label: string;
+  hint?: string;
   min: number;
   max: number;
   step?: number;
@@ -1107,7 +1163,7 @@ function NumberControl({
 }) {
   return (
     <label className="space-y-1 min-w-0">
-      <div className="text-eve-dim uppercase tracking-wide text-[10px] truncate">{label}</div>
+      <ControlLabel label={label} hint={hint} />
       <input
         type="number"
         min={min}
@@ -1123,18 +1179,20 @@ function NumberControl({
 
 function SelectControl({
   label,
+  hint,
   value,
   onChange,
   options,
 }: {
   label: string;
+  hint?: string;
   value: string;
   onChange: (value: string) => void;
   options: Array<[string, string]>;
 }) {
   return (
     <label className="space-y-1 min-w-0">
-      <div className="text-eve-dim uppercase tracking-wide text-[10px] truncate">{label}</div>
+      <ControlLabel label={label} hint={hint} />
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -1150,14 +1208,16 @@ function SelectControl({
 
 function CheckControl({
   label,
+  hint,
   checked,
   onChange,
 }: {
   label: string;
+  hint?: string;
   checked: boolean;
   onChange: (value: boolean) => void;
 }) {
-  return (
+  const box = (
     <label className="inline-flex items-center gap-2 text-eve-dim">
       <input
         type="checkbox"
@@ -1165,8 +1225,37 @@ function CheckControl({
         onChange={(e) => onChange(e.target.checked)}
         className="accent-eve-accent"
       />
-      <span>{label}</span>
+      <span className={hint ? "border-b border-dotted border-eve-border/70" : undefined}>
+        {label}
+      </span>
     </label>
+  );
+  if (!hint) return box;
+  return (
+    <Tooltip content={hint} maxWidth="340px">
+      {box}
+    </Tooltip>
+  );
+}
+
+/**
+ * A control's name, with its meaning one hover away.
+ *
+ * The dotted underline is the affordance: a tooltip nobody can see is a tooltip
+ * nobody finds. Radix rather than a native title= because these are whole
+ * sentences, and several of them are the difference between a believable
+ * backtest and a meaningless one.
+ */
+function ControlLabel({ label, hint }: { label: string; hint?: string }) {
+  const text = (
+    <span className={hint ? "border-b border-dotted border-eve-border/70 cursor-help" : undefined}>
+      {label}
+    </span>
+  );
+  return (
+    <div className="text-eve-dim uppercase tracking-wide text-[10px] truncate">
+      {hint ? <Tooltip content={hint} maxWidth="340px">{text}</Tooltip> : text}
+    </div>
   );
 }
 

@@ -57,6 +57,24 @@ deliberately outside the action queue -- that queue ranks on seven-day ISK per
 minute of attention, and a hold that pays out over a month has no honest place
 on that scale.
 
+### Paper backtest: the controls say what they do
+
+Twenty-eight settings, each labelled with a two-word abbreviation and explained
+nowhere -- "Volume %", "Safety x", "Buy markup %". Every one is a modelling
+assumption, and a backtest whose assumptions you cannot read is a number you
+cannot use. Each label now carries the sentence describing what it changes,
+written from what the simulation actually does with it.
+
+- A short header says which kind of question the window answers, and which three
+  settings decide whether the answer is believable: the volume share you assume
+  you could have captured, and the buy markup and sell haircut that charge the
+  strategy for not getting perfect fills. Left at their most generous, those
+  three are how a backtest flatters a strategy that would have lost money.
+- Recorded-book mode says up front that it can only replay items and regions you
+  have stored snapshots for, and points at Check coverage first. It was the one
+  mode that could silently have nothing to work with, and an empty result read as
+  a verdict on the strategy rather than as missing data.
+
 ### Fixed: the hold-or-cut verdict depended on cache state
 
 `CalcRecoveryOutlook` fits a 180-day trend to decide whether an underwater order
