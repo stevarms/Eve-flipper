@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "repo": "stevarms/Eve-flipper",
-  "generated_at": "2026-09-12T22:25:48.048Z",
+  "generated_at": "2026-09-13T04:54:30.078Z",
   "latest_release": "v1.12.2",
-  "total_downloads": 1887,
-  "current_github_total": 21,
+  "total_downloads": 1890,
+  "current_github_total": 24,
   "active_asset_count": 30,
   "archived_asset_count": 404,
   "clone_stats": {
@@ -5568,13 +5568,13 @@
       "tag_name": "v1.12.2",
       "release_id": "387721551",
       "state": "active",
-      "download_count": 0,
-      "github_download_count": 0,
+      "download_count": 1,
+      "github_download_count": 1,
       "browser_download_url": "https://github.com/stevarms/Eve-flipper/releases/download/v1.12.2/eve-flipper-desktop-windows-amd64.exe",
       "created_at": "2026-09-12T22:25:02Z",
       "updated_at": "2026-09-12T22:25:03Z",
       "first_seen_at": "2026-09-12T22:25:48.048Z",
-      "last_seen_at": "2026-09-12T22:25:48.048Z"
+      "last_seen_at": "2026-09-13T04:54:30.078Z"
     },
     {
       "id": "560053559",
@@ -5582,13 +5582,13 @@
       "tag_name": "v1.12.2",
       "release_id": "387721551",
       "state": "active",
-      "download_count": 0,
-      "github_download_count": 0,
+      "download_count": 1,
+      "github_download_count": 1,
       "browser_download_url": "https://github.com/stevarms/Eve-flipper/releases/download/v1.12.2/eve-flipper-web-windows-amd64.exe",
       "created_at": "2026-09-12T22:25:02Z",
       "updated_at": "2026-09-12T22:25:03Z",
       "first_seen_at": "2026-09-12T22:25:48.048Z",
-      "last_seen_at": "2026-09-12T22:25:48.048Z"
+      "last_seen_at": "2026-09-13T04:54:30.078Z"
     },
     {
       "id": "560053558",
@@ -5596,13 +5596,13 @@
       "tag_name": "v1.12.2",
       "release_id": "387721551",
       "state": "active",
-      "download_count": 0,
-      "github_download_count": 0,
+      "download_count": 1,
+      "github_download_count": 1,
       "browser_download_url": "https://github.com/stevarms/Eve-flipper/releases/download/v1.12.2/SHA256SUMS.txt",
       "created_at": "2026-09-12T22:25:02Z",
       "updated_at": "2026-09-12T22:25:02Z",
       "first_seen_at": "2026-09-12T22:25:48.048Z",
-      "last_seen_at": "2026-09-12T22:25:48.048Z"
+      "last_seen_at": "2026-09-13T04:54:30.078Z"
     },
     {
       "id": "559891448",
