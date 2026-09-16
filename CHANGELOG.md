@@ -1,5 +1,158 @@
 # Changelog
 
+## v1.13.0 - 2026-09-16
+
+The order desk learns the difference between a bid that is failing and a bid that
+is waiting, prices the capital a reprice would commit, and shows margin on both
+sides of every move it advises. Accumulate stops looking at one window.
+
+### Fixed: buy competition stopped at your own station
+
+Every buy row was measured against the orders sitting in your own station and
+nowhere else. ESI's `range` field was never parsed, so a region-range bid parked
+three systems out was invisible to the desk while outbidding you for every unit a
+seller at your station wanted to move. Position, queue-ahead and every ETA built
+on them have been optimistic the whole time.
+
+Buy rows are now built from the region's book, filtered by whether each competing
+bid actually reaches your station: `region` always, `station` only the same
+station, `solarsystem` only the same system, a numeric range by gate jumps through
+the existing BFS cache. An empty or unparseable range is read as station-only,
+which is the conservative reading and matches the old behaviour. Sell orders are
+always station-range in EVE, so sell rows are untouched.
+
+This is the one change here that can make the tab *more* pessimistic. The row
+drawer names how many of the orders ahead of you are not at your station, so a
+surprising position can be checked against the in-game market window before the
+rest of the desk is trusted.
+
+### Orders: a parked bid is a decision, not a defect
+
+A lowball is by construction at the back of the queue, so the whole station sat
+in its queue-ahead and its ETA ran to years -- and the desk reported the defining
+property of the order as a fault, every time, with a huge margin ensuring nothing
+stood in the way of "reprice".
+
+A buy row 20% or more under the best reaching bid (`Lowball %` in the prefs strip)
+now reads `hold -- parked bid: N% under best`. Queue depth, ETA and expiry-driven
+reprice advice stand down; the margin and capital guards still run, because a
+parked bid that has gone underwater is still worth saying out loud. Expiry is not
+swallowed: a lowball inside the expiry window returns `review -- parked bid
+expiring`. A patient-bid flag on the item forces the verdict for a bid sitting
+closer in than the threshold.
+
+The drawer also suggests one: the item's 10th-percentile daily average over the
+trailing year, with the share of the last 365 days it would have filled on, which
+is the only honest fill-odds statement daily bars support.
+
+### Orders: what a reprice would commit
+
+The only economics on a reprice was the price concession. 100 units bid at 50k
+with the book now at 500k passed every check -- margin at the new bid was +9.2%,
+comfortably over the floor -- while committing 45M ISK more than the order holds
+today, at a price near the top of everything the item traded all year. The spread
+is momentary; the price level is not.
+
+Buy rows now carry the notional at the suggested price, the ISK the move would
+add, and where both your price and the suggested one sit in the item's own year.
+Two new `review` verdicts: the raise exceeds `Reprice jump %` of your own price
+and adds capital ("book moved +900%: this is a new buy at 500.0k, not a reprice
+-- 45.0M more ISK committed"), or the suggested price would sit at or above the
+85th percentile of the item's year. `review` rather than `cancel` deliberately --
+the trade may still be right, and the expander already prices cut, hold and move.
+
+The distribution comes from the derived market cache, not the 90-day history
+table, which is a RAM budget for the blueprint scanner and could never satisfy
+the percentile sample gates. A price-rank lookup was added so a cached ladder
+that has lost its sorted series is still answerable.
+
+### Orders: margin before and after
+
+The after-reprice margin already existed and was deliberately hidden. It is now
+on the row: the Margin column reads `+9.2% -> +1.1%` when a move is advised,
+coloured on the number you would end up with, and the drawer gains a Margin &
+risk group -- basis, both margins, cost basis or exit price, added capital, both
+percentiles. A new warning fires when the after-margin is positive but under your
+floor: the action stands, the row shows a triangle, and the reason says the margin
+drops. The break-even guard is unchanged.
+
+A `hold` row shows one margin number, not a before-and-after pair. The suggested
+price is computed from the book for every row whether or not the desk advises
+acting on it, so "a different price exists" was never evidence of a proposed move;
+the pair now renders only on the verdicts that are about a price, and never on a
+parked bid, whose suggested price sits ~40% above it by construction.
+
+### Orders: a price you set by hand
+
+Reusing the holding rules, per type -- a target pinned to an order id would
+evaporate on the next relist, since that mints a new id. Migration v51 adds a bid
+ceiling and the patient-bid flag alongside the existing target price.
+
+- A sell row is never advised below your target: `hold -- below your target of
+  620.0k (market 540.0k, 87% of the way)`.
+- A buy row is never advised above your ceiling.
+- **A fourth margin basis.** A sell row with a target but no cost basis was
+  measured against nothing and reported a dash -- and every margin-driven branch,
+  the break-even guard included, stood down on exactly those rows. It is now
+  measured against the target, so the guard has something to work with.
+
+The drawer carries the editor: a price input, the five named percentile chips
+quoted against the order's own region, the patient-bid checkbox, and Clear. A row
+with a rule shows a lock beside its badge. This is the same rule Positions and
+Today read -- set it once.
+
+### Orders: buy orders away from the trade station
+
+Placing buy orders one station off Jita with a system range is common practice for
+the broker fee, and those rows had no margin at all: the exit was looked up in the
+book at the order's own station, where there is often nothing to sell into.
+
+A buy row's stock is now assumed to be sold at the configured trade station, with
+the region's canonical hub as the fallback, and the trade station wins over a
+local sell book rather than merely filling in for a missing one -- where stock gets
+sold is a decision about the trade, not a consequence of which backwater happens to
+have one hopeful order standing in it. The region's orders were already in memory,
+so this costs no extra request.
+
+The drawer names the station the exit was read at when it is not the order's own.
+Hauling is not modelled, and that label is what stops a hub margin reading as a
+local one.
+
+### Accumulate: 30, 90, 180, 365
+
+The sweep was never looking for the yearly low -- it was today's daily average as
+a percentile of the trailing 365 days, accepted at or below the 25th. One window.
+An item that dipped hard over the last month but trended up over the year was
+structurally invisible, and an item near its yearly low after six months of
+grinding down looked identical to a real dip.
+
+Percentiles are now computed over four windows. The absolute sample gates that
+made a short window impossible scale with the window length, pinned so 365
+reproduces today's numbers exactly. A candidate is cheap when *any* window puts it
+at or below the threshold -- but one that qualifies only on a window shorter than
+a year must additionally clear the not-declining and bounce-record gates as hard
+blockers, because a one-month dip with no recovery history is a falling knife.
+
+The exit target is the lowest median among qualifying windows rather than always
+the year's: the conservative exit is the one the item has genuinely traded at
+recently, which keeps the minimum-upside gate honest instead of letting a
+year-old median manufacture it. The reason names the window it qualified on, and
+each row shows a compact 30/90/180/365 strip, so the shape -- cheap everywhere
+versus cheap only on 30 days -- is readable at a glance.
+
+### Known limits
+
+- **Hauling is not costed.** A margin quoted at the trade station for stock bought
+  elsewhere ignores freight and time. The station label is the warning.
+- **Region-wide orders are still typed into EVE by hand.** ESI has no write scope
+  for market orders; the desk reports the range and advises on it.
+- **The flow model still scales fill by your station's share of regional depth**,
+  which is arguably wrong now the competing book is region-wide. Moving the queue
+  and the flow model together would make it impossible to tell which one moved an
+  ETA; the ETAs from this release are the baseline for that change.
+- **Competing bids' minimum volume is ignored**, so queue-ahead slightly
+  overstates against bids that will not take a small fill.
+
 ## v1.12.2 - 2026-09-12
 
 Positions learns where your stock actually is, and stops counting stock you do
