@@ -17,7 +17,16 @@ type MarketOrder struct {
 	VolumeRemain int32   `json:"volume_remain"`
 	MinVolume    int32   `json:"min_volume"`
 	IsBuyOrder   bool    `json:"is_buy_order"`
-	RegionID     int32   `json:"-"` // set by us
+	// Range is how far a buy order reaches: "station", "solarsystem",
+	// "region", or a gate-jump count as a decimal string. Meaningless on a
+	// sell order, which is always station-range in EVE.
+	//
+	// It matters because a region-range bid parked in another system
+	// competes for every unit a seller at your station wants to move, so
+	// any consumer that treats one station's book as the whole competition
+	// is wrong by however much of the region is bidding over it.
+	Range    string `json:"range"`
+	RegionID int32  `json:"-"` // set by us
 }
 
 // MarketOrderSnapshot is a point-in-time capture of live ESI market orders.

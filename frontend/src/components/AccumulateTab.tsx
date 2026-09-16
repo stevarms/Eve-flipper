@@ -16,6 +16,7 @@ import type {
   AccumulateResult,
   AccumulateRow,
   AccumulateSummary,
+  AccumulateWindow,
   TodayGrade,
 } from "@/lib/types";
 import { todayRelativeAge } from "./home/todayFormat";
@@ -274,6 +275,72 @@ function rejectedTotal(s: AccumulateSummary): number {
   );
 }
 
+/** How a span reads in two or three characters. */
+function windowLabel(days: number): string {
+  return days >= 365 ? "1y" : `${days}d`;
+}
+
+/**
+ * The shape of the dip, at a glance.
+ *
+ * The sweep reads the same price against four spans, and their disagreement is
+ * the whole point: cheap on all of them is a market that has repriced, cheap
+ * only on thirty days is a dip that may or may not come back. The qualifying
+ * span is marked because the row's target and discount are measured against
+ * that one, not against the year.
+ *
+ * A span with too little traded history shows a dash rather than a number. A
+ * zero here would read as the strongest buy signal there is, built out of
+ * nothing.
+ */
+function WindowStrip({ row }: { row: AccumulateRow }) {
+  const { t } = useI18n();
+  const windows = row.window_percentiles;
+  if (!windows?.length) return null;
+
+  return (
+    <span
+      className="mt-0.5 flex flex-wrap justify-end gap-1"
+      title={t("accumWindowStripHint")}
+    >
+      {windows.map((w) => (
+        <WindowChip key={w.window_days} w={w} />
+      ))}
+    </span>
+  );
+}
+
+function WindowChip({ w }: { w: AccumulateWindow }) {
+  const { t } = useI18n();
+  const label = windowLabel(w.window_days);
+  const days = String(w.window_days);
+  if (w.basis !== "history") {
+    return (
+      <span
+        className="rounded-sm px-1 text-fg-tertiary opacity-60"
+        title={t("accumWindowNoneHint", { days })}
+      >
+        {t("accumWindowNone", { label })}
+      </span>
+    );
+  }
+  return (
+    <span
+      className={cn(
+        "rounded-sm px-1",
+        w.qualifies ? "bg-profit/15 font-semibold text-profit" : "text-fg-tertiary",
+      )}
+      title={t(w.qualifies ? "accumWindowQualifyingHint" : "accumWindowHint", {
+        pct: w.current_percentile.toFixed(0),
+        days,
+        median: formatISK(w.p50),
+      })}
+    >
+      {t("accumWindowValue", { label, pct: w.current_percentile.toFixed(0) })}
+    </span>
+  );
+}
+
 function AccumRow({ row }: { row: AccumulateRow }) {
   const { t } = useI18n();
   const { addToast } = useGlobalToast();
@@ -340,10 +407,12 @@ function AccumRow({ row }: { row: AccumulateRow }) {
         </span>
       </td>
 
-      {/* Where it sits in its own year: the range, and the position in it. */}
+      {/* Where it sits in its own year: the range, and the position in it —
+          then the same price against the shorter spans underneath. */}
       <td className="px-2 py-1.5 text-right font-num tnum text-t-caption text-fg-tertiary">
         {formatISK(row.year_low)}–{formatISK(row.year_high)}
         <span className="ml-1 text-fg-secondary">p{row.current_percentile.toFixed(0)}</span>
+        <WindowStrip row={row} />
       </td>
 
       <td className="px-2 py-1.5 text-right font-num tnum text-t-cell font-semibold text-profit">

@@ -227,7 +227,7 @@ func (s *Server) dispositionVenues(ctx context.Context, sdeData *sde.Data, cfg *
 	if cfg != nil {
 		minSec = cfg.MinRouteSecurity
 	}
-	originSystem, originOK := s.dispositionSystemID(sdeData, order.LocationID)
+	originSystem, originOK := s.marketSystemID(sdeData, order.LocationID)
 
 	regions := map[int32]bool{order.RegionID: true}
 	for _, hub := range dispositionHubs {
@@ -294,7 +294,7 @@ func (s *Server) dispositionVenues(ctx context.Context, sdeData *sde.Data, cfg *
 		if !originOK {
 			return -1
 		}
-		dest, ok := s.dispositionSystemID(sdeData, locationID)
+		dest, ok := s.marketSystemID(sdeData, locationID)
 		if !ok {
 			return -1
 		}
@@ -352,11 +352,12 @@ func (s *Server) dispositionVenues(ctx context.Context, sdeData *sde.Data, cfg *
 	return home, elsewhere
 }
 
-// dispositionSystemID resolves a market location to its solar system.
+// marketSystemID resolves a market location to its solar system.
 // Upwell structures are not in the SDE, so they fall back to the system ids
 // ESI has already handed us for structures we can see. Unknown means
-// unknown — the caller drops the venue rather than assuming a distance.
-func (s *Server) dispositionSystemID(sdeData *sde.Data, locationID int64) (int32, bool) {
+// unknown — callers drop the venue rather than assuming a distance, or in the
+// order desk's case fall back to a station-scoped book.
+func (s *Server) marketSystemID(sdeData *sde.Data, locationID int64) (int32, bool) {
 	if sdeData != nil {
 		if st, ok := sdeData.Stations[locationID]; ok && st.SystemID != 0 {
 			return st.SystemID, true
@@ -368,6 +369,22 @@ func (s *Server) dispositionSystemID(sdeData *sde.Data, locationID int64) (int32
 		}
 	}
 	return 0, false
+}
+
+// marketRegionID resolves a market location to its region, via the system
+// marketSystemID already knows how to find. Unknown means unknown: a caller
+// that cannot place a station in a region drops it rather than guessing, which
+// for the order desk's trade station means falling back to the canonical hub.
+func (s *Server) marketRegionID(sdeData *sde.Data, locationID int64) (int32, bool) {
+	sysID, ok := s.marketSystemID(sdeData, locationID)
+	if !ok || sdeData == nil {
+		return 0, false
+	}
+	sys, ok := sdeData.Systems[sysID]
+	if !ok || sys == nil || sys.RegionID == 0 {
+		return 0, false
+	}
+	return sys.RegionID, true
 }
 
 // dispositionDeepestStations ranks the other stations trading this type in

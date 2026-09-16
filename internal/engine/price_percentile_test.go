@@ -326,3 +326,161 @@ func TestMarketDerivedSurvivesJSONRoundTrip(t *testing.T) {
 		t.Errorf("recovery changed across the round trip")
 	}
 }
+
+// RankOfPrice is the wire-safe half of the pair: PercentileAt reads the sorted
+// series and returns nothing once it is gone, while this one has to keep
+// working on a value pulled out of the derived cache -- which is the only form
+// the order desk ever sees.
+func TestRankOfPriceAgreesWithCurrentPercentile(t *testing.T) {
+	h := percentileHistory(400, func(i int) float64 { return float64(i + 1) }, 40)
+	pct := CalcPricePercentiles(h, 0, percentileNow)
+	if pct.Basis != PercentileBasisHistory {
+		t.Fatalf("basis = %q (%s)", pct.Basis, pct.Reason)
+	}
+
+	got := pct.RankOfPrice(pct.Current)
+	if math.Abs(got-pct.CurrentPercentile) > 1e-9 {
+		t.Fatalf("rank of current = %v, current_percentile = %v", got, pct.CurrentPercentile)
+	}
+}
+
+func TestRankOfPriceSurvivesTheDerivedCache(t *testing.T) {
+	// The ladder has eight knots and the body of the distribution is
+	// interpolated between them, so agreement is close rather than exact --
+	// and the tails, where the knots are furthest apart, are the loosest.
+	h := percentileHistory(400, func(i int) float64 { return float64(i + 1) }, 40)
+	live := CalcPricePercentiles(h, 0, percentileNow)
+
+	payload, err := json.Marshal(live)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var cached PricePercentiles
+	if err := json.Unmarshal(payload, &cached); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	for _, price := range []float64{live.P10, live.P25, live.P50, live.P75, live.P90, live.P95} {
+		want := live.RankOfPrice(price)
+		got := cached.RankOfPrice(price)
+		if math.Abs(got-want) > 1.0 {
+			t.Errorf("rank of %v: cached %v, live %v", price, got, want)
+		}
+	}
+
+	// A price between two knots, where interpolation is doing the work.
+	mid := (live.P50 + live.P75) / 2
+	if got, want := cached.RankOfPrice(mid), live.RankOfPrice(mid); math.Abs(got-want) > 3.0 {
+		t.Errorf("rank of the P50/P75 midpoint: cached %v, live %v", got, want)
+	}
+}
+
+func TestRankOfPriceClampsOutsideTheObservedRange(t *testing.T) {
+	h := percentileHistory(400, func(i int) float64 { return float64(i + 1) }, 40)
+	live := CalcPricePercentiles(h, 0, percentileNow)
+	payload, _ := json.Marshal(live)
+	var cached PricePercentiles
+	if err := json.Unmarshal(payload, &cached); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	for name, p := range map[string]PricePercentiles{"live": live, "cached": cached} {
+		if got := p.RankOfPrice(live.Min / 10); got != 0 {
+			t.Errorf("%s: rank below the yearly low = %v, want 0", name, got)
+		}
+		if got := p.RankOfPrice(live.Max * 10); got != 100 {
+			t.Errorf("%s: rank above the yearly high = %v, want 100", name, got)
+		}
+	}
+}
+
+func TestRankOfPriceRefusesWithoutBasis(t *testing.T) {
+	// Same contract as PercentileAt: no basis means no answer, not zero
+	// dressed up as one. The desk keys its risk verdict on the returned
+	// number, so a silent 0 would read as "cheapest all year".
+	none := PricePercentiles{Basis: PercentileBasisNone, P50: 100, Min: 1, Max: 200}
+	if got := none.RankOfPrice(150); got != 0 {
+		t.Fatalf("rank without a basis = %v, want 0", got)
+	}
+	h := percentileHistory(400, func(i int) float64 { return float64(i + 1) }, 40)
+	live := CalcPricePercentiles(h, 0, percentileNow)
+	if got := live.RankOfPrice(-5); got != 0 {
+		t.Fatalf("rank of a negative price = %v, want 0", got)
+	}
+}
+
+// --- Scaled window gates (multi-window accumulate) ---
+
+// The absolute gates (120 samples / 90 traded days) made a short window
+// impossible to satisfy: a 30-day window has at most 30 of either. Scaling them
+// is what lets the sweep ask "is it cheap this month?" at all.
+func TestCalcPricePercentilesScalesItsGatesToTheWindow(t *testing.T) {
+	price := func(i int) float64 { return float64(i + 1) }
+
+	t.Run("30-day window admits 20 traded days", func(t *testing.T) {
+		pct := CalcPricePercentiles(percentileHistory(20, price, 10), 30, percentileNow)
+		if pct.Basis != PercentileBasisHistory {
+			t.Fatalf("basis = %q (%s), want history at the 20-sample floor", pct.Basis, pct.Reason)
+		}
+	})
+
+	t.Run("and refuses 19", func(t *testing.T) {
+		pct := CalcPricePercentiles(percentileHistory(19, price, 10), 30, percentileNow)
+		if pct.Basis != PercentileBasisNone {
+			t.Fatalf("basis = %q, want none one sample under the floor", pct.Basis)
+		}
+	})
+
+	t.Run("the floor is a floor, not a proportion", func(t *testing.T) {
+		// 0.55 * 30 rounds to 17, which is below the 20-sample floor. Seventeen
+		// bars is not a distribution however short the window is.
+		if got, _ := pricePercentileGates(30); got != 20 {
+			t.Errorf("minSamples(30) = %d, want the floor 20", got)
+		}
+	})
+}
+
+// The year path must not have moved: every existing consumer reads it, and a
+// gate that drifted would silently requalify or disqualify items across the
+// whole app.
+func TestCalcPricePercentilesYearGatesAreUnchanged(t *testing.T) {
+	if s, tr := pricePercentileGates(365); s != pricePercentileMinSamples || tr != pricePercentileMinTradedDays {
+		t.Fatalf("gates(365) = %d/%d, want the original %d/%d",
+			s, tr, pricePercentileMinSamples, pricePercentileMinTradedDays)
+	}
+	price := func(i int) float64 { return float64(i + 1) }
+	if pct := CalcPricePercentiles(percentileHistory(120, price, 10), 0, percentileNow); pct.Basis != PercentileBasisHistory {
+		t.Errorf("basis = %q (%s), want history at exactly 120 samples", pct.Basis, pct.Reason)
+	}
+	if pct := CalcPricePercentiles(percentileHistory(119, price, 10), 0, percentileNow); pct.Basis != PercentileBasisNone {
+		t.Errorf("basis = %q, want none at 119 samples", pct.Basis)
+	}
+}
+
+// The derived cache is where the accumulate sweep reads its spans from, so all
+// of them have to be in it -- and the year has to stay exactly where every
+// other caller already looks for it.
+func TestCalcMarketDerivedCarriesEveryWindow(t *testing.T) {
+	d := CalcMarketDerived(percentileHistory(400, func(i int) float64 { return float64(i + 1) }, 10), percentileNow)
+
+	if len(d.Windows) != len(DerivedWindowDays) {
+		t.Fatalf("windows = %d, want %d", len(d.Windows), len(DerivedWindowDays))
+	}
+	for i, w := range d.Windows {
+		if w.WindowDays != DerivedWindowDays[i] {
+			t.Errorf("windows[%d] covers %d days, want %d (ascending, and the order is load-bearing for the cache check)",
+				i, w.WindowDays, DerivedWindowDays[i])
+		}
+		if w.Basis != PercentileBasisHistory {
+			t.Errorf("windows[%d] basis = %q (%s), want history on a 400-day series", i, w.Basis, w.Reason)
+		}
+	}
+	// On a rising series the shorter the window, the higher its median.
+	if !(d.Windows[0].P50 > d.Windows[1].P50 && d.Windows[1].P50 > d.Windows[2].P50 && d.Windows[2].P50 > d.Percentiles.P50) {
+		t.Errorf("medians are not ordered by window on a monotonic series: 30=%.0f 90=%.0f 180=%.0f year=%.0f",
+			d.Windows[0].P50, d.Windows[1].P50, d.Windows[2].P50, d.Percentiles.P50)
+	}
+	if d.Percentiles.Samples != 365 {
+		t.Errorf("the year member moved: samples = %d, want 365", d.Percentiles.Samples)
+	}
+}

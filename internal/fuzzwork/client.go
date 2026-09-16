@@ -252,6 +252,7 @@ func ParseOrders(
 			Price:        price,
 			VolumeRemain: int32(volRemain),
 			MinVolume:    int32(minVolume),
+			Range:        strings.TrimSpace(fields[colRange]),
 			// Python's csv writer emits Python bools.
 			IsBuyOrder: isTrue(fields[colIsBuyOrder]),
 			RegionID:   regionID,

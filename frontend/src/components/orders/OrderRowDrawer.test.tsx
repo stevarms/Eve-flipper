@@ -3,7 +3,7 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { OrderRowDrawer, recommendationTone } from "./OrderRowDrawer";
+import { OrderRowDrawer, proposesReprice, recommendationTone, showsAfterMargin } from "./OrderRowDrawer";
 import { en } from "@/lib/locale/en";
 import type { TranslationKey } from "@/lib/i18n";
 import type { OrderDeskOrder } from "@/lib/types";
@@ -87,6 +87,8 @@ const ROW: OrderDeskOrder = {
   margin_unit_isk: 0.3,
   margin_percent: 6.25,
   margin_basis: "cost_basis",
+  suggested_margin_unit_isk: 0.2,
+  suggested_margin_percent: 4.17,
 };
 
 /**
@@ -151,5 +153,91 @@ describe("recommendationTone", () => {
     expect(recommendationTone("hold", true)).toBe("profit");
     // No book means we cannot claim the order is well placed.
     expect(recommendationTone("hold", false)).toBe("neutral");
+  });
+});
+
+/**
+ * A "before → after" margin pair is an argument about a move. Printing one on a
+ * row told to hold read as a price change nobody had proposed, which is exactly
+ * what this predicate is for — every row carries a suggested price whether or
+ * not the desk wants it taken.
+ */
+describe("showsAfterMargin", () => {
+  const buy = {
+    ...ROW,
+    is_buy_order: true,
+    margin_basis: "book",
+    price: 100,
+    suggested_price: 140,
+    exit_price: 180,
+  } satisfies OrderDeskOrder;
+
+  it("shows the pair when the desk is advising the move", () => {
+    expect(showsAfterMargin({ ...buy, recommendation: "reprice" })).toBe(true);
+    // review is a verdict about the price too — the whole argument against
+    // taking it is how far the margin falls.
+    expect(showsAfterMargin({ ...buy, recommendation: "review" })).toBe(true);
+  });
+
+  it("shows one number on a row that is not being asked to move", () => {
+    expect(showsAfterMargin({ ...buy, recommendation: "hold" })).toBe(false);
+    expect(showsAfterMargin({ ...buy, recommendation: "cancel" })).toBe(false);
+  });
+
+  it("shows one number on a parked bid, whichever verdict it drew", () => {
+    // A lowball's suggested price is forty percent above it by construction.
+    // Its expiry can still raise a review, and that review is not about price.
+    expect(showsAfterMargin({ ...buy, recommendation: "review", is_lowball: true })).toBe(false);
+    expect(showsAfterMargin({ ...buy, recommendation: "review", patient_bid: true })).toBe(false);
+  });
+
+  it("needs something to measure, and something to measure it at", () => {
+    expect(showsAfterMargin({ ...buy, recommendation: "reprice", margin_basis: "none" })).toBe(false);
+    expect(showsAfterMargin({ ...buy, recommendation: "reprice", book_available: false })).toBe(false);
+    // Already at the suggested price: there is no "after".
+    expect(showsAfterMargin({ ...buy, recommendation: "reprice", suggested_price: 100 })).toBe(false);
+  });
+
+  it("is the margin-aware half of proposesReprice", () => {
+    const unmeasured = { ...buy, recommendation: "reprice", margin_basis: "none" };
+    expect(proposesReprice(unmeasured)).toBe(true);
+    expect(showsAfterMargin(unmeasured)).toBe(false);
+  });
+});
+
+/**
+ * A bid parked outside the trade station is sold at the trade station, and the
+ * drawer has to say so — the margin is real but it is not takeable where the
+ * order stands, and nothing here costs the haul.
+ */
+describe("OrderRowDrawer exit station", () => {
+  const remote = {
+    ...ROW,
+    is_buy_order: true,
+    margin_basis: "book",
+    exit_price: 6.2,
+    exit_location_id: 60003760,
+    exit_location_name: "Jita IV - Moon 4 - Caldari Navy Assembly Plant",
+  } satisfies OrderDeskOrder;
+
+  it("names the station a remote exit was priced at", () => {
+    render(<OrderRowDrawer row={remote} onClose={() => {}} t={t} locale="en" />);
+    expect(screen.getByText(en.ordersDrawerExitPrice)).toBeInTheDocument();
+    expect(
+      screen.getAllByText(/Jita IV - Moon 4 - Caldari Navy Assembly Plant/).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it("says nothing about a station when the exit is local", () => {
+    render(
+      <OrderRowDrawer
+        row={{ ...remote, exit_location_id: undefined, exit_location_name: undefined }}
+        onClose={() => {}}
+        t={t}
+        locale="en"
+      />,
+    );
+    const label = screen.getByText(en.ordersDrawerExitPrice);
+    expect(label).not.toHaveAttribute("title", en.ordersDrawerExitRemoteHint);
   });
 });

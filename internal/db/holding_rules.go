@@ -5,16 +5,19 @@ import (
 	"time"
 )
 
-// holding_rules.go — the two reasons something you own should not be sold
-// today.
+// holding_rules.go — the prices and quantities you have decided by hand,
+// which the automated advice must not talk you out of.
 //
-// A target price is "hold until it is worth what I think it is worth". A
-// reserved quantity is "these are not stock". They live in one row because
-// they answer the same question from the user's side — what of this pile is
-// actually for sale — and because a holding usually needs both or neither.
+// A target price is "hold until it is worth what I think it is worth"; a bid
+// ceiling is its buy-side mirror, "do not follow the book above this"; a
+// patient bid is "that order is parked on purpose"; a reserved quantity is
+// "these are not stock". They live in one row because they answer the same
+// question from the user's side — what of this type am I actually willing to
+// trade today, and at what — and because a type usually needs several or none.
 //
-// Keyed by type, not by position id: the FIFO engine recomputes positions from
-// transactions on every pass, so a rule pinned to a position would evaporate.
+// Keyed by type, not by order or position id: the FIFO engine recomputes
+// positions from transactions on every pass and relisting mints a new order id,
+// so a rule pinned to either would evaporate.
 
 // HoldingRule is one type's selling constraints.
 type HoldingRule struct {
@@ -30,6 +33,19 @@ type HoldingRule struct {
 	// TargetBasis is how the target was arrived at: "percentile" or "manual".
 	TargetBasis string `json:"target_basis"`
 
+	// MaxBidPrice is the buy-side mirror: the unit price above which the
+	// order desk must stop advising you to bid. Zero means no ceiling.
+	//
+	// It exists because the desk's reprice advice reads the book and only
+	// the book, so a market that has run 10x since you decided what the item
+	// was worth produces a confident instruction to follow it up there.
+	MaxBidPrice float64 `json:"max_bid_price"`
+
+	// PatientBid marks a buy order as parked on purpose, overriding the
+	// desk's automatic lowball test for bids that sit closer in than its
+	// threshold.
+	PatientBid bool `json:"patient_bid"`
+
 	// ReservedQty is units held back from trading entirely — the ships you
 	// fly. Subtracted from the tradeable quantity, never from the position.
 	ReservedQty int64 `json:"reserved_qty"`
@@ -42,7 +58,8 @@ type HoldingRule struct {
 // deleted rather than stored, so a cleared form does not leave a row that
 // silently does nothing.
 func (r HoldingRule) IsEmpty() bool {
-	return r.TargetPrice <= 0 && r.ReservedQty <= 0 && r.Note == ""
+	return r.TargetPrice <= 0 && r.MaxBidPrice <= 0 && !r.PatientBid &&
+		r.ReservedQty <= 0 && r.Note == ""
 }
 
 // GetHoldingRules returns every rule for a user, keyed by type id.
@@ -53,7 +70,7 @@ func (d *DB) GetHoldingRules(userID string) map[int32]HoldingRule {
 	}
 	rows, err := d.sql.Query(`
 		SELECT type_id, target_price, target_percentile, target_basis,
-		       reserved_qty, note, updated_at
+		       max_bid_price, patient_bid, reserved_qty, note, updated_at
 		FROM holding_rules WHERE user_id = ?`, userID)
 	if err != nil {
 		return out
@@ -62,7 +79,8 @@ func (d *DB) GetHoldingRules(userID string) map[int32]HoldingRule {
 	for rows.Next() {
 		var r HoldingRule
 		if err := rows.Scan(&r.TypeID, &r.TargetPrice, &r.TargetPercentile,
-			&r.TargetBasis, &r.ReservedQty, &r.Note, &r.UpdatedAt); err != nil {
+			&r.TargetBasis, &r.MaxBidPrice, &r.PatientBid, &r.ReservedQty,
+			&r.Note, &r.UpdatedAt); err != nil {
 			continue
 		}
 		out[r.TypeID] = r
@@ -91,6 +109,9 @@ func (d *DB) SetHoldingRule(userID string, r HoldingRule) error {
 		math.IsNaN(r.TargetPercentile) || math.IsInf(r.TargetPercentile, 0) {
 		r.TargetPercentile = 0
 	}
+	if r.MaxBidPrice < 0 || math.IsNaN(r.MaxBidPrice) || math.IsInf(r.MaxBidPrice, 0) {
+		r.MaxBidPrice = 0
+	}
 	if r.ReservedQty < 0 {
 		r.ReservedQty = 0
 	}
@@ -104,17 +125,19 @@ func (d *DB) SetHoldingRule(userID string, r HoldingRule) error {
 	_, err := d.sql.Exec(`
 		INSERT INTO holding_rules
 			(user_id, type_id, target_price, target_percentile, target_basis,
-			 reserved_qty, note, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			 max_bid_price, patient_bid, reserved_qty, note, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(user_id, type_id) DO UPDATE SET
 			target_price      = excluded.target_price,
 			target_percentile = excluded.target_percentile,
 			target_basis      = excluded.target_basis,
+			max_bid_price     = excluded.max_bid_price,
+			patient_bid       = excluded.patient_bid,
 			reserved_qty      = excluded.reserved_qty,
 			note              = excluded.note,
 			updated_at        = excluded.updated_at`,
 		userID, r.TypeID, r.TargetPrice, r.TargetPercentile, r.TargetBasis,
-		r.ReservedQty, r.Note, r.UpdatedAt)
+		r.MaxBidPrice, r.PatientBid, r.ReservedQty, r.Note, r.UpdatedAt)
 	return err
 }
 

@@ -53,10 +53,12 @@ func writeStatusError(w http.ResponseWriter, err error) {
 }
 
 type orderDeskBuildOptions struct {
-	SalesTaxPercent  float64
-	BrokerFeePercent float64
-	TargetETADays    float64
-	MinMarginPercent float64
+	SalesTaxPercent    float64
+	BrokerFeePercent   float64
+	TargetETADays      float64
+	MinMarginPercent   float64
+	LowballDiscountPct float64
+	RepriceJumpPct     float64
 }
 
 // buildOrderDesk fetches every input the desk needs and computes it.
@@ -76,11 +78,37 @@ func (s *Server) buildOrderDesk(
 	}
 
 	engineOpts := engine.OrderDeskOptions{
-		SalesTaxPercent:  opt.SalesTaxPercent,
-		BrokerFeePercent: opt.BrokerFeePercent,
-		TargetETADays:    opt.TargetETADays,
-		WarnExpiryDays:   2,
-		MinMarginPercent: opt.MinMarginPercent,
+		SalesTaxPercent:    opt.SalesTaxPercent,
+		BrokerFeePercent:   opt.BrokerFeePercent,
+		TargetETADays:      opt.TargetETADays,
+		WarnExpiryDays:     2,
+		MinMarginPercent:   opt.MinMarginPercent,
+		LowballDiscountPct: opt.LowballDiscountPct,
+		RepriceJumpPct:     opt.RepriceJumpPct,
+	}
+
+	// The same per-type rules Positions and Today read — set a target once and
+	// every tab that could advise selling under it stops doing so. Split into
+	// three maps because the engine holds no db types, and the zero entries are
+	// dropped so a row with a cleared target does not read as a target of 0.
+	if rules := s.holdingRulesFor(userID); len(rules) > 0 {
+		targets := make(map[int32]float64, len(rules))
+		ceilings := make(map[int32]float64, len(rules))
+		patient := make(map[int32]bool, len(rules))
+		for typeID, rule := range rules {
+			if rule.TargetPrice > 0 {
+				targets[typeID] = rule.TargetPrice
+			}
+			if rule.MaxBidPrice > 0 {
+				ceilings[typeID] = rule.MaxBidPrice
+			}
+			if rule.PatientBid {
+				patient[typeID] = true
+			}
+		}
+		engineOpts.TargetPriceByType = targets
+		engineOpts.MaxBidByType = ceilings
+		engineOpts.PatientBidTypes = patient
 	}
 
 	var orders []esi.CharacterOrder
@@ -137,6 +165,41 @@ func (s *Server) buildOrderDesk(
 		}
 	}
 
+	// Range awareness for buy rows. Both inputs come from here because the
+	// engine holds no SDE: a system per station of ours, and a jump count
+	// between two systems. ShortestPath is BFS with a path cache, so the
+	// desk pays for each system pair once per process.
+	if sdeData != nil && sdeData.Universe != nil {
+		stationSystem := make(map[int64]int32, len(orders))
+		for _, o := range orders {
+			if _, seen := stationSystem[o.LocationID]; seen {
+				continue
+			}
+			if sysID, ok := s.marketSystemID(sdeData, o.LocationID); ok {
+				stationSystem[o.LocationID] = sysID
+			}
+		}
+		engineOpts.StationSystemID = stationSystem
+		engineOpts.JumpsBetween = sdeData.Universe.ShortestPath
+	}
+
+	// Where a buy row's stock is assumed to be sold. Placing bids a jump or
+	// two out of the hub, at a range that still reaches it, is how you avoid
+	// the hub's broker fee — and those stations have no sell side, so the
+	// desk used to report no margin at all on them. The canonical hub of each
+	// hub region is the default, and the trade station you configured wins in
+	// its own region.
+	exitStations := make(map[int32]int64, len(dispositionHubs)+1)
+	for _, hub := range dispositionHubs {
+		exitStations[hub.RegionID] = hub.StationID
+	}
+	if cfg := s.loadConfigForUser(userID); cfg != nil && cfg.TargetMarketLocationID > 0 {
+		if regionID, ok := s.marketRegionID(sdeData, cfg.TargetMarketLocationID); ok {
+			exitStations[regionID] = cfg.TargetMarketLocationID
+		}
+	}
+	engineOpts.ExitStationByRegion = exitStations
+
 	type regionType struct {
 		regionID int32
 		typeID   int32
@@ -152,6 +215,7 @@ func (s *Server) buildOrderDesk(
 	}
 	books := make(map[regionType]fetchResult)
 	history := make(map[engine.OrderDeskHistoryKey][]esi.HistoryEntry)
+	percentiles := make(map[engine.OrderDeskHistoryKey]engine.PricePercentiles)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 10)
@@ -191,10 +255,23 @@ func (s *Server) buildOrderDesk(
 				}
 			}
 
+			// Percentiles cannot come from the history above: that cache is
+			// capped at 90 days on purpose and CalcPricePercentiles wants a
+			// year, so it would refuse on every row. The derived cache holds a
+			// few hundred bytes per pair and fetches the full series itself on
+			// a miss, so it borrows the same semaphore slot the book used.
+			sem <- struct{}{}
+			derived := s.marketDerivedFor(rt.regionID, rt.typeID)
+			<-sem
+
 			mu.Lock()
 			books[rt] = fetchResult{orders: ro, err: fetchErr}
+			key := engine.NewOrderDeskHistoryKey(rt.regionID, rt.typeID)
 			if len(entries) > 0 {
-				history[engine.NewOrderDeskHistoryKey(rt.regionID, rt.typeID)] = entries
+				history[key] = entries
+			}
+			if derived.Percentiles.Basis == engine.PercentileBasisHistory {
+				percentiles[key] = derived.Percentiles
 			}
 			mu.Unlock()
 		}(pair)
@@ -212,6 +289,7 @@ func (s *Server) buildOrderDesk(
 	}
 
 	engineOpts.CostBasisByType = costBasisByType
+	engineOpts.PercentilesByKey = percentiles
 	result := engine.ComputeOrderDesk(orders, allRegional, history, unavailableBooks, engineOpts)
 
 	// Stamp owner tags for multi-character views (Orders tab). Always
@@ -221,6 +299,12 @@ func (s *Server) buildOrderDesk(
 		if owner, ok := ownerByOrderID[result.Orders[i].OrderID]; ok {
 			result.Orders[i].CharacterID = owner.characterID
 			result.Orders[i].CharacterName = owner.characterName
+		}
+		// A margin quoted somewhere the stock is not has to name the place.
+		// The engine only knows the id; naming is this layer's job, the same
+		// way it is for the orders' own locations above.
+		if id := result.Orders[i].ExitLocationID; id > 0 && s.esi != nil {
+			result.Orders[i].ExitLocationName = s.esi.StationName(id)
 		}
 	}
 	return result, nil
@@ -248,10 +332,12 @@ func (s *Server) handleAuthOrderDesk(w http.ResponseWriter, r *http.Request) {
 	}
 
 	opt := orderDeskBuildOptions{
-		SalesTaxPercent:  8.0,
-		BrokerFeePercent: 1.0,
-		TargetETADays:    3.0,
-		MinMarginPercent: 3.0,
+		SalesTaxPercent:    8.0,
+		BrokerFeePercent:   1.0,
+		TargetETADays:      3.0,
+		MinMarginPercent:   3.0,
+		LowballDiscountPct: 20.0,
+		RepriceJumpPct:     25.0,
 	}
 	if cfg := s.loadConfigForUser(userID); cfg != nil {
 		opt.SalesTaxPercent = cfg.SalesTaxPercent
@@ -261,6 +347,8 @@ func (s *Server) handleAuthOrderDesk(w http.ResponseWriter, r *http.Request) {
 	parseFloatParam(q.Get("broker_fee"), 0, 100, &opt.BrokerFeePercent)
 	parseFloatParamExclusiveMin(q.Get("target_eta_days"), 0, 60, &opt.TargetETADays)
 	parseFloatParamExclusiveMin(q.Get("min_margin_pct"), 0, 100, &opt.MinMarginPercent)
+	parseFloatParamExclusiveMin(q.Get("lowball_pct"), 0, 99, &opt.LowballDiscountPct)
+	parseFloatParamExclusiveMin(q.Get("reprice_jump_pct"), 0, 1000, &opt.RepriceJumpPct)
 
 	result, err := s.buildOrderDesk(r.Context(), userID, characterID, allScope, opt)
 	if err != nil {

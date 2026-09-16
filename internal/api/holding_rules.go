@@ -46,26 +46,50 @@ func (s *Server) handleAuthHoldingRuleSave(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Pointers so an absent field means "leave it alone" and an explicit zero
+	// still clears. Two editors now write these rules — Positions sets the
+	// target and the reserve, the Orders drawer sets the bid ceiling and the
+	// patient flag — and a full replace would have each silently wipe what the
+	// other set, since neither sends fields it does not show.
 	var body struct {
-		TargetPrice      float64 `json:"target_price"`
-		TargetPercentile float64 `json:"target_percentile"`
-		TargetBasis      string  `json:"target_basis"`
-		ReservedQty      int64   `json:"reserved_qty"`
-		Note             string  `json:"note"`
+		TargetPrice      *float64 `json:"target_price"`
+		TargetPercentile *float64 `json:"target_percentile"`
+		TargetBasis      *string  `json:"target_basis"`
+		MaxBidPrice      *float64 `json:"max_bid_price"`
+		PatientBid       *bool    `json:"patient_bid"`
+		ReservedQty      *int64   `json:"reserved_qty"`
+		Note             *string  `json:"note"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 
-	rule := db.HoldingRule{
-		TypeID:           typeID,
-		TargetPrice:      body.TargetPrice,
-		TargetPercentile: body.TargetPercentile,
-		TargetBasis:      body.TargetBasis,
-		ReservedQty:      body.ReservedQty,
-		Note:             body.Note,
-		UpdatedAt:        time.Now().UTC().Format(time.RFC3339),
+	// Merged onto whatever is stored, so the fields this request does not
+	// mention survive it.
+	rule := s.holdingRulesFor(userID)[typeID]
+	rule.TypeID = typeID
+	rule.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	if body.TargetPrice != nil {
+		rule.TargetPrice = *body.TargetPrice
+	}
+	if body.TargetPercentile != nil {
+		rule.TargetPercentile = *body.TargetPercentile
+	}
+	if body.TargetBasis != nil {
+		rule.TargetBasis = *body.TargetBasis
+	}
+	if body.MaxBidPrice != nil {
+		rule.MaxBidPrice = *body.MaxBidPrice
+	}
+	if body.PatientBid != nil {
+		rule.PatientBid = *body.PatientBid
+	}
+	if body.ReservedQty != nil {
+		rule.ReservedQty = *body.ReservedQty
+	}
+	if body.Note != nil {
+		rule.Note = *body.Note
 	}
 	if s.db == nil {
 		writeJSON(w, rule)
@@ -110,11 +134,22 @@ func (s *Server) handleAuthHoldingRulePercentiles(w http.ResponseWriter, r *http
 		return
 	}
 
-	pct := s.marketDerivedFor(holdingRuleRegionID, typeID).Percentiles
+	// The Orders drawer quotes suggestions against the region the order is
+	// actually in, which is not always the hub Positions prices against. Absent
+	// or unparseable falls back to the hub, so every existing caller is
+	// unchanged and a bad parameter degrades rather than errors.
+	regionID := int32(holdingRuleRegionID)
+	if raw := r.URL.Query().Get("region_id"); raw != "" {
+		if parsed, err := strconv.ParseInt(raw, 10, 32); err == nil && parsed > 0 {
+			regionID = int32(parsed)
+		}
+	}
+
+	pct := s.marketDerivedFor(regionID, typeID).Percentiles
 
 	writeJSON(w, map[string]any{
 		"type_id":     typeID,
-		"region_id":   holdingRuleRegionID,
+		"region_id":   regionID,
 		"percentiles": pct,
 		// The choices the editor renders, in the order it renders them.
 		"choices": []map[string]any{
@@ -205,5 +240,20 @@ func sortHoldingRules(rules []db.HoldingRule) {
 //
 // Extend this whenever a member is added to engine.MarketDerived.
 func marketDerivedComplete(d engine.MarketDerived) bool {
-	return d.Percentiles.Basis != "" && d.Recovery.Basis != "" && d.Reversion.Basis != ""
+	if d.Percentiles.Basis == "" || d.Recovery.Basis == "" || d.Reversion.Basis == "" {
+		return false
+	}
+	// Windows arrived with the multi-window accumulate sweep. A row written
+	// before it unmarshals with none, and the sweep would read that as an item
+	// that is cheap on no shorter span rather than one nobody has measured --
+	// the exact failure the note above records.
+	if len(d.Windows) != len(engine.DerivedWindowDays) {
+		return false
+	}
+	for i, w := range d.Windows {
+		if w.Basis == "" || w.WindowDays != engine.DerivedWindowDays[i] {
+			return false
+		}
+	}
+	return true
 }

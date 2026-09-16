@@ -1,4 +1,5 @@
 import { DetailGroup, DetailRow } from "@/components/ui/DetailList";
+import { OrderRuleEditor } from "@/components/orders/OrderRuleEditor";
 import { Badge } from "@/components/ui/badge";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { ItemRef } from "@/components/ui/ItemRef";
@@ -34,6 +35,58 @@ function stamp(iso: string | undefined, locale: string): string {
   return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString(locale);
 }
 
+/** What the margin on this row is measured against. A number with no stated
+ *  basis is worse than no number: book margin and cost-basis margin answer
+ *  different questions and only one of them is about a position. */
+const MARGIN_BASIS_LABEL: Record<string, TranslationKey> = {
+  book: "ordersMarginBasisBook",
+  cost_basis: "ordersMarginBasisCostBasis",
+  target: "ordersMarginBasisTarget",
+  none: "ordersMarginBasisNone",
+};
+
+/** ESI's `range` as something readable. A numeric range is a jump count. */
+function rangeLabel(
+  range: string | undefined,
+  t: (key: TranslationKey, params?: Record<string, string | number>) => string,
+): string {
+  if (!range) return "—";
+  if (range === "region") return t("ordersRangeRegion");
+  if (range === "station") return t("ordersRangeStation");
+  if (range === "solarsystem") return t("ordersRangeSystem");
+  const n = Number(range);
+  return Number.isFinite(n) ? t("ordersRangeJumps", { n }) : range;
+}
+
+/** Whether the desk is actually asking you to move this order's price.
+ *
+ *  A suggested price is computed for every row from the book, whether or not
+ *  the desk wants it taken, so its presence proves nothing on its own. A
+ *  parked bid carries one forty percent above itself and a hold verdict saying
+ *  to leave it there; a sell under its target carries one it is expressly
+ *  forbidden to take. Only `reprice` and `review` are verdicts about a price,
+ *  and a parked bid's `review` is about its expiry rather than its price. */
+export function proposesReprice(row: OrderDeskOrder): boolean {
+  if (!row.book_available || row.suggested_price <= 0) return false;
+  if (row.suggested_price === row.price) return false;
+  if (row.is_lowball || row.patient_bid) return false;
+  return row.recommendation === "reprice" || row.recommendation === "review";
+}
+
+/** Whether the row's after-reprice margin is worth showing: a move the desk is
+ *  advising, and a basis to measure it on.
+ *
+ *  The "before → after" pair is an argument about a move. On a row told to
+ *  hold there is no move, so the pair read as a change of price that nobody
+ *  proposed — which is what this predicate exists to prevent. Such a row shows
+ *  one number: what it returns if it fills at the price it is standing at.
+ *
+ *  Shared with the grid's Margin column so the two cannot disagree about
+ *  which rows have a second number, the same way recommendationTone is. */
+export function showsAfterMargin(row: OrderDeskOrder): boolean {
+  return row.margin_basis !== "none" && proposesReprice(row);
+}
+
 export type OrderTone = "profit" | "loss" | "warn" | "neutral";
 
 /** Shared by the grid badge and the drawer badge so they cannot disagree. */
@@ -51,6 +104,10 @@ export interface OrderRowDrawerProps {
   /** Depth around this order's price, from getUndercuts(). */
   bookLevels?: BookLevel[];
   bookLevelsLoading?: boolean;
+  /** Refetch the desk after a price rule is stored or cleared. Omitted by
+   *  callers that cannot refetch — the editor is then hidden rather than
+   *  offered and silently ignored. */
+  onRuleSaved?: () => void;
 }
 
 export function OrderRowDrawer({
@@ -60,6 +117,7 @@ export function OrderRowDrawer({
   locale,
   bookLevels,
   bookLevelsLoading = false,
+  onRuleSaved,
 }: OrderRowDrawerProps) {
   if (!row) return null;
 
@@ -90,6 +148,9 @@ export function OrderRowDrawer({
           {row.character_name && <Badge tone="neutral">{row.character_name}</Badge>}
           {row.warn_unprofitable_relist && (
             <Badge tone="warn">{t("ordersDrawerFeeEatsGain")}</Badge>
+          )}
+          {(row.is_lowball || row.patient_bid) && (
+            <Badge tone="neutral">{t("ordersBadgeParked")}</Badge>
           )}
         </div>
 
@@ -128,6 +189,10 @@ export function OrderRowDrawer({
           />
           <DetailRow label={t("ordersDrawerNetUnit")} value={isk(row.net_unit_isk)} />
         </DetailGroup>
+
+        <MarginRiskGroup row={row} t={t} />
+
+        {onRuleSaved && <OrderRuleEditor row={row} onSaved={onRuleSaved} />}
 
         <DetailGroup title={t("ordersDrawerGroupRelist")}>
           <DetailRow label={t("ordersDrawerRelistFee")} value={isk(row.relist_fee_isk)} />
@@ -193,6 +258,144 @@ export function OrderRowDrawer({
         />
       </SheetContent>
     </Sheet>
+  );
+}
+
+/**
+ * What the order is worth, and what taking the desk's advice would cost.
+ *
+ * The grid can only afford one margin figure per row. Everything that decides
+ * whether that figure is worth acting on — what it is measured against, what
+ * it becomes after the move, how much more ISK the move commits, and where the
+ * price sits in the item's own year — is here. The capital and percentile rows
+ * exist because a bid chasing a book that has run away passes every per-unit
+ * test there is; these are the numbers that do not.
+ */
+function MarginRiskGroup({
+  row,
+  t,
+}: {
+  row: OrderDeskOrder;
+  t: (key: TranslationKey, params?: Record<string, string | number>) => string;
+}) {
+  const after = showsAfterMargin(row);
+  const measurable = row.margin_basis !== "none";
+
+  /** A percentile only means something with a year behind it. Without one the
+   *  row says so rather than printing a zero that reads as "cheapest ever". */
+  const pct = (v: number | undefined) =>
+    row.percentile_basis === "history" && v != null && Number.isFinite(v)
+      ? t("ordersDrawerPercentileValue", { pct: Math.round(v) })
+      : t("ordersDrawerPercentileNone");
+
+  const marginTone = (v: number | undefined): "profit" | "loss" | undefined =>
+    v == null ? undefined : v > 0 ? "profit" : "loss";
+
+  return (
+    <DetailGroup title={t("ordersDrawerGroupRisk")}>
+      <DetailRow
+        label={t("ordersDrawerMarginBasis")}
+        value={t(MARGIN_BASIS_LABEL[row.margin_basis] ?? "ordersMarginBasisNone")}
+        tone={measurable ? undefined : "muted"}
+      />
+      {measurable && (
+        <DetailRow
+          label={t("ordersDrawerMarginNow")}
+          value={`${isk(row.margin_unit_isk)} (${row.margin_percent.toFixed(1)}%)`}
+          tone={marginTone(row.margin_unit_isk)}
+        />
+      )}
+      {after && (
+        <DetailRow
+          label={t("ordersDrawerMarginAfter")}
+          value={`${isk(row.suggested_margin_unit_isk)} (${row.suggested_margin_percent.toFixed(1)}%)`}
+          tone={marginTone(row.suggested_margin_unit_isk)}
+          hint={t("ordersDrawerMarginAfterHint")}
+        />
+      )}
+      {row.margin_basis === "cost_basis" && (
+        <DetailRow label={t("ordersDrawerCostBasisUnit")} value={isk(row.cost_basis_isk)} />
+      )}
+      {row.margin_basis === "book" && (
+        // A resale price read somewhere the stock is not has to say where.
+        // Bids parked beside the hub to dodge its broker fee are the norm and
+        // their own station usually has no sell side at all, so this is the
+        // common case rather than the exotic one.
+        <DetailRow
+          label={t("ordersDrawerExitPrice")}
+          value={
+            row.exit_location_name
+              ? t("ordersDrawerExitAt", {
+                  price: isk(row.exit_price),
+                  station: row.exit_location_name,
+                })
+              : isk(row.exit_price)
+          }
+          hint={row.exit_location_name ? t("ordersDrawerExitRemoteHint") : undefined}
+        />
+      )}
+      {row.margin_basis === "target" && (
+        <DetailRow label={t("holdingRuleTarget")} value={isk(row.target_price)} />
+      )}
+
+      {after && row.suggested_notional != null && (
+        <DetailRow
+          label={t("ordersDrawerSuggestedNotional")}
+          value={isk(row.suggested_notional)}
+        />
+      )}
+      {/* Buy rows only: a sell order commits stock you already own, so there
+          is no extra ISK to put at risk by moving its price. */}
+      {row.is_buy_order && after && row.added_capital_isk != null && (
+        <DetailRow
+          label={t("ordersDrawerAddedCapital")}
+          value={isk(row.added_capital_isk)}
+          tone={row.added_capital_isk > 0 ? "warn" : undefined}
+          hint={t("ordersDrawerAddedCapitalHint")}
+        />
+      )}
+
+      <DetailRow
+        label={t("ordersDrawerPercentileNow")}
+        value={pct(row.price_percentile)}
+        hint={t("ordersDrawerPercentileHint")}
+      />
+      {after && (
+        <DetailRow
+          label={t("ordersDrawerPercentileAfter")}
+          value={pct(row.suggested_price_percentile)}
+        />
+      )}
+
+      {row.is_buy_order && (
+        <>
+          <DetailRow label={t("ordersDrawerOrderRange")} value={rangeLabel(row.order_range, t)} />
+          {row.competing_remote_bids != null && row.competing_remote_bids > 0 && (
+            <DetailRow
+              label={t("ordersDrawerRemoteBids")}
+              value={int(row.competing_remote_bids)}
+              hint={t("ordersDrawerRemoteBidsHint")}
+            />
+          )}
+          {row.lowball_price != null && row.lowball_price > 0 && (
+            <DetailRow
+              label={t("ordersDrawerLowballPrice")}
+              value={isk(row.lowball_price)}
+              hint={
+                row.lowball_fill_days_pct != null
+                  ? `${t("ordersDrawerLowballHint")} ${t("ordersDrawerLowballFillDays", {
+                      pct: Math.round(row.lowball_fill_days_pct),
+                    })}`
+                  : t("ordersDrawerLowballHint")
+              }
+              copyValue={row.lowball_price}
+              copyLabel={t("copyPrice")}
+              copyStep={priceStep(row.lowball_price)}
+            />
+          )}
+        </>
+      )}
+    </DetailGroup>
   );
 }
 

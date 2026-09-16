@@ -63,6 +63,21 @@ export const ORDERS_DEFAULT_MIN_MARGIN_PCT = 3;
 export const ORDERS_MIN_MARGIN_PCT_MIN = 0.1;
 export const ORDERS_MIN_MARGIN_PCT_MAX = 100;
 
+/** How far under the best reaching bid a buy order has to sit before the desk
+ *  reads it as parked on purpose rather than buried. A lowball is at the back
+ *  of the queue by construction, so without this the queue-depth verdict
+ *  reports the defining property of the order as a fault. */
+export const ORDERS_DEFAULT_LOWBALL_PCT = 20;
+export const ORDERS_LOWBALL_PCT_MIN = 1;
+export const ORDERS_LOWBALL_PCT_MAX = 99;
+
+/** How large a raise turns a reprice into a new buy rather than an adjustment.
+ *  Following the book up by this much commits materially more ISK than the
+ *  order was placed with, which is a decision and not a correction. */
+export const ORDERS_DEFAULT_REPRICE_JUMP_PCT = 25;
+export const ORDERS_REPRICE_JUMP_PCT_MIN = 1;
+export const ORDERS_REPRICE_JUMP_PCT_MAX = 1000;
+
 /** One layer of the sort stack. */
 export interface OrdersSortLayer {
   key: OrdersSortKey;
@@ -86,6 +101,10 @@ export interface OrdersPrefs {
   targetEtaDays: number;
   /** Percent; passed through to the order desk as its thin-margin floor. */
   minMarginPct: number;
+  /** Percent under best bid at which a buy order reads as parked, not buried. */
+  lowballPct: number;
+  /** Percent raise at which a reprice is reported as a new buy. */
+  repriceJumpPct: number;
 }
 
 /** Item A→Z, matching the in-game Orders window so the two lists can be
@@ -98,6 +117,8 @@ export const ORDERS_DEFAULT_PREFS: OrdersPrefs = {
   refreshMinutes: ORDERS_DEFAULT_REFRESH_MINUTES,
   targetEtaDays: ORDERS_DEFAULT_TARGET_ETA_DAYS,
   minMarginPct: ORDERS_DEFAULT_MIN_MARGIN_PCT,
+  lowballPct: ORDERS_DEFAULT_LOWBALL_PCT,
+  repriceJumpPct: ORDERS_DEFAULT_REPRICE_JUMP_PCT,
 };
 
 /** Reads the current stack shape. Returns null — not an empty stack — when
@@ -186,6 +207,14 @@ function defaultPrefs(): OrdersPrefs {
   };
 }
 
+/** A stored number clamped into range, or the default when it is not a usable
+ *  number at all. Out of range is a slip whose intent is worth honouring; a
+ *  string or a NaN is a corrupt blob and gets the default. */
+function readBounded(value: unknown, min: number, max: number, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, value));
+}
+
 export function normalizeOrdersPrefs(raw: string | null): OrdersPrefs {
   const prefs: OrdersPrefs = defaultPrefs();
   if (!raw) return prefs;
@@ -219,6 +248,20 @@ export function normalizeOrdersPrefs(raw: string | null): OrdersPrefs {
   ) {
     prefs.minMarginPct = parsed.minMarginPct;
   }
+  // Both of these post-date the stored blob's first version, so a prefs object
+  // written before they existed keeps the defaults rather than being rejected.
+  prefs.lowballPct = readBounded(
+    parsed.lowballPct,
+    ORDERS_LOWBALL_PCT_MIN,
+    ORDERS_LOWBALL_PCT_MAX,
+    prefs.lowballPct,
+  );
+  prefs.repriceJumpPct = readBounded(
+    parsed.repriceJumpPct,
+    ORDERS_REPRICE_JUMP_PCT_MIN,
+    ORDERS_REPRICE_JUMP_PCT_MAX,
+    prefs.repriceJumpPct,
+  );
   if (ACTION_FILTERS.includes(parsed.actionFilter as OrdersActionFilter)) {
     prefs.actionFilter = parsed.actionFilter as OrdersActionFilter;
   }

@@ -427,6 +427,12 @@ export const en = {
     accumColSize: "Size",
     accumEpisodes: "{n}x, ~{days}d",
     accumPerDay: "{units}/day",
+    accumWindowValue: "{label} p{pct}",
+    accumWindowNone: "{label} —",
+    accumWindowStripHint: "The same price read against four spans. Cheap on all of them is a market that has repriced; cheap only on the shortest is a dip that may not come back.",
+    accumWindowHint: "At the {pct}th percentile of the last {days} days. Median {median}.",
+    accumWindowQualifyingHint: "At the {pct}th percentile of the last {days} days. Median {median} — this is the span the row is judged against, and where its target and discount come from.",
+    accumWindowNoneHint: "Too little traded history in the last {days} days to place the price. Unmeasured, not cheap.",
     accumHoldSet: "Hold to target",
     accumHoldArmedShort: "Target set",
     accumHoldHint: "Remember {price} as the sell target for this item. When your buy order fills, Positions will hold the stock and Today will not offer it for sale until the price gets there.",
@@ -1875,19 +1881,84 @@ export const en = {
       "Regional volume {regional}/day counts both sides of the market. About {side}% of it is your side, and {station}% of that trades at this station, so roughly {perDay}/day flows past your order ({basis}). {queue}d to clear the depth ahead of you, {total}d in total.",
     ordersEtaUnknownHint: "No price history for this item, so there is nothing to estimate from.",
     ordersColMarginHint:
-      "Whether this order is still worth filling, after sales tax and broker fee. A buy order is measured against what you could resell for at this station; a sell order against what the stock actually cost you. Sort by it to bring the losers to the top.",
+      "Whether this order is still worth filling, after sales tax and broker fee. A buy order is measured against what you could resell for — at its own station, or at your trade station when the bid is parked outside it; a sell order against what the stock actually cost you. Sort by it to bring the losers to the top.",
     ordersMarginBuyBreakdown:
       "Resell at {exit} — one step under the best ask at this station — minus {fees}% tax and broker fee leaves {net}. Against your {bid} bid that is {margin}/unit, {pct}%. The broker fee already paid to place this order is excluded: cancelling will not refund it.",
+    ordersMarginBuyBreakdownRemote:
+      "Resell at {exit} — one step under the best ask at {station} — minus {fees}% tax and broker fee leaves {net}. Against your {bid} bid that is {margin}/unit, {pct}%. This bid is not at your trade station, so the exit is quoted there and the haul is on you: nothing here costs the freight. The broker fee already paid to place this order is excluded: cancelling will not refund it.",
     ordersMarginSellBreakdown:
       "Selling at {price} minus {fees}% tax and broker fee leaves {net}. The stock cost {cost}/unit, so that is {margin}/unit, {pct}%.",
     ordersMarginNoneBuyHint:
-      "Nothing is being sold at this station, so there is no resale price to measure the bid against.",
+      "Nothing is being sold at this station or at your trade station, so there is no resale price to measure the bid against.",
     ordersMarginNoneSellHint:
       "No cost basis for this item. Sync your wallet on the Trade Journal tab and the desk can tell whether this order is above what the stock cost you.",
     ordersThinMarginHint: "Margin is positive but under your {floor}% floor.",
     ordersMinMargin: "Min margin",
     ordersMinMarginHint:
       "Below this the margin is flagged thin with a warning. It never changes the recommendation — only a margin that has actually gone negative does that: cancel on a buy order, review on a sell order, where the ISK is already spent.",
+    // Lowballs, capital risk and hand-set prices. A bid parked well under the
+    // book is not a broken order, and following the book up by a multiple is
+    // not a reprice — both were being reported as ordinary work to do.
+    ordersLowball: "Lowball %",
+    ordersLowballHint:
+      "How far under the best reaching bid a buy order has to sit before the desk reads it as parked on purpose. A lowball is at the back of the queue by construction, so below this threshold the queue and ETA verdicts stand down and the order is left alone.",
+    ordersRepriceJump: "New-buy %",
+    ordersRepriceJumpHint:
+      "A raise this large stops being an adjustment and becomes a new buy at a new price. The desk still shows the move, but asks you to look at it rather than telling you to make it.",
+    ordersMarginTargetBreakdown:
+      "Selling at {price} minus {fees}% tax and broker fee leaves {net}. Against the {target} target you set by hand that is {margin}/unit, {pct}%. There is no cost basis for this stock, so this measures the decision rather than the position.",
+    ordersMarginAfterLine: " After repricing to {price} it becomes {margin}/unit, {pct}%.",
+    ordersThinAfterRepriceHint:
+      "Margin drops to {pct}% after the suggested move — still positive, but under your {floor}% floor.",
+    ordersRuleLockHint: "You have a price rule on this item.",
+    ordersDrawerGroupRisk: "Margin and risk",
+    ordersDrawerMarginBasis: "Measured against",
+    ordersMarginBasisBook: "resale at this station",
+    ordersMarginBasisCostBasis: "what the stock cost",
+    ordersMarginBasisTarget: "your target price",
+    ordersMarginBasisNone: "nothing measurable",
+    ordersDrawerMarginNow: "Margin now",
+    ordersDrawerMarginAfter: "Margin after reprice",
+    ordersDrawerMarginAfterHint:
+      "What the margin becomes if you take the suggested price, on the same basis as the figure above.",
+    ordersDrawerCostBasisUnit: "Stock cost per unit",
+    ordersDrawerExitPrice: "Assumed resale",
+    ordersDrawerExitAt: "{price} at {station}",
+    ordersDrawerExitRemoteHint:
+      "This bid is not at your trade station, so its exit is priced there — which is what you would actually do with the stock. Moving it there is not costed: no freight, no time.",
+    ordersDrawerSuggestedNotional: "Value after reprice",
+    ordersDrawerAddedCapital: "Extra ISK committed",
+    ordersDrawerAddedCapitalHint:
+      "How much more ISK this order would put on the market than it does now. A bid chasing a book that has run away passes every per-unit test there is; this is the number that does not.",
+    ordersDrawerPercentileNow: "Price vs its year",
+    ordersDrawerPercentileAfter: "After reprice, vs its year",
+    ordersDrawerPercentileHint:
+      "Where the price sits in the item's own trailing year: 0 is the cheapest it has been, 100 the dearest.",
+    ordersDrawerPercentileValue: "{pct}th percentile",
+    ordersDrawerPercentileNone: "no usable year of history",
+    ordersDrawerOrderRange: "Order range",
+    ordersDrawerRemoteBids: "Bids from elsewhere",
+    ordersDrawerRemoteBidsHint:
+      "Orders ahead of you that are not standing at your station. A region-range bid three systems away outbids you for every unit a seller here wants to move, and until now the desk could not see it.",
+    ordersRangeStation: "this station",
+    ordersRangeSystem: "this system",
+    ordersRangeRegion: "whole region",
+    ordersRangeJumps: "{n} jumps",
+    ordersDrawerLowballPrice: "A patient bid would be",
+    ordersDrawerLowballHint:
+      "The 10th percentile of the item's trailing year — a price it has genuinely traded at, rather than a discount off today's book.",
+    ordersDrawerLowballFillDays: "daily average was at or below this on {pct}% of days last year",
+    ordersBadgeParked: "parked bid",
+    ordersRuleTitle: "Your price rules for this item",
+    ordersRuleHint:
+      "The same rule Assets - Positions edits, kept per item rather than per order: relisting mints a new order id and would lose it.",
+    ordersRuleTargetHint: "Until the book reaches this, the desk will not tell you to drop the price.",
+    ordersRuleCeiling: "Do not bid above",
+    ordersRuleCeilingHint:
+      "The buy-side mirror of a target. The reprice advice reads the book and only the book, so a market that has run 10x since you decided what the item was worth produces a confident instruction to follow it up there.",
+    ordersRulePatient: "This bid is parked on purpose",
+    ordersRulePatientHint:
+      "Suppresses the queue and depth verdicts whatever the distance to the best bid — distance alone cannot tell a bid you parked from one the market ran away from.",
     ordersFlowBasisWeekday: "shaped by day of week",
     ordersFlowBasisFlat: "flat weekly average — not enough history to shape by day",
     ordersSectionSell: "Sell orders",

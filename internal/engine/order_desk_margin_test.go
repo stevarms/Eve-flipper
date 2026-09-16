@@ -372,3 +372,134 @@ func TestComputeOrderDesk_MinMarginPercentIsClampedAndDefaulted(t *testing.T) {
 		})
 	}
 }
+
+// The trade station a buy row exits at, and a quiet station beside it. Bidding
+// from the second at a range that reaches the first is how you avoid the hub's
+// broker fee, and it is what these cover.
+const (
+	orderDeskMarginHub        = 60003760
+	orderDeskMarginOutstation = 60015116
+)
+
+// orderDeskMarginBookOrderAt is somebody else's order at a named station.
+func orderDeskMarginBookOrderAt(id, station int64, price float64, vol int32, isBuy bool) esi.MarketOrder {
+	return esi.MarketOrder{
+		OrderID: id, TypeID: orderDeskMarginTestType, RegionID: 10000002,
+		LocationID: station, Price: price, VolumeRemain: vol, IsBuyOrder: isBuy,
+	}
+}
+
+// orderDeskMarginMineAt is one of our own orders at a named station.
+func orderDeskMarginMineAt(station int64, price float64, isBuy bool) esi.CharacterOrder {
+	mine := orderDeskMarginMine(price, isBuy)
+	mine.LocationID = station
+	mine.LocationName = "Outstation"
+	return mine
+}
+
+// orderDeskMarginHubOpts quotes buy exits at the hub, the way the API fills
+// this in from the configured trade station.
+func orderDeskMarginHubOpts() OrderDeskOptions {
+	opt := orderDeskMarginOpts()
+	opt.ExitStationByRegion = map[int32]int64{10000002: orderDeskMarginHub}
+	return opt
+}
+
+func TestComputeOrderDesk_BuyOutsideTheTradeStationExitsThere(t *testing.T) {
+	// The report this exists for: bids placed a system out of Jita to dodge
+	// its broker fee showed no margin at all, because their own station sells
+	// nothing and that was the only sell side the desk would look at. The
+	// stock was always going to be sold in Jita.
+	row := orderDeskMarginRow(t,
+		orderDeskMarginMineAt(orderDeskMarginOutstation, 100, true),
+		[]esi.MarketOrder{orderDeskMarginBookOrderAt(8100, orderDeskMarginHub, 120, 50, false)},
+		orderDeskMarginHubOpts())
+
+	if row.MarginBasis != orderDeskMarginBook {
+		t.Fatalf("margin_basis = %q, want %q — the hub's ask is the exit", row.MarginBasis, orderDeskMarginBook)
+	}
+	wantExit := NextSellUndercut(120)
+	if row.ExitPrice != wantExit {
+		t.Fatalf("exit_price = %v, want the hub undercut %v", row.ExitPrice, wantExit)
+	}
+	if row.ExitLocationID != orderDeskMarginHub {
+		t.Fatalf("exit_location_id = %d, want %d — a margin quoted elsewhere has to say where",
+			row.ExitLocationID, orderDeskMarginHub)
+	}
+	wantMargin := wantExit*orderDeskMarginProceeds - 100
+	if math.Abs(row.MarginUnitISK-wantMargin) > 1e-9 {
+		t.Fatalf("margin_unit_isk = %v, want %v", row.MarginUnitISK, wantMargin)
+	}
+}
+
+func TestComputeOrderDesk_TradeStationOutranksTheLocalSellSide(t *testing.T) {
+	// Where the stock gets sold is a decision about the trade, not a
+	// consequence of which backwater happens to have an order standing in it.
+	// The optimistic 200 next door is not an exit; the hub is.
+	row := orderDeskMarginRow(t,
+		orderDeskMarginMineAt(orderDeskMarginOutstation, 100, true),
+		[]esi.MarketOrder{
+			orderDeskMarginBookOrderAt(8100, orderDeskMarginOutstation, 200, 1, false),
+			orderDeskMarginBookOrderAt(8101, orderDeskMarginHub, 120, 50, false),
+		},
+		orderDeskMarginHubOpts())
+
+	if row.ExitLocationID != orderDeskMarginHub {
+		t.Fatalf("exit_location_id = %d, want the hub %d", row.ExitLocationID, orderDeskMarginHub)
+	}
+	if want := NextSellUndercut(120); row.ExitPrice != want {
+		t.Fatalf("exit_price = %v, want %v — the lone local ask is not an exit", row.ExitPrice, want)
+	}
+}
+
+func TestComputeOrderDesk_BuyAtTheTradeStationExitsLocally(t *testing.T) {
+	// An order already standing at the trade station has nothing to say about
+	// where it exits, and a row claiming a remote exit would put a hauling
+	// caveat on a margin that is takeable on the spot.
+	row := orderDeskMarginRow(t,
+		orderDeskMarginMineAt(orderDeskMarginHub, 100, true),
+		[]esi.MarketOrder{orderDeskMarginBookOrderAt(8100, orderDeskMarginHub, 120, 50, false)},
+		orderDeskMarginHubOpts())
+
+	if row.MarginBasis != orderDeskMarginBook {
+		t.Fatalf("margin_basis = %q, want %q", row.MarginBasis, orderDeskMarginBook)
+	}
+	if row.ExitLocationID != 0 {
+		t.Fatalf("exit_location_id = %d on a local exit, want 0", row.ExitLocationID)
+	}
+}
+
+func TestComputeOrderDesk_NoTradeStationKeepsTheStationBook(t *testing.T) {
+	// Nil options are the pre-change desk, and the hub's ask must stay
+	// invisible to it — otherwise every existing case here is measuring
+	// something other than what it says.
+	row := orderDeskMarginRow(t,
+		orderDeskMarginMineAt(orderDeskMarginOutstation, 100, true),
+		[]esi.MarketOrder{orderDeskMarginBookOrderAt(8100, orderDeskMarginHub, 120, 50, false)},
+		orderDeskMarginOpts())
+
+	if row.MarginBasis != orderDeskMarginNone {
+		t.Fatalf("margin_basis = %q, want %q without a trade station", row.MarginBasis, orderDeskMarginNone)
+	}
+	if row.ExitPrice != 0 || row.ExitLocationID != 0 {
+		t.Fatalf("unmeasured row reported an exit: price=%v location=%d", row.ExitPrice, row.ExitLocationID)
+	}
+}
+
+func TestComputeOrderDesk_SellRowIgnoresTheTradeStation(t *testing.T) {
+	// A sell order is already standing where its stock is. Only bids can exit
+	// somewhere else, and a sell row is measured against cost regardless.
+	opt := orderDeskMarginHubOpts()
+	opt.CostBasisByType = map[int32]float64{orderDeskMarginTestType: 80}
+	row := orderDeskMarginRow(t,
+		orderDeskMarginMineAt(orderDeskMarginOutstation, 100, false),
+		[]esi.MarketOrder{orderDeskMarginBookOrderAt(8100, orderDeskMarginHub, 60, 50, false)},
+		opt)
+
+	if row.MarginBasis != orderDeskMarginCostBasis {
+		t.Fatalf("margin_basis = %q, want %q", row.MarginBasis, orderDeskMarginCostBasis)
+	}
+	if row.ExitLocationID != 0 {
+		t.Fatalf("exit_location_id = %d on a sell row, want 0", row.ExitLocationID)
+	}
+}

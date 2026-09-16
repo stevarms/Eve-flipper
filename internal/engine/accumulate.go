@@ -57,6 +57,10 @@ const (
 	// current price wildly below the yearly minimum is far more likely to be
 	// a data artefact or a market-wide change than an opportunity.
 	accumulateMinPriceRatio = 0.35
+
+	// The span MarketDerived.Percentiles covers. Named here because the sweep
+	// now compares several spans and needs to say which one is the year.
+	accumulateYearWindowDays = 365
 )
 
 // AccumulateCandidate is one type as the scan sees it before judging: what the
@@ -102,13 +106,27 @@ type AccumulateRow struct {
 	YearHigh          float64 `json:"year_high"`
 	YearMedian        float64 `json:"year_median"`
 
-	// DiscountPct is how far below the yearly median the entry price sits --
-	// the headline "how cheap is this".
+	// DiscountPct is how far below the qualifying window's median the entry
+	// price sits -- the headline "how cheap is this". On a rejected row it is
+	// measured against the year, because no window qualified.
 	DiscountPct float64 `json:"discount_pct"`
 
+	// WindowPercentiles is the same price read against several spans,
+	// ascending, ending with the year. The disagreement between them is the
+	// point: cheap on all four is a market that has repriced, cheap only on
+	// thirty days is a dip that may or may not be a knife.
+	WindowPercentiles []AccumulateWindow `json:"window_percentiles,omitempty"`
+	// QualifyingWindowDays is the span that admitted the row and supplied its
+	// target -- the lowest median among the spans it is cheap against. Zero on
+	// a row that qualified on none.
+	QualifyingWindowDays int `json:"qualifying_window_days,omitempty"`
+
 	// --- what recovering is worth ---
-	// TargetPrice is the conservative exit: the yearly median, not the peak.
-	// Recommending a return to p90 would be quoting the best case as the plan.
+	// TargetPrice is the conservative exit: the lowest median among the spans
+	// the item is cheap against, not the peak. Recommending a return to p90
+	// would be quoting the best case as the plan, and taking the year's median
+	// when a shorter span sits lower would let a stale figure manufacture
+	// upside the item has not traded at recently.
 	TargetPrice float64 `json:"target_price"`
 	// UpsidePct is net of the fees paid on the way out.
 	UpsidePct        float64 `json:"upside_pct"`
@@ -157,6 +175,22 @@ type AccumulateRow struct {
 	// no fixed horizon, so a bigger number here means better-evidenced and
 	// cheaper, not sooner.
 	Score float64 `json:"score"`
+}
+
+// AccumulateWindow is one span's view of the same price.
+//
+// Basis rides along so a span with too little history reads as unmeasured
+// rather than as a zeroth percentile, which would be the strongest possible
+// buy signal built out of nothing.
+type AccumulateWindow struct {
+	WindowDays        int     `json:"window_days"`
+	Basis             string  `json:"basis"`
+	CurrentPercentile float64 `json:"current_percentile"`
+	P50               float64 `json:"p50"`
+	Min               float64 `json:"min"`
+	// Qualifies reports whether this span alone puts the price at or under the
+	// cheapness threshold.
+	Qualifies bool `json:"qualifies,omitempty"`
 }
 
 // AccumulateSummary is what the header says about the run.
@@ -387,10 +421,43 @@ func judgeAccumulate(c AccumulateCandidate, opts AccumulateOpts, keepRate float6
 		return row, accumulateThin
 	}
 
-	// --- Is it actually cheap? ---
-	if pct.CurrentPercentile > opts.MaxPercentile {
+	// --- Is it actually cheap? Over any span, not only the year. ---
+	//
+	// One window was blind in both directions. An item that dipped hard last
+	// month but has trended up over the year sits high in its year and could
+	// never appear, however sharp the dip; an item that has ground down for six
+	// months sits at its yearly low and looked identical to a real one.
+	//
+	// A row that qualifies on a short span only still has to clear the
+	// Declining and Episodes gates further down -- those are unconditional for
+	// every row and must stay that way, because a one-month dip with no bounce
+	// record is a falling knife and the short spans are exactly what surfaces
+	// it.
+	row.WindowPercentiles = accumulateWindows(c.Derived)
+	cheapest := -1
+	for i := range row.WindowPercentiles {
+		w := &row.WindowPercentiles[i]
+		if w.Basis != PercentileBasisHistory || w.P50 <= 0 {
+			continue
+		}
+		if w.CurrentPercentile > opts.MaxPercentile {
+			continue
+		}
+		w.Qualifies = true
+		// Lowest median wins: that is the exit this becomes, and taking the
+		// highest would let the most generous span speak for the item. On a tie
+		// the longer span wins -- same target, more evidence behind it, and it
+		// keeps an item cheap across the board reading as cheap for the year
+		// rather than for the month.
+		if cheapest < 0 || w.P50 <= row.WindowPercentiles[cheapest].P50 {
+			cheapest = i
+		}
+	}
+	if cheapest < 0 {
 		return row, accumulateNotCheap
 	}
+	best := row.WindowPercentiles[cheapest]
+	row.QualifyingWindowDays = best.WindowDays
 	// A price far under the yearly floor is more likely bad data or a
 	// step-change in the item's worth than a gift.
 	if pct.Min > 0 && c.BestSell < pct.Min*accumulateMinPriceRatio {
@@ -400,7 +467,13 @@ func judgeAccumulate(c AccumulateCandidate, opts AccumulateOpts, keepRate float6
 	}
 
 	// --- Exit target and what it is worth, after fees ---
-	row.TargetPrice = pct.P50
+	//
+	// Measured against the qualifying span rather than the year, so the two
+	// halves of the claim agree: an item cheap only over ninety days is being
+	// bought back to its ninety-day median, and quoting the year's would be
+	// promising a price it has not traded at since.
+	row.TargetPrice = best.P50
+	row.DiscountPct = (best.P50 - c.BestSell) / best.P50 * 100
 	netExit := row.TargetPrice * keepRate
 	row.UpsideISKPerUnit = netExit - c.BestSell
 	if c.BestSell > 0 {
@@ -474,10 +547,57 @@ func judgeAccumulate(c AccumulateCandidate, opts AccumulateOpts, keepRate float6
 	return row, accumulateAccept
 }
 
+// accumulateWindows reads the same price against every span the derived cache
+// carries, ascending, with the year last.
+//
+// The year is one window among four here rather than the only one, but it stays
+// MarketDerived.Percentiles everywhere else: the order desk, Positions and the
+// holding-rule suggester all mean "its year" when they ask.
+func accumulateWindows(d MarketDerived) []AccumulateWindow {
+	out := make([]AccumulateWindow, 0, len(d.Windows)+1)
+	add := func(p PricePercentiles, days int) {
+		out = append(out, AccumulateWindow{
+			WindowDays:        days,
+			Basis:             p.Basis,
+			CurrentPercentile: p.CurrentPercentile,
+			P50:               p.P50,
+			Min:               p.Min,
+		})
+	}
+	for _, w := range d.Windows {
+		add(w, w.WindowDays)
+	}
+	// The yearly reduction predates WindowDays being set on it, so cached rows
+	// carry a zero there. Name the span rather than trusting the field.
+	add(d.Percentiles, accumulateYearWindowDays)
+	return out
+}
+
+// accumulateWindowLabel is how a span reads in a sentence.
+func accumulateWindowLabel(days int) string {
+	switch {
+	case days >= accumulateYearWindowDays:
+		return "yearly"
+	case days%30 == 0:
+		return fmt.Sprintf("%d-month", days/30)
+	default:
+		return fmt.Sprintf("%d-day", days)
+	}
+}
+
 func accumulateWhy(row AccumulateRow, rec MeanReversionProfile) string {
 	parts := make([]string, 0, 4)
-	parts = append(parts, fmt.Sprintf("%.0f%% under its yearly median, at the %.0fth percentile",
-		row.DiscountPct, row.CurrentPercentile))
+	// The span is part of the claim. "Cheap" over thirty days and "cheap" over a
+	// year are different statements about the same price, and the reader
+	// deciding whether to commit needs to know which one this is -- so the
+	// percentile quoted is the qualifying window's, not always the year's.
+	if w, ok := accumulateQualifyingWindow(row); ok && w.WindowDays < accumulateYearWindowDays {
+		parts = append(parts, fmt.Sprintf("%.0f%% under its %s median, at the %.0fth percentile over %d days",
+			row.DiscountPct, accumulateWindowLabel(w.WindowDays), w.CurrentPercentile, w.WindowDays))
+	} else {
+		parts = append(parts, fmt.Sprintf("%.0f%% under its yearly median, at the %.0fth percentile",
+			row.DiscountPct, row.CurrentPercentile))
+	}
 	if rec.Episodes > 0 {
 		parts = append(parts, fmt.Sprintf("%d past dips recovered, typically in %.0f days",
 			rec.Episodes, rec.MedianDays))
@@ -486,6 +606,17 @@ func accumulateWhy(row AccumulateRow, rec MeanReversionProfile) string {
 		parts = append(parts, fmt.Sprintf("%.1f days of its own volume to unwind", row.DaysToUnwind))
 	}
 	return strings.Join(parts, " · ")
+}
+
+// accumulateQualifyingWindow finds the span that admitted the row and supplied
+// its target.
+func accumulateQualifyingWindow(row AccumulateRow) (AccumulateWindow, bool) {
+	for _, w := range row.WindowPercentiles {
+		if w.WindowDays == row.QualifyingWindowDays && w.Qualifies {
+			return w, true
+		}
+	}
+	return AccumulateWindow{}, false
 }
 
 func firstNonEmptyStr(vals ...string) string {

@@ -4,10 +4,16 @@ import {
   defaultDirForSortKey,
   normalizeOrdersPrefs,
   ORDERS_DEFAULT_PREFS,
+  ORDERS_DEFAULT_LOWBALL_PCT,
   ORDERS_DEFAULT_MIN_MARGIN_PCT,
   ORDERS_DEFAULT_REFRESH_MINUTES,
+  ORDERS_DEFAULT_REPRICE_JUMP_PCT,
   ORDERS_DEFAULT_TARGET_ETA_DAYS,
+  ORDERS_LOWBALL_PCT_MAX,
+  ORDERS_LOWBALL_PCT_MIN,
   ORDERS_MAX_SORT_LAYERS,
+  ORDERS_REPRICE_JUMP_PCT_MAX,
+  ORDERS_REPRICE_JUMP_PCT_MIN,
   type OrdersSortLayer,
 } from "./ordersPrefs";
 
@@ -26,6 +32,43 @@ describe("orders preferences normalization", () => {
     for (const raw of [null, "", "{bad json", "[]", '"a string"', "null", "42"]) {
       expect(normalizeOrdersPrefs(raw)).toEqual(ORDERS_DEFAULT_PREFS);
     }
+  });
+
+  it("keeps working when the stored blob predates a preference", () => {
+    // Every browser that has used the tab has a blob in it written before the
+    // lowball and new-buy thresholds existed. Rejecting one, or reading the
+    // missing field as zero, would silently reclassify every buy order.
+    const prefs = normalizeOrdersPrefs(JSON.stringify({ targetEtaDays: 7 }));
+    expect(prefs.targetEtaDays).toBe(7);
+    expect(prefs.lowballPct).toBe(ORDERS_DEFAULT_LOWBALL_PCT);
+    expect(prefs.repriceJumpPct).toBe(ORDERS_DEFAULT_REPRICE_JUMP_PCT);
+  });
+
+  it("clamps the lowball and new-buy thresholds instead of dropping them", () => {
+    // Out of range is a slip at the number input, and the intent behind it is
+    // worth honouring; a string is a corrupt blob and gets the default.
+    const low = normalizeOrdersPrefs(
+      JSON.stringify({ lowballPct: -5, repriceJumpPct: 0 }),
+    );
+    expect(low.lowballPct).toBe(ORDERS_LOWBALL_PCT_MIN);
+    expect(low.repriceJumpPct).toBe(ORDERS_REPRICE_JUMP_PCT_MIN);
+
+    const high = normalizeOrdersPrefs(
+      JSON.stringify({ lowballPct: 1000, repriceJumpPct: 99999 }),
+    );
+    expect(high.lowballPct).toBe(ORDERS_LOWBALL_PCT_MAX);
+    expect(high.repriceJumpPct).toBe(ORDERS_REPRICE_JUMP_PCT_MAX);
+
+    const junk = normalizeOrdersPrefs(
+      JSON.stringify({ lowballPct: "20", repriceJumpPct: null }),
+    );
+    expect(junk.lowballPct).toBe(ORDERS_DEFAULT_LOWBALL_PCT);
+    expect(junk.repriceJumpPct).toBe(ORDERS_DEFAULT_REPRICE_JUMP_PCT);
+
+    // And a usable value in range is kept exactly.
+    const set = normalizeOrdersPrefs(JSON.stringify({ lowballPct: 35, repriceJumpPct: 60 }));
+    expect(set.lowballPct).toBe(35);
+    expect(set.repriceJumpPct).toBe(60);
   });
 
   it("restores a full set of saved preferences", () => {
@@ -55,6 +98,10 @@ describe("orders preferences normalization", () => {
       refreshMinutes: 10,
       targetEtaDays: 7,
       minMarginPct: 5,
+      // Absent from the blob above, which is the point: a preference added
+      // later lands on its default rather than making the whole blob unusable.
+      lowballPct: ORDERS_DEFAULT_LOWBALL_PCT,
+      repriceJumpPct: ORDERS_DEFAULT_REPRICE_JUMP_PCT,
     });
   });
 

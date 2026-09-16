@@ -2333,6 +2333,8 @@ export interface OrderDeskParams {
   brokerFee?: number;
   targetEtaDays?: number;
   minMarginPct?: number;
+  lowballPct?: number;
+  repriceJumpPct?: number;
   characterId?: CharacterScope;
   /** Skip the shared cache and refill it. For an explicit user refresh. */
   force?: boolean;
@@ -2373,6 +2375,10 @@ export async function getOrderDesk(params?: OrderDeskParams): Promise<OrderDeskR
   if (params?.brokerFee != null) qp.set("broker_fee", String(params.brokerFee));
   if (params?.targetEtaDays != null) qp.set("target_eta_days", String(params.targetEtaDays));
   if (params?.minMarginPct != null) qp.set("min_margin_pct", String(params.minMarginPct));
+  if (params?.lowballPct != null) qp.set("lowball_pct", String(params.lowballPct));
+  if (params?.repriceJumpPct != null) {
+    qp.set("reprice_jump_pct", String(params.repriceJumpPct));
+  }
   appendCharacterScope(qp, params?.characterId);
   const qs = qp.toString();
 
@@ -3744,6 +3750,12 @@ export async function getHoldingRules(): Promise<HoldingRule[]> {
  * Store a rule for one type. Returns what was actually stored, which may be
  * empty: a rule that constrains nothing is deleted server-side, so echoing
  * the request back would claim a target exists after it was cleared.
+ *
+ * Only the fields sent are written. Two editors reach these rules — Positions
+ * sets the target and the reserve, the Orders drawer sets the bid ceiling and
+ * the patient flag — and neither shows the other's fields, so a full replace
+ * would have each save silently wipe the other's work. An explicit zero still
+ * clears; it is omission that means "leave this alone".
  */
 export async function setHoldingRule(
   typeId: number,
@@ -3751,6 +3763,8 @@ export async function setHoldingRule(
     target_price?: number;
     target_percentile?: number;
     target_basis?: string;
+    max_bid_price?: number;
+    patient_bid?: boolean;
     reserved_qty?: number;
     note?: string;
   },
@@ -3780,8 +3794,12 @@ export async function deleteHoldingRule(typeId: number): Promise<void> {
  */
 export async function getHoldingRulePercentiles(
   typeId: number,
+  /** Quote against the region an order actually sits in. Omitted falls back to
+   *  the hub, which is what Positions wants. */
+  regionId?: number,
 ): Promise<HoldingRulePercentilesResponse> {
-  const res = await apiFetch(`${BASE}/api/auth/holding-rules/${typeId}/percentiles`);
+  const qs = regionId && regionId > 0 ? `?region_id=${regionId}` : "";
+  const res = await apiFetch(`${BASE}/api/auth/holding-rules/${typeId}/percentiles${qs}`);
   return handleResponse<HoldingRulePercentilesResponse>(res);
 }
 

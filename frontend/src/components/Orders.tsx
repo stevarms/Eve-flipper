@@ -21,9 +21,13 @@ import {
   applySortClick,
   loadOrdersPrefs,
   saveOrdersPrefs,
+  ORDERS_LOWBALL_PCT_MAX,
+  ORDERS_LOWBALL_PCT_MIN,
   ORDERS_MIN_MARGIN_PCT_MAX,
   ORDERS_MIN_MARGIN_PCT_MIN,
   ORDERS_REFRESH_CHOICES,
+  ORDERS_REPRICE_JUMP_PCT_MAX,
+  ORDERS_REPRICE_JUMP_PCT_MIN,
   ORDERS_TARGET_ETA_MAX_DAYS,
   ORDERS_TARGET_ETA_MIN_DAYS,
   type OrdersActionFilter,
@@ -39,7 +43,7 @@ import { useKeyboardShortcuts } from "@/lib/useKeyboardShortcuts";
 import { useEveUiActions } from "@/lib/eveUiActions";
 import { useOptionalToast } from "@/components/Toast";
 import { ItemRef } from "@/components/ui/ItemRef";
-import { OrderRowDrawer } from "@/components/orders/OrderRowDrawer";
+import { OrderRowDrawer, showsAfterMargin } from "@/components/orders/OrderRowDrawer";
 import { OrderHistoryPanel } from "@/components/orders/OrderHistoryPanel";
 import { cn } from "@/lib/utils";
 
@@ -291,6 +295,8 @@ export function Orders({ isLoggedIn, focus, onFocusConsumed }: Props) {
           brokerFee,
           targetEtaDays: prefs.targetEtaDays,
           minMarginPct: prefs.minMarginPct,
+          lowballPct: prefs.lowballPct,
+          repriceJumpPct: prefs.repriceJumpPct,
           characterId: "all",
           force,
         });
@@ -304,7 +310,15 @@ export function Orders({ isLoggedIn, focus, onFocusConsumed }: Props) {
         setLoading(false);
       }
     },
-    [isLoggedIn, salesTax, brokerFee, prefs.targetEtaDays, prefs.minMarginPct],
+    [
+      isLoggedIn,
+      salesTax,
+      brokerFee,
+      prefs.targetEtaDays,
+      prefs.minMarginPct,
+      prefs.lowballPct,
+      prefs.repriceJumpPct,
+    ],
   );
 
   // First load is immediate; later reruns are only ever caused by a fee or
@@ -703,6 +717,48 @@ export function Orders({ isLoggedIn, focus, onFocusConsumed }: Props) {
               className="ml-1 w-16 bg-eve-dark border border-eve-border rounded-sm px-1 py-0.5 text-eve-text"
             />
           </label>
+          <label className="text-[11px] text-eve-dim" title={t("ordersLowballHint")}>
+            {t("ordersLowball")}
+            <input
+              type="number"
+              min={ORDERS_LOWBALL_PCT_MIN}
+              max={ORDERS_LOWBALL_PCT_MAX}
+              step={1}
+              value={prefs.lowballPct}
+              onChange={(e) => {
+                const v = parseFloat(e.target.value);
+                if (!Number.isFinite(v)) return;
+                updatePrefs({
+                  lowballPct: Math.min(
+                    ORDERS_LOWBALL_PCT_MAX,
+                    Math.max(ORDERS_LOWBALL_PCT_MIN, v),
+                  ),
+                });
+              }}
+              className="ml-1 w-16 bg-eve-dark border border-eve-border rounded-sm px-1 py-0.5 text-eve-text"
+            />
+          </label>
+          <label className="text-[11px] text-eve-dim" title={t("ordersRepriceJumpHint")}>
+            {t("ordersRepriceJump")}
+            <input
+              type="number"
+              min={ORDERS_REPRICE_JUMP_PCT_MIN}
+              max={ORDERS_REPRICE_JUMP_PCT_MAX}
+              step={5}
+              value={prefs.repriceJumpPct}
+              onChange={(e) => {
+                const v = parseFloat(e.target.value);
+                if (!Number.isFinite(v)) return;
+                updatePrefs({
+                  repriceJumpPct: Math.min(
+                    ORDERS_REPRICE_JUMP_PCT_MAX,
+                    Math.max(ORDERS_REPRICE_JUMP_PCT_MIN, v),
+                  ),
+                });
+              }}
+              className="ml-1 w-16 bg-eve-dark border border-eve-border rounded-sm px-1 py-0.5 text-eve-text"
+            />
+          </label>
           <button
             type="button"
             onClick={resyncFees}
@@ -995,6 +1051,9 @@ export function Orders({ isLoggedIn, focus, onFocusConsumed }: Props) {
         locale={locale}
         bookLevels={inspected ? bookLevels?.[inspected.order_id] : undefined}
         bookLevelsLoading={bookLoading}
+        /* The recommendation is computed server-side from the rule, so a save
+           that did not refetch would leave the drawer contradicting itself. */
+        onRuleSaved={() => void load(true)}
       />
     </div>
   );
@@ -1207,6 +1266,13 @@ function etaBreakdown(row: OrderDeskOrder, t: Translate): string {
   });
 }
 
+/** A percentage with its sign always shown, because the interesting reading of
+ *  `+9.2% -> +1.1%` is how far it fell, and an unsigned second number would
+ *  hide the case where it fell through zero. */
+function signedPct(v: number): string {
+  return `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`;
+}
+
 /** The margin is two fees and an assumed exit price deep by the time it
  *  reaches the table, and it is now the thing that turns an order red. The
  *  derivation has to be checkable against the in-game book from the row. */
@@ -1214,9 +1280,34 @@ function marginBreakdown(row: OrderDeskOrder, settings: OrderDeskSettings, t: Tr
   const fees = settings.sales_tax_percent + settings.broker_fee_percent;
   const feeLabel = fees.toFixed(2);
   const pct = row.margin_percent.toFixed(1);
+  // Appended to whichever basis applies, so the sentence reads as a
+  // continuation of the derivation rather than a second, unrelated figure.
+  const after = showsAfterMargin(row)
+    ? t("ordersMarginAfterLine", {
+        price: formatIsk(row.suggested_price),
+        margin: formatIsk(row.suggested_margin_unit_isk),
+        pct: row.suggested_margin_percent.toFixed(1),
+      })
+    : "";
 
   if (row.margin_basis === "book") {
     const exit = row.exit_price ?? 0;
+    // A bid parked outside the trade station exits there, not where it
+    // stands. Same arithmetic, but the sentence has to name the station or
+    // the reader will check it against the wrong book.
+    if (row.exit_location_name) {
+      return (
+        t("ordersMarginBuyBreakdownRemote", {
+          exit: formatIsk(exit),
+          station: row.exit_location_name,
+          fees: feeLabel,
+          net: formatIsk(exit * (1 - fees / 100)),
+          bid: formatIsk(row.price),
+          margin: formatIsk(row.margin_unit_isk),
+          pct,
+        }) + after
+      );
+    }
     return t("ordersMarginBuyBreakdown", {
       exit: formatIsk(exit),
       fees: feeLabel,
@@ -1224,7 +1315,7 @@ function marginBreakdown(row: OrderDeskOrder, settings: OrderDeskSettings, t: Tr
       bid: formatIsk(row.price),
       margin: formatIsk(row.margin_unit_isk),
       pct,
-    });
+    }) + after;
   }
   if (row.margin_basis === "cost_basis") {
     return t("ordersMarginSellBreakdown", {
@@ -1234,7 +1325,20 @@ function marginBreakdown(row: OrderDeskOrder, settings: OrderDeskSettings, t: Tr
       cost: formatIsk(row.cost_basis_isk ?? 0),
       margin: formatIsk(row.margin_unit_isk),
       pct,
-    });
+    }) + after;
+  }
+  // Stock with a hand-set target and no cost basis. The number measures the
+  // decision rather than the position, and saying so is the point of having a
+  // separate basis for it instead of folding it into cost_basis.
+  if (row.margin_basis === "target") {
+    return t("ordersMarginTargetBreakdown", {
+      price: formatIsk(row.price),
+      fees: feeLabel,
+      net: formatIsk(row.price * (1 - fees / 100)),
+      target: formatIsk(row.target_price ?? 0),
+      margin: formatIsk(row.margin_unit_isk),
+      pct,
+    }) + after;
   }
   // Unmeasured. Which input was missing depends on the side, and the two
   // have different fixes, so the hint has to say which one applies.
@@ -1269,12 +1373,20 @@ function OrderRow({
   const hasCopyablePrice = row.book_available && row.suggested_price > 0 && !atTop;
   // Thin reads amber rather than green: it is still a profit, but it is the
   // one the floor was set to catch.
+  //
+  // On a reprice row it grades the *after* number: the colour is advice about
+  // the move on offer, and grading the margin you are about to leave behind
+  // would paint a healthy move red on the strength of a position you are
+  // fixing.
+  const afterMargin = showsAfterMargin(row);
+  const gradedMarginISK = afterMargin ? row.suggested_margin_unit_isk : row.margin_unit_isk;
+  const gradedThin = afterMargin ? row.warn_thin_after_reprice : row.warn_thin_margin;
   const marginCls =
     row.margin_basis === "none"
       ? "text-eve-dim"
-      : row.margin_unit_isk <= 0
+      : gradedMarginISK <= 0
         ? "text-red-400"
-        : row.warn_thin_margin
+        : gradedThin
           ? "text-amber-400"
           : "text-emerald-400";
   // `review` is deliberately not red. The ISK is already spent, so the row is
@@ -1355,6 +1467,11 @@ function OrderRow({
           >
             {row.recommendation}
           </span>
+          {row.has_holding_rule && (
+            <span className="text-[10px] cursor-help" title={t("ordersRuleLockHint")}>
+              🔒
+            </span>
+          )}
           {reviewable && (
             <button
               type="button"
@@ -1416,15 +1533,24 @@ function OrderRow({
           <span className="text-eve-dim cursor-help">—</span>
         ) : (
           <span className={`inline-flex items-center gap-1 justify-end cursor-help ${marginCls}`}>
-            {row.warn_thin_margin && (
+            {(gradedThin || row.warn_thin_margin) && (
               <span
                 className="text-yellow-400"
-                title={t("ordersThinMarginHint", { floor: settings.min_margin_percent })}
+                title={
+                  afterMargin && row.warn_thin_after_reprice
+                    ? t("ordersThinAfterRepriceHint", {
+                        pct: row.suggested_margin_percent.toFixed(1),
+                        floor: settings.min_margin_percent,
+                      })
+                    : t("ordersThinMarginHint", { floor: settings.min_margin_percent })
+                }
               >
                 ⚠
               </span>
             )}
-            {`${row.margin_percent >= 0 ? "+" : ""}${row.margin_percent.toFixed(1)}%`}
+            {afterMargin
+              ? `${signedPct(row.margin_percent)} → ${signedPct(row.suggested_margin_percent)}`
+              : signedPct(row.margin_percent)}
           </span>
         )}
       </td>

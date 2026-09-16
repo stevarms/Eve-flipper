@@ -944,6 +944,12 @@ export interface HoldingRule {
   target_price: number;
   target_percentile: number;
   target_basis: string;
+  /** The buy-side mirror of a target: the price above which the order desk
+   *  stops advising you to follow the book up. Zero means no ceiling. */
+  max_bid_price: number;
+  /** This type's buy orders are parked on purpose, whatever their distance
+   *  from the best bid. */
+  patient_bid: boolean;
   reserved_qty: number;
   note: string;
   updated_at: string;
@@ -1992,16 +1998,81 @@ export interface OrderDeskOrder {
   // input was available — in which case the margin numbers mean nothing and
   // the UI must render them as unknown rather than as zero.
   /** Buy rows: the price we assume we could resell at, an undercut of the
-   *  station's best ask rather than the ask itself. */
+   *  best ask rather than the ask itself. */
   exit_price?: number;
+  /** Where exit_price was read, when that is not the order's own station.
+   *
+   *  A bid parked a jump or two out of the hub to avoid its broker fee is
+   *  ordinary practice, and such a station usually has no sell side of its
+   *  own — so its honest exit is the trade station. Absent means the exit is
+   *  local and takeable on the spot; present means a haul this app does not
+   *  cost, which is why every surface showing the figure names the place. */
+  exit_location_id?: number;
+  exit_location_name?: string;
   /** Sell rows: average unit cost of the stock currently held. */
   cost_basis_isk?: number;
   margin_unit_isk: number;
   margin_percent: number;
-  margin_basis: "book" | "cost_basis" | "none" | string;
+  /** "target" is the fourth basis: a sell row with no cost basis but a hand-set
+   *  target, measured against the target so the break-even guard has something
+   *  to work with on exactly the rows that used to be unguarded. A shortfall
+   *  against a target is a decision not going your way rather than a position
+   *  underwater, so it is not coloured as a loss. */
+  margin_basis: "book" | "cost_basis" | "target" | "none" | string;
   /** Positive but under settings.min_margin_percent. A warning only — it
    *  deliberately does not change the recommendation. */
   warn_thin_margin?: boolean;
+  /** What the margin would become after repricing to suggested_price, on the
+   *  same basis as the before figure so the two are comparable. */
+  suggested_margin_unit_isk: number;
+  suggested_margin_percent: number;
+  /** After-margin is positive but under the floor. Unlike warn_thin_margin,
+   *  taking the suggested price is what would cause it.
+   *
+   *  Set by the server whenever a different price exists, which is not the
+   *  same as one being advised — see proposesReprice, which is what the UI
+   *  gates on. */
+  warn_thin_after_reprice?: boolean;
+
+  // Range awareness, buy rows only — sell orders in EVE are always
+  // station-range. order_range is this order's own range as ESI reports it;
+  // competing_remote_bids counts how many orders ahead of you are standing
+  // somewhere other than your station, which is the whole explanation for a
+  // position that looks wrong against the station's own book.
+  order_range?: string;
+  competing_remote_bids?: number;
+
+  /** A buy order parked well under the best reaching bid. Not a fault: the
+   *  desk's queue, ETA and depth verdicts stand down for it entirely. */
+  is_lowball?: boolean;
+  /** is_lowball asserted by hand through a holding rule rather than inferred
+   *  from distance — which also suppresses the price-level check an inferred
+   *  lowball still gets. */
+  patient_bid?: boolean;
+  /** A lowball worth placing, from the item's own year, with the share of days
+   *  its daily average actually sat at or below that price. */
+  lowball_price?: number;
+  lowball_fill_days_pct?: number;
+
+  /** suggested_price × volume_remain, and on buy rows how much more ISK than
+   *  now that commits. A bid chasing a book that has moved 10x passes every
+   *  per-unit test ever written; this is the number that does not. */
+  suggested_notional?: number;
+  added_capital_isk?: number;
+  /** Where the current and suggested prices sit in the item's own trailing
+   *  year. Unmeasured — not zero — when percentile_basis is "none". */
+  price_percentile?: number;
+  suggested_price_percentile?: number;
+  percentile_basis?: "history" | "none" | string;
+
+  /** The holding rule in force for this type, the same one Assets → Positions
+   *  edits. target_price floors a sell, max_bid_price caps a bid, and
+   *  target_progress_pct is how far the market has come toward the target. */
+  target_price?: number;
+  target_progress_pct?: number;
+  target_met?: boolean;
+  max_bid_price?: number;
+  has_holding_rule?: boolean;
 }
 
 export interface OrderDeskResponse {
@@ -4453,10 +4524,20 @@ export interface AccumulateRow {
   year_low: number;
   year_high: number;
   year_median: number;
-  /** How far below the yearly median the entry price sits. */
+  /** How far below the qualifying window's median the entry price sits. On a
+   *  rejected row this is measured against the year, since no window
+   *  qualified. */
   discount_pct: number;
 
-  /** The conservative exit: the yearly median, never the peak. */
+  /** The same price read against several spans, ascending, the year last. The
+   *  disagreement between them is the point: cheap on all four is a market that
+   *  has repriced, cheap only on thirty days is a dip that may be a knife. */
+  window_percentiles?: AccumulateWindow[];
+  /** The span that admitted the row and supplied its target. */
+  qualifying_window_days?: number;
+
+  /** The conservative exit: the lowest median among the spans it is cheap
+   *  against, never the peak. */
   target_price: number;
   /** Net of the fees paid on the way out. */
   upside_pct: number;
@@ -4492,6 +4573,18 @@ export interface AccumulateRow {
   blockers?: string[];
   /** Ranks accepted rows by evidence and cheapness, not by ISK. */
   score: number;
+}
+
+/** One span's view of the same price. `basis` rides along so a span with too
+ *  little history reads as unmeasured rather than as a zeroth percentile --
+ *  which would be the strongest possible buy signal built out of nothing. */
+export interface AccumulateWindow {
+  window_days: number;
+  basis: string;
+  current_percentile: number;
+  p50: number;
+  min: number;
+  qualifies?: boolean;
 }
 
 export interface AccumulateSummary {

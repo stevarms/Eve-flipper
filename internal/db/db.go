@@ -2084,6 +2084,26 @@ func (d *DB) migrate() error {
 		logger.Info("DB", "Applied migration v50 (corp industry jobs + per-kind sync freshness)")
 	}
 
+	if version < 51 {
+		// The order desk needs the buy-side half of a holding rule. A target
+		// price says "do not sell below this"; a ceiling says "do not bid
+		// above this", which is the thing that stops the desk chasing a book
+		// that has run away from the price you decided on.
+		if err := d.ensureTableColumn("holding_rules", "max_bid_price", "REAL NOT NULL DEFAULT 0"); err != nil {
+			return fmt.Errorf("migration v51 add holding_rules.max_bid_price: %w", err)
+		}
+		// And the manual override for lowball detection: a bid that is
+		// parked on purpose even though it is not far enough under the book
+		// for the automatic test to notice.
+		if err := d.ensureTableColumn("holding_rules", "patient_bid", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return fmt.Errorf("migration v51 add holding_rules.patient_bid: %w", err)
+		}
+		if _, err := d.sql.Exec(`INSERT OR IGNORE INTO schema_version (version) VALUES (51);`); err != nil {
+			return fmt.Errorf("migration v51: %w", err)
+		}
+		logger.Info("DB", "Applied migration v51 (holding rules: bid ceiling + patient bid)")
+	}
+
 	return nil
 }
 

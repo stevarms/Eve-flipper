@@ -21,6 +21,10 @@ type CharacterOrder struct {
 	IsBuyOrder   bool    `json:"is_buy_order"`
 	Duration     int     `json:"duration"`
 	Issued       string  `json:"issued"`
+	// Range mirrors esi.MarketOrder.Range: how far this buy order reaches.
+	// Carried so the order desk can judge you against the competitors that
+	// can actually reach your station, and report your own range back.
+	Range string `json:"range,omitempty"`
 	// Enriched fields (filled by server)
 	TypeName     string `json:"type_name,omitempty"`
 	LocationName string `json:"location_name,omitempty"`

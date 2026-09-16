@@ -83,6 +83,8 @@ tmp_ai_server.log
 tmp_ai_server.err
 eve-flipper-*.log
 eve-flipper-*.err
+server-out.log
+server-err.log
 
 # Local Discord setup/scratch workspace (do not track)
 discord-local/
