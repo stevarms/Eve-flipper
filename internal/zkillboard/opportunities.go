@@ -41,7 +41,18 @@ type RegionOpportunities struct {
 	TotalPotential float64            `json:"total_potential"` // Sum of daily profits
 }
 
-// Common PvP modules — fallback when killmail data is not available
+// Common PvP modules -- fallback when killmail data is not available.
+//
+// Every ID here was wrong until 2026-09-17, and wrong in a specific way: the IDs
+// were real published items, just shifted off their names by roughly one row. ID
+// 2281 was labelled "Damage Control II" but is Multispectrum Shield Hardener II;
+// 11269 was labelled "1600mm Steel Plates II" but is Multispectrum Energized
+// Membrane II. So WarTracker's fallback path was pricing real items under other
+// items' names -- the worst failure mode available, because every figure looked
+// plausible. Two names were also pre-2018 and no longer resolve at all; they are
+// updated to the items they were renamed to.
+//
+// TestStaticListsMatchTheSDE pins every pair against the local SDE.
 var commonPvPModules = []struct {
 	TypeID   int32
 	Name     string
@@ -50,86 +61,92 @@ var commonPvPModules = []struct {
 	// Shield modules
 	{3841, "Large Shield Extender II", "module"},
 	{3831, "Medium Shield Extender II", "module"},
-	{2281, "Damage Control II", "module"},
-	{2048, "Adaptive Invulnerability Field II", "module"},
+	{2048, "Damage Control II", "module"},
+	{2281, "Multispectrum Shield Hardener II", "module"}, // was "Adaptive Invulnerability Field II"
 
 	// Armor modules
-	{11269, "1600mm Steel Plates II", "module"},
-	{11295, "Energized Adaptive Nano Membrane II", "module"},
-	{20353, "Damage Control II", "module"},
+	{20353, "1600mm Steel Plates II", "module"},
+	{11269, "Multispectrum Energized Membrane II", "module"}, // was "Energized Adaptive Nano Membrane II"
 
 	// Tackle
-	{5443, "Warp Disruptor II", "module"},
-	{5439, "Warp Scrambler II", "module"},
-	{4405, "Stasis Webifier II", "module"},
+	{3244, "Warp Disruptor II", "module"},
+	{448, "Warp Scrambler II", "module"},
+	{527, "Stasis Webifier II", "module"},
 
 	// Propulsion
 	{12076, "50MN Microwarpdrive II", "module"},
 	{12084, "500MN Microwarpdrive II", "module"},
-	{12068, "10MN Afterburner II", "module"},
+	{12058, "10MN Afterburner II", "module"},
 
 	// Weapon upgrades
-	{22291, "Gyrostabilizer II", "module"},
-	{10190, "Ballistic Control System II", "module"},
-	{22919, "Heat Sink II", "module"},
+	{519, "Gyrostabilizer II", "module"},
+	{22291, "Ballistic Control System II", "module"},
+	{2364, "Heat Sink II", "module"},
 }
 
-// Common ammo types — fallback when killmail data is not available
+// Common ammo types -- fallback when killmail data is not available.
+//
+// Corrected 2026-09-17 alongside commonPvPModules, and the same failure: 248 was
+// labelled "Void M" but is Microwave M, 233 was "Antimatter Charge L" but is
+// Iridium Charge L, and 2203 was "EMP L" but is Acolyte I -- a drone sitting in
+// the projectile block. "Fury Heavy Missile" is not an item at all; Fury missiles
+// carry a damage type, and the ID that entry held is Scourge Fury Heavy Missile.
 var commonAmmo = []struct {
 	TypeID   int32
 	Name     string
 	Category string
 }{
 	// Hybrid charges
-	{233, "Antimatter Charge L", "ammo"},
-	{237, "Antimatter Charge M", "ammo"},
-	{229, "Antimatter Charge S", "ammo"},
-	{244, "Void L", "ammo"},
-	{248, "Void M", "ammo"},
-	{240, "Void S", "ammo"},
-	{243, "Null L", "ammo"},
-	{247, "Null M", "ammo"},
-	{239, "Null S", "ammo"},
+	{238, "Antimatter Charge L", "ammo"},
+	{230, "Antimatter Charge M", "ammo"},
+	{222, "Antimatter Charge S", "ammo"},
+	{12791, "Void L", "ammo"},
+	{12789, "Void M", "ammo"},
+	{12612, "Void S", "ammo"},
+	{12787, "Null L", "ammo"},
+	{12785, "Null M", "ammo"},
+	{12614, "Null S", "ammo"},
 
 	// Projectile ammo
-	{2203, "EMP L", "ammo"},
-	{2205, "EMP M", "ammo"},
-	{2201, "EMP S", "ammo"},
-	{12761, "Hail L", "ammo"},
-	{12763, "Hail M", "ammo"},
-	{12759, "Hail S", "ammo"},
-	{12774, "Barrage L", "ammo"},
-	{12776, "Barrage M", "ammo"},
-	{12772, "Barrage S", "ammo"},
+	{201, "EMP L", "ammo"},
+	{193, "EMP M", "ammo"},
+	{185, "EMP S", "ammo"},
+	{12779, "Hail L", "ammo"},
+	{12777, "Hail M", "ammo"},
+	{12608, "Hail S", "ammo"},
+	{12775, "Barrage L", "ammo"},
+	{12773, "Barrage M", "ammo"},
+	{12625, "Barrage S", "ammo"},
 
 	// Laser crystals
 	{12820, "Scorch L", "ammo"},
-	{12822, "Scorch M", "ammo"},
-	{12818, "Scorch S", "ammo"},
-	{12826, "Conflagration L", "ammo"},
-	{12828, "Conflagration M", "ammo"},
-	{12824, "Conflagration S", "ammo"},
+	{12818, "Scorch M", "ammo"},
+	{12563, "Scorch S", "ammo"},
+	{12816, "Conflagration L", "ammo"},
+	{12814, "Conflagration M", "ammo"},
+	{12565, "Conflagration S", "ammo"},
 
 	// Missiles
-	{24513, "Caldari Navy Scourge Heavy Missile", "ammo"},
-	{24519, "Caldari Navy Mjolnir Heavy Missile", "ammo"},
-	{27361, "Fury Heavy Missile", "ammo"},
-	{2629, "Nova Rage Torpedo", "ammo"},
+	{27441, "Caldari Navy Scourge Heavy Missile", "ammo"},
+	{27435, "Caldari Navy Mjolnir Heavy Missile", "ammo"},
+	{2629, "Scourge Fury Heavy Missile", "ammo"}, // was the non-existent "Fury Heavy Missile"
+	{24519, "Nova Rage Torpedo", "ammo"},
 
-	// Drones
+	// Drones. Categorized "ammo" because the static path appends straight into
+	// result.Ammo, which is also where the killmail path sends drones for display.
 	{2456, "Hobgoblin II", "ammo"},
-	{2454, "Hammerhead II", "ammo"},
+	{2185, "Hammerhead II", "ammo"},
 	{2446, "Ogre II", "ammo"},
-	{28209, "Warrior II", "ammo"},
-	{28211, "Valkyrie II", "ammo"},
-	{28213, "Berserker II", "ammo"},
+	{2488, "Warrior II", "ammo"},
+	{21640, "Valkyrie II", "ammo"},
+	{2478, "Berserker II", "ammo"},
 
 	// Nanite paste
 	{28668, "Nanite Repair Paste", "ammo"},
 
 	// Cap boosters
-	{11283, "Cap Booster 800", "ammo"},
-	{263, "Cap Booster 400", "ammo"},
+	{11289, "Cap Booster 800", "ammo"},
+	{11287, "Cap Booster 400", "ammo"},
 }
 
 const jitaRegionID = int32(10000002) // The Forge
@@ -215,7 +232,7 @@ func (d *DemandAnalyzer) GetRegionOpportunities(regionID int32, esiClient *esi.C
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		prices := fetchBestPrices(esiClient, jitaRegionID, typeIDSlice)
+		prices := fetchBestPrices(esiClient, jitaRegionID, typeIDSlice, priceFilter{})
 		mu.Lock()
 		jitaPrices = prices
 		mu.Unlock()
@@ -225,7 +242,7 @@ func (d *DemandAnalyzer) GetRegionOpportunities(regionID int32, esiClient *esi.C
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			prices := fetchBestPrices(esiClient, regionID, typeIDSlice)
+			prices := fetchBestPrices(esiClient, regionID, typeIDSlice, priceFilter{})
 			mu.Lock()
 			regionPrices = prices
 			mu.Unlock()
@@ -359,29 +376,68 @@ func (d *DemandAnalyzer) GetRegionOpportunities(regionID int32, esiClient *esi.C
 type priceInfo struct {
 	sellPrice  float64
 	sellVolume int32
+	// totalVolume is every unit listed, not just those at the best price. Days of
+	// cover is stocked units over units destroyed per day, and "stocked" means the
+	// whole book -- 500,035 rounds of Void M spread over many orders is 28 days of
+	// cover whether or not they share a price.
+	totalVolume int64
+	// orderCount and sellerLevels describe the shape of the book at the best
+	// price, which is what decides whether a cheaper competitor is worth
+	// undercutting or stepping over.
+	orderCount int
 }
 
-func fetchBestPrices(esiClient *esi.Client, regionID int32, typeIDs []int32) map[int32]priceInfo {
-	prices := make(map[int32]priceInfo)
+// priceFilter narrows what fetchBestPrices counts. The zero value is region-wide
+// and counts everything, which is exactly what WarTracker asked for before this
+// existed -- so its results are unchanged.
+type priceFilter struct {
+	// LocationID restricts to one station. A campaign prices against the book at
+	// its own destination, not the region: Onnamon and Villasen are both Black
+	// Rise and their markups differ by 12 points.
+	LocationID int64
+	// ExcludeNPCSeeded drops 365-day orders. Off by default because turning it on
+	// silently would change WarTracker's numbers.
+	ExcludeNPCSeeded bool
+}
 
+func fetchBestPrices(esiClient *esi.Client, regionID int32, typeIDs []int32, filter priceFilter) map[int32]priceInfo {
 	orders, err := esiClient.FetchRegionOrders(regionID, "sell")
 	if err != nil {
-		return prices
+		return make(map[int32]priceInfo)
 	}
+	return aggregateSellBook(orders, filter)
+}
+
+// aggregateSellBook reduces a sell book to one priceInfo per type. It is the
+// whole of fetchBestPrices except the fetch, so the filters and the depth
+// arithmetic are testable without ESI.
+func aggregateSellBook(orders []esi.MarketOrder, filter priceFilter) map[int32]priceInfo {
+	prices := make(map[int32]priceInfo)
 
 	// Find best (lowest) sell price for each type
 	for _, order := range orders {
+		if filter.LocationID != 0 && order.LocationID != filter.LocationID {
+			continue
+		}
+		if filter.ExcludeNPCSeeded && order.IsNPCSeeded() {
+			continue
+		}
+
 		existing, ok := prices[order.TypeID]
-		if !ok || order.Price < existing.sellPrice {
-			prices[order.TypeID] = priceInfo{
-				sellPrice:  order.Price,
-				sellVolume: order.VolumeRemain,
-			}
-		} else if order.Price == existing.sellPrice {
+		// Stocked depth accumulates across every order, independently of price.
+		existing.totalVolume += int64(order.VolumeRemain)
+
+		switch {
+		case !ok || order.Price < existing.sellPrice:
+			existing.sellPrice = order.Price
+			existing.sellVolume = order.VolumeRemain
+			existing.orderCount = 1
+		case order.Price == existing.sellPrice:
 			// Same price, add volume
 			existing.sellVolume += order.VolumeRemain
-			prices[order.TypeID] = existing
+			existing.orderCount++
 		}
+		prices[order.TypeID] = existing
 	}
 
 	return prices

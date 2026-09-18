@@ -407,6 +407,7 @@ func (e *ESICorpProvider) GetOrders() ([]CorpMarketOrder, error) {
 			Issued       string  `json:"issued"`
 			Duration     int     `json:"duration"`
 			RegionID     int32   `json:"region_id"`
+			Range        string  `json:"range"`
 		}
 		if err := json.Unmarshal(page, &o); err != nil {
 			continue
@@ -428,6 +429,7 @@ func (e *ESICorpProvider) GetOrders() ([]CorpMarketOrder, error) {
 			Issued:       o.Issued,
 			Duration:     o.Duration,
 			RegionID:     o.RegionID,
+			Range:        o.Range,
 		})
 	}
 

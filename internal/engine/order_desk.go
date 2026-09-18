@@ -244,8 +244,27 @@ type OrderDeskOrder struct {
 	// Owner tags stamped by the api-layer aggregator when scope=all so the
 	// multi-character Orders tab can group / filter by owning character.
 	// Empty when the row came through a single-character request.
+	//
+	// OwnerKind says what CharacterID / CharacterName actually name:
+	// "character" for a personal order, "corporation" for one held in the corp
+	// wallet, where the id and name are the corporation's. The two fields keep
+	// their names because every existing consumer reads them as "who owns this"
+	// -- the kind is what stops that reading being wrong for a corp row.
 	CharacterID   int64  `json:"character_id,omitempty"`
 	CharacterName string `json:"character_name,omitempty"`
+	OwnerKind     string `json:"owner_kind,omitempty"`
+
+	// The character whose standings and skills set this order's real broker fee
+	// and sales tax. For a personal order that is its owner; for a corporation
+	// order it is the character who issued it, which is routinely not the
+	// character the book was fetched through.
+	//
+	// The desk charges one rate pair per request (SalesTaxPercent /
+	// BrokerFeePercent above), so this names whose profile those figures should
+	// be read against rather than letting a corp row quietly borrow a default
+	// nobody chose.
+	FeeCharacterID   int64  `json:"fee_character_id,omitempty"`
+	FeeCharacterName string `json:"fee_character_name,omitempty"`
 
 	// Broker-fee-aware relist economics — matches
 	// AnalyzeUndercutsWithRelistFee at undercut.go. Populated inside
@@ -365,6 +384,14 @@ type OrderDeskResponse struct {
 	Summary  OrderDeskSummary  `json:"summary"`
 	Orders   []OrderDeskOrder  `json:"orders"`
 	Settings OrderDeskSettings `json:"settings"`
+
+	// What the desk could not see, in words. A book it failed to reach is
+	// already reported per row as BookAvailable=false, but a whole *owner* it
+	// could not ask -- a corporation wallet with no role-holding character, a
+	// missing scope -- has no row to hang off. Reporting nothing there would
+	// render as "no competition" and "no orders", which is the one wrong
+	// answer a trading tool must never give silently.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 func normalizeOrderDeskOptions(opt OrderDeskOptions) OrderDeskOptions {

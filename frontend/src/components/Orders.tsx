@@ -842,6 +842,18 @@ export function Orders({ isLoggedIn, focus, onFocusConsumed }: Props) {
         </div>
       )}
 
+      {/* What the desk could not see. A corp wallet it could not read is not an
+          error -- the rest of the desk is still worth showing -- but it must not
+          be silent either: an unread book renders as "no competition", which is
+          the one wrong answer a market tool must never give quietly. */}
+      {data?.warnings?.length ? (
+        <div className="rounded-sm border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-xs text-amber-300 space-y-1">
+          {data.warnings.map((w) => (
+            <div key={w}>{w}</div>
+          ))}
+        </div>
+      ) : null}
+
       {/* KPI strip */}
       {data && (
         <div className="grid grid-cols-2 sm:grid-cols-6 gap-3">
@@ -1425,16 +1437,35 @@ function OrderRow({
       <td className="px-2 py-1 text-eve-text">
         {row.character_id ? (
           <div className="flex items-center gap-1.5">
+            {/* A corporation id is not a character id, and asking the portrait
+                endpoint for one returns nothing. owner_kind is what tells the
+                two apart; rows from before corp orders existed have none and
+                are characters. */}
             <img
-              src={`https://images.evetech.net/characters/${row.character_id}/portrait?size=32`}
+              src={
+                row.owner_kind === "corporation"
+                  ? `https://images.evetech.net/corporations/${row.character_id}/logo?size=32`
+                  : `https://images.evetech.net/characters/${row.character_id}/portrait?size=32`
+              }
               alt=""
-              className="w-4 h-4 rounded-full"
+              className={
+                row.owner_kind === "corporation" ? "w-4 h-4 rounded-sm" : "w-4 h-4 rounded-full"
+              }
             />
             <span className="text-[11px]">{row.character_name || `#${row.character_id}`}</span>
           </div>
         ) : (
           <span className="text-eve-dim">—</span>
         )}
+        {/* Whose fees these are is not a detail: a corp order's broker fee and
+            sales tax follow the issuing character, who is usually not whoever
+            the book was fetched through. Named only when it differs from the
+            owner, so a personal row stays uncluttered. */}
+        {row.owner_kind === "corporation" && row.fee_character_name ? (
+          <div className="text-[10px] text-eve-dim">
+            {t("ordersFeesVia")} {row.fee_character_name}
+          </div>
+        ) : null}
       </td>
       {/* The market button lives here rather than in the suggested-price cell,
           where it used to be skipped entirely for any order that had no

@@ -119,6 +119,12 @@ type CorpMarketOrder struct {
 	Issued        string  `json:"issued"`
 	Duration      int     `json:"duration"` // days
 	RegionID      int32   `json:"region_id"`
+	// Range mirrors esi.MarketOrder.Range: how far a buy order reaches. Parsed
+	// because the order desk judges a buy order against the competitors that
+	// can actually reach its station, and a corp order with no range would be
+	// measured against the wrong book -- which matters most in exactly the thin
+	// markets corp wallets get used for.
+	Range string `json:"range,omitempty"`
 }
 
 // ============================================================

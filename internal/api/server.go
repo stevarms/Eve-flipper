@@ -81,6 +81,12 @@ type Server struct {
 	// Gank check route danger analyzer (initialized on SDE load).
 	ganker *gankcheck.Checker
 
+	// fwSystems caches the faction warfare map. One shared cache rather than one
+	// per request: the endpoint is unauthenticated and the same 160 systems answer
+	// every user, so a per-campaign fetch would re-read the whole warzone for each
+	// plan generated and each plan read.
+	fwSystems *esi.FWSystemsCache
+
 	userIDCookieSecretMu sync.Mutex
 	userIDCookieSecret   []byte
 
@@ -724,6 +730,7 @@ func NewServer(cfg *config.Config, esiClient *esi.Client, database *db.DB, ssoCo
 		appFlavor:          "classic",
 		updateHTTP:         &http.Client{Timeout: 45 * time.Second},
 		updateSkipByUser:   make(map[string]string),
+		fwSystems:          esi.NewFWSystemsCache(),
 	}
 	if s.wikiRAG != nil && stationAIWikiRAGAutoStartEnabled() {
 		s.wikiRAG.Start(defaultStationAIWikiRepo)
@@ -954,6 +961,21 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/auth/today", s.handleAuthToday)
 	mux.HandleFunc("POST /api/auth/today/refresh", s.handleAuthTodayRefresh)
 	mux.HandleFunc("POST /api/auth/today/state", s.handleAuthTodayState)
+	// FW Supply: campaigns, lots and the campaign-to-desk reconciliation.
+	// See internal/api/fw_campaign.go and internal/api/fw_orders.go.
+	mux.HandleFunc("GET /api/auth/fw/campaigns", s.handleFWCampaigns)
+	mux.HandleFunc("POST /api/auth/fw/campaigns", s.handleFWCampaignCreate)
+	mux.HandleFunc("GET /api/auth/fw/campaigns/{id}", s.handleFWCampaignGet)
+	mux.HandleFunc("PATCH /api/auth/fw/campaigns/{id}", s.handleFWCampaignUpdate)
+	mux.HandleFunc("DELETE /api/auth/fw/campaigns/{id}", s.handleFWCampaignDelete)
+	mux.HandleFunc("POST /api/auth/fw/campaigns/{id}/lots", s.handleFWLotSave)
+	mux.HandleFunc("POST /api/auth/fw/campaigns/{id}/lots/{lotID}/state", s.handleFWLotState)
+	mux.HandleFunc("DELETE /api/auth/fw/campaigns/{id}/lots/{lotID}", s.handleFWLotDelete)
+	mux.HandleFunc("POST /api/auth/fw/campaigns/{id}/lots/bulk", s.handleFWLotsBulk)
+	mux.HandleFunc("GET /api/auth/fw/campaigns/{id}/orders", s.handleFWCampaignOrders)
+	mux.HandleFunc("POST /api/auth/fw/campaigns/{id}/orders/apply", s.handleFWCampaignOrdersApply)
+	mux.HandleFunc("GET /api/auth/fw/campaigns/{id}/plan", s.handleFWCampaignPlan)
+	mux.HandleFunc("POST /api/auth/fw/campaigns/{id}/plan", s.handleFWCampaignPlanGenerate)
 	mux.HandleFunc("GET /api/auth/orders/history", s.handleAuthOrderHistory)
 	// Assets → Positions. See internal/api/positions.go.
 	mux.HandleFunc("GET /api/auth/positions", s.handleAuthPositions)
@@ -4205,26 +4227,26 @@ func (s *Server) handleScanStation(w http.ResponseWriter, r *http.Request) {
 			SellSalesTaxPercent:   req.SellSalesTaxPercent,
 			RegionAvgByType:       regionAvgByType,
 			RegionAvgSourceByType: regionAvgSourceByType,
-			MinDailyVolume:       req.MinDailyVolume,
-			MinItemProfit:        req.MinItemProfit,
-			MinDailyProfit:       req.MinDailyProfit,
-			MinExpectedPnL:       req.MinExpectedPnL,
-			MinDemandPerDay:      req.MinDemandPerDay,
-			MinS2BPerDay:         req.MinS2BPerDay,
-			MinBfSPerDay:         req.MinBfSPerDay,
-			AvgPricePeriod:       req.AvgPricePeriod,
-			MinPeriodROI:         req.MinPeriodROI,
-			BvSRatioMin:          req.BvSRatioMin,
-			BvSRatioMax:          req.BvSRatioMax,
-			MaxPVI:               req.MaxPVI,
-			MaxSDS:               req.MaxSDS,
-			LimitBuyToPriceLow:   req.LimitBuyToPriceLow,
-			FlagExtremePrices:    req.FlagExtremePrices,
-			AccessToken:          accessToken,
-			IncludeStructures:    req.IncludeStructures,
-			ExcludeCosmetics:     req.ExcludeCosmetics,
-			IgnoredCategories:    ignoredCategorySet(req.IgnoredCategoryIDs),
-			Ctx:                  ctx,
+			MinDailyVolume:        req.MinDailyVolume,
+			MinItemProfit:         req.MinItemProfit,
+			MinDailyProfit:        req.MinDailyProfit,
+			MinExpectedPnL:        req.MinExpectedPnL,
+			MinDemandPerDay:       req.MinDemandPerDay,
+			MinS2BPerDay:          req.MinS2BPerDay,
+			MinBfSPerDay:          req.MinBfSPerDay,
+			AvgPricePeriod:        req.AvgPricePeriod,
+			MinPeriodROI:          req.MinPeriodROI,
+			BvSRatioMin:           req.BvSRatioMin,
+			BvSRatioMax:           req.BvSRatioMax,
+			MaxPVI:                req.MaxPVI,
+			MaxSDS:                req.MaxSDS,
+			LimitBuyToPriceLow:    req.LimitBuyToPriceLow,
+			FlagExtremePrices:     req.FlagExtremePrices,
+			AccessToken:           accessToken,
+			IncludeStructures:     req.IncludeStructures,
+			ExcludeCosmetics:      req.ExcludeCosmetics,
+			IgnoredCategories:     ignoredCategorySet(req.IgnoredCategoryIDs),
+			Ctx:                   ctx,
 		}
 		// In all-stations mode keep StationIDs nil so the engine evaluates full region scope.
 		if allStationsMode {
@@ -12372,23 +12394,23 @@ func clampFloat64(value, minValue, maxValue float64) float64 {
 
 func (s *Server) handleIndustryAnalyze(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		TypeID              int32   `json:"type_id"`
-		Runs                int32   `json:"runs"`
-		ActivityMode        string  `json:"activity_mode"`
-		MaterialEfficiency  int32   `json:"me"`
-		TimeEfficiency      int32   `json:"te"`
-		SystemName          string  `json:"system_name"`
-		StationID           int64   `json:"station_id"` // Optional: specific station/structure for price lookup
+		TypeID             int32  `json:"type_id"`
+		Runs               int32  `json:"runs"`
+		ActivityMode       string `json:"activity_mode"`
+		MaterialEfficiency int32  `json:"me"`
+		TimeEfficiency     int32  `json:"te"`
+		SystemName         string `json:"system_name"`
+		StationID          int64  `json:"station_id"` // Optional: specific station/structure for price lookup
 		// Optional pricing-system decoupling: when set, product/material market
 		// prices are read from PricingSystemName's region (falling back to
 		// PricingStationID) instead of SystemName's. Lets users build in one
 		// system and quote prices from another (e.g. build Botane, sell Jita).
 		PricingSystemName string  `json:"pricing_system_name"`
 		PricingStationID  int64   `json:"pricing_station_id"`
-		FacilityTax         float64 `json:"facility_tax"`
-		StructureBonus      float64 `json:"structure_bonus"`
-		BrokerFee           float64 `json:"broker_fee"`
-		SalesTaxPercent     float64 `json:"sales_tax_percent"`
+		FacilityTax       float64 `json:"facility_tax"`
+		StructureBonus    float64 `json:"structure_bonus"`
+		BrokerFee         float64 `json:"broker_fee"`
+		SalesTaxPercent   float64 `json:"sales_tax_percent"`
 		// Split-fee overlay — matches backtest / station_trading. Audit P1.3.
 		SplitTradeFees       bool    `json:"split_trade_fees"`
 		BuyBrokerFeePercent  float64 `json:"buy_broker_fee_percent"`
@@ -12415,12 +12437,12 @@ func (s *Server) handleIndustryAnalyze(w http.ResponseWriter, r *http.Request) {
 		InventionChance     float64 `json:"invention_chance"`
 		InventionChanceMult float64 `json:"invention_chance_mult"`
 		// Character invention skill levels (0-5). Audit P1.2.
-		InventionEncryptionLevel int32 `json:"invention_encryption_level"`
-		InventionDatacoreLevel1  int32 `json:"invention_datacore_level_1"`
-		InventionDatacoreLevel2  int32 `json:"invention_datacore_level_2"`
-		DecryptorCost       float64 `json:"decryptor_cost"`
-		DecryptorTypeID     int32   `json:"decryptor_type_id"`
-		InventionOutputRuns int32   `json:"invention_output_runs"`
+		InventionEncryptionLevel  int32   `json:"invention_encryption_level"`
+		InventionDatacoreLevel1   int32   `json:"invention_datacore_level_1"`
+		InventionDatacoreLevel2   int32   `json:"invention_datacore_level_2"`
+		DecryptorCost             float64 `json:"decryptor_cost"`
+		DecryptorTypeID           int32   `json:"decryptor_type_id"`
+		InventionOutputRuns       int32   `json:"invention_output_runs"`
 		BuildMode                 string  `json:"build_mode"`
 		SkipReactions             bool    `json:"skip_reactions"`
 		StructureRigTypeIDs       []int32 `json:"structure_rig_type_ids"`
@@ -12562,31 +12584,31 @@ func (s *Server) handleIndustryAnalyze(w http.ResponseWriter, r *http.Request) {
 	}
 
 	params := engine.IndustryParams{
-		TypeID:              req.TypeID,
-		Runs:                req.Runs,
-		ActivityMode:        req.ActivityMode,
-		MaterialEfficiency:  req.MaterialEfficiency,
-		TimeEfficiency:      req.TimeEfficiency,
-		SystemID:            systemID,
-		PricingSystemID:     pricingSystemID,
+		TypeID:             req.TypeID,
+		Runs:               req.Runs,
+		ActivityMode:       req.ActivityMode,
+		MaterialEfficiency: req.MaterialEfficiency,
+		TimeEfficiency:     req.TimeEfficiency,
+		SystemID:           systemID,
+		PricingSystemID:    pricingSystemID,
 		// StationID drives per-station price lookup. When the user has
 		// decoupled pricing via PricingSystemName/PricingStationID, prefer
 		// the pricing station over the build station.
-		StationID:           func() int64 {
+		StationID: func() int64 {
 			if req.PricingSystemName != "" && req.PricingStationID > 0 {
 				return req.PricingStationID
 			}
 			return req.StationID
 		}(),
-		FacilityTax:         req.FacilityTax,
-		StructureBonus:      req.StructureBonus,
-		BrokerFee:           req.BrokerFee,
-		SalesTaxPercent:     req.SalesTaxPercent,
-		SplitTradeFees:       req.SplitTradeFees,
-		BuyBrokerFeePercent:  req.BuyBrokerFeePercent,
-		SellBrokerFeePercent: req.SellBrokerFeePercent,
-		BuySalesTaxPercent:   req.BuySalesTaxPercent,
-		SellSalesTaxPercent:  req.SellSalesTaxPercent,
+		FacilityTax:                      req.FacilityTax,
+		StructureBonus:                   req.StructureBonus,
+		BrokerFee:                        req.BrokerFee,
+		SalesTaxPercent:                  req.SalesTaxPercent,
+		SplitTradeFees:                   req.SplitTradeFees,
+		BuyBrokerFeePercent:              req.BuyBrokerFeePercent,
+		SellBrokerFeePercent:             req.SellBrokerFeePercent,
+		BuySalesTaxPercent:               req.BuySalesTaxPercent,
+		SellSalesTaxPercent:              req.SellSalesTaxPercent,
 		IncludeReprocessing:              req.IncludeReprocessing,
 		ReprocessingYield:                req.ReprocessingYield,
 		ReprocessingBaseStationYield:     req.ReprocessingBaseStationYield,
@@ -12596,21 +12618,21 @@ func (s *Server) handleIndustryAnalyze(w http.ResponseWriter, r *http.Request) {
 		ReprocessingImplantYieldBonus:    req.ReprocessingImplantYieldBonus,
 		ReprocessingStationTaxPercent:    req.ReprocessingStationTaxPercent,
 		SCCSurchargePercent:              req.SCCSurchargePercent,
-		MaxDepth:            req.MaxDepth,
-		OwnBlueprint:        req.OwnBlueprint == nil || *req.OwnBlueprint,
-		BlueprintCost:       req.BlueprintCost,
-		BlueprintIsBPO:      req.BlueprintIsBPO,
-		InventionChance:          req.InventionChance,
-		InventionChanceMult:      req.InventionChanceMult,
-		InventionEncryptionLevel: req.InventionEncryptionLevel,
-		InventionDatacoreLevel1:  req.InventionDatacoreLevel1,
-		InventionDatacoreLevel2:  req.InventionDatacoreLevel2,
-		DecryptorCost:            req.DecryptorCost,
-		DecryptorTypeID:          req.DecryptorTypeID,
-		InventionOutputRuns:      req.InventionOutputRuns,
-		BuildMode:           req.BuildMode,
-		SkipReactions:       req.SkipReactions,
-		StructureJobCostReduction: req.StructureJobCostReduction,
+		MaxDepth:                         req.MaxDepth,
+		OwnBlueprint:                     req.OwnBlueprint == nil || *req.OwnBlueprint,
+		BlueprintCost:                    req.BlueprintCost,
+		BlueprintIsBPO:                   req.BlueprintIsBPO,
+		InventionChance:                  req.InventionChance,
+		InventionChanceMult:              req.InventionChanceMult,
+		InventionEncryptionLevel:         req.InventionEncryptionLevel,
+		InventionDatacoreLevel1:          req.InventionDatacoreLevel1,
+		InventionDatacoreLevel2:          req.InventionDatacoreLevel2,
+		DecryptorCost:                    req.DecryptorCost,
+		DecryptorTypeID:                  req.DecryptorTypeID,
+		InventionOutputRuns:              req.InventionOutputRuns,
+		BuildMode:                        req.BuildMode,
+		SkipReactions:                    req.SkipReactions,
+		StructureJobCostReduction:        req.StructureJobCostReduction,
 		StructureRigs: engine.StructureRigConfig{
 			RigTypeIDs:      req.StructureRigTypeIDs,
 			StructureTypeID: req.StructureTypeID,
@@ -13021,8 +13043,8 @@ func (s *Server) handleDemandOpportunities(w http.ResponseWriter, r *http.Reques
 
 	// Try to load fitting profile from cache (TTL 2 hours)
 	var fittingProfile *zkillboard.RegionDemandProfile
-	if s.db.IsFittingProfileFresh(regionID, 2*time.Hour) {
-		items, err := s.db.GetFittingDemandProfile(regionID)
+	if s.db.IsFittingProfileFresh(db.RegionDemandScope(regionID), 2*time.Hour) {
+		items, err := s.db.GetFittingDemandProfile(db.RegionDemandScope(regionID))
 		if err == nil && len(items) > 0 {
 			fittingProfile = &zkillboard.RegionDemandProfile{
 				RegionID: regionID,
@@ -13154,13 +13176,13 @@ func (s *Server) handleDemandFittings(w http.ResponseWriter, r *http.Request) {
 	}
 	regionID := int32(regionIDInt)
 
-	items, err := s.db.GetFittingDemandProfile(regionID)
+	items, err := s.db.GetFittingDemandProfile(db.RegionDemandScope(regionID))
 	if err != nil {
 		writeError(w, 500, fmt.Sprintf("failed to get fitting data: %v", err))
 		return
 	}
 
-	fresh := s.db.IsFittingProfileFresh(regionID, 2*time.Hour)
+	fresh := s.db.IsFittingProfileFresh(db.RegionDemandScope(regionID), 2*time.Hour)
 
 	writeJSON(w, map[string]interface{}{
 		"region_id":  regionID,
@@ -13260,7 +13282,6 @@ func (s *Server) handleDemandRefresh(w http.ResponseWriter, r *http.Request) {
 			var dbItems []db.FittingDemandItem
 			for _, item := range profile.Items {
 				dbItems = append(dbItems, db.FittingDemandItem{
-					RegionID:       z.RegionID,
 					TypeID:         item.TypeID,
 					TypeName:       item.TypeName,
 					Category:       item.Category,
@@ -13272,7 +13293,7 @@ func (s *Server) handleDemandRefresh(w http.ResponseWriter, r *http.Request) {
 					TotalKills24h:  profile.TotalKills24h,
 				})
 			}
-			if err := s.db.SaveFittingDemandProfile(z.RegionID, dbItems); err != nil {
+			if err := s.db.SaveFittingDemandProfile(db.RegionDemandScope(z.RegionID), dbItems); err != nil {
 				log.Printf("[Demand] Failed to save fitting profile for region %d: %v", z.RegionID, err)
 			}
 		}

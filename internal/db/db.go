@@ -2104,6 +2104,205 @@ func (d *DB) migrate() error {
 		logger.Info("DB", "Applied migration v51 (holding rules: bid ceiling + patient bid)")
 	}
 
+	if version < 52 {
+		// FW Supply: campaigns, the lots that record what was actually spent,
+		// and a regenerable plan.
+		//
+		// The same split as today_plan, for the same reason. fw_plan_cache is
+		// disposable -- it can be rebuilt from zkill and a market fetch any
+		// time. fw_campaign_lots cannot: it is the only source of the budget,
+		// so a lost row is a lost record of ISK that left the wallet.
+		//
+		// Lots carry their own owner triple because the buyer is routinely not
+		// the holder -- the Jita alt buys, an FW character or the corporation
+		// holds and sells -- and their own dest_station_id, defaulted from the
+		// campaign. That dest column is the one concession to the two-tier
+		// idea: none of that logic is built, but grouping by dest from the
+		// first row is what keeps adding it additive instead of a migration of
+		// live lots.
+		//
+		// user_id is denormalized onto lots and the plan cache so every read
+		// can be scoped by it directly. A campaign_id belonging to another user
+		// then returns no rows, rather than relying on a join nobody forgets to
+		// write.
+		if _, err := d.sql.Exec(`
+			CREATE TABLE IF NOT EXISTS fw_campaigns (
+				campaign_id            INTEGER PRIMARY KEY AUTOINCREMENT,
+				user_id                TEXT    NOT NULL,
+				name                   TEXT    NOT NULL DEFAULT '',
+				militia_faction_id     INTEGER NOT NULL DEFAULT 0,
+				source_station_id      INTEGER NOT NULL DEFAULT 60003760,
+				dest_station_id        INTEGER NOT NULL DEFAULT 0,
+				budget_isk             REAL    NOT NULL DEFAULT 0,
+				target_cover_days      REAL    NOT NULL DEFAULT 7,
+				covered_multiple       REAL    NOT NULL DEFAULT 2,
+				min_margin_pct         REAL    NOT NULL DEFAULT 10,
+				freight_isk_per_m3     REAL    NOT NULL DEFAULT 0,
+				step_over_days_cover   REAL    NOT NULL DEFAULT 0.5,
+				category_ceilings_json TEXT    NOT NULL DEFAULT '',
+				ship_profile           TEXT    NOT NULL DEFAULT '',
+				max_trips              INTEGER NOT NULL DEFAULT 0,
+				max_jumps_from_front   INTEGER NOT NULL DEFAULT 2,
+				pinned_systems_json    TEXT    NOT NULL DEFAULT '',
+				excluded_systems_json  TEXT    NOT NULL DEFAULT '',
+				buyer_character_id     INTEGER NOT NULL DEFAULT 0,
+				seller_owner_kind      TEXT    NOT NULL DEFAULT '',
+				seller_owner_id        INTEGER NOT NULL DEFAULT 0,
+				created_at             TEXT    NOT NULL DEFAULT '',
+				updated_at             TEXT    NOT NULL DEFAULT ''
+			);
+			CREATE INDEX IF NOT EXISTS idx_fw_campaigns_user ON fw_campaigns(user_id);
+
+			CREATE TABLE IF NOT EXISTS fw_campaign_lots (
+				lot_id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+				campaign_id              INTEGER NOT NULL,
+				user_id                  TEXT    NOT NULL,
+				type_id                  INTEGER NOT NULL,
+				type_name                TEXT    NOT NULL DEFAULT '',
+				state                    TEXT    NOT NULL DEFAULT 'planned',
+				qty                      INTEGER NOT NULL DEFAULT 0,
+				qty_remaining            INTEGER NOT NULL DEFAULT 0,
+				unit_cost_isk            REAL    NOT NULL DEFAULT 0,
+				listed_price             REAL    NOT NULL DEFAULT 0,
+				dest_station_id          INTEGER NOT NULL DEFAULT 0,
+				acquired_by_character_id INTEGER NOT NULL DEFAULT 0,
+				holder_owner_kind        TEXT    NOT NULL DEFAULT '',
+				holder_owner_id          INTEGER NOT NULL DEFAULT 0,
+				holder_name              TEXT    NOT NULL DEFAULT '',
+				created_at               TEXT    NOT NULL DEFAULT '',
+				updated_at               TEXT    NOT NULL DEFAULT ''
+			);
+			CREATE INDEX IF NOT EXISTS idx_fw_lots_campaign ON fw_campaign_lots(campaign_id, state);
+			CREATE INDEX IF NOT EXISTS idx_fw_lots_user ON fw_campaign_lots(user_id);
+			CREATE INDEX IF NOT EXISTS idx_fw_lots_type ON fw_campaign_lots(campaign_id, type_id);
+
+			CREATE TABLE IF NOT EXISTS fw_plan_cache (
+				campaign_id  INTEGER PRIMARY KEY,
+				user_id      TEXT NOT NULL,
+				generated_at TEXT NOT NULL,
+				payload_json TEXT NOT NULL
+			);
+
+			INSERT OR IGNORE INTO schema_version (version) VALUES (52);
+		`); err != nil {
+			return fmt.Errorf("migration v52 fw campaigns: %w", err)
+		}
+
+		// demand_fitting_cache gains a scope key. Keyed (region_id, type_id) it
+		// cannot express "Caldari militia, inside the warzone, over 7 days" --
+		// two of those three facts have nowhere to live, and a militia profile
+		// stored under a region ID would collide with the region's own.
+		//
+		// SQLite needs a table rebuild to change a primary key. This one is a
+		// cache with no durable content, so the rebuild drops and recreates
+		// without copying a single row: one refresh repopulates it. Copying
+		// would mean inventing a scope for rows that never had one.
+		if _, err := d.sql.Exec(`
+			DROP TABLE IF EXISTS demand_fitting_cache;
+			CREATE TABLE demand_fitting_cache (
+				scope_kind       TEXT    NOT NULL,
+				scope_id         INTEGER NOT NULL,
+				window_seconds   INTEGER NOT NULL,
+				type_id          INTEGER NOT NULL,
+				type_name        TEXT,
+				category         TEXT    NOT NULL,
+				total_destroyed  INTEGER NOT NULL DEFAULT 0,
+				killmail_count   INTEGER NOT NULL DEFAULT 0,
+				avg_per_killmail REAL    NOT NULL DEFAULT 0,
+				est_daily_demand REAL    NOT NULL DEFAULT 0,
+				sampled_kills    INTEGER NOT NULL DEFAULT 0,
+				total_kills_24h  INTEGER NOT NULL DEFAULT 0,
+				updated_at       TEXT    NOT NULL,
+				PRIMARY KEY (scope_kind, scope_id, window_seconds, type_id)
+			);
+			CREATE INDEX IF NOT EXISTS idx_demand_fitting_scope
+				ON demand_fitting_cache(scope_kind, scope_id, window_seconds);
+			CREATE INDEX IF NOT EXISTS idx_demand_fitting_demand
+				ON demand_fitting_cache(est_daily_demand DESC);
+		`); err != nil {
+			return fmt.Errorf("migration v52 rekey demand_fitting_cache: %w", err)
+		}
+		logger.Info("DB", "Applied migration v52 (FW campaigns + lots + plan cache; scope-keyed fitting demand cache)")
+	}
+
+	if version < 53 {
+		// The second demand window.
+		//
+		// Seconds rather than a label, so moving 30 days to 45 is a settings
+		// change and not a migration. Zero is off, which is both the default and
+		// what every existing campaign means: seven days was the only window
+		// there was, and a campaign that predates the choice has not made one.
+		if err := d.ensureTableColumn("fw_campaigns", "long_demand_window_seconds", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return fmt.Errorf("migration v53 add fw_campaigns.long_demand_window_seconds: %w", err)
+		}
+		// Which of the two rates drives cover and quantities. The short window is
+		// fixed at seven days -- zkillboard's pastSeconds ceiling, and what "this
+		// week" means -- so 'short' is the answer that costs nothing to default
+		// to and is what every campaign written before this column did.
+		if err := d.ensureTableColumn("fw_campaigns", "size_against", "TEXT NOT NULL DEFAULT 'short'"); err != nil {
+			return fmt.Errorf("migration v53 add fw_campaigns.size_against: %w", err)
+		}
+		// What a cached demand profile's fetch actually managed.
+		//
+		// demand_fitting_cache stores per-type rates and nothing else, which was
+		// enough while every profile covered the window it asked for. A long
+		// window does not: each calendar month is paged separately against its
+		// own 100-page limit, so a quarter can come back with a hole in the
+		// middle, and the rates are scaled to what was covered rather than to
+		// what was requested.
+		//
+		// Without this, serving from cache would serve those rates with the
+		// warnings stripped off -- numbers that look complete because the
+		// sentence saying they are not was never stored. A fetch that came back
+		// thin is a warning, never an absence, and that has to survive the cache
+		// or the cache is where the warning goes to die.
+		//
+		// One row per scope rather than columns on the per-type table: these are
+		// facts about the sample, not about a type, and repeating a warning list
+		// across two thousand rows would store it two thousand times.
+		if _, err := d.sql.Exec(`
+			CREATE TABLE IF NOT EXISTS demand_scope_coverage (
+				scope_kind       TEXT    NOT NULL,
+				scope_id         INTEGER NOT NULL,
+				window_seconds   INTEGER NOT NULL,
+				fetched_kills    INTEGER NOT NULL DEFAULT 0,
+				in_warzone_kills INTEGER NOT NULL DEFAULT 0,
+				covered_seconds  REAL    NOT NULL DEFAULT 0,
+				truncated        INTEGER NOT NULL DEFAULT 0,
+				warnings_json    TEXT    NOT NULL DEFAULT '',
+				months_json      TEXT    NOT NULL DEFAULT '',
+				updated_at       TEXT    NOT NULL,
+				PRIMARY KEY (scope_kind, scope_id, window_seconds)
+			);
+		`); err != nil {
+			return fmt.Errorf("migration v53 demand scope coverage: %w", err)
+		}
+		if _, err := d.sql.Exec(`INSERT OR IGNORE INTO schema_version (version) VALUES (53);`); err != nil {
+			return fmt.Errorf("migration v53: %w", err)
+		}
+		logger.Info("DB", "Applied migration v53 (FW campaigns: long demand window + sizing window; demand scope coverage)")
+	}
+
+	if version < 54 {
+		// Per-item overrides: your judgment beating the algorithm's, per type.
+		// An included type always gets a price and a quantity when there is a
+		// real cover gap, past the automatic caution that would otherwise drop
+		// it; an excluded type never appears at all. Empty string, not "[]" or
+		// "null", so a column read back by anything that does not parse JSON
+		// still reads as empty -- the same convention pinned_systems_json and
+		// excluded_systems_json already use.
+		if err := d.ensureTableColumn("fw_campaigns", "included_types_json", "TEXT NOT NULL DEFAULT ''"); err != nil {
+			return fmt.Errorf("migration v54 add fw_campaigns.included_types_json: %w", err)
+		}
+		if err := d.ensureTableColumn("fw_campaigns", "excluded_types_json", "TEXT NOT NULL DEFAULT ''"); err != nil {
+			return fmt.Errorf("migration v54 add fw_campaigns.excluded_types_json: %w", err)
+		}
+		if _, err := d.sql.Exec(`INSERT OR IGNORE INTO schema_version (version) VALUES (54);`); err != nil {
+			return fmt.Errorf("migration v54: %w", err)
+		}
+		logger.Info("DB", "Applied migration v54 (FW campaigns: per-item ship-always / never-ship overrides)")
+	}
+
 	return nil
 }
 

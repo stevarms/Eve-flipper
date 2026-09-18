@@ -49,6 +49,7 @@ import type {
   OrderBookCoverageResult,
   OrderBookRecordingSettings,
   OrderBookStats,
+  OrderDeskOrder,
   OrderDeskResponse,
   DispositionResponse,
   PaperTrade,
@@ -3877,4 +3878,563 @@ export async function runAccumulateScan(
   }
   if (!result) throw new Error("The sweep ended without a result");
   return result;
+}
+
+// --- FW Supply (faction warfare campaigns) ---
+//
+// The campaign is the record and the plan is a cache, which is why there are
+// two reads: GET .../plan serves whatever was last generated and says how old
+// it is, while POST .../plan rebuilds it from a week of killmails and a sell
+// book per region the staging ring touches. The tab must never call the POST
+// on mount.
+
+/** One lot of stock: bought somewhere, held by someone, on its way to a
+ *  destination. The only source of the budget, which is why every field that
+ *  moves ISK lives here rather than on the plan. */
+export interface FWLot {
+  lot_id: number;
+  type_id: number;
+  type_name: string;
+  /** planned | bought | in_transit | at_dest | listed | sold | pulled */
+  state: string;
+  qty: number;
+  qty_remaining: number;
+  unit_cost_isk: number;
+  listed_price: number;
+  dest_station_id: number;
+  acquired_by_character_id: number;
+  holder_owner_kind: string;
+  holder_owner_id: number;
+  holder_name: string;
+}
+
+export interface FWOwnerCommitment {
+  owner_kind: string;
+  owner_id: number;
+  owner_name: string;
+  committed_isk: number;
+  units: number;
+  lots: number;
+}
+
+export interface FWStateCommitment {
+  state: string;
+  committed_isk: number;
+  units: number;
+  lots: number;
+}
+
+export interface FWDestCommitment {
+  dest_station_id: number;
+  committed_isk: number;
+  units: number;
+  lots: number;
+}
+
+/** Capital at cost: everything spent on this campaign that has not come back.
+ *  listed_value_isk is shown but does not gate — it is what the stock is asking,
+ *  not what it cost. */
+export interface FWBudget {
+  budget_isk: number;
+  committed_isk: number;
+  headroom_isk: number;
+  listed_value_isk: number;
+  lots: number;
+  committed_lots: number;
+  by_state: FWStateCommitment[];
+  by_owner: FWOwnerCommitment[];
+  by_dest: FWDestCommitment[];
+}
+
+/** One type a campaign has overridden, named the way the row that produced it
+ *  did — a settings chip has nowhere else to get the name from once a type
+ *  stops appearing as a row. */
+export interface FWTypeOverride {
+  type_id: number;
+  type_name: string;
+}
+
+export interface FWCampaign {
+  campaign_id: number;
+  name: string;
+  militia_faction_id: number;
+  source_station_id: number;
+  dest_station_id: number;
+  budget_isk: number;
+  target_cover_days: number;
+  covered_multiple: number;
+  min_margin_pct: number;
+  freight_isk_per_m3: number;
+  step_over_days_cover: number;
+  category_ceilings: Record<string, number>;
+  ship_profile: string;
+  max_trips: number;
+  /** The second demand window in seconds: 0 off, 2592000 (30d) or 7776000
+   *  (90d). Seconds rather than a label, so another value is a settings change
+   *  and not a migration. */
+  long_demand_window_seconds: number;
+  /** "short" | "long" — which rate drives cover and quantities. The other is
+   *  still measured and still shown. */
+  size_against: string;
+  max_jumps_from_front: number;
+  pinned_systems: number[];
+  excluded_systems: number[];
+  /** Your judgment overriding the model's, per item. An included type always
+   *  gets a price and a quantity when there is a real cover gap, past the
+   *  automatic caution that would otherwise drop it; an excluded type never
+   *  appears at all. Named, not bare IDs — an excluded type may never appear
+   *  as a row again to look its name up from. */
+  included_types: FWTypeOverride[];
+  excluded_types: FWTypeOverride[];
+  buyer_character_id: number;
+  seller_owner_kind: string;
+  seller_owner_id: number;
+  created_at: string;
+  updated_at: string;
+
+  source_station_name?: string;
+  dest_station_name?: string;
+  budget: FWBudget;
+  lots: FWLot[];
+  /** Empty means never planned, which is the signal to generate one. */
+  plan_generated_at?: string;
+}
+
+export type FWCampaignPatch = Partial<
+  Pick<
+    FWCampaign,
+    | "name"
+    | "militia_faction_id"
+    | "source_station_id"
+    | "dest_station_id"
+    | "budget_isk"
+    | "target_cover_days"
+    | "covered_multiple"
+    | "min_margin_pct"
+    | "freight_isk_per_m3"
+    | "step_over_days_cover"
+    | "category_ceilings"
+    | "ship_profile"
+    | "max_trips"
+    | "long_demand_window_seconds"
+    | "size_against"
+    | "max_jumps_from_front"
+    | "pinned_systems"
+    | "excluded_systems"
+    | "included_types"
+    | "excluded_types"
+    | "buyer_character_id"
+    | "seller_owner_kind"
+    | "seller_owner_id"
+  >
+>;
+
+/** One station in the staging ring. The tradeoff is shown rather than resolved:
+ *  a deep highsec station several jumps out and a thin lowsec one on the
+ *  frontline are both legitimate answers, and the columns are what make the
+ *  choice legible. */
+export interface FWStagingCandidate {
+  station_id: number;
+  station_name: string;
+  system_id: number;
+  system_name: string;
+  region_id: number;
+  security: number;
+  is_bulwark: boolean;
+  pinned: boolean;
+  in_ring: boolean;
+  jumps_to_front: number;
+  jumps_from_source: number;
+  lowsec_jumps_from_source: number;
+  highsec_route: boolean;
+  player_orders: number;
+  player_types: number;
+  fw_item_overlap: number;
+  score: number;
+}
+
+export interface FWMarkupBand {
+  max_jita_price: number;
+  samples: number;
+  median: number;
+  p75: number;
+}
+
+export interface FWMarkupLadder {
+  station_id: number;
+  bands: FWMarkupBand[];
+}
+
+/** One item, from what the warzone destroys to what to charge for it.
+ *  price_rule and price_reason say which rule chose the price, because a bare
+ *  number cannot be checked against the market window. */
+export interface FWSupplyRow {
+  type_id: number;
+  type_name: string;
+  category: string;
+  volume_m3: number;
+  daily_destroyed: number;
+  kills_with_item: number;
+  /** The same two figures over the campaign's long window, both zero when none
+   *  is set. Shown beside the short pair rather than instead of it: a rate over
+   *  a week against the same rate over a quarter is what separates a spike from
+   *  a staple, and one number cannot. */
+  daily_destroyed_long: number;
+  kills_with_item_long: number;
+  /** "short" | "long" — which of the two rates set the cover, the verdict and
+   *  the quantity on this row. Usually the campaign's size_against; it differs
+   *  exactly when the chosen window measured nothing here and the other did. */
+  sized_by: string;
+  shippable: boolean;
+  /** Your judgment overriding the model's for this row: thin evidence and a
+   *  competitor's depth stopped being reasons to withhold it. It does not mean
+   *  a rate was invented — a type with nothing measured in either window still
+   *  sizes to zero, included or not. */
+  included: boolean;
+  stocked_qty: number;
+  /** null when nothing measurable is being destroyed: cover is unbounded,
+   *  which JSON cannot say with a number. Renders as the infinity sign. */
+  days_of_cover: number | null;
+  local_best_sell: number;
+  local_order_count: number;
+  jita_best_sell: number;
+  landed_cost: number;
+  floor_price: number;
+  reference_price: number;
+  reference_markup: number;
+  reference_source: string;
+  suggested_price: number;
+  suggested_markup: number;
+  price_rule: string;
+  price_reason: string;
+  competing_units_below: number;
+  competing_orders_below: number;
+  /** gap | thin | covered | unpriceable */
+  verdict: string;
+  verdict_reason: string;
+  suggested_qty: number;
+  /** What the cover model alone asked for, before the minimum-lot floor. Equal
+   *  to suggested_qty unless the floor raised the lot. */
+  cover_sized_qty: number;
+  /** Why suggested_qty is not cover_sized_qty — empty when the floor did not
+   *  bite. A raised lot is a bet that destruction understates demand, so the
+   *  sentence names both quantities and the cover the larger one implies. */
+  qty_reason: string;
+  cargo_m3: number;
+  cost_isk: number;
+  /** suggested_price less broker fee and sales tax — what a unit brings in. */
+  net_unit_isk: number;
+  /** net_unit_isk less landed_cost: freight in, fees out. */
+  unit_profit_isk: number;
+  /** unit_profit_isk against landed_cost, the capital a unit ties up. Same
+   *  basis as an Order Desk sell row, and the basis min_margin_pct is defined
+   *  in — a row priced at its floor reports exactly that minimum. */
+  margin_pct: number;
+  /** unit_profit_isk across suggested_qty. Zero for a row with nothing to
+   *  ship, which is not the same as a row that earns nothing. */
+  profit_isk: number;
+}
+
+/** A shipment line is a supply row trimmed to budget and cargo — the Go type
+ *  embeds FWSupplyRow, so every row field is present here too. */
+export interface FWShipmentLine extends FWSupplyRow {
+  planned_qty: number;
+  ship_qty: number;
+  ship_cargo_m3: number;
+  ship_cost_isk: number;
+  /** Earned on ship_qty, not planned_qty: a trimmed line earns less. */
+  ship_profit_isk: number;
+  trim_reason: string;
+}
+
+export interface FWShipment {
+  lines: FWShipmentLine[];
+  total_cost_isk: number;
+  total_cargo_m3: number;
+  /** Stock plus the freight to move it — what margin_pct is taken against.
+   *  The budget still gates on total_cost_isk: freight buys no stock. */
+  total_landed_isk: number;
+  total_profit_isk: number;
+  margin_pct: number;
+  trips: number;
+  headroom_isk: number;
+  remaining_isk: number;
+  fully_funded: number;
+  trimmed: number;
+  dropped: number;
+  notes: string[];
+}
+
+export interface FWPlanDestination {
+  station_id: number;
+  station_name: string;
+  system_id: number;
+  system_name: string;
+  region_id: number;
+  security: number;
+  is_bulwark: boolean;
+  jumps_to_front: number;
+}
+
+export interface FWPlanDemand {
+  window_seconds: number;
+  fetched_kills: number;
+  in_warzone_kills: number;
+  truncated: boolean;
+  destroyed_types: number;
+  sampled_at: string;
+
+  /** The long window, all zero when none is configured. long_window_seconds is
+   *  what was asked for and long_covered_seconds what the walk actually
+   *  spanned; they differ when a calendar month hit zkillboard's page limit,
+   *  and the gap between them is what says how much to trust the column. */
+  long_window_seconds: number;
+  long_covered_seconds: number;
+  long_fetched_kills: number;
+  long_in_warzone_kills: number;
+  long_destroyed_types: number;
+  long_truncated: boolean;
+  long_sampled_at?: string;
+  /** "short" | "long" — the campaign's setting as the plan actually applied it,
+   *  which is not the same thing: asking to size against a window that failed
+   *  to fetch sizes against the other one. */
+  size_against: string;
+}
+
+/** The sell-side rate pair floor prices were actually computed with, and
+ *  where it came from — the same profile every other realized-profit surface
+ *  in the app reports. */
+export interface FWFeeProfile {
+  sales_tax_percent: number;
+  broker_fee_percent: number;
+  /** "config" | "skills" | "default" */
+  source: string;
+  accounting_level?: number;
+  broker_relations_level?: number;
+}
+
+export interface FWPlanRoute {
+  jumps: number;
+  lowsec_jumps: number;
+  highsec_route: boolean;
+  /** False means the check could not run. An unchecked route and a clean one
+   *  must not render the same. */
+  checked: boolean;
+  verdict?: string;
+  hot_systems?: string[];
+}
+
+export interface FWOccupancy {
+  system_id: number;
+  system_name: string;
+  occupier_faction_id: number;
+  contested: string;
+}
+
+export interface FWPlan {
+  campaign_id: number;
+  generated_at: string;
+  militia_faction_id: number;
+  militia_name: string;
+  ring: FWStagingCandidate[];
+  ring_radius: number;
+  frontline_systems: number;
+  /** Absent on a ring-only plan, which is what a campaign with no destination
+   *  gets. Everything below it is empty in that case. */
+  destination?: FWPlanDestination;
+  demand: FWPlanDemand;
+  ladder: FWMarkupLadder;
+  rows: FWSupplyRow[];
+  shipment: FWShipment;
+  budget: FWBudget;
+  /** Absent on a ring-only plan, for the same reason destination is. */
+  fees?: FWFeeProfile;
+  route?: FWPlanRoute;
+  occupancy?: FWOccupancy[];
+  warnings?: string[];
+}
+
+export interface FWPlanResponse {
+  has_plan: boolean;
+  plan?: FWPlan;
+  generated_at?: string;
+  age_seconds?: number;
+  /** Systems near the destination whose occupier or contested state has moved
+   *  since the plan was built — the risk with no market signal. */
+  occupancy_drift?: string[];
+  warnings?: string[];
+}
+
+export interface FWOrderMatch {
+  lot_id: number;
+  type_id: number;
+  type_name: string;
+  dest_station_id: number;
+  /** resting | partial_fill | sold_out | gone */
+  status: string;
+  qty_remaining: number;
+  suggested_qty_remaining: number;
+  filled_qty: number;
+  suggested_state?: string;
+  order_ids?: number[];
+  primary_order_id?: number;
+  note?: string;
+}
+
+export interface FWOrderReconciliation {
+  matches: FWOrderMatch[];
+  warnings?: string[];
+}
+
+export interface FWOrdersResponse {
+  campaign_id: number;
+  dest_station_id: number;
+  reconciliation: FWOrderReconciliation;
+  budget: FWBudget;
+  desk_orders?: OrderDeskOrder[];
+  counts: Record<string, number>;
+  warnings?: string[];
+}
+
+export interface FWApplyResult {
+  lot_id: number;
+  type_id: number;
+  type_name?: string;
+  from_qty_remaining: number;
+  to_qty_remaining: number;
+  from_state: string;
+  to_state: string;
+}
+
+export interface FWApplySkip {
+  lot_id: number;
+  status: string;
+  reason: string;
+}
+
+export interface FWApplyResponse {
+  applied: FWApplyResult[];
+  skipped?: FWApplySkip[];
+  budget: FWBudget;
+  lots: FWLot[];
+  warnings?: string[];
+}
+
+export async function listFWCampaigns(): Promise<FWCampaign[]> {
+  const res = await apiFetch(`${BASE}/api/auth/fw/campaigns`);
+  const data = await handleResponse<{ campaigns?: FWCampaign[] }>(res);
+  return data.campaigns ?? [];
+}
+
+export async function getFWCampaign(id: number): Promise<FWCampaign> {
+  const res = await apiFetch(`${BASE}/api/auth/fw/campaigns/${id}`);
+  return handleResponse<FWCampaign>(res);
+}
+
+export async function createFWCampaign(payload: FWCampaignPatch): Promise<FWCampaign> {
+  const res = await apiFetch(`${BASE}/api/auth/fw/campaigns`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return handleResponse<FWCampaign>(res);
+}
+
+/** PATCH states only the fields it means to change: the server leaves the rest
+ *  alone, so a settings panel must not resend a stale copy of the whole
+ *  campaign. */
+export async function updateFWCampaign(id: number, patch: FWCampaignPatch): Promise<FWCampaign> {
+  const res = await apiFetch(`${BASE}/api/auth/fw/campaigns/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  return handleResponse<FWCampaign>(res);
+}
+
+/**
+ * Deletes a campaign, its lots and its plan.
+ *
+ * confirm=1 is not optional: the server refuses an unconfirmed delete because
+ * the lots are the only record of what was bought and what it cost. Sending it
+ * unconditionally from here would make that guard decorative, so the caller is
+ * expected to have asked first -- see the campaign delete dialog in FWSupply.
+ */
+export async function deleteFWCampaign(id: number): Promise<void> {
+  const res = await apiFetch(`${BASE}/api/auth/fw/campaigns/${id}?confirm=1`, { method: "DELETE" });
+  await handleResponse<{ ok: boolean }>(res);
+}
+
+export async function saveFWLot(id: number, lot: Partial<FWLot>): Promise<FWCampaign> {
+  const res = await apiFetch(`${BASE}/api/auth/fw/campaigns/${id}/lots`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(lot),
+  });
+  return handleResponse<FWCampaign>(res);
+}
+
+export async function setFWLotState(id: number, lotID: number, state: string): Promise<FWCampaign> {
+  const res = await apiFetch(`${BASE}/api/auth/fw/campaigns/${id}/lots/${lotID}/state`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ state }),
+  });
+  return handleResponse<FWCampaign>(res);
+}
+
+export async function deleteFWLot(id: number, lotID: number): Promise<FWCampaign> {
+  const res = await apiFetch(`${BASE}/api/auth/fw/campaigns/${id}/lots/${lotID}`, { method: "DELETE" });
+  return handleResponse<FWCampaign>(res);
+}
+
+/**
+ * Move or delete many lots in one request.
+ *
+ * Deliberately not a loop over setFWLotState: the budget is derived from the
+ * lots, so a loop that failed partway would leave headroom describing a
+ * position that never existed. The server applies the whole batch in one
+ * transaction and returns the recomputed campaign.
+ */
+export async function bulkFWLots(
+  id: number,
+  lotIDs: number[],
+  action: "state" | "delete",
+  state?: string,
+): Promise<FWCampaign> {
+  const res = await apiFetch(`${BASE}/api/auth/fw/campaigns/${id}/lots/bulk`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ lot_ids: lotIDs, action, state }),
+  });
+  return handleResponse<FWCampaign>(res);
+}
+
+export async function getFWCampaignOrders(id: number): Promise<FWOrdersResponse> {
+  const res = await apiFetch(`${BASE}/api/auth/fw/campaigns/${id}/orders`);
+  return handleResponse<FWOrdersResponse>(res);
+}
+
+export async function applyFWCampaignOrders(id: number, lotIDs?: number[]): Promise<FWApplyResponse> {
+  const res = await apiFetch(`${BASE}/api/auth/fw/campaigns/${id}/orders/apply`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ lot_ids: lotIDs ?? [] }),
+  });
+  return handleResponse<FWApplyResponse>(res);
+}
+
+/** Reads the cache. Cheap, and safe to call on mount. */
+export async function getFWPlan(id: number): Promise<FWPlanResponse> {
+  const res = await apiFetch(`${BASE}/api/auth/fw/campaigns/${id}/plan`);
+  return handleResponse<FWPlanResponse>(res);
+}
+
+/** Rebuilds the plan. Expensive and metered as a scan — only ever on a click. */
+export async function generateFWPlan(id: number): Promise<FWPlanResponse> {
+  const res = await apiFetch(`${BASE}/api/auth/fw/campaigns/${id}/plan`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+  return handleResponse<FWPlanResponse>(res);
 }

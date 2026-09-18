@@ -721,6 +721,7 @@ func hostedQuotaFeatureForRequest(r *http.Request) (string, bool) {
 		path == "/api/auth/today/refresh",
 		path == "/api/auth/journal/sync",
 		path == "/api/auth/journal/link-job",
+		isHostedQuotaFWPlanPath(path),
 		isHostedQuotaIndustryProjectComputePath(path),
 		isHostedQuotaStockpileScanPath(path):
 		return "scans", true
@@ -730,6 +731,18 @@ func hostedQuotaFeatureForRequest(r *http.Request) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+// isHostedQuotaFWPlanPath matches POST /api/auth/fw/campaigns/{id}/plan.
+//
+// Metered as a scan because it is one: generating a plan walks a week of
+// killmails through zkill's paging API and then fetches a sell book for every
+// region the staging ring touches. That is heavier than most of the scans
+// already on this list, and it is the reason the GET beside it serves a cache
+// instead of rebuilding.
+func isHostedQuotaFWPlanPath(path string) bool {
+	return strings.HasPrefix(path, "/api/auth/fw/campaigns/") &&
+		strings.HasSuffix(path, "/plan")
 }
 
 func isHostedQuotaIndustryProjectComputePath(path string) bool {

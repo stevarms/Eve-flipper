@@ -78,7 +78,7 @@ func enrichRouteExecutionEstimate(route *RouteResult, profile RouteExecutionProf
 		hop := &route.Hops[i]
 		hop.CargoM3 = sanitizeFloat(float64(hop.Units) * hop.VolumeM3)
 		cargoValueISK += float64(hop.Units) * hop.BuyPrice
-		hop.CargoTrips = routeCargoTrips(hop.CargoM3, profile.CargoCapacity)
+		hop.CargoTrips = RouteCargoTrips(hop.CargoM3, profile.CargoCapacity)
 		if hop.CargoTrips > cargoTrips {
 			cargoTrips = hop.CargoTrips
 		}
@@ -237,7 +237,12 @@ func isPositiveFinite(v float64) bool {
 	return v > 0 && !math.IsNaN(v) && !math.IsInf(v, 0)
 }
 
-func routeCargoTrips(cargoM3, cargoCapacity float64) int {
+// RouteCargoTrips is how many round trips a cargo takes at a given hold size.
+//
+// It returns 1 rather than 0 for an unmeasured or empty cargo, because a route
+// hop happens whether or not its volume is known. A caller sizing a shipment that
+// may legitimately be empty has to check for that itself.
+func RouteCargoTrips(cargoM3, cargoCapacity float64) int {
 	if cargoM3 <= 0 || cargoCapacity <= 0 || math.IsNaN(cargoM3) || math.IsNaN(cargoCapacity) || math.IsInf(cargoM3, 0) || math.IsInf(cargoCapacity, 0) {
 		return 1
 	}
@@ -246,4 +251,15 @@ func routeCargoTrips(cargoM3, cargoCapacity float64) int {
 		return 1
 	}
 	return trips
+}
+
+// ShipProfileCargoCapacityM3 is the hold size of a named ship profile, in m3, or
+// 0 for a name this code does not know -- including "custom", whose capacity is
+// carried on the route params rather than implied by the name.
+//
+// Exported for callers that size a haul from a stored profile name and have no
+// RouteParams to build one from: a shipment is a cargo problem before it is a
+// route problem, and a campaign stores the profile it intends to fly.
+func ShipProfileCargoCapacityM3(profile string) float64 {
+	return routeShipProfileDefaults(profile).CargoCapacity
 }

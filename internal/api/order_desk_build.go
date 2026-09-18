@@ -112,12 +112,9 @@ func (s *Server) buildOrderDesk(
 	}
 
 	var orders []esi.CharacterOrder
-	// Remember which order belongs to which session so the response can
-	// carry owner tags on each row.
-	type orderOwner struct {
-		characterID   int64
-		characterName string
-	}
+	// Remember which order belongs to which owner so the response can carry
+	// owner tags on each row. The type lives in order_desk_corp.go because a
+	// corporation is an owner too.
 	ownerByOrderID := make(map[int64]orderOwner)
 	for _, sess := range selectedSessions {
 		token, tokenErr := s.sessions.EnsureValidTokenForUserCharacter(s.sso, userID, sess.CharacterID)
@@ -138,13 +135,33 @@ func (s *Server) buildOrderDesk(
 			continue
 		}
 		for _, o := range charOrders {
-			ownerByOrderID[o.OrderID] = orderOwner{characterID: sess.CharacterID, characterName: sess.CharacterName}
+			ownerByOrderID[o.OrderID] = orderOwner{
+				kind:             orderOwnerKindCharacter,
+				id:               sess.CharacterID,
+				name:             sess.CharacterName,
+				feeCharacterID:   sess.CharacterID,
+				feeCharacterName: sess.CharacterName,
+			}
 		}
 		orders = append(orders, charOrders...)
 	}
 
+	// Corporation wallets hold orders too, and a corp book the desk never asked
+	// for reads as no competition. Warnings rather than an error: one
+	// unreachable corporation should not cost the user the rest of the desk.
+	corpOrders, corpOwners, warnings := s.corpOrdersForDesk(userID, selectedSessions)
+	orders = append(orders, corpOrders...)
+	for id, owner := range corpOwners {
+		ownerByOrderID[id] = owner
+	}
+
 	if len(orders) == 0 {
-		return engine.ComputeOrderDesk(nil, nil, nil, nil, engineOpts), nil
+		// The warnings matter most on exactly this path: an empty desk with an
+		// unreadable corp book is indistinguishable from an empty desk unless
+		// it says so.
+		empty := engine.ComputeOrderDesk(nil, nil, nil, nil, engineOpts)
+		empty.Warnings = warnings
+		return empty, nil
 	}
 
 	// Enrich names for UI readability.
@@ -295,10 +312,14 @@ func (s *Server) buildOrderDesk(
 	// Stamp owner tags for multi-character views (Orders tab). Always
 	// populate — single-character requests just repeat the same identity
 	// per row, and the frontend can still use it.
+	result.Warnings = warnings
 	for i := range result.Orders {
 		if owner, ok := ownerByOrderID[result.Orders[i].OrderID]; ok {
-			result.Orders[i].CharacterID = owner.characterID
-			result.Orders[i].CharacterName = owner.characterName
+			result.Orders[i].CharacterID = owner.id
+			result.Orders[i].CharacterName = owner.name
+			result.Orders[i].OwnerKind = owner.kind
+			result.Orders[i].FeeCharacterID = owner.feeCharacterID
+			result.Orders[i].FeeCharacterName = owner.feeCharacterName
 		}
 		// A margin quoted somewhere the stock is not has to name the place.
 		// The engine only knows the id; naming is this layer's job, the same

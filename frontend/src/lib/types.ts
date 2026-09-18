@@ -1983,8 +1983,21 @@ export interface OrderDeskOrder {
   reason: string;
   // Owner tags stamped by the api-layer aggregator when scope=all so the
   // multi-character Orders tab can group / filter by owning character.
+  //
+  // owner_kind says what character_id / character_name actually name:
+  // "character" for a personal order, "corporation" for one held in the corp
+  // wallet, where both fields are the corporation's. Absent on rows from
+  // before corp orders entered the desk — treat that as "character".
   character_id?: number;
   character_name?: string;
+  owner_kind?: "character" | "corporation" | string;
+  /** The character whose standings and skills set this order's real broker fee
+   *  and sales tax. For a personal order that is its owner; for a corporation
+   *  order it is the issuer, who is routinely not the character the book was
+   *  fetched through. The desk charges one rate pair per request, so this names
+   *  whose profile those figures should be read against. */
+  fee_character_id?: number;
+  fee_character_name?: string;
   // Broker-fee-aware relist economics — populated when BrokerFeePercent > 0
   // on the request. Surfaced so the Orders tab can render the ⚠ warning
   // when the fee eats the theoretical gain.
@@ -2079,6 +2092,11 @@ export interface OrderDeskResponse {
   summary: OrderDeskSummary;
   orders: OrderDeskOrder[];
   settings: OrderDeskSettings;
+  /** What the desk could not see, in words. An unreachable order *book* is
+   *  reported per row as book_available=false, but a whole unreachable *owner*
+   *  — a corp wallet with no role-holding character, a missing scope — has no
+   *  row to hang off, and rendering nothing there reads as "no competition". */
+  warnings?: string[];
 }
 
 // --- Disposition -----------------------------------------------------

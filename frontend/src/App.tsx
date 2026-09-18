@@ -18,6 +18,7 @@ import { Orders } from "./components/Orders";
 import { OrdersPill } from "./components/OrdersPill";
 import { IndustryTab } from "./components/IndustryTab";
 import { WarTracker } from "./components/WarTracker";
+import { FWSupply } from "./components/FWSupply";
 import { ItemIntelligenceModal } from "./components/ItemIntelligenceModal";
 import { TabActionBar, TabPanel, tabWorkspaceClass } from "./components/TabWorkspace";
 import { ScanHistory } from "./components/ScanHistory";
@@ -2648,6 +2649,12 @@ function App() {
                   "success",
                 );
               }}
+            />
+          </TabPanel>
+          <TabPanel active={tab === "fw"}>
+            <FWSupply
+              isLoggedIn={authStatus.logged_in}
+              onError={(msg) => addToast(msg, "error")}
             />
           </TabPanel>
         </div>

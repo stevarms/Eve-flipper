@@ -17,6 +17,20 @@ type MarketOrder struct {
 	VolumeRemain int32   `json:"volume_remain"`
 	MinVolume    int32   `json:"min_volume"`
 	IsBuyOrder   bool    `json:"is_buy_order"`
+	// Duration is the order's listed lifetime in days, and it is the only field
+	// that separates an NPC seed from a player order: a player order caps at 90
+	// days, so duration == 365 is always NPC. Measured on Black Rise's sell book,
+	// 4,660 of 11,643 orders are 365-day seeds and the longest player order is
+	// exactly 90 -- there is no overlap to get wrong.
+	//
+	// It matters because a seeded book reads as competition that will never move
+	// or reprice. Hallanen lists 405 sell types, of which 55 are player orders;
+	// unfiltered it looks like the deepest market in the warzone.
+	Duration int32 `json:"duration"`
+	// VolumeTotal is the order's original size. Every one of those 4,660 seeds has
+	// VolumeRemain == VolumeTotal, so the two fields together corroborate the
+	// duration test rather than resting on it alone.
+	VolumeTotal int32 `json:"volume_total"`
 	// Range is how far a buy order reaches: "station", "solarsystem",
 	// "region", or a gate-jump count as a decimal string. Meaningless on a
 	// sell order, which is always station-range in EVE.
@@ -27,6 +41,17 @@ type MarketOrder struct {
 	// is wrong by however much of the region is bidding over it.
 	Range    string `json:"range"`
 	RegionID int32  `json:"-"` // set by us
+}
+
+// IsNPCSeeded reports whether this order was seeded by an NPC corporation
+// rather than placed by a player.
+//
+// A player order caps at 90 days, so a 365-day duration is conclusive. The rule
+// lives here, on the order, because two packages need it and a second copy is a
+// second thing to get wrong: half the warzone's sell book is seed, and anything
+// that mistakes one for competition prices into an order that will never move.
+func (o MarketOrder) IsNPCSeeded() bool {
+	return o.Duration == 365
 }
 
 // MarketOrderSnapshot is a point-in-time capture of live ESI market orders.
