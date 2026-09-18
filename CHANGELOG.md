@@ -1,5 +1,63 @@
 # Changelog
 
+## v1.14.0 - 2026-09-18
+
+A new tab: FW Supply, for stocking a faction warfare destination against a
+warzone that is actually destroying stock, with prices that never gouge and
+quantities you can always override.
+
+### New: FW Supply
+
+Reads a militia's own warzone -- which systems it holds, what dies inside
+it -- and turns that into a buy list. A staging ring picks a destination
+station within N jumps of the frontline, ranked on market depth, FW-item
+overlap and distance, with pinned/excluded systems and a badge for the four
+bulwark capitals (Mehatoor, Onnamon, Intaki, Amo). The gap table prices every
+destroyed type against the destination's own book -- a markup ladder derived
+from its paired sales, clamped by category ceilings that are a ceiling and
+never a floor -- and sizes it against a 7-day destruction rate, or an
+optional 30/90-day window shown side by side rather than blended, so a spike
+and a staple read differently.
+
+Destruction is a proxy for demand, not demand itself: a minimum-lot floor by
+price band (50/30/15/5 units under 100k/1m/1.5m/5m ISK) keeps a genuinely
+slow-moving type off the shelf at "2 units," capped at 10x what the cover
+math alone would ask for so the floor cannot stretch past what evidence
+supports. Included/Excluded per-item overrides are your judgment overriding
+the model's for the cases it cannot see on its own -- T2 ammo or a
+microwarpdrive worth stocking despite a competitor sitting under cost, or a
+free-issue starter item whose kill count is pure noise.
+
+Every row is a suggestion, not a gate. A checkbox drives the buyer's
+multibuy, the seller's price paste and lot recording directly, and no
+verdict disables it -- a "covered" row is a claim about existing stock, not
+a claim that there is no trade. A row the engine sized at zero opens with a
+quantity pre-filled from its own destruction rate over the cover target
+(capped at the same minimum-lot floor), rather than empty or guessed from
+kill count -- a handful of killmails can each carry a fit's whole ammo hold,
+so kills alone would suggest bringing 2 rounds where 2,278 a day actually
+move. Any quantity, computed or typed, is yours to reduce or raise before it
+ships; price is never invented, only ever the engine's own where one was
+reached. Toggling an override re-prices immediately rather than waiting on a
+Regenerate you would have to remember to click.
+
+Fees are resolved from the seller's own Accounting and Broker Relations --
+the same profile every other realized-profit surface in the app already
+reads -- and lots, orders and the order desk round out the loop: recording a
+lot is the moment a plan becomes capital, and the campaign's own order-desk
+view reconciles what is actually listed against what the plan called for.
+
+### Fixed: a corp order's fees borrowed nobody's skills
+
+The order desk's fee-aware relist math already read Accounting and Broker
+Relations off a character -- but a corp wallet order has no owning
+character, and the fee rate it was charged came from whichever character's
+session happened to be open, not from whoever actually issued the order.
+Corp rows now carry the issuing character explicitly, and NPC-seed detection
+(a 365-day order never reprices, and a seed under cost is a wall no undercut
+clears) moved onto the order type itself so every caller shares one
+definition instead of reimplementing it.
+
 ## v1.13.0 - 2026-09-16
 
 The order desk learns the difference between a bid that is failing and a bid that
