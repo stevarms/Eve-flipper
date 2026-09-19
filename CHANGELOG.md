@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.14.1 - 2026-09-18
+
+### Fixed: a second browser didn't see your data
+
+Every browser gets its own random identity cookie the first time it hits the
+server; SSO login only ever attached a character's ESI token to whichever
+cookie the browser already had, without ever checking whether that character
+had logged in from somewhere else before. On a hosted/Docker deployment
+reached from more than one computer, logging into the same EVE character on
+a second browser silently forked a second, empty account -- none of the
+first browser's holding rules, Accumulate targets, industry projects,
+config or watchlist were there, and the two never converged.
+
+Login now checks whether the character signing in already has a home under
+a different id and, if so, adopts it before anything is saved -- so the
+second browser lands on the same data as the first the moment you log in,
+rather than starting over.
+
 ## v1.14.0 - 2026-09-18
 
 A new tab: FW Supply, for stocking a faction warfare destination against a
