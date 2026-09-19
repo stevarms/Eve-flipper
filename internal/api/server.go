@@ -5431,6 +5431,20 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	if !isValidUserID(userID) {
 		userID = userIDFromRequest(r)
 	}
+	// user_id is a browser cookie, not an EVE identity. Without this, a second
+	// browser logging into a character that already lives under a different
+	// user_id -- a laptop logging into the same account a desktop already
+	// uses -- forks into a second, empty account: none of the first browser's
+	// holding rules, industry projects or config would be there, and the two
+	// would never converge on their own. Checked before the session is saved,
+	// so nothing is ever written under the fresh id to begin with; the home
+	// id, once adopted, is what every future login and request from this
+	// browser carries.
+	if s.sessions != nil {
+		if homeUserID, found := s.sessions.FindUserIDForCharacter(info.CharacterID); found && homeUserID != userID {
+			userID = homeUserID
+		}
+	}
 	userID = s.setUserIDCookie(w, r, userID)
 	sess := &auth.Session{
 		CharacterID:   info.CharacterID,

@@ -202,6 +202,36 @@ func (s *SessionStore) GetByCharacterIDForUser(userID string, characterID int64)
 		LIMIT 1`, userID, characterID)
 }
 
+// FindUserIDForCharacter reports which user this character has ever logged in
+// under, regardless of who is asking.
+//
+// user_id is a browser cookie, not an EVE identity -- a second browser logging
+// into a character that already lives under a different user_id would
+// otherwise fork into a second, empty account with none of the first
+// browser's holding rules, industry projects or config. This is the lookup
+// that stops that: the caller adopts the returned user_id for the browser
+// doing this login instead of keeping the fresh one it arrived with.
+//
+// No vault gating here -- this only reads which user_id owns the row, never
+// the token material inside it, so a locked vault does not hide the answer.
+// The oldest matching row wins (insertion order via rowid), so of several
+// browsers that already independently know this character -- only possible
+// from logins that predate this check -- the one that saw it first stays
+// home.
+func (s *SessionStore) FindUserIDForCharacter(characterID int64) (string, bool) {
+	var userID string
+	err := s.db.QueryRow(`
+		SELECT user_id FROM auth_session
+		WHERE character_id = ?
+		ORDER BY rowid ASC
+		LIMIT 1`, characterID).Scan(&userID)
+	if err != nil {
+		return "", false
+	}
+	userID = normalizeUserID(userID)
+	return userID, userID != ""
+}
+
 // List returns all stored character sessions (active first).
 func (s *SessionStore) List() []*Session {
 	return s.ListForUser(defaultUserID)

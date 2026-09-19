@@ -205,6 +205,65 @@ func TestSessionStore_UserIsolation(t *testing.T) {
 	}
 }
 
+// TestSessionStore_FindUserIDForCharacter is the lookup the SSO callback uses
+// to reunite a second browser with a character's existing home, rather than
+// forking a new empty account under the browser's own fresh cookie id.
+func TestSessionStore_FindUserIDForCharacter(t *testing.T) {
+	store := newSessionStoreForTokenTest(t)
+
+	if _, found := store.FindUserIDForCharacter(9001); found {
+		t.Error("a character nobody has ever logged in as reported a home")
+	}
+
+	if err := store.SaveAndActivateForUser("laptop", &Session{
+		CharacterID:   9001,
+		CharacterName: "Nine Characters",
+		AccessToken:   "at",
+		RefreshToken:  "rt",
+		ExpiresAt:     time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("save on laptop: %v", err)
+	}
+
+	home, found := store.FindUserIDForCharacter(9001)
+	if !found || home != "laptop" {
+		t.Fatalf("FindUserIDForCharacter = %q, %v; want laptop, true", home, found)
+	}
+
+	// A different browser cookie logging into the same character before this
+	// check existed would have created exactly this: a second row, same
+	// character, different user_id. The original still wins -- the point is
+	// convergence onto one home, not onto whichever browser asked last.
+	if err := store.SaveAndActivateForUser("desktop", &Session{
+		CharacterID:   9001,
+		CharacterName: "Nine Characters",
+		AccessToken:   "at2",
+		RefreshToken:  "rt2",
+		ExpiresAt:     time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("save on desktop: %v", err)
+	}
+	home, found = store.FindUserIDForCharacter(9001)
+	if !found || home != "laptop" {
+		t.Fatalf("after a second browser also saved this character, FindUserIDForCharacter = %q, %v; want the first one, laptop", home, found)
+	}
+
+	// A second character logged in nowhere but "desktop" has no other home to
+	// converge onto -- desktop is correctly its own answer.
+	if err := store.SaveAndActivateForUser("desktop", &Session{
+		CharacterID:   9002,
+		CharacterName: "Alt",
+		AccessToken:   "at3",
+		RefreshToken:  "rt3",
+		ExpiresAt:     time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("save alt on desktop: %v", err)
+	}
+	if home, found := store.FindUserIDForCharacter(9002); !found || home != "desktop" {
+		t.Fatalf("FindUserIDForCharacter(9002) = %q, %v; want desktop, true", home, found)
+	}
+}
+
 func newSessionStoreForTokenTest(t *testing.T) *SessionStore {
 	t.Helper()
 	sqlDB, err := sql.Open("sqlite", ":memory:")
