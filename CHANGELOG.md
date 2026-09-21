@@ -1,5 +1,34 @@
 # Changelog
 
+## v1.15.0 - 2026-09-21
+
+Continues v1.14.1's identity fix. That fix made a second browser converge on
+the same `user_id` as the first, which only helps for data that was already
+server-side. Five things weren't: they lived in whichever browser last set
+them, so logging into the same character elsewhere still didn't show them.
+
+### Fixed: PLEX alerts, Station Trading, PI Factory, presets, and order-desk prefs now follow your login
+
+PLEX alert thresholds, Station Trading's working system/station/discount
+target/ignored categories, and PI Factory's settings panel move into
+AppConfig alongside everything the identity fix already covered. Scan
+presets and PI Factory's factory-line portfolio get their own server-side
+homes -- a saved preset or a tuned factory list now shows up on the next
+computer you open the app on, reorder included, the same way a holding rule
+or an Accumulate target already did. The Order Desk's sort/filter/threshold
+prefs move too, so the top-bar pill's badge count and the tab it links to
+read the same numbers instead of two independent copies that could disagree
+across devices.
+
+A same-session PLEX alert edit also used to need a page reload to take
+effect -- the notification checker and the settings panel each kept their
+own copy of the thresholds. They now share one, so an edit applies on the
+very next dashboard refresh.
+
+Layout-only state (Station Trading's column widths, the operator panel's
+size) stays local -- that was never data worth following you, just how wide
+you like a panel on this particular screen.
+
 ## v1.14.1 - 2026-09-18
 
 ### Fixed: a second browser didn't see your data
