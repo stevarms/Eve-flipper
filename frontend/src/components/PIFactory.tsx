@@ -1,11 +1,15 @@
-import { useCallback, useEffect, useMemo, useState, type DragEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { Copy } from "lucide-react";
 import { CopyPrice } from "@/components/ui/CopyPrice";
 import { ItemRef } from "@/components/ui/ItemRef";
 import {
+  getConfig,
+  getPIFactoryPortfolio,
   getPISchematics,
   getStations,
   piFactoryPlan,
+  savePIFactoryPortfolio,
+  updateConfig,
   type PIFactoryConfig,
   type PIFactoryResponse,
   type PISchematicSummary,
@@ -24,8 +28,6 @@ interface Props {
 }
 
 const DEFAULT_HUB = STATION_TRADING_HUBS[0]; // Jita IV-4
-const PORTFOLIO_KEY = "pi_factory.portfolio";
-const SETTINGS_KEY = "pi_factory.settings";
 
 interface PersistedSettings {
   systemName: string;
@@ -47,57 +49,6 @@ const DEFAULT_SETTINGS: PersistedSettings = {
   launchpadM3: 10000,
 };
 
-function loadPortfolio(): PIFactoryConfig[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = window.localStorage.getItem(PORTFOLIO_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter(
-        (p): p is PIFactoryConfig =>
-          typeof p?.id === "string" &&
-          typeof p?.name === "string" &&
-          typeof p?.schematic_id === "number" &&
-          typeof p?.factory_count === "number",
-      )
-      .slice(0, 100);
-  } catch {
-    return [];
-  }
-}
-
-function savePortfolio(list: PIFactoryConfig[]): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(PORTFOLIO_KEY, JSON.stringify(list));
-  } catch {
-    /* ignore */
-  }
-}
-
-function loadSettings(): PersistedSettings {
-  if (typeof window === "undefined") return DEFAULT_SETTINGS;
-  try {
-    const raw = window.localStorage.getItem(SETTINGS_KEY);
-    if (!raw) return DEFAULT_SETTINGS;
-    const parsed = JSON.parse(raw);
-    return { ...DEFAULT_SETTINGS, ...parsed };
-  } catch {
-    return DEFAULT_SETTINGS;
-  }
-}
-
-function saveSettings(s: PersistedSettings): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
-  } catch {
-    /* ignore */
-  }
-}
-
 function makeId(): string {
   return `f_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -107,8 +58,19 @@ export function PIFactory({ isLoggedIn }: Props) {
   const { addToast } = useGlobalToast();
   const { importFees, loading: importingFees } = useEsiFeeImport();
 
-  const [settings, setSettings] = useState<PersistedSettings>(() => loadSettings());
-  const [portfolio, setPortfolio] = useState<PIFactoryConfig[]>(() => loadPortfolio());
+  // Settings (station, taxes, buffer) live server-side (AppConfig's
+  // pi_factory_* fields) so they follow your login across browsers -- this
+  // starts at DEFAULT_SETTINGS since the fetch below can't complete before
+  // first render, same shape as StationTrading's stationConfigLoadedRef.
+  const [settings, setSettings] = useState<PersistedSettings>(DEFAULT_SETTINGS);
+  const settingsLoadedRef = useRef(false);
+  const settingsSaveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // The factory list itself lives server-side (pi_factory_entries) so it
+  // follows your login too -- starts empty since the fetch below can't
+  // complete before first render, same guard shape as settings above.
+  const [portfolio, setPortfolio] = useState<PIFactoryConfig[]>([]);
+  const portfolioLoadedRef = useRef(false);
+  const portfolioSaveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const [schematics, setSchematics] = useState<PISchematicSummary[]>([]);
   const [schematicFilter, setSchematicFilter] = useState("");
   const [stations, setStations] = useState<StationInfo[]>([]);
@@ -118,8 +80,73 @@ export function PIFactory({ isLoggedIn }: Props) {
   const [planResp, setPlanResp] = useState<PIFactoryResponse | null>(null);
   const [fetching, setFetching] = useState(false);
 
-  useEffect(() => saveSettings(settings), [settings]);
-  useEffect(() => savePortfolio(portfolio), [portfolio]);
+  useEffect(() => {
+    let cancelled = false;
+    void getConfig()
+      .then((cfg) => {
+        if (cancelled) return;
+        setSettings({
+          systemName: cfg.pi_factory_system_name ?? DEFAULT_SETTINGS.systemName,
+          stationId: cfg.pi_factory_station_id ?? DEFAULT_SETTINGS.stationId,
+          pocoTaxPct: cfg.pi_factory_poco_tax_pct ?? DEFAULT_SETTINGS.pocoTaxPct,
+          salesTaxPct: cfg.pi_factory_sales_tax_pct ?? DEFAULT_SETTINGS.salesTaxPct,
+          brokerFeePct: cfg.pi_factory_broker_fee_pct ?? DEFAULT_SETTINGS.brokerFeePct,
+          bufferDays: cfg.pi_factory_buffer_days ?? DEFAULT_SETTINGS.bufferDays,
+          launchpadM3: cfg.pi_factory_launchpad_m3 ?? DEFAULT_SETTINGS.launchpadM3,
+        });
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (cancelled) return;
+        settingsLoadedRef.current = true;
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!settingsLoadedRef.current) return;
+    clearTimeout(settingsSaveTimerRef.current);
+    settingsSaveTimerRef.current = setTimeout(() => {
+      void updateConfig({
+        pi_factory_system_name: settings.systemName,
+        pi_factory_station_id: settings.stationId,
+        pi_factory_poco_tax_pct: settings.pocoTaxPct,
+        pi_factory_sales_tax_pct: settings.salesTaxPct,
+        pi_factory_broker_fee_pct: settings.brokerFeePct,
+        pi_factory_buffer_days: settings.bufferDays,
+        pi_factory_launchpad_m3: settings.launchpadM3,
+      });
+    }, 500);
+    return () => clearTimeout(settingsSaveTimerRef.current);
+  }, [settings]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getPIFactoryPortfolio()
+      .then((list) => {
+        if (cancelled) return;
+        setPortfolio(list);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (cancelled) return;
+        portfolioLoadedRef.current = true;
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!portfolioLoadedRef.current) return;
+    clearTimeout(portfolioSaveTimerRef.current);
+    portfolioSaveTimerRef.current = setTimeout(() => {
+      void savePIFactoryPortfolio(portfolio);
+    }, 500);
+    return () => clearTimeout(portfolioSaveTimerRef.current);
+  }, [portfolio]);
 
   // Load schematic catalog once on mount.
   useEffect(() => {

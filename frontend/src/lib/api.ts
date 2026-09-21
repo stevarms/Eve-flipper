@@ -472,6 +472,81 @@ export async function deleteCockpitLoadoutRemote(loadoutID: string): Promise<Coc
   return handleResponse<CockpitLoadoutsResponse>(res);
 }
 
+/* eslint-disable @typescript-eslint/no-explicit-any */
+export interface ServerSavedPreset {
+  id: string;
+  name: string;
+  tab: string;
+  params: Record<string, any>;
+  active: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface CreateSavedPresetRequest {
+  tab: string;
+  name: string;
+  params: Record<string, any>;
+  /** Defaults to true server-side -- saving new params applies them immediately. */
+  activate?: boolean;
+}
+
+export interface UpdateSavedPresetRequest {
+  name?: string;
+  params?: Record<string, any>;
+  activate?: boolean;
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
+export interface SavedPresetsResponse {
+  presets: ServerSavedPreset[];
+}
+
+export interface SavedPresetResponse {
+  preset: ServerSavedPreset;
+  presets: ServerSavedPreset[];
+}
+
+export async function getSavedPresets(): Promise<SavedPresetsResponse> {
+  const res = await apiFetch(`${BASE}/api/presets`);
+  return handleResponse<SavedPresetsResponse>(res);
+}
+
+export async function createSavedPreset(payload: CreateSavedPresetRequest): Promise<SavedPresetResponse> {
+  const res = await apiFetch(`${BASE}/api/presets`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return handleResponse<SavedPresetResponse>(res);
+}
+
+export async function updateSavedPreset(
+  presetID: string,
+  patch: UpdateSavedPresetRequest,
+): Promise<SavedPresetResponse> {
+  const res = await apiFetch(`${BASE}/api/presets/${encodeURIComponent(presetID)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  return handleResponse<SavedPresetResponse>(res);
+}
+
+export async function activateSavedPreset(presetID: string): Promise<SavedPresetResponse> {
+  const res = await apiFetch(`${BASE}/api/presets/${encodeURIComponent(presetID)}/activate`, {
+    method: "POST",
+  });
+  return handleResponse<SavedPresetResponse>(res);
+}
+
+export async function deleteSavedPreset(presetID: string): Promise<SavedPresetsResponse> {
+  const res = await apiFetch(`${BASE}/api/presets/${encodeURIComponent(presetID)}`, {
+    method: "DELETE",
+  });
+  return handleResponse<SavedPresetsResponse>(res);
+}
+
 export async function testAlertChannels(message?: string): Promise<{ sent: string[]; failed?: Record<string, string> }> {
   const res = await apiFetch(`${BASE}/api/alerts/test`, {
     method: "POST",
@@ -3379,6 +3454,25 @@ export async function piFactoryPlan(params: {
     body: JSON.stringify(params),
   });
   return handleResponse<PIFactoryResponse>(res);
+}
+
+// The factory list itself (schematic + count per line), server-side so it
+// follows your login -- separate from piFactoryPlan above, which is a
+// per-request pricing call.
+export async function getPIFactoryPortfolio(): Promise<PIFactoryConfig[]> {
+  const res = await apiFetch(`${BASE}/api/pi/portfolio`);
+  const data = await handleResponse<{ factories: PIFactoryConfig[] }>(res);
+  return data.factories ?? [];
+}
+
+export async function savePIFactoryPortfolio(factories: PIFactoryConfig[]): Promise<PIFactoryConfig[]> {
+  const res = await apiFetch(`${BASE}/api/pi/portfolio`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ factories }),
+  });
+  const data = await handleResponse<{ factories: PIFactoryConfig[] }>(res);
+  return data.factories ?? [];
 }
 
 // --- UI Operations (in-game actions) ---

@@ -2,12 +2,14 @@ package api
 
 import (
 	"encoding/json"
+	"io"
 	"math"
 	"net/http"
 	"sort"
 	"strconv"
 	"sync"
 
+	"eve-flipper/internal/db"
 	"eve-flipper/internal/engine"
 	"eve-flipper/internal/sde"
 )
@@ -523,4 +525,85 @@ func (s *Server) handlePIFactoryPlan(w http.ResponseWriter, r *http.Request) {
 		StationName: station.Name,
 		BufferDays:  req.BufferDays,
 	})
+}
+
+// --- Portfolio persistence ---
+//
+// The factory list itself (schematic + count per line), server-side so it
+// follows your login -- separate from piFactoryRequest above, which is the
+// per-plan-request shape sent to handlePIFactoryPlan and includes pricing
+// context (station, taxes) that lives in AppConfig now, not here.
+
+const piFactoryPortfolioPayloadLimit = 256 * 1024
+
+func piFactoryEntriesFromConfigs(configs []piFactoryConfig) []db.PIFactoryEntry {
+	out := make([]db.PIFactoryEntry, 0, len(configs))
+	for i, c := range configs {
+		out = append(out, db.PIFactoryEntry{
+			ClientID:     c.ID,
+			Name:         c.Name,
+			SchematicID:  c.SchematicID,
+			FactoryCount: c.FactoryCount,
+			SortOrder:    i,
+		})
+	}
+	return out
+}
+
+func piFactoryConfigsFromEntries(entries []db.PIFactoryEntry) []piFactoryConfig {
+	out := make([]piFactoryConfig, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, piFactoryConfig{
+			ID:           e.ClientID,
+			Name:         e.Name,
+			SchematicID:  e.SchematicID,
+			FactoryCount: e.FactoryCount,
+		})
+	}
+	return out
+}
+
+func (s *Server) handleGetPIFactoryPortfolio(w http.ResponseWriter, r *http.Request) {
+	if s.db == nil {
+		writeJSON(w, map[string]any{"factories": []piFactoryConfig{}})
+		return
+	}
+	entries, err := s.db.GetPIFactoryPortfolioForUser(userIDFromRequest(r))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load PI Factory portfolio")
+		return
+	}
+	writeJSON(w, map[string]any{"factories": piFactoryConfigsFromEntries(entries)})
+}
+
+func (s *Server) handlePutPIFactoryPortfolio(w http.ResponseWriter, r *http.Request) {
+	if s.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database unavailable")
+		return
+	}
+	var body struct {
+		Factories []piFactoryConfig `json:"factories"`
+	}
+	decoder := json.NewDecoder(io.LimitReader(r.Body, piFactoryPortfolioPayloadLimit))
+	if err := decoder.Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	// Matches loadPortfolio's old localStorage-era cap -- a real portfolio
+	// never gets remotely this large, so this is a sanity bound, not a
+	// meaningful limit on legitimate use.
+	if len(body.Factories) > 100 {
+		body.Factories = body.Factories[:100]
+	}
+	userID := userIDFromRequest(r)
+	if err := s.db.ReplacePIFactoryPortfolioForUser(userID, piFactoryEntriesFromConfigs(body.Factories)); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save PI Factory portfolio")
+		return
+	}
+	entries, err := s.db.GetPIFactoryPortfolioForUser(userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load PI Factory portfolio")
+		return
+	}
+	writeJSON(w, map[string]any{"factories": piFactoryConfigsFromEntries(entries)})
 }

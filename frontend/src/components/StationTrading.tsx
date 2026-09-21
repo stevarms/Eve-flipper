@@ -24,6 +24,8 @@ import {
   addToWatchlist,
   removeFromWatchlist,
   setWaypointInGame,
+  getConfig,
+  updateConfig,
 } from "@/lib/api";
 import { formatISK, formatMargin, formatNumber } from "@/lib/format";
 import { formatGridPrice, nextBuyOverbid, nextSellUndercut, priceStep } from "@/lib/pricing";
@@ -307,76 +309,13 @@ const OPERATOR_PANEL_MIN = 28;
 const OPERATOR_PANEL_MAX = 62;
 const OPERATOR_PANEL_DEFAULT = 50;
 const STATION_CACHE_TTL_MS = 20 * 60 * 1000;
-const STATION_TRADING_LOCATION_STORAGE_KEY = "station.location";
-const STATION_IGNORED_CATEGORIES_STORAGE_KEY = "station.ignored_categories";
-const STATION_DISCOUNT_TARGET_KEY = "station.discount_bid_target";
-const STATION_OPERATOR_MODE_KEY = "station.operator_mode";
 const DEFAULT_DISCOUNT_TARGET = 0.5;
-
-function loadIgnoredCategories(): Set<number> {
-  if (typeof window === "undefined") return new Set();
-  try {
-    const raw = window.localStorage.getItem(STATION_IGNORED_CATEGORIES_STORAGE_KEY);
-    if (!raw) return new Set();
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return new Set();
-    return new Set(parsed.filter((n): n is number => typeof n === "number" && n > 0));
-  } catch {
-    return new Set();
-  }
-}
-
-function saveIgnoredCategories(ids: Set<number>): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(
-      STATION_IGNORED_CATEGORIES_STORAGE_KEY,
-      JSON.stringify([...ids]),
-    );
-  } catch {
-    /* ignore */
-  }
-}
 
 interface PersistedStationLocation {
   systemName: string;
   stationId: number;
 }
 
-function loadPersistedStationLocation(): PersistedStationLocation | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = window.localStorage.getItem(STATION_TRADING_LOCATION_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (
-      parsed &&
-      typeof parsed.systemName === "string" &&
-      parsed.systemName.trim() &&
-      typeof parsed.stationId === "number"
-    ) {
-      return {
-        systemName: parsed.systemName.trim(),
-        stationId: parsed.stationId,
-      };
-    }
-  } catch {
-    /* ignore */
-  }
-  return null;
-}
-
-function savePersistedStationLocation(loc: PersistedStationLocation): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(
-      STATION_TRADING_LOCATION_STORAGE_KEY,
-      JSON.stringify(loc),
-    );
-  } catch {
-    /* ignore */
-  }
-}
 
 const settingsSectionClass =
   "rounded-sm border border-eve-border/60 bg-gradient-to-br from-eve-panel to-eve-dark/40";
@@ -620,13 +559,21 @@ export function StationTrading({
   const operatorModeAvailable = true;
 
   const [stations, setStations] = useState<StationInfo[]>([]);
-  // pendingStationLocationRef holds a persisted {system, station} restored from
-  // localStorage. Consumed once: by the mount effect (to override the parent's
-  // default system) and then by the station-load effect (to re-select the
-  // saved station). Cleared after use so manual system changes don't re-apply.
-  const pendingStationLocationRef = useRef<PersistedStationLocation | null>(
-    loadPersistedStationLocation(),
-  );
+  // pendingStationLocationRef holds a persisted {system, station} restored
+  // from the server (AppConfig, so it follows your login) once the config
+  // fetch below lands. Consumed once: by the mount-equivalent restore effect
+  // (to override the parent's default system) and then by the station-load
+  // effect (to re-select the saved station). Cleared after use so manual
+  // system changes don't re-apply. Starts null -- unlike a synchronous
+  // localStorage read, the fetch cannot complete before first render.
+  const pendingStationLocationRef = useRef<PersistedStationLocation | null>(null);
+  // Flips true once the AppConfig fetch below lands (or fails) -- every save
+  // effect for the four fields this section persists checks it first, the
+  // same guard App.tsx's own config effect uses, so the placeholder defaults
+  // this component renders with for one frame never get written up over
+  // whatever the server actually had.
+  const stationConfigLoadedRef = useRef(false);
+  const [stationConfigReady, setStationConfigReady] = useState(false);
   const [selectedStationId, setSelectedStationId] = useState<number>(
     ALL_STATIONS_ID,
   );
@@ -647,20 +594,18 @@ export function StationTrading({
   const lastSyncedTaxProfileRef = useRef(taxProfileKey(params));
   const taxSyncInProgressRef = useRef<string | null>(null);
   const [ctsProfile, setCTSProfile] = useState<CTSProfile>("balanced");
-  const [discountBuyTarget, setDiscountBuyTargetState] = useState<number>(() => {
-    if (typeof window === "undefined") return DEFAULT_DISCOUNT_TARGET;
-    const raw = window.localStorage.getItem(STATION_DISCOUNT_TARGET_KEY);
-    const n = raw == null ? NaN : Number(raw);
-    if (!Number.isFinite(n) || n <= 0 || n >= 1) return DEFAULT_DISCOUNT_TARGET;
-    return n;
-  });
+  const [discountBuyTarget, setDiscountBuyTargetState] = useState<number>(DEFAULT_DISCOUNT_TARGET);
+  const discountTargetSaveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const setDiscountBuyTarget = (n: number) => {
     // Clamp to (0, 1) — a 100% bid is just the region avg (nonsensical for
     // this workflow) and 0% would suggest bidding 0 ISK.
     const clamped = Math.min(0.99, Math.max(0.01, n));
     setDiscountBuyTargetState(clamped);
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(STATION_DISCOUNT_TARGET_KEY, String(clamped));
+    if (stationConfigLoadedRef.current) {
+      clearTimeout(discountTargetSaveTimerRef.current);
+      discountTargetSaveTimerRef.current = setTimeout(() => {
+        void updateConfig({ station_discount_bid_target: clamped });
+      }, 500);
     }
   };
   const [radius, setRadius] = useState(0);
@@ -684,13 +629,10 @@ export function StationTrading({
   const [includeStructures, setIncludeStructures] = useState(false);
   const [structureStations, setStructureStations] = useState<StationInfo[]>([]);
   const [loadingStructures, setLoadingStructures] = useState(false);
-  const [operatorMode, setOperatorMode] = useState<boolean>(() => {
-    if (typeof window === "undefined") return false;
-    return window.localStorage.getItem(STATION_OPERATOR_MODE_KEY) === "1";
-  });
+  const [operatorMode, setOperatorMode] = useState<boolean>(false);
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem(STATION_OPERATOR_MODE_KEY, operatorMode ? "1" : "0");
+    if (!stationConfigLoadedRef.current) return;
+    void updateConfig({ station_operator_mode: operatorMode });
   }, [operatorMode]);
   const [commandRowsByKey, setCommandRowsByKey] = useState<
     Record<string, StationCommandRow>
@@ -751,9 +693,43 @@ export function StationTrading({
   const [limitBuyToPriceLow, setLimitBuyToPriceLow] = useState(false);
   const [flagExtremePrices, setFlagExtremePrices] = useState(true);
   const [excludeCosmetics, setExcludeCosmetics] = useState(true);
-  const [ignoredCategoryIds, setIgnoredCategoryIds] = useState<Set<number>>(
-    () => loadIgnoredCategories(),
-  );
+  const [ignoredCategoryIds, setIgnoredCategoryIds] = useState<Set<number>>(() => new Set());
+
+  // Fetch this tab's four server-side settings once on mount (was four
+  // separate synchronous localStorage reads). stationConfigLoadedRef gates
+  // every save effect above so the placeholder defaults rendered before this
+  // resolves never get written back over whatever the server actually has.
+  useEffect(() => {
+    let cancelled = false;
+    void getConfig()
+      .then((cfg) => {
+        if (cancelled) return;
+        if (cfg.station_system_name) {
+          pendingStationLocationRef.current = {
+            systemName: cfg.station_system_name,
+            stationId: cfg.station_station_id ?? ALL_STATIONS_ID,
+          };
+        }
+        if (typeof cfg.station_discount_bid_target === "number") {
+          setDiscountBuyTargetState(
+            Math.min(0.99, Math.max(0.01, cfg.station_discount_bid_target)),
+          );
+        }
+        setOperatorMode(Boolean(cfg.station_operator_mode));
+        setIgnoredCategoryIds(new Set(cfg.station_ignored_categories ?? []));
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (cancelled) return;
+        stationConfigLoadedRef.current = true;
+        setStationConfigReady(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Multibuy session: typeID -> qty. Holds rows the user has queued for a
   // multibuy paste into EVE. Lives only for the current page session — no
   // persistence; mid-flight stocking shouldn't carry across refreshes.
@@ -1253,19 +1229,25 @@ export function StationTrading({
     splitTradeFees,
   ]);
 
-  // Restore the persisted system at mount when it differs from the parent
-  // default. The station ID itself is still applied by the station-load effect
-  // once the lookup resolves.
+  // Restore the persisted system once the config fetch below lands (was:
+  // once at mount, back when the value was available synchronously from
+  // localStorage). If the restored system already matches the parent's
+  // default, nothing here needs to change it -- but the station itself still
+  // needs the load-stations effect below to re-run and notice the now
+  // -populated ref, which is why that effect also depends on
+  // stationConfigReady rather than only on params.system_name.
   useEffect(() => {
+    if (!stationConfigReady) return;
     const stored = pendingStationLocationRef.current;
     if (!stored) return;
     const current = (params.system_name ?? "").trim().toLowerCase();
     if (stored.systemName.toLowerCase() === current) return;
     onChange?.({ ...params, system_name: stored.systemName });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [stationConfigReady]);
 
-  // Load stations when system changes
+  // Load stations when system changes (or once the persisted station becomes
+  // available to re-select, even if the system name didn't need to change).
   useEffect(() => {
     const systemName = (params.system_name ?? "").trim();
     if (!systemName) {
@@ -1313,17 +1295,23 @@ export function StationTrading({
         if (isCurrent()) setLoadingStations(false);
       });
     return () => controller.abort();
-  }, [params.system_name]);
+  }, [params.system_name, stationConfigReady]);
 
-  // Persist the active system + selected station so they survive refresh.
+  // Persist the active system + selected station so they survive refresh
+  // (server-side, so it follows your login -- see stationConfigLoadedRef).
   useEffect(() => {
+    if (!stationConfigLoadedRef.current) return;
     const systemName = (params.system_name ?? "").trim();
     if (!systemName) return;
-    savePersistedStationLocation({ systemName, stationId: selectedStationId });
+    void updateConfig({
+      station_system_name: systemName,
+      station_station_id: selectedStationId,
+    });
   }, [params.system_name, selectedStationId]);
 
   useEffect(() => {
-    saveIgnoredCategories(ignoredCategoryIds);
+    if (!stationConfigLoadedRef.current) return;
+    void updateConfig({ station_ignored_categories: [...ignoredCategoryIds] });
   }, [ignoredCategoryIds]);
 
   // Fetch structures when toggle is enabled

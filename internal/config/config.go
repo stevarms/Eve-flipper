@@ -92,6 +92,48 @@ type Config struct {
 	WindowY             int    `json:"window_y"`
 	WindowW             int    `json:"window_w"`
 	WindowH             int    `json:"window_h"`
+
+	// PLEX alert thresholds (PlexAlerts.tsx). Below/Above are ISK prices;
+	// 0 means that side is off, the same convention the client already used
+	// when this lived in localStorage.
+	PlexAlertsEnabled       bool    `json:"plex_alerts_enabled"`
+	PlexAlertBelowPrice     float64 `json:"plex_alert_below_price"`
+	PlexAlertAbovePrice     float64 `json:"plex_alert_above_price"`
+	PlexAlertOnCCPSale      bool    `json:"plex_alert_on_ccp_sale"`
+	PlexAlertOnSignalChange bool    `json:"plex_alert_on_signal_change"`
+
+	// Station Trading's persisted working context (StationTrading.tsx).
+	// StationIgnoredCategories is a set, stored and sent as a plain slice.
+	StationSystemName        string  `json:"station_system_name"`
+	StationStationID         int64   `json:"station_station_id"`
+	StationDiscountBidTarget float64 `json:"station_discount_bid_target"`
+	StationOperatorMode      bool    `json:"station_operator_mode"`
+	StationIgnoredCategories []int32 `json:"station_ignored_categories"`
+
+	// PI Factory's settings panel (PIFactory.tsx's PersistedSettings).
+	PIFactorySystemName   string  `json:"pi_factory_system_name"`
+	PIFactoryStationID    int64   `json:"pi_factory_station_id"`
+	PIFactoryPocoTaxPct   float64 `json:"pi_factory_poco_tax_pct"`
+	PIFactorySalesTaxPct  float64 `json:"pi_factory_sales_tax_pct"`
+	PIFactoryBrokerFeePct float64 `json:"pi_factory_broker_fee_pct"`
+	PIFactoryBufferDays   float64 `json:"pi_factory_buffer_days"`
+	PIFactoryLaunchpadM3  float64 `json:"pi_factory_launchpad_m3"`
+
+	// OrdersPrefsJSON is the Order Desk's sort/filter/threshold prefs, stored
+	// opaquely -- ordersPrefs.ts's normalizeOrdersPrefs already tolerates
+	// anything on the way in, so the server does not need to understand the
+	// shape, only round-trip it. Empty means "nothing saved yet."
+	OrdersPrefsJSON string `json:"orders_prefs_json"`
+
+	// ActivePresetIDsJSON maps a PresetPicker tab to the id of the preset
+	// currently applied there -- a builtin preset's id (e.g. "flip-normal")
+	// or a saved_presets row's id, PresetPicker.tsx treats both the same way.
+	// Opaque JSON for the same reason OrdersPrefsJSON is: the id space is the
+	// frontend's to define, the server only round-trips it. This is the
+	// "current selection" pointer that used to live in a separate
+	// eve-flipper-active-preset-${tab} localStorage key per tab; the actual
+	// saved preset data it can point to lives in the saved_presets table.
+	ActivePresetIDsJSON string `json:"active_preset_ids_json"`
 }
 
 // Default returns a Config with sensible defaults.
@@ -123,5 +165,17 @@ func Default() *Config {
 		Opacity:            230,
 		WindowW:            800,
 		WindowH:            600,
+
+		StationDiscountBidTarget: 0.5,
+
+		// Matches PIFactory.tsx's own DEFAULT_SETTINGS -- Jita IV-4, the same
+		// hub the rest of the app defaults new campaigns and scans to.
+		PIFactorySystemName:   "Jita",
+		PIFactoryStationID:    60003760,
+		PIFactoryPocoTaxPct:   15,
+		PIFactorySalesTaxPct:  4.5,
+		PIFactoryBrokerFeePct: 3,
+		PIFactoryBufferDays:   7,
+		PIFactoryLaunchpadM3:  10000,
 	}
 }

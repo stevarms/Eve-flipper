@@ -1,5 +1,3 @@
-const STORAGE_KEY = "eve-flipper-presets";
-
 export type PresetTab =
   | "flipper"
   | "region"
@@ -75,7 +73,7 @@ const USER_BOUND_PRESET_KEYS = new Set<string>([
   "ignored_system_ids",
 ]);
 
-function isPresetTab(value: unknown): value is PresetTab {
+export function isPresetTab(value: unknown): value is PresetTab {
   return typeof value === "string" && PRESET_TAB_SET.has(value as PresetTab);
 }
 
@@ -525,103 +523,42 @@ export function getPresetsForTab(tab: string): BuiltinPreset[] {
   return BUILTIN_PRESETS.filter((p) => p.tab === mapTabToPresetTab(tab));
 }
 
-// ── Storage helpers ──
+// ── Custom preset helpers ──
+//
+// Custom presets themselves now live server-side (saved_presets, via
+// api.ts's getSavedPresets/createSavedPreset/updateSavedPreset/
+// deleteSavedPreset) so they follow your login across browsers -- these are
+// now pure functions over a list PresetPicker already has in state, rather
+// than a localStorage-backed store this module owned outright.
 
-function loadAllCustomPresets(): SavedPreset[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-
-    let changed = false;
-    const normalized: SavedPreset[] = [];
-
-    for (const item of parsed) {
-      if (!item || typeof item !== "object") {
-        changed = true;
-        continue;
-      }
-      const id = typeof item.id === "string" ? item.id.trim() : "";
-      const name = typeof item.name === "string" ? item.name.trim() : "";
-      const params =
-        item.params && typeof item.params === "object" && !Array.isArray(item.params)
-          ? sanitizePresetParams(item.params as Record<string, any>)
-          : null;
-      if (!id || !name || !params) {
-        changed = true;
-        continue;
-      }
-
-      let tab: PresetTab = "flipper";
-      if (isPresetTab(item.tab)) {
-        tab = item.tab;
-      } else {
-        changed = true;
-      }
-
-      const createdAt =
-        typeof item.createdAt === "number" && Number.isFinite(item.createdAt)
-          ? item.createdAt
-          : undefined;
-
-      normalized.push({ id, name, tab, params, createdAt });
-    }
-
-    if (changed) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
-    }
-    return normalized;
-  } catch {
-    return [];
-  }
-}
-
-export function loadCustomPresets(tab?: string): SavedPreset[] {
-  const all = loadAllCustomPresets();
-  if (!tab) return all;
+export function filterPresetsForTab<T extends { tab: string }>(all: T[], tab: string): T[] {
   const presetTab = mapTabToPresetTab(tab);
   return all.filter((p) => p.tab === presetTab);
-}
-
-export function saveCustomPreset(preset: SavedPreset): void {
-  const list = loadAllCustomPresets();
-  const idx = list.findIndex((p) => p.id === preset.id);
-  if (idx >= 0) list[idx] = preset;
-  else list.push(preset);
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
-}
-
-export function deleteCustomPreset(id: string): void {
-  const list = loadAllCustomPresets().filter((p) => p.id !== id);
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
 }
 
 export function applyPreset<T>(current: T, presetParams: Partial<T>): T {
   return { ...current, ...presetParams };
 }
 
-export function nextPresetId(): string {
-  return `custom-${Date.now()}`;
-}
-
 // ── Export / Import ──
+//
+// Both take/return plain data now instead of touching storage directly --
+// the caller (PresetPicker) holds the current list from the server and is
+// responsible for actually creating whatever importPresets hands back.
 
-export function exportPresets(): string {
-  return JSON.stringify(loadAllCustomPresets(), null, 2);
+export function exportPresets(presets: SavedPreset[]): string {
+  return JSON.stringify(presets, null, 2);
 }
 
-export function importPresets(
+export function parseImportedPresets(
   json: string,
-): { imported: number; error?: string } {
+): { presets: SavedPreset[]; error?: string } {
   try {
     const parsed = JSON.parse(json);
     if (!Array.isArray(parsed)) {
-      return { imported: 0, error: "Invalid format: expected array" };
+      return { presets: [], error: "Invalid format: expected array" };
     }
-    const existing = loadAllCustomPresets();
-    const existingIds = new Set(existing.map((p) => p.id));
-    let imported = 0;
+    const out: SavedPreset[] = [];
     for (const item of parsed) {
       if (!item || typeof item !== "object") continue;
       const id = typeof item.id === "string" ? item.id.trim() : "";
@@ -630,27 +567,17 @@ export function importPresets(
         item.params && typeof item.params === "object" && !Array.isArray(item.params)
           ? sanitizePresetParams(item.params as Record<string, any>)
           : null;
-      if (!id || !name || !params) continue;
+      if (!name || !params) continue;
 
       const tab: PresetTab = isPresetTab(item.tab) ? item.tab : "flipper";
       const createdAt =
         typeof item.createdAt === "number" && Number.isFinite(item.createdAt)
           ? item.createdAt
           : undefined;
-      const normalized: SavedPreset = { id, name, tab, params, createdAt };
-
-      if (existingIds.has(id)) {
-        const idx = existing.findIndex((p) => p.id === id);
-        if (idx >= 0) existing[idx] = normalized;
-      } else {
-        existing.push(normalized);
-        existingIds.add(id);
-      }
-      imported++;
+      out.push({ id, name, tab, params, createdAt });
     }
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(existing));
-    return { imported };
+    return { presets: out };
   } catch {
-    return { imported: 0, error: "Invalid JSON" };
+    return { presets: [], error: "Invalid JSON" };
   }
 }

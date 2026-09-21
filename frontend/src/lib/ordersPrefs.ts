@@ -47,8 +47,6 @@ export const ORDERS_REFRESH_CHOICES: readonly number[] = [0, 1, 3, 5, 10];
  *  roughly current when you come back to it. */
 export const ORDERS_DEFAULT_REFRESH_MINUTES = 3;
 
-export const ORDERS_PREFS_LS_KEY = "eve-flipper:orders-prefs:v1";
-
 /** How long an order is allowed to take before the desk calls it slow. Also
  *  sets the depth cutoff: an order more than half this far down the queue is
  *  reported as buried rather than on track. */
@@ -275,23 +273,6 @@ export function normalizeOrdersPrefs(raw: string | null): OrdersPrefs {
   }
 
   return prefs;
-}
-
-export function loadOrdersPrefs(): OrdersPrefs {
-  try {
-    return normalizeOrdersPrefs(localStorage.getItem(ORDERS_PREFS_LS_KEY));
-  } catch {
-    // Storage can throw outright in a locked-down browser profile.
-    return defaultPrefs();
-  }
-}
-
-export function saveOrdersPrefs(prefs: OrdersPrefs): void {
-  try {
-    localStorage.setItem(ORDERS_PREFS_LS_KEY, JSON.stringify(prefs));
-  } catch {
-    // Preferences are a convenience; losing them must not break the tab.
-  }
 }
 
 /** Direction a column should take when it is first clicked. Names read

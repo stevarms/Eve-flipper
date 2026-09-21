@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getCharacterInfo, getPLEXDashboard, type CharacterScope, type PLEXDashboardParams } from "../lib/api";
+import { getCharacterInfo, getConfig, getPLEXDashboard, updateConfig, type CharacterScope, type PLEXDashboardParams } from "../lib/api";
 import { type TranslationKey, useI18n } from "../lib/i18n";
 import { formatISK } from "../lib/format";
 import { useTheme } from "../lib/useTheme";
 import type { PLEXDashboard, ArbitragePath, ScanParams } from "../lib/types";
 import { normalizeTaxProfile, type TaxProfile } from "../lib/taxProfile";
-import { usePlexAlerts, PlexAlertPanel } from "./PlexAlerts";
+import { usePlexAlerts, PlexAlertPanel, DEFAULT_PLEX_ALERT_CONFIG, type PlexAlertConfig } from "./PlexAlerts";
 import { SignalCard, GlobalPriceCard, ArbitrageRow, SpreadRow, MarketDepthCard, InjectionTiersCard } from "./plex-tab/PlexMarketCards";
 import { SPFarmCard } from "./plex-tab/SPFarmCard";
 import { ArbHistoryChart, PLEXChart } from "./plex-tab/PlexCharts";
@@ -196,8 +196,63 @@ export function PlexTab({ isLoggedIn = false, activeCharacterId, taxProfile, onT
   const [showAlerts, setShowAlerts] = useState(false);
   const [subTab, setSubTab] = useState<PlexSubTab>("market");
 
+  // PLEX alert thresholds -- server-side (AppConfig), so they follow your
+  // login rather than staying stuck in whichever browser set them. One copy
+  // here feeds both the notification checker and the panel that edits it;
+  // the two used to keep independent copies (the checker read localStorage
+  // once into a ref, the panel had its own useState), so an edit never took
+  // effect until a reload.
+  const [plexAlertConfig, setPlexAlertConfig] = useState<PlexAlertConfig>(DEFAULT_PLEX_ALERT_CONFIG);
+  const plexAlertConfigLoadedRef = useRef(false);
+  const plexAlertSaveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getConfig()
+      .then((cfg) => {
+        if (cancelled) return;
+        setPlexAlertConfig({
+          enabled: cfg.plex_alerts_enabled ?? DEFAULT_PLEX_ALERT_CONFIG.enabled,
+          belowPrice: cfg.plex_alert_below_price ?? DEFAULT_PLEX_ALERT_CONFIG.belowPrice,
+          abovePrice: cfg.plex_alert_above_price ?? DEFAULT_PLEX_ALERT_CONFIG.abovePrice,
+          onCCPSale: cfg.plex_alert_on_ccp_sale ?? DEFAULT_PLEX_ALERT_CONFIG.onCCPSale,
+          onSignalChange: cfg.plex_alert_on_signal_change ?? DEFAULT_PLEX_ALERT_CONFIG.onSignalChange,
+        });
+      })
+      .catch(() => {})
+      .finally(() => {
+        plexAlertConfigLoadedRef.current = true;
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const updatePlexAlertConfig = useCallback((patch: Partial<PlexAlertConfig>) => {
+    setPlexAlertConfig((prev) => {
+      const next = { ...prev, ...patch };
+      // Guard against saving the placeholder defaults over real server state
+      // while the initial fetch above is still in flight.
+      if (plexAlertConfigLoadedRef.current) {
+        clearTimeout(plexAlertSaveTimerRef.current);
+        plexAlertSaveTimerRef.current = setTimeout(() => {
+          void updateConfig({
+            plex_alerts_enabled: next.enabled,
+            plex_alert_below_price: next.belowPrice,
+            plex_alert_above_price: next.abovePrice,
+            plex_alert_on_ccp_sale: next.onCCPSale,
+            plex_alert_on_signal_change: next.onSignalChange,
+          });
+        }, 500);
+      }
+      return next;
+    });
+  }, []);
+
+  useEffect(() => () => clearTimeout(plexAlertSaveTimerRef.current), []);
+
   // PLEX alerts (Browser Notification API)
-  usePlexAlerts(dashboard);
+  usePlexAlerts(dashboard, plexAlertConfig);
 
   const signal = dashboard?.signal;
   const ind = dashboard?.indicators;
@@ -333,7 +388,13 @@ export function PlexTab({ isLoggedIn = false, activeCharacterId, taxProfile, onT
           >
             🔔
           </button>
-          {showAlerts && <PlexAlertPanel onClose={() => setShowAlerts(false)} />}
+          {showAlerts && (
+            <PlexAlertPanel
+              cfg={plexAlertConfig}
+              onChange={updatePlexAlertConfig}
+              onClose={() => setShowAlerts(false)}
+            />
+          )}
         </div>
         {error && <span className="text-xs text-eve-error">{error}</span>}
       </div>

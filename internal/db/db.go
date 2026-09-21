@@ -2303,6 +2303,63 @@ func (d *DB) migrate() error {
 		logger.Info("DB", "Applied migration v54 (FW campaigns: per-item ship-always / never-ship overrides)")
 	}
 
+	if version < 55 {
+		// Scan presets, following your login the same way cockpit_loadouts
+		// does -- a named opaque payload per user, with one active flag. Here
+		// the "one" is per (user, tab): flipper and station each remember
+		// their own active choice today via separate localStorage keys, so
+		// the partial unique index needs tab in it, not just user_id like
+		// cockpit_loadouts'.
+		_, err := d.sql.Exec(`
+			CREATE TABLE IF NOT EXISTS saved_presets (
+				user_id      TEXT NOT NULL,
+				preset_id    TEXT NOT NULL,
+				tab          TEXT NOT NULL,
+				name         TEXT NOT NULL,
+				payload_json TEXT NOT NULL,
+				is_active    INTEGER NOT NULL DEFAULT 0,
+				created_at   TEXT NOT NULL,
+				updated_at   TEXT NOT NULL,
+				PRIMARY KEY (user_id, preset_id)
+			);
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_saved_presets_active
+				ON saved_presets(user_id, tab)
+				WHERE is_active = 1;
+
+			INSERT OR IGNORE INTO schema_version (version) VALUES (55);
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v55: %w", err)
+		}
+		logger.Info("DB", "Applied migration v55 (saved scan presets)")
+	}
+
+	if version < 56 {
+		// PI Factory's portfolio: one row per planned factory line. Ordering
+		// carried explicitly (sort_order) since a plain table has no order of
+		// its own, and there is exactly one implicit portfolio per user here
+		// -- not several named ones like stockpiles -- so no header table.
+		_, err := d.sql.Exec(`
+			CREATE TABLE IF NOT EXISTS pi_factory_entries (
+				user_id       TEXT NOT NULL,
+				client_id     TEXT NOT NULL,
+				name          TEXT NOT NULL,
+				schematic_id  INTEGER NOT NULL,
+				factory_count INTEGER NOT NULL,
+				sort_order    INTEGER NOT NULL,
+				PRIMARY KEY (user_id, client_id)
+			);
+			CREATE INDEX IF NOT EXISTS idx_pi_factory_entries_user
+				ON pi_factory_entries(user_id, sort_order);
+
+			INSERT OR IGNORE INTO schema_version (version) VALUES (56);
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v56: %w", err)
+		}
+		logger.Info("DB", "Applied migration v56 (PI Factory portfolio)")
+	}
+
 	return nil
 }
 

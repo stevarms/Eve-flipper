@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getOrderDesk } from "../lib/api";
+import { getConfig, getOrderDesk } from "../lib/api";
 import type { OrderDeskSummary } from "../lib/types";
-import { loadOrdersPrefs } from "../lib/ordersPrefs";
+import { normalizeOrdersPrefs } from "../lib/ordersPrefs";
 import { useI18n } from "../lib/i18n";
 
 // OrdersPill — always-visible chip in the app's top bar showing how many
@@ -40,8 +40,12 @@ export function OrdersPill({ isLoggedIn, onOpen, refreshKey }: Props) {
       setLoading(true);
       try {
         // Same thresholds the tab uses, or the badge would count a
-        // different set of rows than the table it links to.
-        const prefs = loadOrdersPrefs();
+        // different set of rows than the table it links to. Read straight
+        // from the server (not a locally cached copy) since the Orders tab
+        // that owns this config may be running -- and its config may have
+        // last been edited -- on a different browser than this pill.
+        const cfg = await getConfig().catch(() => null);
+        const prefs = normalizeOrdersPrefs(cfg?.orders_prefs_json ?? null);
         const resp = await getOrderDesk({
           characterId: "all",
           force,
@@ -71,10 +75,14 @@ export function OrdersPill({ isLoggedIn, onOpen, refreshKey }: Props) {
   // one.
   useEffect(() => {
     const onFocus = () => {
-      const { refreshMinutes } = loadOrdersPrefs();
-      const gapMs = (refreshMinutes > 0 ? refreshMinutes : 10) * 60_000;
-      if (Date.now() - lastLoadedAtRef.current < gapMs) return;
-      void load();
+      void getConfig()
+        .catch(() => null)
+        .then((cfg) => {
+          const { refreshMinutes } = normalizeOrdersPrefs(cfg?.orders_prefs_json ?? null);
+          const gapMs = (refreshMinutes > 0 ? refreshMinutes : 10) * 60_000;
+          if (Date.now() - lastLoadedAtRef.current < gapMs) return;
+          void load();
+        });
     };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);

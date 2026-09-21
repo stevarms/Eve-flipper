@@ -174,6 +174,43 @@ func (d *DB) LoadConfigForUser(userID string) *config.Config {
 	cfg.WindowW = parseInt("window_w", cfg.WindowW)
 	cfg.WindowH = parseInt("window_h", cfg.WindowH)
 
+	cfg.PlexAlertsEnabled = parseBool("plex_alerts_enabled", cfg.PlexAlertsEnabled)
+	cfg.PlexAlertBelowPrice = parseFloat("plex_alert_below_price", cfg.PlexAlertBelowPrice)
+	cfg.PlexAlertAbovePrice = parseFloat("plex_alert_above_price", cfg.PlexAlertAbovePrice)
+	cfg.PlexAlertOnCCPSale = parseBool("plex_alert_on_ccp_sale", cfg.PlexAlertOnCCPSale)
+	cfg.PlexAlertOnSignalChange = parseBool("plex_alert_on_signal_change", cfg.PlexAlertOnSignalChange)
+
+	if v, ok := m["station_system_name"]; ok {
+		cfg.StationSystemName = v
+	}
+	cfg.StationStationID = parseInt64("station_station_id", cfg.StationStationID)
+	cfg.StationDiscountBidTarget = parseFloat("station_discount_bid_target", cfg.StationDiscountBidTarget)
+	cfg.StationOperatorMode = parseBool("station_operator_mode", cfg.StationOperatorMode)
+	if v, ok := m["station_ignored_categories"]; ok {
+		var ids []int32
+		if err := json.Unmarshal([]byte(v), &ids); err == nil {
+			cfg.StationIgnoredCategories = ids
+		}
+	}
+
+	if v, ok := m["pi_factory_system_name"]; ok {
+		cfg.PIFactorySystemName = v
+	}
+	cfg.PIFactoryStationID = parseInt64("pi_factory_station_id", cfg.PIFactoryStationID)
+	cfg.PIFactoryPocoTaxPct = parseFloat("pi_factory_poco_tax_pct", cfg.PIFactoryPocoTaxPct)
+	cfg.PIFactorySalesTaxPct = parseFloat("pi_factory_sales_tax_pct", cfg.PIFactorySalesTaxPct)
+	cfg.PIFactoryBrokerFeePct = parseFloat("pi_factory_broker_fee_pct", cfg.PIFactoryBrokerFeePct)
+	cfg.PIFactoryBufferDays = parseFloat("pi_factory_buffer_days", cfg.PIFactoryBufferDays)
+	cfg.PIFactoryLaunchpadM3 = parseFloat("pi_factory_launchpad_m3", cfg.PIFactoryLaunchpadM3)
+
+	if v, ok := m["orders_prefs_json"]; ok {
+		cfg.OrdersPrefsJSON = v
+	}
+
+	if v, ok := m["active_preset_ids_json"]; ok {
+		cfg.ActivePresetIDsJSON = v
+	}
+
 	return cfg
 }
 
@@ -197,6 +234,10 @@ func (d *DB) SaveConfigForUser(userID string, cfg *config.Config) error {
 	categoryIDsJSON := "[]"
 	if b, err := json.Marshal(cfg.CategoryIDs); err == nil {
 		categoryIDsJSON = string(b)
+	}
+	stationIgnoredCategoriesJSON := "[]"
+	if b, err := json.Marshal(cfg.StationIgnoredCategories); err == nil {
+		stationIgnoredCategoriesJSON = string(b)
 	}
 
 	pairs := map[string]string{
@@ -244,6 +285,30 @@ func (d *DB) SaveConfigForUser(userID string, cfg *config.Config) error {
 		"window_y":                  strconv.Itoa(cfg.WindowY),
 		"window_w":                  strconv.Itoa(cfg.WindowW),
 		"window_h":                  strconv.Itoa(cfg.WindowH),
+
+		"plex_alerts_enabled":         strconv.FormatBool(cfg.PlexAlertsEnabled),
+		"plex_alert_below_price":      fmt.Sprintf("%g", cfg.PlexAlertBelowPrice),
+		"plex_alert_above_price":      fmt.Sprintf("%g", cfg.PlexAlertAbovePrice),
+		"plex_alert_on_ccp_sale":      strconv.FormatBool(cfg.PlexAlertOnCCPSale),
+		"plex_alert_on_signal_change": strconv.FormatBool(cfg.PlexAlertOnSignalChange),
+
+		"station_system_name":         cfg.StationSystemName,
+		"station_station_id":          strconv.FormatInt(cfg.StationStationID, 10),
+		"station_discount_bid_target": fmt.Sprintf("%g", cfg.StationDiscountBidTarget),
+		"station_operator_mode":       strconv.FormatBool(cfg.StationOperatorMode),
+		"station_ignored_categories":  stationIgnoredCategoriesJSON,
+
+		"pi_factory_system_name":    cfg.PIFactorySystemName,
+		"pi_factory_station_id":     strconv.FormatInt(cfg.PIFactoryStationID, 10),
+		"pi_factory_poco_tax_pct":   fmt.Sprintf("%g", cfg.PIFactoryPocoTaxPct),
+		"pi_factory_sales_tax_pct":  fmt.Sprintf("%g", cfg.PIFactorySalesTaxPct),
+		"pi_factory_broker_fee_pct": fmt.Sprintf("%g", cfg.PIFactoryBrokerFeePct),
+		"pi_factory_buffer_days":    fmt.Sprintf("%g", cfg.PIFactoryBufferDays),
+		"pi_factory_launchpad_m3":   fmt.Sprintf("%g", cfg.PIFactoryLaunchpadM3),
+
+		"orders_prefs_json": cfg.OrdersPrefsJSON,
+
+		"active_preset_ids_json": cfg.ActivePresetIDsJSON,
 	}
 
 	storedPairs := make(map[string]string, len(pairs))

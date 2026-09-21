@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   getAuthStatus,
+  getConfig,
   getOrderDesk,
   getOrderDisposition,
   getUndercuts,
+  updateConfig,
 } from "../lib/api";
 import type { CharacterMarketFees } from "../lib/api";
 import type {
@@ -19,8 +21,8 @@ import type {
 import { useEsiFeeImport } from "../lib/useEsiFeeImport";
 import {
   applySortClick,
-  loadOrdersPrefs,
-  saveOrdersPrefs,
+  normalizeOrdersPrefs,
+  ORDERS_DEFAULT_PREFS,
   ORDERS_LOWBALL_PCT_MAX,
   ORDERS_LOWBALL_PCT_MIN,
   ORDERS_MIN_MARGIN_PCT_MAX,
@@ -199,7 +201,12 @@ export function Orders({ isLoggedIn, focus, onFocusConsumed }: Props) {
   const [brokerFee, setBrokerFee] = useState<number>(1);
   const [characterFilter, setCharacterFilter] = useState<Set<number>>(new Set());
   const [authCharacters, setAuthCharacters] = useState<AuthCharacter[]>([]);
-  const [prefs, setPrefs] = useState<OrdersPrefs>(() => loadOrdersPrefs());
+  // Server-side (AppConfig's orders_prefs_json) so the desk's sort, filters
+  // and thresholds follow your login across browsers -- starts at defaults
+  // since the fetch below can't complete before first render.
+  const [prefs, setPrefs] = useState<OrdersPrefs>(ORDERS_DEFAULT_PREFS);
+  const prefsLoadedRef = useRef(false);
+  const prefsSaveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const [lastLoadedAt, setLastLoadedAt] = useState<number>(0);
   const [now, setNow] = useState<number>(() => Date.now());
 
@@ -227,10 +234,32 @@ export function Orders({ isLoggedIn, focus, onFocusConsumed }: Props) {
 
   const refreshMs = prefs.refreshMinutes * 60_000;
 
+  useEffect(() => {
+    let cancelled = false;
+    void getConfig()
+      .then((cfg) => {
+        if (cancelled) return;
+        setPrefs(normalizeOrdersPrefs(cfg.orders_prefs_json ?? null));
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (cancelled) return;
+        prefsLoadedRef.current = true;
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const updatePrefs = useCallback((patch: Partial<OrdersPrefs>) => {
     setPrefs((prev) => {
       const next = { ...prev, ...patch };
-      saveOrdersPrefs(next);
+      if (prefsLoadedRef.current) {
+        clearTimeout(prefsSaveTimerRef.current);
+        prefsSaveTimerRef.current = setTimeout(() => {
+          void updateConfig({ orders_prefs_json: JSON.stringify(next) });
+        }, 500);
+      }
       return next;
     });
   }, []);

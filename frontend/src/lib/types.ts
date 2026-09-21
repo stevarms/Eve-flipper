@@ -1600,6 +1600,41 @@ export interface AppConfig {
   window_y: number;
   window_w: number;
   window_h: number;
+
+  /** PLEX alert thresholds (PlexAlerts.tsx). below/above of 0 means that
+   *  side is off, the same convention the client used when this lived in
+   *  localStorage. */
+  plex_alerts_enabled?: boolean;
+  plex_alert_below_price?: number;
+  plex_alert_above_price?: number;
+  plex_alert_on_ccp_sale?: boolean;
+  plex_alert_on_signal_change?: boolean;
+
+  /** Station Trading's persisted working context (StationTrading.tsx). */
+  station_system_name?: string;
+  station_station_id?: number;
+  station_discount_bid_target?: number;
+  station_operator_mode?: boolean;
+  station_ignored_categories?: number[];
+
+  /** PI Factory's settings panel (PIFactory.tsx's PersistedSettings). */
+  pi_factory_system_name?: string;
+  pi_factory_station_id?: number;
+  pi_factory_poco_tax_pct?: number;
+  pi_factory_sales_tax_pct?: number;
+  pi_factory_broker_fee_pct?: number;
+  pi_factory_buffer_days?: number;
+  pi_factory_launchpad_m3?: number;
+
+  /** The Order Desk's sort/filter/threshold prefs, round-tripped opaquely --
+   *  parse with normalizeOrdersPrefs, never assume the shape here. */
+  orders_prefs_json?: string;
+
+  /** PresetPicker's "which preset is currently applied on this tab" pointer
+   *  -- a JSON object of {[tab]: presetId}, presetId being a builtin id or a
+   *  saved_presets row's id. Round-tripped opaquely; parse, never assume
+   *  the shape here. */
+  active_preset_ids_json?: string;
 }
 
 export interface AppStatus {

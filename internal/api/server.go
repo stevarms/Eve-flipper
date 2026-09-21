@@ -899,6 +899,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/cockpit/loadouts/{loadoutID}", s.handleUpdateCockpitLoadout)
 	mux.HandleFunc("POST /api/cockpit/loadouts/{loadoutID}/activate", s.handleActivateCockpitLoadout)
 	mux.HandleFunc("DELETE /api/cockpit/loadouts/{loadoutID}", s.handleDeleteCockpitLoadout)
+	mux.HandleFunc("GET /api/presets", s.handleGetSavedPresets)
+	mux.HandleFunc("POST /api/presets", s.handleCreateSavedPreset)
+	mux.HandleFunc("PUT /api/presets/{presetID}", s.handleUpdateSavedPreset)
+	mux.HandleFunc("POST /api/presets/{presetID}/activate", s.handleActivateSavedPreset)
+	mux.HandleFunc("DELETE /api/presets/{presetID}", s.handleDeleteSavedPreset)
 	mux.HandleFunc("POST /api/alerts/test", s.handleAlertsTest)
 	mux.HandleFunc("GET /api/systems", s.handleGetSystems)
 	mux.HandleFunc("GET /api/systems/autocomplete", s.handleAutocomplete)
@@ -933,6 +938,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/market/hub-allocate", s.handleHubAllocate)
 	mux.HandleFunc("GET /api/pi/schematics", s.handlePISchematics)
 	mux.HandleFunc("POST /api/pi/factory-plan", s.handlePIFactoryPlan)
+	mux.HandleFunc("GET /api/pi/portfolio", s.handleGetPIFactoryPortfolio)
+	mux.HandleFunc("PUT /api/pi/portfolio", s.handlePutPIFactoryPortfolio)
 	mux.HandleFunc("GET /api/stations", s.handleGetStations)
 	mux.HandleFunc("GET /api/scan/history", s.handleGetHistory)
 	mux.HandleFunc("GET /api/scan/history/{id}", s.handleGetHistoryByID)
@@ -2154,6 +2161,63 @@ func (s *Server) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 	if v, ok := patch["opacity"]; ok {
 		json.Unmarshal(v, &cfg.Opacity)
 	}
+	if v, ok := patch["plex_alerts_enabled"]; ok {
+		json.Unmarshal(v, &cfg.PlexAlertsEnabled)
+	}
+	if v, ok := patch["plex_alert_below_price"]; ok {
+		json.Unmarshal(v, &cfg.PlexAlertBelowPrice)
+	}
+	if v, ok := patch["plex_alert_above_price"]; ok {
+		json.Unmarshal(v, &cfg.PlexAlertAbovePrice)
+	}
+	if v, ok := patch["plex_alert_on_ccp_sale"]; ok {
+		json.Unmarshal(v, &cfg.PlexAlertOnCCPSale)
+	}
+	if v, ok := patch["plex_alert_on_signal_change"]; ok {
+		json.Unmarshal(v, &cfg.PlexAlertOnSignalChange)
+	}
+	if v, ok := patch["station_system_name"]; ok {
+		json.Unmarshal(v, &cfg.StationSystemName)
+	}
+	if v, ok := patch["station_station_id"]; ok {
+		json.Unmarshal(v, &cfg.StationStationID)
+	}
+	if v, ok := patch["station_discount_bid_target"]; ok {
+		json.Unmarshal(v, &cfg.StationDiscountBidTarget)
+	}
+	if v, ok := patch["station_operator_mode"]; ok {
+		json.Unmarshal(v, &cfg.StationOperatorMode)
+	}
+	if v, ok := patch["station_ignored_categories"]; ok {
+		json.Unmarshal(v, &cfg.StationIgnoredCategories)
+	}
+	if v, ok := patch["pi_factory_system_name"]; ok {
+		json.Unmarshal(v, &cfg.PIFactorySystemName)
+	}
+	if v, ok := patch["pi_factory_station_id"]; ok {
+		json.Unmarshal(v, &cfg.PIFactoryStationID)
+	}
+	if v, ok := patch["pi_factory_poco_tax_pct"]; ok {
+		json.Unmarshal(v, &cfg.PIFactoryPocoTaxPct)
+	}
+	if v, ok := patch["pi_factory_sales_tax_pct"]; ok {
+		json.Unmarshal(v, &cfg.PIFactorySalesTaxPct)
+	}
+	if v, ok := patch["pi_factory_broker_fee_pct"]; ok {
+		json.Unmarshal(v, &cfg.PIFactoryBrokerFeePct)
+	}
+	if v, ok := patch["pi_factory_buffer_days"]; ok {
+		json.Unmarshal(v, &cfg.PIFactoryBufferDays)
+	}
+	if v, ok := patch["pi_factory_launchpad_m3"]; ok {
+		json.Unmarshal(v, &cfg.PIFactoryLaunchpadM3)
+	}
+	if v, ok := patch["orders_prefs_json"]; ok {
+		json.Unmarshal(v, &cfg.OrdersPrefsJSON)
+	}
+	if v, ok := patch["active_preset_ids_json"]; ok {
+		json.Unmarshal(v, &cfg.ActivePresetIDsJSON)
+	}
 	if len(cfg.IgnoredSystemIDs) > 0 {
 		s.mu.RLock()
 		var systems map[int32]*sde.SolarSystem
@@ -2305,6 +2369,68 @@ func (s *Server) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 	// Keep at least one alert channel enabled.
 	if !cfg.AlertTelegram && !cfg.AlertDiscord && !cfg.AlertDesktop {
 		cfg.AlertDesktop = true
+	}
+	if cfg.PlexAlertBelowPrice < 0 {
+		cfg.PlexAlertBelowPrice = 0
+	}
+	if cfg.PlexAlertAbovePrice < 0 {
+		cfg.PlexAlertAbovePrice = 0
+	}
+	if cfg.StationStationID < 0 {
+		cfg.StationStationID = 0
+	}
+	// The same clamp StationTrading.tsx already applies before it ever hits
+	// localStorage: a fraction of the region average, never 0 (buy at
+	// nothing) or 1+ (no discount at all).
+	if cfg.StationDiscountBidTarget < 0.01 || cfg.StationDiscountBidTarget > 0.99 {
+		cfg.StationDiscountBidTarget = 0.5
+	}
+	{
+		clean := make([]int32, 0, len(cfg.StationIgnoredCategories))
+		seen := make(map[int32]bool, len(cfg.StationIgnoredCategories))
+		for _, id := range cfg.StationIgnoredCategories {
+			if id <= 0 || seen[id] {
+				continue
+			}
+			seen[id] = true
+			clean = append(clean, id)
+		}
+		cfg.StationIgnoredCategories = clean
+	}
+	if cfg.PIFactoryStationID < 0 {
+		cfg.PIFactoryStationID = 0
+	}
+	clampPct := func(v float64) float64 {
+		if v < 0 {
+			return 0
+		}
+		if v > 100 {
+			return 100
+		}
+		return v
+	}
+	cfg.PIFactoryPocoTaxPct = clampPct(cfg.PIFactoryPocoTaxPct)
+	cfg.PIFactorySalesTaxPct = clampPct(cfg.PIFactorySalesTaxPct)
+	cfg.PIFactoryBrokerFeePct = clampPct(cfg.PIFactoryBrokerFeePct)
+	if cfg.PIFactoryBufferDays < 1 {
+		cfg.PIFactoryBufferDays = 1
+	} else if cfg.PIFactoryBufferDays > 90 {
+		cfg.PIFactoryBufferDays = 90
+	}
+	if cfg.PIFactoryLaunchpadM3 < 0 {
+		cfg.PIFactoryLaunchpadM3 = 0
+	}
+	// Stored opaquely -- ordersPrefs.ts already validates its own shape on
+	// read -- but a bound stops one bad request from growing the row forever.
+	// Discarded rather than truncated: a truncated JSON string is not valid
+	// JSON, and a corrupt row is worse than an empty one here.
+	if len(cfg.OrdersPrefsJSON) > 8192 {
+		cfg.OrdersPrefsJSON = ""
+	}
+	// A handful of short ids per tab; the same discard-not-truncate rule as
+	// OrdersPrefsJSON above.
+	if len(cfg.ActivePresetIDsJSON) > 2048 {
+		cfg.ActivePresetIDsJSON = ""
 	}
 
 	if err := s.saveConfigForUser(userID, cfg); err != nil {

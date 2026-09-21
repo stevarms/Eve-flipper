@@ -3,8 +3,13 @@ import { formatISK } from "../lib/format";
 import { useI18n } from "../lib/i18n";
 import type { PLEXDashboard } from "../lib/types";
 
-/** Alert thresholds stored in localStorage */
-interface PlexAlertConfig {
+/** Alert thresholds. Stored server-side (AppConfig's plex_alert_* fields) so
+ *  they follow your login across browsers -- PlexTab owns the one copy of
+ *  this and passes it to both usePlexAlerts and PlexAlertPanel, which used
+ *  to each keep their own (the hook read localStorage once into a ref; the
+ *  panel had its own useState), so an edit in the panel never took effect
+ *  until a reload. */
+export interface PlexAlertConfig {
   enabled: boolean;
   belowPrice: number; // alert when PLEX sell price drops below this
   abovePrice: number; // alert when PLEX sell price rises above this
@@ -12,8 +17,7 @@ interface PlexAlertConfig {
   onSignalChange: boolean;
 }
 
-const STORAGE_KEY = "plex_alerts";
-const DEFAULT_CONFIG: PlexAlertConfig = {
+export const DEFAULT_PLEX_ALERT_CONFIG: PlexAlertConfig = {
   enabled: false,
   belowPrice: 0,
   abovePrice: 0,
@@ -21,28 +25,14 @@ const DEFAULT_CONFIG: PlexAlertConfig = {
   onSignalChange: true,
 };
 
-function loadConfig(): PlexAlertConfig {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return { ...DEFAULT_CONFIG, ...JSON.parse(raw) };
-  } catch { /* ignore */ }
-  return { ...DEFAULT_CONFIG };
-}
-
-function saveConfig(cfg: PlexAlertConfig) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg));
-}
-
 /** Hook: check dashboard data against alert thresholds and fire Browser Notifications */
-export function usePlexAlerts(dashboard: PLEXDashboard | null) {
+export function usePlexAlerts(dashboard: PLEXDashboard | null, cfg: PlexAlertConfig) {
   const lastSignalRef = useRef<string>("");
   const lastCCPSaleRef = useRef(false);
   const lastPriceAlertRef = useRef<string>(""); // dedup key
-  const configRef = useRef(loadConfig());
 
   const checkAlerts = useCallback(() => {
     if (!dashboard) return;
-    const cfg = configRef.current;
     if (!cfg.enabled) return;
     if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
 
@@ -91,42 +81,41 @@ export function usePlexAlerts(dashboard: PLEXDashboard | null) {
       });
     }
     if (signal) lastSignalRef.current = signal;
-  }, [dashboard]);
+  }, [dashboard, cfg]);
 
-  // Run check whenever dashboard updates
+  // Run check whenever dashboard updates, or the config the panel edited does.
   useEffect(() => {
     checkAlerts();
   }, [checkAlerts]);
-
-  return configRef;
 }
 
-/** Alert configuration panel (toggle in PlexTab top bar) */
-export function PlexAlertPanel({ onClose }: { onClose: () => void }) {
+/** Alert configuration panel (toggle in PlexTab top bar). Controlled: the
+ *  caller owns the config and is the one source of truth usePlexAlerts also
+ *  reads, so an edit here takes effect on the very next dashboard refresh. */
+export function PlexAlertPanel({
+  cfg,
+  onChange,
+  onClose,
+}: {
+  cfg: PlexAlertConfig;
+  onChange: (patch: Partial<PlexAlertConfig>) => void;
+  onClose: () => void;
+}) {
   const { t } = useI18n();
-  const [cfg, setCfg] = useState(loadConfig);
   const [permStatus, setPermStatus] = useState<NotificationPermission>(
     typeof Notification !== "undefined" ? Notification.permission : "denied"
   );
-
-  const updateCfg = (patch: Partial<PlexAlertConfig>) => {
-    setCfg(prev => {
-      const next = { ...prev, ...patch };
-      saveConfig(next);
-      return next;
-    });
-  };
 
   const handleEnable = async (checked: boolean) => {
     if (checked && typeof Notification !== "undefined" && Notification.permission === "default") {
       const perm = await Notification.requestPermission();
       setPermStatus(perm);
       if (perm !== "granted") {
-        updateCfg({ enabled: false });
+        onChange({ enabled: false });
         return;
       }
     }
-    updateCfg({ enabled: checked });
+    onChange({ enabled: checked });
   };
 
   return (
@@ -160,7 +149,7 @@ export function PlexAlertPanel({ onClose }: { onClose: () => void }) {
             min="0"
             step="100000"
             value={cfg.belowPrice || ""}
-            onChange={e => updateCfg({ belowPrice: parseFloat(e.target.value) || 0 })}
+            onChange={e => onChange({ belowPrice: parseFloat(e.target.value) || 0 })}
             placeholder="ISK"
             className="flex-1 px-1.5 py-0.5 bg-eve-input border border-eve-border rounded-sm text-xs text-eve-text font-mono"
           />
@@ -172,7 +161,7 @@ export function PlexAlertPanel({ onClose }: { onClose: () => void }) {
             min="0"
             step="100000"
             value={cfg.abovePrice || ""}
-            onChange={e => updateCfg({ abovePrice: parseFloat(e.target.value) || 0 })}
+            onChange={e => onChange({ abovePrice: parseFloat(e.target.value) || 0 })}
             placeholder="ISK"
             className="flex-1 px-1.5 py-0.5 bg-eve-input border border-eve-border rounded-sm text-xs text-eve-text font-mono"
           />
@@ -183,7 +172,7 @@ export function PlexAlertPanel({ onClose }: { onClose: () => void }) {
           <input
             type="checkbox"
             checked={cfg.onCCPSale}
-            onChange={e => updateCfg({ onCCPSale: e.target.checked })}
+            onChange={e => onChange({ onCCPSale: e.target.checked })}
             className="accent-eve-accent"
           />
           <span className="text-eve-text">{t("plexAlertCCPSale")}</span>
@@ -194,7 +183,7 @@ export function PlexAlertPanel({ onClose }: { onClose: () => void }) {
           <input
             type="checkbox"
             checked={cfg.onSignalChange}
-            onChange={e => updateCfg({ onSignalChange: e.target.checked })}
+            onChange={e => onChange({ onSignalChange: e.target.checked })}
             className="accent-eve-accent"
           />
           <span className="text-eve-text">{t("plexAlertSignal")}</span>

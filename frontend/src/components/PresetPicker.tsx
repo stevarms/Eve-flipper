@@ -2,18 +2,24 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { useI18n, type TranslationKey } from "@/lib/i18n";
 import { useGlobalToast } from "./Toast";
 import {
-  loadCustomPresets,
-  saveCustomPreset,
-  deleteCustomPreset,
-  nextPresetId,
+  filterPresetsForTab,
   exportPresets,
-  importPresets,
+  parseImportedPresets,
   mapTabToPresetTab,
   getPresetApplyBase,
   sanitizePresetParams,
-  type SavedPreset,
+  isPresetTab,
   type BuiltinPreset,
 } from "@/lib/presets";
+import {
+  getConfig,
+  updateConfig,
+  getSavedPresets,
+  createSavedPreset,
+  updateSavedPreset,
+  deleteSavedPreset,
+  type ServerSavedPreset,
+} from "@/lib/api";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 interface Props {
@@ -26,61 +32,122 @@ interface Props {
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
+/** Parses AppConfig's active_preset_ids_json -- a {[tab]: presetId} map --
+ *  tolerating anything, the same convention ordersPrefs.ts's
+ *  normalizeOrdersPrefs uses for its own opaque config blob. */
+function parseActivePresetIds(raw: string | undefined): Record<string, string> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, string> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value === "string" && value) out[key] = value;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 export function PresetPicker({ params, onApply, tab, builtinPresets, align = "left" }: Props) {
   const { t } = useI18n();
   const { addToast } = useGlobalToast();
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveName, setSaveName] = useState("");
-  const activeKey = `eve-flipper-active-preset-${tab}`;
-  const [activePresetId, setActivePresetIdRaw] = useState<string | null>(() => {
-    try { return localStorage.getItem(activeKey); } catch { return null; }
-  });
-  const setActivePresetId = useCallback((id: string | null) => {
-    setActivePresetIdRaw(id);
-    try {
-      if (id) localStorage.setItem(activeKey, id);
-      else localStorage.removeItem(activeKey);
-    } catch { /* ignore */ }
-  }, [activeKey]);
+  const presetTab = mapTabToPresetTab(tab);
 
-  const [customPresets, setCustomPresets] = useState<SavedPreset[]>(() =>
-    loadCustomPresets(tab),
-  );
+  // Which preset (builtin or custom) is currently applied on this tab --
+  // server-side (AppConfig's active_preset_ids_json) so it follows your
+  // login, replacing what used to be a separate
+  // eve-flipper-active-preset-${tab} localStorage key per tab. The saved
+  // presets themselves live in a different place (saved_presets, below).
+  const [activePresetId, setActivePresetIdState] = useState<string | null>(null);
+  const [customPresets, setCustomPresets] = useState<ServerSavedPreset[]>([]);
+  const builtinPresetsRef = useRef(builtinPresets);
+  useEffect(() => {
+    builtinPresetsRef.current = builtinPresets;
+  }, [builtinPresets]);
+
   const ref = useRef<HTMLDivElement>(null);
   const autoAppliedRef = useRef<string | null>(null);
-
-  // Keep active preset selection strictly tab-scoped.
+  const paramsRef = useRef(params);
   useEffect(() => {
-    let stored: string | null = null;
-    try {
-      stored = localStorage.getItem(activeKey);
-    } catch {
-      stored = null;
-    }
+    paramsRef.current = params;
+  }, [params]);
+  const onApplyRef = useRef(onApply);
+  useEffect(() => {
+    onApplyRef.current = onApply;
+  }, [onApply]);
 
-    if (stored) {
-      if (stored !== activePresetId) {
-        setActivePresetIdRaw(stored);
+  // Re-fetches the pointer fresh right before merging in this tab's choice,
+  // rather than writing back a copy of the map read at mount -- this tab is
+  // the only one this component ever changes, but another tab's picker may
+  // be mounted (hidden, kept alive) and could have changed a different key
+  // in the same JSON blob since this component's own last fetch.
+  const setActivePresetId = useCallback(
+    async (id: string | null) => {
+      setActivePresetIdState(id);
+      try {
+        const cfg = await getConfig();
+        const map = parseActivePresetIds(cfg.active_preset_ids_json);
+        if (id) map[presetTab] = id;
+        else delete map[presetTab];
+        await updateConfig({ active_preset_ids_json: JSON.stringify(map) });
+      } catch {
+        // A UI selection pointer, not data -- worth trying again next
+        // change, not worth surfacing to the user.
       }
-      return;
-    }
+    },
+    [presetTab],
+  );
 
-    // If tab has built-ins and no prior selection, pin a deterministic default.
-    const defaultBuiltin =
-      builtinPresets.find((p) => p.id.includes("normal")) ?? builtinPresets[0];
-    if (defaultBuiltin) {
-      if (activePresetId !== defaultBuiltin.id) {
-        setActivePresetId(defaultBuiltin.id);
-        autoAppliedRef.current = null;
+  // Load this tab's saved presets and active pointer whenever the tab
+  // changes (or on mount). Also replays the active preset's params onto the
+  // current params once, the same way switching back to a tab used to.
+  useEffect(() => {
+    let cancelled = false;
+    autoAppliedRef.current = null;
+    void (async () => {
+      const [cfgResult, presetsResult] = await Promise.allSettled([getConfig(), getSavedPresets()]);
+      if (cancelled) return;
+
+      const allPresets = presetsResult.status === "fulfilled" ? presetsResult.value.presets : [];
+      const tabPresets = filterPresetsForTab(allPresets, tab);
+      setCustomPresets(tabPresets);
+
+      const map = cfgResult.status === "fulfilled" ? parseActivePresetIds(cfgResult.value.active_preset_ids_json) : {};
+      let resolvedId = map[presetTab] ?? null;
+      if (!resolvedId) {
+        const defaultBuiltin =
+          builtinPresetsRef.current.find((p) => p.id.includes("normal")) ?? builtinPresetsRef.current[0];
+        if (defaultBuiltin) {
+          resolvedId = defaultBuiltin.id;
+          void setActivePresetId(defaultBuiltin.id);
+        }
       }
-      return;
-    }
+      setActivePresetIdState(resolvedId);
 
-    if (activePresetId !== null) {
-      setActivePresetIdRaw(null);
-    }
-  }, [activeKey, activePresetId, builtinPresets, setActivePresetId]);
+      if (!resolvedId) return;
+      const applyKey = `${tab}:${resolvedId}`;
+      if (autoAppliedRef.current === applyKey) return;
+      const builtin = builtinPresetsRef.current.find((p) => p.id === resolvedId);
+      const custom = tabPresets.find((p) => p.id === resolvedId);
+      const presetParams = builtin?.params ?? custom?.params;
+      if (!presetParams) return;
+      onApplyRef.current({
+        ...paramsRef.current,
+        ...getPresetApplyBase(tab),
+        ...sanitizePresetParams(presetParams),
+      });
+      autoAppliedRef.current = applyKey;
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, presetTab, setActivePresetId]);
 
   // Close on outside click
   useEffect(() => {
@@ -108,38 +175,10 @@ export function PresetPicker({ params, onApply, tab, builtinPresets, align = "le
     return () => document.removeEventListener("keydown", handler);
   }, [open]);
 
-  // Reload when tab changes
-  useEffect(() => {
-    setCustomPresets(loadCustomPresets(tab));
-    autoAppliedRef.current = null;
+  const refreshCustomPresets = useCallback(async () => {
+    const resp = await getSavedPresets();
+    setCustomPresets(filterPresetsForTab(resp.presets, tab));
   }, [tab]);
-
-  // When switching tabs, auto-apply tab's active preset so scan params follow tab profile.
-  useEffect(() => {
-    if (!activePresetId) return;
-    let storedActiveId: string | null = null;
-    try {
-      storedActiveId = localStorage.getItem(activeKey);
-    } catch {
-      storedActiveId = null;
-    }
-    if (storedActiveId !== activePresetId) return;
-
-    const applyKey = `${tab}:${activePresetId}`;
-    if (autoAppliedRef.current === applyKey) return;
-
-    const builtin = builtinPresets.find((p) => p.id === activePresetId);
-    const custom = loadCustomPresets(tab).find((p) => p.id === activePresetId);
-    const presetParams = builtin?.params ?? custom?.params;
-    if (!presetParams) return;
-
-    onApply({
-      ...params,
-      ...getPresetApplyBase(tab),
-      ...sanitizePresetParams(presetParams),
-    });
-    autoAppliedRef.current = applyKey;
-  }, [activeKey, activePresetId, builtinPresets, onApply, params, tab]);
 
   const handleApply = useCallback(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -149,99 +188,126 @@ export function PresetPicker({ params, onApply, tab, builtinPresets, align = "le
         ...getPresetApplyBase(tab),
         ...sanitizePresetParams(presetParams),
       });
-      setActivePresetId(id);
+      void setActivePresetId(id);
       autoAppliedRef.current = `${tab}:${id}`;
       setOpen(false);
     },
     [params, onApply, setActivePresetId, tab],
   );
 
-  const handleDelete = (e: React.MouseEvent, id: string) => {
+  const handleDelete = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    deleteCustomPreset(id);
-    setCustomPresets(loadCustomPresets(tab));
-    if (activePresetId === id) setActivePresetId(null);
-    addToast(t("presetDeleted" as TranslationKey) || "Preset deleted", "success", 2000);
+    try {
+      const resp = await deleteSavedPreset(id);
+      setCustomPresets(filterPresetsForTab(resp.presets, tab));
+      if (activePresetId === id) void setActivePresetId(null);
+      addToast(t("presetDeleted" as TranslationKey) || "Preset deleted", "success", 2000);
+    } catch {
+      addToast(t("presetDeleteFailed" as TranslationKey) || "Failed to delete preset", "error", 3000);
+    }
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!saveName.trim()) return;
-    const preset: SavedPreset = {
-      id: nextPresetId(),
-      name: saveName.trim(),
-      tab: mapTabToPresetTab(tab),
-      params: sanitizePresetParams({ ...params }),
-      createdAt: Date.now(),
-    };
-    saveCustomPreset(preset);
-    setCustomPresets(loadCustomPresets(tab));
-    setActivePresetId(preset.id);
-    autoAppliedRef.current = `${tab}:${preset.id}`;
-    setSaveName("");
-    setSaving(false);
-    addToast(t("presetSaved"), "success", 2000);
+    try {
+      const resp = await createSavedPreset({
+        tab: presetTab,
+        name: saveName.trim(),
+        params: sanitizePresetParams({ ...params }),
+        activate: true,
+      });
+      setCustomPresets(filterPresetsForTab(resp.presets, tab));
+      void setActivePresetId(resp.preset.id);
+      autoAppliedRef.current = `${tab}:${resp.preset.id}`;
+      setSaveName("");
+      setSaving(false);
+      addToast(t("presetSaved"), "success", 2000);
+    } catch {
+      addToast(t("presetSaveFailed" as TranslationKey) || "Failed to save preset", "error", 3000);
+    }
   };
 
-  const handleUpdate = () => {
+  const handleUpdate = async () => {
     if (!activePresetId) return;
     const existing = customPresets.find((p) => p.id === activePresetId);
     if (!existing) return;
-    saveCustomPreset({
-      ...existing,
-      params: sanitizePresetParams({ ...params }),
-    });
-    setCustomPresets(loadCustomPresets(tab));
-    addToast(
-      t("presetUpdated" as TranslationKey) || "Preset updated",
-      "success",
-      2000,
-    );
+    try {
+      const resp = await updateSavedPreset(activePresetId, {
+        params: sanitizePresetParams({ ...params }),
+      });
+      setCustomPresets(filterPresetsForTab(resp.presets, tab));
+      addToast(t("presetUpdated" as TranslationKey) || "Preset updated", "success", 2000);
+    } catch {
+      addToast(t("presetUpdateFailed" as TranslationKey) || "Failed to update preset", "error", 3000);
+    }
   };
 
-  const handleOverwritePreset = (e: React.MouseEvent, id: string) => {
+  const handleOverwritePreset = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
     const existing = customPresets.find((p) => p.id === id);
     if (!existing) return;
-    saveCustomPreset({
-      ...existing,
-      tab: mapTabToPresetTab(tab),
-      params: sanitizePresetParams({ ...params }),
-    });
-    setCustomPresets(loadCustomPresets(tab));
-    setActivePresetId(id);
-    autoAppliedRef.current = `${tab}:${id}`;
-    addToast(
-      t("presetUpdated" as TranslationKey) || "Preset updated",
-      "success",
-      2000,
-    );
+    try {
+      const resp = await updateSavedPreset(id, {
+        params: sanitizePresetParams({ ...params }),
+      });
+      setCustomPresets(filterPresetsForTab(resp.presets, tab));
+      void setActivePresetId(id);
+      autoAppliedRef.current = `${tab}:${id}`;
+      addToast(t("presetUpdated" as TranslationKey) || "Preset updated", "success", 2000);
+    } catch {
+      addToast(t("presetUpdateFailed" as TranslationKey) || "Failed to update preset", "error", 3000);
+    }
   };
 
-  const handleExport = () => {
-    const json = exportPresets();
-    navigator.clipboard.writeText(json);
-    addToast(
-      t("presetExported" as TranslationKey) || "Presets copied to clipboard",
-      "success",
-      2000,
-    );
+  const handleExport = async () => {
+    try {
+      const resp = await getSavedPresets();
+      const json = exportPresets(
+        resp.presets.map((p) => ({
+          id: p.id,
+          name: p.name,
+          tab: isPresetTab(p.tab) ? p.tab : "flipper",
+          params: p.params,
+          createdAt: p.created_at ? Date.parse(p.created_at) || undefined : undefined,
+        })),
+      );
+      await navigator.clipboard.writeText(json);
+      addToast(t("presetExported" as TranslationKey) || "Presets copied to clipboard", "success", 2000);
+    } catch {
+      addToast("Clipboard access denied", "error", 3000);
+    }
     setOpen(false);
   };
 
   const handleImport = async () => {
     try {
       const json = await navigator.clipboard.readText();
-      const result = importPresets(json);
-      if (result.error) {
-        addToast(result.error, "error", 3000);
-      } else {
-        setCustomPresets(loadCustomPresets(tab));
-        addToast(
-          `${t("presetImported" as TranslationKey) || "Imported"}: ${result.imported}`,
-          "success",
-          2000,
-        );
+      const { presets: parsed, error } = parseImportedPresets(json);
+      if (error) {
+        addToast(error, "error", 3000);
+        setOpen(false);
+        return;
       }
+      let imported = 0;
+      for (const preset of parsed) {
+        try {
+          await createSavedPreset({
+            tab: preset.tab,
+            name: preset.name,
+            params: preset.params,
+            activate: false,
+          });
+          imported++;
+        } catch {
+          // Skip presets the server rejects; report the count that stuck.
+        }
+      }
+      await refreshCustomPresets();
+      addToast(
+        `${t("presetImported" as TranslationKey) || "Imported"}: ${imported}`,
+        "success",
+        2000,
+      );
     } catch {
       addToast("Clipboard access denied", "error", 3000);
     }
