@@ -16,6 +16,7 @@ import {
 import { formatISK } from "@/lib/format";
 import { useI18n, type TranslationKey } from "@/lib/i18n";
 import { loadScannerPricingLocation } from "@/lib/industryScannerSettings";
+import { lpBreakdownLines, lpMethodsWithValues, type LPValueMethod } from "@/lib/lpBreakdown";
 import { computeLPBasket } from "@/lib/lpBasket";
 import { useIndustrySharedPrefs } from "@/lib/useIndustrySharedPrefs";
 
@@ -379,32 +380,14 @@ export function LPStoreTab({ isLoggedIn, onError }: Props) {
       return next;
     });
 
-  // The first line says how the value is realised; the second is the sum.
-  // The profit is value x LP, so "net" is profit + cost: for a sale that is
-  // the revenue after fees, for a build the revenue after fees and after the
-  // materials and job.
-  const valueTitle = (r: LPOfferRow, v: number | null, method: Exclude<LPMethod, "">): string => {
+  // The full worked sum, one line per step (see lib/lpBreakdown).
+  const valueTitle = (r: LPOfferRow, v: number | null, method: LPValueMethod): string => {
     if (r.unpriced) return t("lpUnpricedHint");
     if (v == null) return t("lpTipNoValue");
-    const profit = v * r.lp_cost;
-    const how: Record<Exclude<LPMethod, "">, string> = {
-      sell: t("lpTipSell", { qty: r.quantity.toLocaleString(), price: formatISK(r.unit_bid) }),
-      list: t("lpTipList", { qty: r.quantity.toLocaleString(), price: formatISK(r.unit_ask) }),
-      sell_bpc: t("lpTipSellBPC", { runs: r.runs, price: formatISK(r.bpc_per_run) }) + " " + bpcTitle(r),
-      build_sell: t("lpTipBuildSell", { units: r.units_per_redemption.toLocaleString(), product: r.product_name, cost: formatISK(r.build_cost) }),
-      build_list: t("lpTipBuildList", { units: r.units_per_redemption.toLocaleString(), product: r.product_name, cost: formatISK(r.build_cost) }),
-    };
-    const calc = t("lpTipCalc", {
-      net: formatISK(profit + r.cost),
-      cost: formatISK(r.cost),
-      profit: formatISK(profit),
-      lp: r.lp_cost.toLocaleString(),
-      value: formatPerLP(v),
-    });
-    return `${how[method]}\n${calc}`;
+    return lpBreakdownLines(r, method, t, formatISK).join("\n");
   };
 
-  const valueCell = (r: LPOfferRow, v: number | null, pending: boolean, method: Exclude<LPMethod, "">) => {
+  const valueCell = (r: LPOfferRow, v: number | null, pending: boolean, method: LPValueMethod) => {
     if (r.unpriced) return <span className="text-eve-warning" title={t("lpUnpricedHint")}>?</span>;
     if (v == null && pending && running) return <span className="text-eve-dim" title={t("lpTipPending")}>…</span>;
     const isBest = r.best_method === method;
@@ -827,6 +810,41 @@ function CountInput({ count, label, onChange }: { count: number; label: string; 
   );
 }
 
+// The worked sum for each way this offer can be realised, best first, one
+// tab each -- the same lines the table's tooltips show, easier to read here.
+function BreakdownPanel({ row }: { row: LPOfferRow }) {
+  const { t } = useI18n();
+  const methods = lpMethodsWithValues(row);
+  const [method, setMethod] = useState<LPValueMethod | null>(methods[0] ?? null);
+  const active = method && methods.includes(method) ? method : (methods[0] ?? null);
+  if (!active) return null;
+  return (
+    <div className="space-y-1 md:col-span-2">
+      <div className="flex items-center gap-2">
+        <span className="text-eve-dim uppercase tracking-wider text-[10px]">{t("lpDetailBreakdown")}</span>
+        {methods.map((m) => (
+          <button
+            key={m}
+            type="button"
+            onClick={() => setMethod(m)}
+            title={t("lpTipBreakdownTab")}
+            className={`px-1.5 py-0.5 rounded-sm border text-[10px] ${
+              m === active ? "border-eve-accent text-eve-accent bg-eve-accent/10" : "border-eve-border text-eve-dim hover:text-eve-text"
+            }`}
+          >
+            {t(METHOD_LABEL[m])}
+          </button>
+        ))}
+      </div>
+      <div className="font-mono text-[11px] leading-5 whitespace-pre">
+        {lpBreakdownLines(row, active, t, formatISK).map((line, i) => (
+          <div key={i}>{line}</div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function balanceHint(b: LPBalancesResponse | null, t: ReturnType<typeof useI18n>["t"]): string {
   if (!b || b.available) return "";
   if (b.reason === "missing_scope") return t("lpBalanceMissingScope");
@@ -911,6 +929,8 @@ function OfferDetail({
           </div>
         )}
       </div>
+
+      <BreakdownPanel row={row} />
 
       {row.is_blueprint && (
         <div className="space-y-1">

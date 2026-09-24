@@ -4548,6 +4548,8 @@ export interface LPMaterial {
   type_id: number;
   type_name: string;
   quantity: number;
+  unit_price: number;
+  total_price: number;
 }
 
 /** "sell" | "list" | "sell_bpc" | "build_sell" | "build_list" | "" */
@@ -4596,6 +4598,16 @@ export interface LPOfferRow {
   /** Materials + job install for all runs (0 until the build phase arrives). */
   build_cost: number;
   build_job_cost: number;
+  build_material_cost: number;
+  /** Product units the build makes, and its sale before and after fees. */
+  build_units: number;
+  build_listed_gross: number;
+  build_listed_net: number;
+  build_instant_gross: number;
+  build_instant_net: number;
+  /** Fee rates the values were computed with (percent). */
+  broker_fee_percent: number;
+  sales_tax_percent: number;
 }
 
 export type LPStreamMessage =

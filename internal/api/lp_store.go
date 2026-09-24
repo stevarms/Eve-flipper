@@ -447,7 +447,7 @@ func (s *Server) handleLPAnalyze(w http.ResponseWriter, r *http.Request) {
 				params.TypeID = k.product
 				params.Runs = int32(k.runs)
 				res, err := local.Analyze(params, func(string) {})
-				result := lpBuildResultFrom(res, err)
+				result := lpBuildResultFrom(res, err, params)
 				rowsMu.Lock()
 				for _, i := range idxs {
 					rows[i].ApplyBuild(result)
@@ -550,7 +550,7 @@ func lpMemoizedAnalyzer(analyzer *engine.IndustryAnalyzer, sell, buy map[int32][
 	return a
 }
 
-func lpBuildResultFrom(res *engine.IndustryAnalysis, err error) engine.LPBuildResult {
+func lpBuildResultFrom(res *engine.IndustryAnalysis, err error, params engine.IndustryParams) engine.LPBuildResult {
 	if err != nil {
 		return engine.LPBuildResult{Error: err.Error()}
 	}
@@ -563,12 +563,28 @@ func lpBuildResultFrom(res *engine.IndustryAnalysis, err error) engine.LPBuildRe
 		ListedProfit:     res.MakerSellProfit,
 		BuildCost:        res.OptimalBuildCost,
 		JobCost:          res.TotalJobCost,
+		MaterialCost:     res.TotalMaterialCost,
+		Units:            int64(res.TotalQuantity),
+		ListedNet:        res.MakerSellRevenue,
+		ListedGross:      res.UnitAskPrice * float64(res.TotalQuantity),
+		InstantNet:       res.InstantSellRevenue,
+	}
+	// The instant sale walks the buy book, so its gross is not one price
+	// times the units; it is the net with the sales tax put back.
+	if m := params.InstantSellTaxOnlyMultiplier(); m > 0 && res.InstantSellAvailable {
+		out.InstantGross = res.InstantSellRevenue / m
 	}
 	for _, m := range res.FlatMaterials {
 		if m == nil || m.Quantity <= 0 {
 			continue
 		}
-		out.Materials = append(out.Materials, engine.LPMaterial{TypeID: m.TypeID, TypeName: m.TypeName, Quantity: int64(m.Quantity)})
+		out.Materials = append(out.Materials, engine.LPMaterial{
+			TypeID:     m.TypeID,
+			TypeName:   m.TypeName,
+			Quantity:   int64(m.Quantity),
+			UnitPrice:  m.UnitPrice,
+			TotalPrice: m.TotalPrice,
+		})
 	}
 	return out
 }

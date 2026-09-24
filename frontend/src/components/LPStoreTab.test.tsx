@@ -65,6 +65,14 @@ function row(over: Partial<LPOfferRow>): LPOfferRow {
     unit_ask: 0,
     build_cost: 0,
     build_job_cost: 0,
+    build_material_cost: 0,
+    build_units: 0,
+    build_listed_gross: 0,
+    build_listed_net: 0,
+    build_instant_gross: 0,
+    build_instant_net: 0,
+    broker_fee_percent: 0,
+    sales_tax_percent: 0,
     bpc_per_run: 0,
     bpc_samples: 0,
     bpc_override: false,
@@ -195,8 +203,9 @@ describe("LPStoreTab", () => {
 
     const listed = within(tr).getAllByText("3,132").find((el) => el.getAttribute("title")?.startsWith("List"))!;
     const tip = listed.getAttribute("title")!;
-    expect(tip).toMatch(/8\.41\s?M each/);
-    expect(tip).toMatch(/2\.15\s?M offer cost/);
+    expect(tip).toMatch(/List 1 at 8\.41\s?M each/);
+    expect(tip).toMatch(/Offer cost \(ISK \+ items\): -2\.15\s?M/);
+    expect(tip).toMatch(/Profit per redemption: 6\.26\s?M/);
     expect(tip).toMatch(/\/ 2,000 LP = 3,132 ISK\/LP/);
 
     expect(screen.getAllByText("ISK/LP").length).toBeGreaterThanOrEqual(6);

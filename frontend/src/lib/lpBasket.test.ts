@@ -33,6 +33,14 @@ function row(over: Partial<LPOfferRow>): LPOfferRow {
     unit_ask: 0,
     build_cost: 0,
     build_job_cost: 0,
+    build_material_cost: 0,
+    build_units: 0,
+    build_listed_gross: 0,
+    build_listed_net: 0,
+    build_instant_gross: 0,
+    build_instant_net: 0,
+    broker_fee_percent: 0,
+    sales_tax_percent: 0,
     bpc_per_run: 0,
     bpc_samples: 0,
     bpc_override: false,
@@ -97,8 +105,8 @@ describe("computeLPBasket", () => {
       runs: 10,
       required_items: [{ type_id: 34, type_name: "Tritanium", quantity: 5, unit_price: 4, priced: true }],
       build_materials: [
-        { type_id: 34, type_name: "Tritanium", quantity: 80_000_000 },
-        { type_id: 35, type_name: "Pyerite", quantity: 40_000_000 },
+        { type_id: 34, type_name: "Tritanium", quantity: 80_000_000, unit_price: 4, total_price: 320_000_000 },
+        { type_id: 35, type_name: "Pyerite", quantity: 40_000_000, unit_price: 17, total_price: 680_000_000 },
       ],
     });
     const without = computeLPBasket([bp], new Map([[1, 2]]), { includeBuild: false, balance: null });

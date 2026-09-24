@@ -85,15 +85,26 @@ type LPBuildResult struct {
 	// BuildCost is materials plus job install for all runs; JobCost is the
 	// install part of it. Shown, never used in a value: the profits above
 	// already have them taken out.
-	BuildCost float64
-	JobCost   float64
+	BuildCost    float64
+	JobCost      float64
+	MaterialCost float64
+	// The sale behind each profit, for the breakdown: units sold, and the
+	// revenue before (gross) and after (net) fees for listing and for
+	// selling into buy orders.
+	Units        int64
+	ListedGross  float64
+	ListedNet    float64
+	InstantGross float64
+	InstantNet   float64
 }
 
 // LPMaterial is one line of a build's shopping list.
 type LPMaterial struct {
-	TypeID   int32  `json:"type_id"`
-	TypeName string `json:"type_name"`
-	Quantity int64  `json:"quantity"`
+	TypeID     int32   `json:"type_id"`
+	TypeName   string  `json:"type_name"`
+	Quantity   int64   `json:"quantity"`
+	UnitPrice  float64 `json:"unit_price"`
+	TotalPrice float64 `json:"total_price"`
 }
 
 // LPBPCPrice is what a blueprint copy of this type sells for on contract, per
@@ -155,9 +166,20 @@ type LPOfferRow struct {
 	BPCOverride bool    `json:"bpc_override"`
 	BuildError  string  `json:"build_error,omitempty"`
 
-	BuildMaterials []LPMaterial `json:"build_materials,omitempty"`
-	BuildCost      float64      `json:"build_cost"`
-	BuildJobCost   float64      `json:"build_job_cost"`
+	BuildMaterials    []LPMaterial `json:"build_materials,omitempty"`
+	BuildCost         float64      `json:"build_cost"`
+	BuildJobCost      float64      `json:"build_job_cost"`
+	BuildMaterialCost float64      `json:"build_material_cost"`
+	BuildUnits        int64        `json:"build_units"`
+	BuildListedGross  float64      `json:"build_listed_gross"`
+	BuildListedNet    float64      `json:"build_listed_net"`
+	BuildInstantGross float64      `json:"build_instant_gross"`
+	BuildInstantNet   float64      `json:"build_instant_net"`
+
+	// The fee rates the values were computed with, so a breakdown can show
+	// each fee rather than one lump.
+	BrokerFeePercent float64 `json:"broker_fee_percent"`
+	SalesTaxPercent  float64 `json:"sales_tax_percent"`
 }
 
 // NewLPOfferRow computes everything that needs only the market: the cost and,
@@ -165,19 +187,21 @@ type LPOfferRow struct {
 // and contract values arrive later through ApplyBuild and ApplyBPCPrice.
 func NewLPOfferRow(o LPOffer, meta LPOfferMeta, q *LPMarketQuote, fees LPFees) LPOfferRow {
 	row := LPOfferRow{
-		OfferID:       o.OfferID,
-		TypeID:        o.TypeID,
-		TypeName:      meta.TypeName,
-		ProductTypeID: meta.ProductTypeID,
-		ProductName:   meta.ProductName,
-		IsBlueprint:   meta.IsBlueprint,
-		Category:      meta.Category,
-		Group:         meta.Group,
-		MarketPath:    meta.MarketPath,
-		Quantity:      o.Quantity,
-		LPCost:        o.LPCost,
-		ISKCost:       o.ISKCost,
-		RequiredItems: o.RequiredItems,
+		OfferID:          o.OfferID,
+		TypeID:           o.TypeID,
+		TypeName:         meta.TypeName,
+		ProductTypeID:    meta.ProductTypeID,
+		ProductName:      meta.ProductName,
+		IsBlueprint:      meta.IsBlueprint,
+		Category:         meta.Category,
+		Group:            meta.Group,
+		MarketPath:       meta.MarketPath,
+		Quantity:         o.Quantity,
+		LPCost:           o.LPCost,
+		ISKCost:          o.ISKCost,
+		RequiredItems:    o.RequiredItems,
+		BrokerFeePercent: fees.BrokerFeePercent,
+		SalesTaxPercent:  fees.SalesTaxPercent,
 	}
 	if row.RequiredItems == nil {
 		row.RequiredItems = []LPRequiredItem{}
@@ -221,7 +245,10 @@ func (r *LPOfferRow) ApplyBuild(b LPBuildResult) {
 	r.BuildInstant, r.BuildListed = nil, nil
 	r.BuildError = b.Error
 	r.BuildMaterials = b.Materials
-	r.BuildCost, r.BuildJobCost = b.BuildCost, b.JobCost
+	r.BuildCost, r.BuildJobCost, r.BuildMaterialCost = b.BuildCost, b.JobCost, b.MaterialCost
+	r.BuildUnits = b.Units
+	r.BuildListedGross, r.BuildListedNet = b.ListedGross, b.ListedNet
+	r.BuildInstantGross, r.BuildInstantNet = b.InstantGross, b.InstantNet
 	if b.Error == "" {
 		// The analyzer's profit is already net of the build; it is revenue
 		// the offer's cost has not been taken from yet.
