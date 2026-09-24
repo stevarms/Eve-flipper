@@ -1,5 +1,60 @@
 # Changelog
 
+## v1.16.0 - 2026-09-24
+
+### New: LP Store tab
+
+**Log in again once after updating.** The app now asks EVE for one more
+permission, `esi-characters.read_loyalty.v1`, to read your LP balances. Until
+you log in again the tab still works; you type your LP instead.
+
+A new **Trade → LP Store** tab values every offer in a loyalty-point store per
+LP, each way it can be turned into ISK, side by side:
+
+- **Instant** -- sold into buy orders, after sales tax.
+- **Listed** -- listed at the best sell order, after broker fee and sales tax.
+- **BP sale** -- for blueprint copies, sold on contract at the median asking
+  price per run of current single-copy contracts (no market fees). Set your
+  own price per run in a row's details to override it.
+- **Build (instant / list)** -- the copy built (ME 0 / TE 0, with the Industry
+  tab's build system, structure, rigs and build/buy mode) and the product sold.
+
+The **Best** column picks the highest, says how to realise it, and shows the
+profit from one redemption.
+
+What it gets right that other LP tools don't:
+
+- **Required items cost what they cost.** Tags, chips and supply packages are
+  priced at their cheapest Jita sell order. At current prices the 8 Federal
+  Strategic Materiel Supply Packages on the 10-run Raven Navy Issue offer are
+  about 1.4B ISK, which puts that offer deep in the red. An item with no sell
+  order makes the offer "?" rather than free.
+- **A blueprint's runs are counted.** A store offer's quantity is the runs on
+  one copy, and every value uses them.
+- **Real build costs.** Job install, structure and rig bonuses and component
+  build-or-buy all come from the same engine as the Industry tab.
+- **Liquidity is shown.** Vol/day (30-day average) sits beside every offer.
+
+Every value explains itself: hover it, or open the row, for the full sum --
+each material with its price, job install, build cost, the sale, broker fee
+and sales tax with their rates, net, the offer's cost, and the profit behind
+the ISK/LP.
+
+**The basket.** Tick offers and set how many times to redeem each. The tally
+adds up LP against your balance, ISK needed and expected profit, warns when a
+selection is more than a week of the market's volume, and **Copy multibuy**
+gives one paste of every required item across the basket, merged by type --
+optionally with the build materials for the blueprints you mean to build.
+
+Offers sort on every column, filter by kind, minimum ISK/LP and minimum
+volume, and search matches name, category, group and market group -- "ammunition"
+finds all the ammo.
+
+The store picker lists the four militia corporations and every store you
+hold LP with. The first analysis after starting the app takes about a minute
+(it reads The Forge's blueprint-copy contracts); later ones take about a
+second.
+
 ## v1.15.1 - 2026-09-23
 
 ### Improved: FW Supply's Lots tab is where you work a shipment
