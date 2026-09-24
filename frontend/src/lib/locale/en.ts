@@ -3660,6 +3660,7 @@ export const en = {
   lpSelectOffer: "Select {item}",
   lpRedeemCount: "Times to redeem {item}",
   lpRuns: "{runs} runs",
+  lpOneRun: "1 run",
   lpOffersInGroup: "{count} offers",
   lpDetailCost: "Cost per redemption",
   lpDetailTotal: "Total",

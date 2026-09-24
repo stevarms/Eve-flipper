@@ -120,7 +120,7 @@ describe("LPStoreTab", () => {
 
     await user.click(screen.getByText("2 offers"));
     expect(screen.getByText(/10 runs/)).toBeInTheDocument();
-    expect(screen.getByText(/^1 runs/)).toBeInTheDocument();
+    expect(screen.getByText(/^1 run ·|^1 run$/)).toBeInTheDocument();
   });
 
   it("tallies the selection against the LP balance and copies one merged multibuy", async () => {

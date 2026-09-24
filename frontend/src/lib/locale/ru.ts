@@ -3658,6 +3658,7 @@ export const ru = {
   lpSelectOffer: "Select {item}",
   lpRedeemCount: "Times to redeem {item}",
   lpRuns: "{runs} прогонов",
+  lpOneRun: "1 прогон",
   lpOffersInGroup: "{count} предложений",
   lpDetailCost: "Cost per redemption",
   lpDetailTotal: "Итого",

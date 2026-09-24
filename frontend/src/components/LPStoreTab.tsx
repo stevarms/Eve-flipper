@@ -338,7 +338,8 @@ export function LPStoreTab({ isLoggedIn, onError }: Props) {
   const valueCell = (r: LPOfferRow, v: number | null, pending: boolean, isBest: boolean) => {
     if (r.unpriced) return <span className="text-eve-warning" title={t("lpUnpricedHint")}>?</span>;
     if (v == null && pending && running) return <span className="text-eve-dim">…</span>;
-    return <span className={isBest ? "text-eve-accent font-semibold" : v != null && v < 0 ? "text-eve-error" : ""}>{formatPerLP(v)}</span>;
+    const tone = v != null && v < 0 ? "text-eve-error" : isBest ? "text-eve-accent" : "";
+    return <span className={`${tone} ${isBest ? "font-semibold" : ""}`}>{formatPerLP(v)}</span>;
   };
 
   const offerRow = (r: LPOfferRow, nested: boolean) => {
@@ -397,7 +398,7 @@ export function LPStoreTab({ isLoggedIn, onError }: Props) {
           <td className={TDR}>
             {r.best != null && !r.unpriced ? (
               <span>
-                <span className="text-eve-accent font-semibold">{formatPerLP(r.best)}</span>
+                <span className={`font-semibold ${r.best < 0 ? "text-eve-error" : "text-eve-accent"}`}>{formatPerLP(r.best)}</span>
                 <span className="block text-[10px] text-eve-dim">{r.best_method ? t(METHOD_LABEL[r.best_method]) : ""}</span>
               </span>
             ) : (
@@ -424,7 +425,7 @@ export function LPStoreTab({ isLoggedIn, onError }: Props) {
 
   function offerLabel(r: LPOfferRow): string {
     const parts: string[] = [];
-    if (r.is_blueprint) parts.push(t("lpRuns", { runs: r.runs }));
+    if (r.is_blueprint) parts.push(r.runs === 1 ? t("lpOneRun") : t("lpRuns", { runs: r.runs }));
     else if (r.quantity > 1) parts.push(`× ${r.quantity.toLocaleString()}`);
     if (r.isk_cost > 0) parts.push(`${formatISK(r.isk_cost)} ISK`);
     for (const ri of r.required_items) parts.push(`${ri.quantity}× ${ri.type_name}`);
@@ -635,7 +636,7 @@ export function LPStoreTab({ isLoggedIn, onError }: Props) {
                       <td className={TDR}>
                         {head.best != null ? (
                           <span>
-                            <span className="text-eve-accent font-semibold">{formatPerLP(head.best)}</span>
+                            <span className={`font-semibold ${head.best < 0 ? "text-eve-error" : "text-eve-accent"}`}>{formatPerLP(head.best)}</span>
                             <span className="block text-[10px] text-eve-dim">{head.best_method ? t(METHOD_LABEL[head.best_method]) : ""}</span>
                           </span>
                         ) : (
