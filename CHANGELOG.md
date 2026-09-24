@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.15.1 - 2026-09-23
+
+### Improved: FW Supply's Lots tab is where you work a shipment
+
+Recording rows from the gaps list used to create lots already in `bought`,
+committing budget before anything had been bought. New lots now start in
+`planned`, which consumes no budget; advancing a lot to `bought` is what
+commits it.
+
+The Lots tab also gains what used to mean going back to the gaps list:
+
+- **Add selected to multibuy** -- copies the selected lots at their remaining
+  quantity, so a partly sold lot only asks for what is left to move.
+- **Copy selected sell prices** -- the same grid-snapped price list the gaps
+  tab copies.
+- **Editable quantity and unit cost** -- change a lot's size after recording
+  it, or set its cost to your build cost if you manufactured it instead of
+  buying in Jita. Saves on Enter or when you leave the box; Esc cancels.
+- **Prices follow the plan** -- a lot not yet on the market shows the current
+  plan's sell price, marked ↻ with the recorded price on hover when the two
+  differ. Copying the sell prices saves the new price onto the lot. Regenerate
+  the plan to refresh them; listed lots keep their own price, since the
+  in-game order is what is actually on the market.
+
 ## v1.15.0 - 2026-09-21
 
 Continues v1.14.1's identity fix. That fix made a second browser converge on
