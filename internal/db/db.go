@@ -2360,6 +2360,27 @@ func (d *DB) migrate() error {
 		logger.Info("DB", "Applied migration v56 (PI Factory portfolio)")
 	}
 
+	if version < 57 {
+		// LP Store: the user's own price per run for selling a blueprint copy,
+		// replacing the contract-based estimate for that type. Keyed by type,
+		// not offer: two offers for the same blueprint sell the same copy.
+		_, err := d.sql.Exec(`
+			CREATE TABLE IF NOT EXISTS lp_bpc_price_overrides (
+				user_id       TEXT NOT NULL,
+				type_id       INTEGER NOT NULL,
+				price_per_run REAL NOT NULL,
+				updated_at    TEXT NOT NULL,
+				PRIMARY KEY (user_id, type_id)
+			);
+
+			INSERT OR IGNORE INTO schema_version (version) VALUES (57);
+		`)
+		if err != nil {
+			return fmt.Errorf("migration v57: %w", err)
+		}
+		logger.Info("DB", "Applied migration v57 (LP store blueprint price overrides)")
+	}
+
 	return nil
 }
 
