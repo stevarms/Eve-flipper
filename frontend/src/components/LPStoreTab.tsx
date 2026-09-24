@@ -379,14 +379,66 @@ export function LPStoreTab({ isLoggedIn, onError }: Props) {
       return next;
     });
 
-  const valueCell = (r: LPOfferRow, v: number | null, pending: boolean, isBest: boolean) => {
-    if (r.unpriced) return <span className="text-eve-warning" title={t("lpUnpricedHint")}>?</span>;
-    if (v == null && pending && running) return <span className="text-eve-dim">…</span>;
-    const tone = v != null && v < 0 ? "text-eve-error" : isBest ? "text-eve-accent" : "";
-    return <span className={`${tone} ${isBest ? "font-semibold" : ""}`}>{formatPerLP(v)}</span>;
+  // The first line says how the value is realised; the second is the sum.
+  // The profit is value x LP, so "net" is profit + cost: for a sale that is
+  // the revenue after fees, for a build the revenue after fees and after the
+  // materials and job.
+  const valueTitle = (r: LPOfferRow, v: number | null, method: Exclude<LPMethod, "">): string => {
+    if (r.unpriced) return t("lpUnpricedHint");
+    if (v == null) return t("lpTipNoValue");
+    const profit = v * r.lp_cost;
+    const how: Record<Exclude<LPMethod, "">, string> = {
+      sell: t("lpTipSell", { qty: r.quantity.toLocaleString(), price: formatISK(r.unit_bid) }),
+      list: t("lpTipList", { qty: r.quantity.toLocaleString(), price: formatISK(r.unit_ask) }),
+      sell_bpc: t("lpTipSellBPC", { runs: r.runs, price: formatISK(r.bpc_per_run) }) + " " + bpcTitle(r),
+      build_sell: t("lpTipBuildSell", { units: r.units_per_redemption.toLocaleString(), product: r.product_name, cost: formatISK(r.build_cost) }),
+      build_list: t("lpTipBuildList", { units: r.units_per_redemption.toLocaleString(), product: r.product_name, cost: formatISK(r.build_cost) }),
+    };
+    const calc = t("lpTipCalc", {
+      net: formatISK(profit + r.cost),
+      cost: formatISK(r.cost),
+      profit: formatISK(profit),
+      lp: r.lp_cost.toLocaleString(),
+      value: formatPerLP(v),
+    });
+    return `${how[method]}\n${calc}`;
   };
 
-  const sortHeader = (key: SortKey, label: string, right: boolean, hint?: string) => {
+  const valueCell = (r: LPOfferRow, v: number | null, pending: boolean, method: Exclude<LPMethod, "">) => {
+    if (r.unpriced) return <span className="text-eve-warning" title={t("lpUnpricedHint")}>?</span>;
+    if (v == null && pending && running) return <span className="text-eve-dim" title={t("lpTipPending")}>…</span>;
+    const isBest = r.best_method === method;
+    const tone = v != null && v < 0 ? "text-eve-error" : isBest ? "text-eve-accent" : "";
+    return (
+      <span className={`${tone} ${isBest ? "font-semibold" : ""}`} title={valueTitle(r, v, method)}>
+        {formatPerLP(v)}
+      </span>
+    );
+  };
+
+  const costTitle = (r: LPOfferRow): string => {
+    const lines = [t("lpTipCostISK", { isk: formatISK(r.isk_cost) })];
+    for (const ri of r.required_items) {
+      lines.push(
+        ri.priced
+          ? t("lpTipCostItem", { qty: ri.quantity, item: ri.type_name, each: formatISK(ri.unit_price), total: formatISK(ri.unit_price * ri.quantity) })
+          : t("lpTipCostItemUnpriced", { qty: ri.quantity, item: ri.type_name }),
+      );
+    }
+    lines.push(r.unpriced ? t("lpUnpricedHint") : t("lpTipCostTotal", { total: formatISK(r.cost) }));
+    return lines.join("\n");
+  };
+
+  const volumeTitle = (r: LPOfferRow): string => {
+    if (r.avg_daily_volume <= 0) return t("lpTipNoVolume");
+    return t("lpTipVolume", {
+      perDay: formatUnits(r.avg_daily_volume),
+      units: r.units_per_redemption.toLocaleString(),
+      days: formatUnits(r.units_per_redemption / r.avg_daily_volume),
+    });
+  };
+
+  const sortHeader = (key: SortKey, label: string, right: boolean, hint?: string, unit?: string) => {
     const active = prefs.sortKey === key;
     return (
       <th className={right ? THR : TH} title={hint} aria-sort={active ? (prefs.sortDir === "asc" ? "ascending" : "descending") : "none"}>
@@ -394,9 +446,11 @@ export function LPStoreTab({ isLoggedIn, onError }: Props) {
           type="button"
           className={`uppercase tracking-wider hover:text-eve-text ${active ? "text-eve-accent" : ""}`}
           onClick={() => toggleSort(key)}
+          title={t("lpTipSort")}
         >
           {label}
           {active && <span className="ml-0.5">{prefs.sortDir === "asc" ? "▲" : "▼"}</span>}
+          {unit && <span className="block text-[9px] normal-case tracking-normal text-eve-dim">{unit}</span>}
         </button>
       </th>
     );
@@ -417,6 +471,7 @@ export function LPStoreTab({ isLoggedIn, onError }: Props) {
               checked={count > 0}
               onChange={(e) => setCount(r.offer_id, e.target.checked ? 1 : 0)}
               aria-label={t("lpSelectOffer", { item: r.type_name })}
+              title={t("lpTipSelect")}
             />
           </td>
           <td className="px-1 py-1.5 w-14" onClick={(e) => e.stopPropagation()}>
@@ -431,7 +486,9 @@ export function LPStoreTab({ isLoggedIn, onError }: Props) {
           <td className={TD}>
             <div className="flex flex-col">
               <ItemRef typeId={r.type_id} name={r.type_name} market={!r.is_blueprint} copyName />
-              <span className="text-[10px] text-eve-dim">{offerLabel(r)}</span>
+              <span className="text-[10px] text-eve-dim" title={t("lpTipOfferLabel")}>
+                {offerLabel(r)}
+              </span>
             </div>
           </td>
           <td className={TD} title={(r.market_path ?? []).join(" › ")}>
@@ -444,34 +501,69 @@ export function LPStoreTab({ isLoggedIn, onError }: Props) {
               <span className="text-eve-dim">—</span>
             )}
           </td>
-          <td className={TDR}>{r.lp_cost.toLocaleString()}</td>
-          <td className={TDR}>{r.unpriced ? "?" : formatISK(r.cost)}</td>
-          <td className={TDR}>{valueCell(r, r.instant, false, r.best_method === "sell")}</td>
-          <td className={TDR}>{valueCell(r, r.listed, false, r.best_method === "list")}</td>
-          <td className={TDR} title={r.is_blueprint ? bpcTitle(r) : undefined}>
-            {r.is_blueprint && r.bpc_sale == null && !running && !r.unpriced ? (
-              <span className="text-eve-dim text-[10px]">{t("lpNoContracts")}</span>
-            ) : (
-              valueCell(r, r.bpc_sale, r.is_blueprint, r.best_method === "sell_bpc")
-            )}
+          <td
+            className={TDR}
+            title={
+              lpBalance != null && r.lp_cost > 0
+                ? `${t("lpColLPHint")}\n${t("lpTipAffordable", { count: Math.floor(lpBalance / r.lp_cost).toLocaleString() })}`
+                : t("lpColLPHint")
+            }
+          >
+            {r.lp_cost.toLocaleString()}
           </td>
-          <td className={TDR} title={r.build_error}>
-            {r.build_error ? <span className="text-eve-warning">!</span> : valueCell(r, r.build_instant, buildPending, r.best_method === "build_sell")}
+          <td className={TDR} title={costTitle(r)}>
+            {r.unpriced ? "?" : formatISK(r.cost)}
           </td>
-          <td className={TDR} title={r.build_error}>
-            {r.build_error ? <span className="text-eve-warning">!</span> : valueCell(r, r.build_listed, buildPending, r.best_method === "build_list")}
-          </td>
+          <td className={TDR}>{r.is_blueprint ? <span title={t("lpTipNotSellable")}>—</span> : valueCell(r, r.instant, false, "sell")}</td>
+          <td className={TDR}>{r.is_blueprint ? <span title={t("lpTipNotSellable")}>—</span> : valueCell(r, r.listed, false, "list")}</td>
           <td className={TDR}>
-            {r.best != null && !r.unpriced ? (
-              <span>
-                <span className={`font-semibold ${r.best < 0 ? "text-eve-error" : "text-eve-accent"}`}>{formatPerLP(r.best)}</span>
-                <span className="block text-[10px] text-eve-dim">{r.best_method ? t(METHOD_LABEL[r.best_method]) : ""}</span>
+            {!r.is_blueprint ? (
+              <span title={t("lpTipNotBlueprint")}>—</span>
+            ) : r.bpc_sale == null && !running && !r.unpriced ? (
+              <span className="text-eve-dim text-[10px]" title={bpcTitle(r)}>
+                {t("lpNoContracts")}
               </span>
             ) : (
-              valueCell(r, null, true, false)
+              valueCell(r, r.bpc_sale, true, "sell_bpc")
             )}
           </td>
-          <td className={TDR}>{r.avg_daily_volume > 0 ? formatUnits(r.avg_daily_volume) : "—"}</td>
+          <td className={TDR}>
+            {!r.is_blueprint ? (
+              <span title={t("lpTipNotBlueprint")}>—</span>
+            ) : r.build_error ? (
+              <span className="text-eve-warning" title={t("lpBuildFailed", { error: r.build_error })}>!</span>
+            ) : (
+              valueCell(r, r.build_instant, buildPending, "build_sell")
+            )}
+          </td>
+          <td className={TDR}>
+            {!r.is_blueprint ? (
+              <span title={t("lpTipNotBlueprint")}>—</span>
+            ) : r.build_error ? (
+              <span className="text-eve-warning" title={t("lpBuildFailed", { error: r.build_error })}>!</span>
+            ) : (
+              valueCell(r, r.build_listed, buildPending, "build_list")
+            )}
+          </td>
+          <td className={TDR}>
+            {r.best != null && r.best_method && !r.unpriced ? (
+              <span title={`${t("lpTipBest", { method: t(METHOD_LABEL[r.best_method]) })}\n${valueTitle(r, r.best, r.best_method)}`}>
+                <span className={`font-semibold ${r.best < 0 ? "text-eve-error" : "text-eve-accent"}`}>{formatPerLP(r.best)}</span>
+                <span className="block text-[10px] text-eve-dim">
+                  {t(METHOD_LABEL[r.best_method])} · {t("lpPerRedemption", { isk: formatISK(r.best * r.lp_cost) })}
+                </span>
+              </span>
+            ) : r.unpriced ? (
+              <span className="text-eve-warning" title={t("lpUnpricedHint")}>?</span>
+            ) : running ? (
+              <span className="text-eve-dim" title={t("lpTipPending")}>…</span>
+            ) : (
+              <span title={t("lpTipNoValue")}>—</span>
+            )}
+          </td>
+          <td className={TDR} title={volumeTitle(r)}>
+            {r.avg_daily_volume > 0 ? formatUnits(r.avg_daily_volume) : "—"}
+          </td>
         </tr>
         {detail === r.offer_id && (
           <tr className="bg-eve-dark/80 border-b border-eve-border/40">
@@ -513,6 +605,7 @@ export function LPStoreTab({ isLoggedIn, onError }: Props) {
         <label className="flex items-center gap-2">
           <span className="text-eve-dim">{t("lpStore")}</span>
           <select
+            title={t("lpTipStore")}
             className={`${INPUT} min-w-[14rem]`}
             value={prefs.corporationID}
             onChange={(e) => changeStore(Number(e.target.value))}
@@ -556,11 +649,11 @@ export function LPStoreTab({ isLoggedIn, onError }: Props) {
         <span className="ml-auto flex items-center gap-2">
           {progress && <span className="text-[11px] text-eve-dim">{progress}</span>}
           {running ? (
-            <button className={BTN} onClick={() => abortRef.current?.abort()}>
+            <button className={BTN} onClick={() => abortRef.current?.abort()} title={t("lpTipCancel")}>
               {t("lpCancel")}
             </button>
           ) : (
-            <button className={BTN_ACCENT} onClick={() => void analyze()}>
+            <button className={BTN_ACCENT} onClick={() => void analyze()} title={t("lpTipAnalyze")}>
               {rows.length > 0 ? t("lpReanalyze") : t("lpAnalyze")}
             </button>
           )}
@@ -579,19 +672,21 @@ export function LPStoreTab({ isLoggedIn, onError }: Props) {
 
       {/* The tally. Always mounted, so nothing jumps under the cursor when the first box is ticked. */}
       <div className={`${PANEL} px-3 py-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs`}>
-        <span className="text-eve-dim">{t("lpSelectedOffers", { count: selectedCount })}</span>
-        <span>
+        <span className="text-eve-dim" title={t("lpTipSelectedOffers")}>
+          {t("lpSelectedOffers", { count: selectedCount })}
+        </span>
+        <span title={t("lpTipTallyLP")}>
           <span className="text-eve-dim">LP </span>
           <span className={`font-mono ${basket.overBalance ? "text-eve-error font-semibold" : "text-eve-text"}`}>
             {basket.lp.toLocaleString()}
             {lpBalance != null && <span className="text-eve-dim"> / {lpBalance.toLocaleString()}</span>}
           </span>
         </span>
-        <span>
+        <span title={t("lpTipISKNeeded")}>
           <span className="text-eve-dim">{t("lpISKNeeded")} </span>
           <span className="font-mono text-eve-text">{formatISK(basket.isk)}</span>
         </span>
-        <span>
+        <span title={t("lpTipExpectedProfit")}>
           <span className="text-eve-dim">{t("lpExpectedProfit")} </span>
           <span className={`font-mono ${basket.profit < 0 ? "text-eve-error" : "text-eve-profit"}`}>{formatISK(basket.profit)}</span>
           {basket.lp > 0 && <span className="text-eve-dim"> ({formatPerLP(basket.blendedISKPerLP)} ISK/LP)</span>}
@@ -610,9 +705,11 @@ export function LPStoreTab({ isLoggedIn, onError }: Props) {
             />
             {t("lpIncludeBuild")}
           </label>
-          <span className="text-[11px] text-eve-dim">{t("lpCopyMultibuy")}</span>
+          <span className="text-[11px] text-eve-dim" title={t("lpTipCopyMultibuy")}>
+            {t("lpCopyMultibuy")}
+          </span>
           <CopyButton text={basket.multibuy} label={t("lpCopyMultibuy")} disabled={!basket.multibuy} />
-          <button className={BTN} disabled={selectedCount === 0} onClick={() => setSelection(new Map())}>
+          <button className={BTN} disabled={selectedCount === 0} onClick={() => setSelection(new Map())} title={t("lpTipClear")}>
             {t("lpClearSelection")}
           </button>
         </span>
@@ -634,6 +731,7 @@ export function LPStoreTab({ isLoggedIn, onError }: Props) {
           <button
             key={f}
             onClick={() => setPrefs({ filter: f })}
+            title={t(f === "all" ? "lpTipFilterAll" : f === "sellable" ? "lpTipFilterSellable" : "lpTipFilterBlueprints")}
             className={`px-2 py-0.5 rounded-sm border text-[11px] ${
               prefs.filter === f ? "border-eve-accent text-eve-accent bg-eve-accent/10" : "border-eve-border text-eve-dim hover:text-eve-text"
             }`}
@@ -641,7 +739,7 @@ export function LPStoreTab({ isLoggedIn, onError }: Props) {
             {t(f === "all" ? "lpFilterAll" : f === "sellable" ? "lpFilterSellable" : "lpFilterBlueprints")}
           </button>
         ))}
-        <label className="flex items-center gap-1 text-eve-dim">
+        <label className="flex items-center gap-1 text-eve-dim" title={t("lpTipMinISKPerLP")}>
           {t("lpMinISKPerLP")}
           <input
             type="number"
@@ -663,6 +761,7 @@ export function LPStoreTab({ isLoggedIn, onError }: Props) {
         <input
           className={`${INPUT} w-48`}
           placeholder={t("lpSearch")}
+          title={t("lpTipSearch")}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
@@ -680,17 +779,17 @@ export function LPStoreTab({ isLoggedIn, onError }: Props) {
               <tr className="text-eve-dim text-[10px] uppercase tracking-wider border-b border-eve-border">
                 <th className="px-2 py-1.5 w-6"></th>
                 <th className="px-1 py-1.5 w-14"></th>
-                {sortHeader("offer", t("lpColItem"), false)}
+                {sortHeader("offer", t("lpColItem"), false, t("lpColItemHint"))}
                 {sortHeader("category", t("lpColCategory"), false, t("lpColCategoryHint"))}
-                {sortHeader("lp", "LP", true)}
+                {sortHeader("lp", "LP", true, t("lpColLPHint"))}
                 {sortHeader("cost", t("lpColCost"), true, t("lpColCostHint"))}
-                {sortHeader("instant", t("lpColInstant"), true, t("lpColInstantHint"))}
-                {sortHeader("listed", t("lpColListed"), true, t("lpColListedHint"))}
-                {sortHeader("bpc", t("lpColBPC"), true, t("lpColBPCHint"))}
-                {sortHeader("build_instant", t("lpColBuildInstant"), true, t("lpColBuildInstantHint"))}
-                {sortHeader("build_listed", t("lpColBuildListed"), true, t("lpColBuildListedHint"))}
-                {sortHeader("best", t("lpColBest"), true)}
-                {sortHeader("volume", t("lpColVolume"), true, t("lpColVolumeHint"))}
+                {sortHeader("instant", t("lpColInstant"), true, t("lpColInstantHint"), "ISK/LP")}
+                {sortHeader("listed", t("lpColListed"), true, t("lpColListedHint"), "ISK/LP")}
+                {sortHeader("bpc", t("lpColBPC"), true, t("lpColBPCHint"), "ISK/LP")}
+                {sortHeader("build_instant", t("lpColBuildInstant"), true, t("lpColBuildInstantHint"), "ISK/LP")}
+                {sortHeader("build_listed", t("lpColBuildListed"), true, t("lpColBuildListedHint"), "ISK/LP")}
+                {sortHeader("best", t("lpColBest"), true, t("lpColBestHint"), "ISK/LP")}
+                {sortHeader("volume", t("lpColVolume"), true, t("lpColVolumeHint"), t("lpUnitsPerDay"))}
               </tr>
             </thead>
             <tbody>
@@ -717,6 +816,7 @@ function CountInput({ count, label, onChange }: { count: number; label: string; 
       className={`${INPUT} w-14 text-right`}
       value={draft}
       aria-label={label}
+      title={label}
       onChange={(e) => {
         setDraft(e.target.value);
         const n = Math.floor(Number(e.target.value));
@@ -787,15 +887,15 @@ function OfferDetail({
           {row.is_blueprint ? t("lpDetailProductMarket", { product: row.product_name }) : t("lpDetailMarket")}
         </div>
         <div className="flex justify-between">
-          <span>{t("lpDetailBid")}</span>
+          <span title={t("lpTipDetailBid")}>{t("lpDetailBid")}</span>
           <span className="font-mono">{row.unit_bid > 0 ? formatISK(row.unit_bid) : "—"}</span>
         </div>
         <div className="flex justify-between">
-          <span>{t("lpDetailAsk")}</span>
+          <span title={t("lpTipDetailAsk")}>{t("lpDetailAsk")}</span>
           <span className="font-mono">{row.unit_ask > 0 ? formatISK(row.unit_ask) : "—"}</span>
         </div>
         <div className="flex justify-between">
-          <span>{t("lpDetailVolume")}</span>
+          <span title={t("lpColVolumeHint")}>{t("lpDetailVolume")}</span>
           <span className="font-mono">
             {row.avg_daily_volume > 0 ? formatUnits(row.avg_daily_volume) : "—"}
             <span className="text-eve-dim"> · {t("lpDetailUnitsPerRedemption", { units: row.units_per_redemption })}</span>
@@ -803,7 +903,7 @@ function OfferDetail({
         </div>
         {row.is_blueprint && row.build_cost > 0 && (
           <div className="flex justify-between">
-            <span>{t("lpDetailBuildCost")}</span>
+            <span title={t("lpTipDetailBuildCost")}>{t("lpDetailBuildCost")}</span>
             <span className="font-mono">
               {formatISK(row.build_cost)}
               <span className="text-eve-dim"> ({t("lpDetailJobCost", { cost: formatISK(row.build_job_cost) })})</span>
@@ -825,7 +925,9 @@ function OfferDetail({
           </div>
           {isLoggedIn ? (
             <div className="flex items-center gap-2">
-              <span className="text-eve-dim">{t("lpYourPricePerRun")}</span>
+              <span className="text-eve-dim" title={t("lpTipYourPrice")}>
+                {t("lpYourPricePerRun")}
+              </span>
               <input
                 type="number"
                 min={0}

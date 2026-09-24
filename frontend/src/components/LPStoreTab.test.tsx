@@ -169,6 +169,39 @@ describe("LPStoreTab", () => {
     expect(screen.queryByText("Caldari Navy Scourge Light Missile")).not.toBeInTheDocument();
   });
 
+  it("shows profit per redemption under Best and explains each value's arithmetic on hover", async () => {
+    const user = userEvent.setup();
+    // Low-grade Talon Omega, no fees: (8.41M - 2.146M) / 2,000 LP = 3,132 ISK/LP, 6.264M a redemption.
+    streamed.rows = [
+      row({
+        offer_id: 1,
+        type_name: "Low-grade Talon Omega",
+        lp_cost: 2_000,
+        isk_cost: 1_000_000,
+        cost: 2_146_000,
+        unit_bid: 1_483_000,
+        unit_ask: 8_410_000,
+        instant: -331.5,
+        listed: 3_132,
+        best: 3_132,
+        best_method: "list",
+      }),
+    ];
+    mount();
+    await user.click(await screen.findByRole("button", { name: /^analyze$/i }));
+    const tr = (await screen.findByText("Low-grade Talon Omega")).closest("tr")!;
+
+    expect(within(tr).getByText(/6\.26\s?M \/ redemption/)).toBeInTheDocument();
+
+    const listed = within(tr).getAllByText("3,132").find((el) => el.getAttribute("title")?.startsWith("List"))!;
+    const tip = listed.getAttribute("title")!;
+    expect(tip).toMatch(/8\.41\s?M each/);
+    expect(tip).toMatch(/2\.15\s?M offer cost/);
+    expect(tip).toMatch(/\/ 2,000 LP = 3,132 ISK\/LP/);
+
+    expect(screen.getAllByText("ISK/LP").length).toBeGreaterThanOrEqual(6);
+  });
+
   it("hides offers that trade less than the minimum volume, including ones with none", async () => {
     const user = userEvent.setup();
     streamed.rows = [
