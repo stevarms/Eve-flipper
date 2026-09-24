@@ -3629,6 +3629,8 @@ export const en = {
   lpFilterSellable: "Sellable",
   lpFilterBlueprints: "Blueprints",
   lpMinISKPerLP: "Min ISK/LP",
+  lpMinVolume: "Min vol/day",
+  lpMinVolumeHint: "Hide offers whose item (for a blueprint, its product) trades fewer units per day than this, on the 30-day average. Offers with no trade data are hidden too.",
   lpSearch: "Search",
   lpOfferCount: "{shown} of {total} offers",
   lpColItem: "Offer",

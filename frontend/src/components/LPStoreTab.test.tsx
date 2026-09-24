@@ -127,6 +127,23 @@ describe("LPStoreTab", () => {
     expect(screen.getByText(/^1 run ·|^1 run$/)).toBeInTheDocument();
   });
 
+  it("hides offers that trade less than the minimum volume, including ones with none", async () => {
+    const user = userEvent.setup();
+    streamed.rows = [
+      row({ offer_id: 1, type_id: 301, type_name: "Busy Implant", avg_daily_volume: 12, best: 900, best_method: "list" }),
+      row({ offer_id: 2, type_id: 302, type_name: "Quiet Implant", avg_daily_volume: 0.4, best: 5_000, best_method: "list" }),
+      row({ offer_id: 3, type_id: 303, type_name: "Dead Implant", avg_daily_volume: 0, best: 9_000, best_method: "list" }),
+    ];
+    mount();
+    await user.click(await screen.findByRole("button", { name: /^analyze$/i }));
+    await screen.findByText("Quiet Implant");
+
+    await user.type(screen.getByRole("spinbutton", { name: /min vol\/day/i }), "1");
+    expect(screen.getByText("Busy Implant")).toBeInTheDocument();
+    expect(screen.queryByText("Quiet Implant")).not.toBeInTheDocument();
+    expect(screen.queryByText("Dead Implant")).not.toBeInTheDocument();
+  });
+
   it("tallies the selection against the LP balance and copies one merged multibuy", async () => {
     const user = userEvent.setup();
     const writeText = vi.fn().mockResolvedValue(undefined);

@@ -3627,6 +3627,8 @@ export const ru = {
   lpFilterSellable: "Продаваемые",
   lpFilterBlueprints: "Чертежи",
   lpMinISKPerLP: "Min ISK/LP",
+  lpMinVolume: "Мин. объём/день",
+  lpMinVolumeHint: "Скрыть предложения, чей предмет (для чертежа — продукт) продаётся меньше этого в день (среднее за 30 дней). Предложения без данных о торгах тоже скрываются.",
   lpSearch: "Поиск",
   lpOfferCount: "{shown} из {total} предложений",
   lpColItem: "Предложение",

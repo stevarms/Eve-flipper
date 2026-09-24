@@ -43,6 +43,8 @@ interface Prefs {
   corporationID: number;
   filter: Filter;
   minISKPerLP: number | null;
+  /** Hides offers whose item (or a blueprint's product) trades less than this per day. */
+  minVolume: number | null;
   typedLP: number | null;
   includeBuild: boolean;
 }
@@ -54,7 +56,7 @@ interface SessionState {
   warnings: string[];
 }
 
-const DEFAULT_PREFS: Prefs = { corporationID: 1000180, filter: "all", minISKPerLP: null, typedLP: null, includeBuild: false };
+const DEFAULT_PREFS: Prefs = { corporationID: 1000180, filter: "all", minISKPerLP: null, minVolume: null, typedLP: null, includeBuild: false };
 
 function loadPrefs(): Prefs {
   try {
@@ -291,10 +293,11 @@ export function LPStoreTab({ isLoggedIn, onError }: Props) {
       if (prefs.filter === "sellable" && r.is_blueprint) return false;
       if (prefs.filter === "blueprints" && !r.is_blueprint) return false;
       if (prefs.minISKPerLP != null && (r.best == null || r.best < prefs.minISKPerLP)) return false;
+      if (prefs.minVolume != null && r.avg_daily_volume < prefs.minVolume) return false;
       if (q && !r.type_name.toLowerCase().includes(q) && !r.product_name.toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [rows, prefs.filter, prefs.minISKPerLP, search]);
+  }, [rows, prefs.filter, prefs.minISKPerLP, prefs.minVolume, search]);
 
   // Groups sorted by their best variant; unvalued last. Within a group, best first.
   const groups = useMemo(() => {
@@ -582,6 +585,16 @@ export function LPStoreTab({ isLoggedIn, onError }: Props) {
             className={`${INPUT} w-20 text-right`}
             value={prefs.minISKPerLP ?? ""}
             onChange={(e) => setPrefs({ minISKPerLP: e.target.value === "" ? null : Number(e.target.value) })}
+          />
+        </label>
+        <label className="flex items-center gap-1 text-eve-dim" title={t("lpMinVolumeHint")}>
+          {t("lpMinVolume")}
+          <input
+            type="number"
+            min={0}
+            className={`${INPUT} w-20 text-right`}
+            value={prefs.minVolume ?? ""}
+            onChange={(e) => setPrefs({ minVolume: e.target.value === "" ? null : Number(e.target.value) })}
           />
         </label>
         <input
