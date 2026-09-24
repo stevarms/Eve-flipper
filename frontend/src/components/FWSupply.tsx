@@ -548,11 +548,12 @@ export function FWSupply({ isLoggedIn, onError }: Props) {
     [campaign, fail],
   );
 
-  // Recording a lot is the moment a plan becomes capital: the quantity and the
-  // Jita price are what was actually bought, and from here the budget is
-  // measured from the lot, never from the plan. The rows are whatever the
-  // caller selected -- GapsPanel's checkboxes, not a budget trim -- so this
-  // reads suggested_qty, the full row's own number, rather than a trimmed one.
+  // Recording a lot turns a plan row into a shopping list entry. It lands in
+  // `planned`, which consumes no budget: nothing has been bought yet, and the
+  // lot only becomes capital when it is advanced to `bought`. The rows are
+  // whatever the caller selected -- GapsPanel's checkboxes, not a budget trim --
+  // so this reads suggested_qty, the full row's own number, rather than a
+  // trimmed one.
   const recordLots = useCallback(
     async (rows: FWSupplyRow[]) => {
       if (!campaign || rows.length === 0) return;
@@ -567,7 +568,7 @@ export function FWSupply({ isLoggedIn, onError }: Props) {
             qty_remaining: row.suggested_qty,
             unit_cost_isk: row.jita_best_sell,
             listed_price: row.suggested_price,
-            state: "bought",
+            state: "planned",
           });
         }
         setCampaign(latest);
@@ -578,6 +579,66 @@ export function FWSupply({ isLoggedIn, onError }: Props) {
       }
     },
     [campaign, fail],
+  );
+
+  // One save path for every in-place lot edit. The lots are saved one at a
+  // time, like recordLots, so a failure part-way leaves the earlier ones saved
+  // and the campaign reloaded to show exactly which.
+  const saveLotEdits = useCallback(
+    async (edits: FWLot[], failure: string) => {
+      if (!campaign || edits.length === 0) return;
+      setBusy(true);
+      try {
+        let latest = campaign;
+        for (const lot of edits) latest = await saveFWLot(campaign.campaign_id, lot);
+        setCampaign(latest);
+      } catch (e) {
+        fail(e, failure);
+        try {
+          setCampaign(await getFWCampaign(campaign.campaign_id));
+        } catch {
+          // The failure above is already on screen; a stale table is the lesser problem.
+        }
+      } finally {
+        setBusy(false);
+      }
+    },
+    [campaign, fail],
+  );
+
+  // A quantity edit moves what is left by the same amount, so a lot that has
+  // partly sold keeps its sold count instead of being reset to whole.
+  const handleLotQty = useCallback(
+    (lot: FWLot, qty: number) => {
+      if (qty <= 0 || qty === lot.qty) return;
+      const remaining = Math.min(qty, Math.max(0, lot.qty_remaining + (qty - lot.qty)));
+      void saveLotEdits([{ ...lot, qty, qty_remaining: remaining }], "Could not change the lot quantity");
+    },
+    [saveLotEdits],
+  );
+
+  // Cost is what the stock actually cost -- a Jita price at recording time,
+  // or a build cost once you decide to manufacture it instead.
+  const handleLotCost = useCallback(
+    (lot: FWLot, cost: number) => {
+      if (cost < 0 || cost === lot.unit_cost_isk) return;
+      void saveLotEdits([{ ...lot, unit_cost_isk: cost }], "Could not change the lot cost");
+    },
+    [saveLotEdits],
+  );
+
+  // The plan's current sell price per type -- the same number the gaps tab
+  // shows. The lots tab reprices unlisted lots from it, so regenerating the
+  // plan is how the prices get refreshed.
+  const planPrices = useMemo(() => {
+    const m = new Map<number, number>();
+    for (const r of plan?.rows ?? []) if (r.suggested_price > 0) m.set(r.type_id, r.suggested_price);
+    return m;
+  }, [plan]);
+
+  const handleLotPrices = useCallback(
+    (edits: FWLot[]) => void saveLotEdits(edits, "Could not save the refreshed prices"),
+    [saveLotEdits],
   );
 
   const rows = plan?.rows ?? [];
@@ -884,6 +945,10 @@ export function FWSupply({ isLoggedIn, onError }: Props) {
               onAdvance={(lotID, state) => void handleLotState(lotID, state)}
               onDelete={(lotID) => void handleLotDelete(lotID)}
               onBulk={(ids, action, state) => void handleLotBulk(ids, action, state)}
+              onQty={handleLotQty}
+              onCost={handleLotCost}
+              planPrices={planPrices}
+              onPrices={handleLotPrices}
             />
           )}
 
@@ -2001,18 +2066,96 @@ export function GapsPanel({
 
 /* -------------------------------------------------------------------- lots */
 
-function LotsPanel({
+// The lot's states before it is on the market. Once listed, the price is the
+// in-game order's, so the plan no longer gets to reprice it.
+const REPRICEABLE_STATES = new Set(["planned", "bought", "in_transit", "at_dest"]);
+
+// An editable number cell. It keeps its own draft and saves on Enter or blur,
+// not per keystroke: every save is a round-trip that recomputes the budget, and
+// typing "1500" should not record 1, 15 and 150 on the way.
+function LotNumberInput({
+  value,
+  integer,
+  min,
+  disabled,
+  label,
+  hint,
+  className,
+  onCommit,
+}: {
+  value: number;
+  integer: boolean;
+  min: number;
+  disabled: boolean;
+  label: string;
+  hint: string;
+  className: string;
+  onCommit: (value: number) => void;
+}) {
+  const [draft, setDraft] = useState(String(value));
+  const cancelled = useRef(false);
+  useEffect(() => setDraft(String(value)), [value]);
+
+  const commit = () => {
+    if (cancelled.current) {
+      cancelled.current = false;
+      setDraft(String(value));
+      return;
+    }
+    const raw = draft.trim() === "" ? NaN : Number(draft);
+    const next = integer ? Math.floor(raw) : raw;
+    if (!Number.isFinite(next) || next < min) {
+      setDraft(String(value));
+      return;
+    }
+    if (next !== value) onCommit(next);
+  };
+
+  return (
+    <input
+      type="number"
+      min={min}
+      step={integer ? 1 : "any"}
+      className={`${INPUT} ${className} text-right`}
+      value={draft}
+      disabled={disabled}
+      aria-label={label}
+      title={hint}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") e.currentTarget.blur();
+        if (e.key === "Escape") {
+          cancelled.current = true;
+          e.currentTarget.blur();
+        }
+      }}
+    />
+  );
+}
+
+export function LotsPanel({
   lots,
   busy,
   onAdvance,
   onDelete,
   onBulk,
+  onQty,
+  onCost,
+  planPrices,
+  onPrices,
 }: {
   lots: FWLot[];
   busy: boolean;
   onAdvance: (lotID: number, state: string) => void;
   onDelete: (lotID: number) => void;
   onBulk: (lotIDs: number[], action: "state" | "delete", state?: string) => void;
+  onQty: (lot: FWLot, qty: number) => void;
+  onCost: (lot: FWLot, cost: number) => void;
+  /** The current plan's sell price per type_id; empty when there is no plan. */
+  planPrices: Map<number, number>;
+  /** Saves lots whose listed_price the plan has moved. */
+  onPrices: (lots: FWLot[]) => void;
 }) {
   const { t } = useI18n();
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -2074,6 +2217,48 @@ function LotsPanel({
     [sorted, selected],
   );
 
+  // What a lot should sell for now: the plan's price while the lot is not yet
+  // on the market and the plan still prices its type, otherwise the price the
+  // lot already carries.
+  const currentPrice = useCallback(
+    (l: FWLot) => (REPRICEABLE_STATES.has(l.state) ? planPrices.get(l.type_id) : undefined) ?? l.listed_price,
+    [planPrices],
+  );
+
+  // The same two pastes the gaps tab offers, read from the lots instead of the
+  // plan: the buyer's multibuy at what is still to be moved, and the seller's
+  // price list at each lot's current price, snapped to EVE's grid.
+  const selectedLots = useMemo(() => sorted.filter((l) => selected.has(l.lot_id)), [sorted, selected]);
+  const multibuyLots = useMemo(() => selectedLots.filter((l) => l.qty_remaining > 0), [selectedLots]);
+  const multibuy = useMemo(
+    () => multibuyLots.map((l) => `${l.type_name} ${l.qty_remaining}`).join("\n"),
+    [multibuyLots],
+  );
+  const pricedLots = useMemo(
+    () => selectedLots.filter((l) => currentPrice(l) > 0),
+    [selectedLots, currentPrice],
+  );
+  const priceList = useMemo(
+    () =>
+      pricedLots
+        .map((l) => {
+          const p = currentPrice(l);
+          return `${l.type_name}\t${formatGridPrice(p, priceStep(p))}`;
+        })
+        .join("\n"),
+    [pricedLots, currentPrice],
+  );
+  // Copying the prices is also the moment they are kept: whatever the plan
+  // moved is saved onto the lot, so the table and the next copy agree with
+  // what was just pasted into EVE.
+  const repriced = useMemo(
+    () =>
+      pricedLots
+        .filter((l) => currentPrice(l) !== l.listed_price)
+        .map((l) => ({ ...l, listed_price: currentPrice(l) })),
+    [pricedLots, currentPrice],
+  );
+
   if (lots.length === 0) {
     return <div className={`${PANEL} px-3 py-6 text-center text-xs text-eve-dim`}>{t("fwNoLots")}</div>;
   }
@@ -2089,6 +2274,16 @@ function LotsPanel({
           {selectedCommitted > 0 && (
             <span className="ml-1 font-mono text-eve-text">({formatISK(selectedCommitted)})</span>
           )}
+        </span>
+
+        <span className="flex items-center gap-1">
+          <CopyButton text={multibuy} label={t("fwAddSelectedMultibuy")} disabled={multibuyLots.length === 0} />
+          <CopyButton
+            text={priceList}
+            label={t("fwCopySelectedPrices")}
+            disabled={pricedLots.length === 0}
+            onCopied={repriced.length > 0 ? () => onPrices(repriced) : undefined}
+          />
         </span>
 
         <span className="flex items-center gap-1">
@@ -2159,6 +2354,7 @@ function LotsPanel({
               const committed =
                 lot.state === "sold" || lot.state === "pulled" ? 0 : lot.qty_remaining * lot.unit_cost_isk;
               const isSelected = selected.has(lot.lot_id);
+              const price = currentPrice(lot);
               return (
                 <tr
                   key={lot.lot_id}
@@ -2179,11 +2375,49 @@ function LotsPanel({
                     <ItemRef typeId={lot.type_id} name={lot.type_name} market copyName />
                   </td>
                   <td className={`${TD} text-eve-text`}>{lot.state}</td>
-                  <td className={TDR}>{formatQty(lot.qty)}</td>
+                  <td className={TDR}>
+                    <LotNumberInput
+                      value={lot.qty}
+                      integer
+                      min={1}
+                      disabled={busy}
+                      label={t("fwLotQtyLabel", { item: lot.type_name })}
+                      hint={t("fwLotQtyHint")}
+                      className="w-24"
+                      onCommit={(qty) => onQty(lot, qty)}
+                    />
+                  </td>
                   <td className={TDR}>{formatQty(lot.qty_remaining)}</td>
-                  <td className={TDR}>{formatPrice(lot.unit_cost_isk)}</td>
+                  <td className={TDR}>
+                    <LotNumberInput
+                      value={lot.unit_cost_isk}
+                      integer={false}
+                      min={0}
+                      disabled={busy}
+                      label={t("fwLotCostLabel", { item: lot.type_name })}
+                      hint={t("fwLotCostHint")}
+                      className="w-28"
+                      onCommit={(cost) => onCost(lot, cost)}
+                    />
+                  </td>
                   <td className={TDR}>{committed > 0 ? formatISK(committed) : "—"}</td>
-                  <td className={TDR}>{formatPrice(lot.listed_price)}</td>
+                  <td className={TDR}>
+                    <span className="inline-flex items-center justify-end gap-1">
+                      {price !== lot.listed_price ? (
+                        <span
+                          className="text-eve-accent"
+                          title={t("fwLotPriceMovedHint", { was: formatPrice(lot.listed_price) })}
+                        >
+                          {formatPrice(price)} ↻
+                        </span>
+                      ) : (
+                        formatPrice(price)
+                      )}
+                      {price > 0 && (
+                        <CopyPrice value={price} step={priceStep(price)} label={t("fwCopyPrice")} reveal="hover" />
+                      )}
+                    </span>
+                  </td>
                   <td className={`${TD} text-eve-dim`}>{lot.holder_name || lot.holder_owner_kind || "—"}</td>
                   <td className="px-3 py-1.5 text-right whitespace-nowrap">
                     {next && (

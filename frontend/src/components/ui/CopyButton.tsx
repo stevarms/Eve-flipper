@@ -18,6 +18,8 @@ export interface CopyButtonProps {
   size?: ActionSize;
   disabled?: boolean;
   className?: string;
+  /** Runs after the text has reached the clipboard, never on a failed copy. */
+  onCopied?: () => void;
 }
 
 /**
@@ -38,6 +40,7 @@ export function CopyButton({
   size = "sm",
   disabled,
   className,
+  onCopied,
 }: CopyButtonProps) {
   const { t } = useI18n();
   const { addToast } = useOptionalToast();
@@ -60,9 +63,11 @@ export function CopyButton({
         timer.current = setTimeout(() => setCopied(false), 1400);
       } catch {
         addToast(t("clipboardUnavailable"), "error", 2500);
+        return;
       }
+      onCopied?.();
     },
-    [text, addToast, t],
+    [text, addToast, t, onCopied],
   );
 
   return (
