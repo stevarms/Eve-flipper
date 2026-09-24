@@ -375,6 +375,7 @@ func (s *Server) handleLPAnalyze(w http.ResponseWriter, r *http.Request) {
 		}
 		rows = append(rows, engine.NewLPOfferRow(offer, meta, &q, fees))
 	}
+	s.lpNameUnknownTypes(rows, sdeData)
 	writeLine(map[string]interface{}{
 		"type":           "offers",
 		"corporation_id": req.CorporationID,
@@ -645,6 +646,42 @@ func lpOfferMeta(typeID int32, sdeData *sde.Data) engine.LPOfferMeta {
 	}
 	meta.Category, meta.Group, meta.MarketPath = lpTypeClassification(sold, sdeData)
 	return meta
+}
+
+// lpNameUnknownTypes names the offers and required items the SDE's market
+// type list leaves out (items that are not sold on the market), through ESI,
+// so the table shows a name instead of "Type 87350". A failed lookup keeps
+// the placeholder; it is a label, not a value.
+func (s *Server) lpNameUnknownTypes(rows []engine.LPOfferRow, sdeData *sde.Data) {
+	known := func(id int32) bool {
+		t, ok := sdeData.Types[id]
+		return ok && t != nil && strings.TrimSpace(t.Name) != ""
+	}
+	var ids []int64
+	for _, r := range rows {
+		if !r.IsBlueprint && !known(r.TypeID) {
+			ids = append(ids, int64(r.TypeID))
+		}
+		for _, ri := range r.RequiredItems {
+			if !known(ri.TypeID) {
+				ids = append(ids, int64(ri.TypeID))
+			}
+		}
+	}
+	if len(ids) == 0 || s.esi == nil {
+		return
+	}
+	names, _ := s.esi.ResolveNames(ids)
+	for i := range rows {
+		if name := names[int64(rows[i].TypeID)]; name != "" && !rows[i].IsBlueprint {
+			rows[i].TypeName = name
+		}
+		for j := range rows[i].RequiredItems {
+			if name := names[int64(rows[i].RequiredItems[j].TypeID)]; name != "" {
+				rows[i].RequiredItems[j].TypeName = name
+			}
+		}
+	}
 }
 
 // lpTypeClassification is a type's SDE category and group names and its
