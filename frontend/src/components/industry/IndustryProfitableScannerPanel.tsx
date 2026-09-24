@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { INDUSTRY_SCANNER_PARAMS_KEY } from "@/lib/industryScannerSettings";
 import { ItemRef } from "@/components/ui/ItemRef";
 import { useI18n } from "@/lib/i18n";
 import { scanProfitableBlueprints, getStations, getStructures } from "@/lib/api";
@@ -55,7 +56,7 @@ import {
 // fits across ten manufacturing slots with a couple of multi-job items.
 const TOP_PICK_COUNT = 15;
 const SCANNER_PERSIST_KEY = "industry-scanner";
-const PARAMS_LS_KEY = "eve-settings:industry-scanner";
+const PARAMS_LS_KEY = INDUSTRY_SCANNER_PARAMS_KEY;
 // Keep transient scan results (rows + selection + sort + search) in
 // sessionStorage so the user doesn't lose them when they switch jobs tabs.
 // Versioned: the persisted blob carries sortKey, and "isk_per_hour" is a

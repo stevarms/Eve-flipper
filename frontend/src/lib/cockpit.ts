@@ -20,6 +20,7 @@ export const MAIN_TAB_IDS = [
   "trade_journal",
   "demand",
   "fw",
+  "lp",
   // Promoted out of the character modal (see WORKSPACE_META below).
   "positions",
   "stockpiles",
@@ -285,6 +286,7 @@ export const MAIN_TAB_META: Record<MainTabId, { labelKey: TranslationKey; fallba
   trade_journal: { labelKey: "tabTradeJournal", fallback: "Trade Journal", group: "tools" },
   demand: { labelKey: "tabDemand", fallback: "War", group: "tools" },
   fw: { labelKey: "tabFWSupply", fallback: "FW Supply", group: "tools" },
+  lp: { labelKey: "tabLPStore", fallback: "LP Store", group: "tools" },
   positions: { labelKey: "tabPositions", fallback: "Positions", group: "tools" },
   stockpiles: { labelKey: "tabStockpiles", fallback: "Stockpiles", group: "tools" },
   jobs: { labelKey: "tabJobs", fallback: "Jobs", group: "tools" },
@@ -335,7 +337,7 @@ export const WORKSPACE_META: Record<WorkspaceId, WorkspaceMeta> = {
     labelKey: "wsTrade",
     fallback: "Trade",
     icon: "TrendingUp",
-    tabs: ["radius", "region", "station", "accumulate", "contracts", "orders", "fw", "plex", "optimizer", "edge"],
+    tabs: ["radius", "region", "station", "accumulate", "contracts", "orders", "fw", "lp", "plex", "optimizer", "edge"],
   },
   industry: {
     labelKey: "wsIndustry",

@@ -19,6 +19,7 @@ import { OrdersPill } from "./components/OrdersPill";
 import { IndustryTab } from "./components/IndustryTab";
 import { WarTracker } from "./components/WarTracker";
 import { FWSupply } from "./components/FWSupply";
+import { LPStoreTab } from "./components/LPStoreTab";
 import { ItemIntelligenceModal } from "./components/ItemIntelligenceModal";
 import { TabActionBar, TabPanel, tabWorkspaceClass } from "./components/TabWorkspace";
 import { ScanHistory } from "./components/ScanHistory";
@@ -2653,6 +2654,12 @@ function App() {
           </TabPanel>
           <TabPanel active={tab === "fw"}>
             <FWSupply
+              isLoggedIn={authStatus.logged_in}
+              onError={(msg) => addToast(msg, "error")}
+            />
+          </TabPanel>
+          <TabPanel active={tab === "lp"}>
+            <LPStoreTab
               isLoggedIn={authStatus.logged_in}
               onError={(msg) => addToast(msg, "error")}
             />
