@@ -73,6 +73,16 @@ type LPBuildResult struct {
 	InstantAvailable bool
 	ListedProfit     float64
 	Error            string
+	// Materials is the build's flattened shopping list for all runs, with the
+	// structure's material bonus applied -- what the basket's multibuy adds.
+	Materials []LPMaterial
+}
+
+// LPMaterial is one line of a build's shopping list.
+type LPMaterial struct {
+	TypeID   int32  `json:"type_id"`
+	TypeName string `json:"type_name"`
+	Quantity int64  `json:"quantity"`
 }
 
 // LPBPCPrice is what a blueprint copy of this type sells for on contract, per
@@ -126,6 +136,8 @@ type LPOfferRow struct {
 	BPCSamples  int     `json:"bpc_samples"`
 	BPCOverride bool    `json:"bpc_override"`
 	BuildError  string  `json:"build_error,omitempty"`
+
+	BuildMaterials []LPMaterial `json:"build_materials,omitempty"`
 }
 
 // NewLPOfferRow computes everything that needs only the market: the cost and,
@@ -181,6 +193,7 @@ func NewLPOfferRow(o LPOffer, meta LPOfferMeta, q *LPMarketQuote, fees LPFees) L
 func (r *LPOfferRow) ApplyBuild(b LPBuildResult) {
 	r.BuildInstant, r.BuildListed = nil, nil
 	r.BuildError = b.Error
+	r.BuildMaterials = b.Materials
 	if b.Error == "" {
 		// The analyzer's profit is already net of the build; it is revenue
 		// the offer's cost has not been taken from yet.

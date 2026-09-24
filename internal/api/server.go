@@ -983,6 +983,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auth/fw/campaigns/{id}/orders/apply", s.handleFWCampaignOrdersApply)
 	mux.HandleFunc("GET /api/auth/fw/campaigns/{id}/plan", s.handleFWCampaignPlan)
 	mux.HandleFunc("POST /api/auth/fw/campaigns/{id}/plan", s.handleFWCampaignPlanGenerate)
+	// LP Store: what each loyalty-point offer is worth, per LP.
+	mux.HandleFunc("GET /api/lp/corporations", s.handleLPCorporations)
+	mux.HandleFunc("POST /api/lp/analyze", s.handleLPAnalyze)
+	mux.HandleFunc("GET /api/auth/lp/balances", s.handleLPBalances)
+	mux.HandleFunc("GET /api/auth/lp/bpc-prices", s.handleLPBPCPricesGet)
+	mux.HandleFunc("PUT /api/auth/lp/bpc-prices", s.handleLPBPCPricesPut)
 	mux.HandleFunc("GET /api/auth/orders/history", s.handleAuthOrderHistory)
 	// Assets → Positions. See internal/api/positions.go.
 	mux.HandleFunc("GET /api/auth/positions", s.handleAuthPositions)
