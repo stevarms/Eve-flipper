@@ -36,7 +36,9 @@ const BTN_ACCENT =
 const INPUT = "h-7 px-2 rounded-sm border border-eve-border bg-eve-input text-eve-text text-xs font-mono";
 
 const PREFS_KEY = "eve-flipper:lp-store:prefs:v1";
-const STATE_KEY = "eve-flipper:lp-store:state:v1";
+// Bump the version whenever LPOfferRow gains or changes a field: a session
+// restored from an older version would hand the table rows missing it.
+const STATE_KEY = "eve-flipper:lp-store:state:v2";
 
 type Filter = "all" | "sellable" | "blueprints";
 

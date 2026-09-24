@@ -11,6 +11,11 @@ export type LPValueMethod = Exclude<LPMethod, "">;
 type T = (key: TranslationKey, params?: Record<string, string | number>) => string;
 type Fmt = (isk: number) => string;
 
+// Counts as text. A field missing from a row (one saved by an older version,
+// say) reads as 0 rather than throwing while the table renders.
+const count = (x: number | undefined | null) => (x ?? 0).toLocaleString();
+const num = (x: number | undefined | null) => x ?? 0;
+
 /** The value for a method, as the row carries it. */
 export function lpValueFor(r: LPOfferRow, method: LPValueMethod): number | null {
   switch (method) {
@@ -43,8 +48,8 @@ export function lpMethodsWithValues(r: LPOfferRow): LPValueMethod[] {
 export function lpBreakdownLines(r: LPOfferRow, method: LPValueMethod, t: T, fmt: Fmt): string[] {
   const v = lpValueFor(r, method);
   if (r.unpriced || v == null) return [];
-  const broker = r.broker_fee_percent;
-  const tax = r.sales_tax_percent;
+  const broker = num(r.broker_fee_percent);
+  const tax = num(r.sales_tax_percent);
   const lines: string[] = [];
 
   const saleFees = (gross: number, withBroker: boolean) => {
@@ -55,14 +60,14 @@ export function lpBreakdownLines(r: LPOfferRow, method: LPValueMethod, t: T, fmt
   switch (method) {
     case "sell": {
       const gross = r.quantity * r.unit_bid;
-      lines.push(t("lpBdSell", { qty: r.quantity.toLocaleString(), price: fmt(r.unit_bid), gross: fmt(gross) }));
+      lines.push(t("lpBdSell", { qty: count(r.quantity), price: fmt(num(r.unit_bid)), gross: fmt(gross) }));
       saleFees(gross, false);
       lines.push(t("lpBdNet", { amount: fmt(gross * (1 - tax / 100)) }));
       break;
     }
     case "list": {
       const gross = r.quantity * r.unit_ask;
-      lines.push(t("lpBdList", { qty: r.quantity.toLocaleString(), price: fmt(r.unit_ask), gross: fmt(gross) }));
+      lines.push(t("lpBdList", { qty: count(r.quantity), price: fmt(num(r.unit_ask)), gross: fmt(gross) }));
       saleFees(gross, true);
       lines.push(t("lpBdNet", { amount: fmt(gross * (1 - (broker + tax) / 100)) }));
       break;
@@ -71,7 +76,7 @@ export function lpBreakdownLines(r: LPOfferRow, method: LPValueMethod, t: T, fmt
       lines.push(
         t(r.bpc_override ? "lpBdBPCOverride" : "lpBdBPC", {
           runs: r.runs,
-          price: fmt(r.bpc_per_run),
+          price: fmt(num(r.bpc_per_run)),
           gross: fmt(r.runs * r.bpc_per_run),
           samples: r.bpc_samples,
         }),
@@ -82,30 +87,30 @@ export function lpBreakdownLines(r: LPOfferRow, method: LPValueMethod, t: T, fmt
     case "build_sell":
     case "build_list": {
       const listed = method === "build_list";
-      lines.push(t("lpBdBuild", { units: r.build_units.toLocaleString(), product: r.product_name, runs: r.runs }));
+      lines.push(t("lpBdBuild", { units: count(r.build_units), product: r.product_name, runs: r.runs }));
       for (const m of r.build_materials ?? []) {
-        lines.push(t("lpBdMaterial", { qty: m.quantity.toLocaleString(), item: m.type_name, price: fmt(m.unit_price), total: fmt(m.total_price) }));
+        lines.push(t("lpBdMaterial", { qty: count(m.quantity), item: m.type_name, price: fmt(num(m.unit_price)), total: fmt(num(m.total_price)) }));
       }
-      lines.push(t("lpBdMaterialsTotal", { amount: fmt(r.build_material_cost) }));
-      lines.push(t("lpBdJob", { amount: fmt(r.build_job_cost) }));
-      lines.push(t("lpBdBuildCost", { amount: fmt(r.build_cost) }));
-      const gross = listed ? r.build_listed_gross : r.build_instant_gross;
-      const net = listed ? r.build_listed_net : r.build_instant_net;
+      lines.push(t("lpBdMaterialsTotal", { amount: fmt(num(r.build_material_cost)) }));
+      lines.push(t("lpBdJob", { amount: fmt(num(r.build_job_cost)) }));
+      lines.push(t("lpBdBuildCost", { amount: fmt(num(r.build_cost)) }));
+      const gross = num(listed ? r.build_listed_gross : r.build_instant_gross);
+      const net = num(listed ? r.build_listed_net : r.build_instant_net);
       lines.push(
         listed
-          ? t("lpBdBuildList", { units: r.build_units.toLocaleString(), price: fmt(r.unit_ask), gross: fmt(gross) })
-          : t("lpBdBuildSell", { units: r.build_units.toLocaleString(), gross: fmt(gross) }),
+          ? t("lpBdBuildList", { units: count(r.build_units), price: fmt(num(r.unit_ask)), gross: fmt(gross) })
+          : t("lpBdBuildSell", { units: count(r.build_units), gross: fmt(gross) }),
       );
       saleFees(gross, listed);
       lines.push(t("lpBdNet", { amount: fmt(net) }));
-      lines.push(t("lpBdBuildProfit", { amount: fmt(net - r.build_cost) }));
+      lines.push(t("lpBdBuildProfit", { amount: fmt(net - num(r.build_cost)) }));
       break;
     }
   }
 
   const profit = v * r.lp_cost;
-  lines.push(t("lpBdOfferCost", { amount: fmt(r.cost) }));
+  lines.push(t("lpBdOfferCost", { amount: fmt(num(r.cost)) }));
   lines.push(t("lpBdProfit", { amount: fmt(profit) }));
-  lines.push(t("lpBdPerLP", { lp: r.lp_cost.toLocaleString(), value: Math.round(v).toLocaleString() }));
+  lines.push(t("lpBdPerLP", { lp: count(r.lp_cost), value: Math.round(v).toLocaleString() }));
   return lines;
 }

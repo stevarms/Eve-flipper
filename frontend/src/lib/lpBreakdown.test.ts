@@ -116,6 +116,19 @@ describe("lpBreakdownLines", () => {
   });
 });
 
+describe("lpBreakdownLines with a row saved by an older version", () => {
+  it("does not throw when the breakdown fields are missing", () => {
+    // What a session restored from before the breakdown shipped looks like.
+    const old = row({ is_blueprint: true, runs: 1, lp_cost: 100_000, cost: 20_000_000, build_listed: 759 }) as Partial<LPOfferRow>;
+    delete old.build_units;
+    delete old.build_listed_gross;
+    delete old.build_listed_net;
+    delete old.broker_fee_percent;
+    delete old.sales_tax_percent;
+    expect(() => lpBreakdownLines(old as LPOfferRow, "build_list", t, fmt)).not.toThrow();
+  });
+});
+
 describe("lpMethodsWithValues", () => {
   it("lists the methods that have a value, best first", () => {
     const r = row({ is_blueprint: true, build_listed: 700, build_instant: 500, bpc_sale: 900 });
