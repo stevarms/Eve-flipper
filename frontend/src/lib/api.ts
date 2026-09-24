@@ -4532,3 +4532,174 @@ export async function generateFWPlan(id: number): Promise<FWPlanResponse> {
   });
   return handleResponse<FWPlanResponse>(res);
 }
+
+/* ------------------------------------------------------------ LP Store */
+
+export interface LPRequiredItem {
+  type_id: number;
+  type_name: string;
+  quantity: number;
+  /** Cheapest sell order in the pricing region; 0 when unpriced. */
+  unit_price: number;
+  priced: boolean;
+}
+
+export interface LPMaterial {
+  type_id: number;
+  type_name: string;
+  quantity: number;
+}
+
+/** "sell" | "list" | "sell_bpc" | "build_sell" | "build_list" | "" */
+export type LPMethod = "sell" | "list" | "sell_bpc" | "build_sell" | "build_list" | "";
+
+/** One LP store offer. Every value is ISK per LP; null means "does not apply or unknown", never zero. */
+export interface LPOfferRow {
+  offer_id: number;
+  type_id: number;
+  type_name: string;
+  product_type_id: number;
+  product_name: string;
+  is_blueprint: boolean;
+  /** Runs on the one copy the store hands over (blueprints only). */
+  runs: number;
+  quantity: number;
+  lp_cost: number;
+  isk_cost: number;
+  required_items: LPRequiredItem[];
+  /** ISK plus required items at their buy price. */
+  cost: number;
+  /** A required item has no sell order, so no value can be computed. */
+  unpriced: boolean;
+  instant: number | null;
+  listed: number | null;
+  bpc_sale: number | null;
+  build_instant: number | null;
+  build_listed: number | null;
+  best: number | null;
+  best_method: LPMethod;
+  units_per_redemption: number;
+  avg_daily_volume: number;
+  bpc_per_run: number;
+  bpc_samples: number;
+  bpc_override: boolean;
+  build_error?: string;
+  build_materials?: LPMaterial[];
+}
+
+export type LPStreamMessage =
+  | { type: "progress"; message: string }
+  | { type: "offers"; corporation_id: number; region_id: number; rows: LPOfferRow[] }
+  | { type: "row"; row: LPOfferRow }
+  | { type: "warning"; message: string }
+  | { type: "error"; message: string }
+  | { type: "done" };
+
+export interface LPAnalyzeRequest {
+  corporation_id: number;
+  build_system_name: string;
+  pricing_system_name: string;
+  pricing_station_id: number;
+  facility_tax: number;
+  structure_bonus: number;
+  broker_fee: number;
+  sales_tax_percent: number;
+  structure_rig_type_ids: number[];
+  structure_type_id: number;
+  structure_job_cost_reduction: number;
+  skip_reactions: boolean;
+  cost_model: string;
+}
+
+export interface LPCorporation {
+  corporation_id: number;
+  name: string;
+  militia: boolean;
+}
+
+export interface LPBalance {
+  corporation_id: number;
+  name: string;
+  loyalty_points: number;
+}
+
+export type LPBalancesResponse =
+  | { available: true; character_name: string; balances: LPBalance[] }
+  | { available: false; reason: "not_logged_in" | "token" | "missing_scope" | "esi" };
+
+/**
+ * Streams an LP store analysis. Unlike streamNdjson this hands every message
+ * to the caller as it arrives: the table fills in phases (offers, then volume,
+ * builds and contract prices as row updates), and waiting for a final result
+ * would throw that away. Resolves on "done"; rejects on "error".
+ */
+export async function analyzeLPStore(
+  req: LPAnalyzeRequest,
+  onMessage: (msg: LPStreamMessage) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await apiFetch(`${BASE}/api/lp/analyze`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+    signal,
+  });
+  if (!res.ok) {
+    let errMsg = "LP store analysis failed";
+    try {
+      const err = await res.json();
+      errMsg = err.error || err.message || errMsg;
+    } catch {
+      // not JSON
+    }
+    throw new Error(errMsg);
+  }
+  if (!res.body) throw new Error("Response body is null");
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const handle = (line: string) => {
+    if (!line.trim()) return;
+    const msg = JSON.parse(line) as LPStreamMessage;
+    if (msg.type === "error") throw new Error(msg.message);
+    onMessage(msg);
+  };
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) handle(line);
+  }
+  buffer += decoder.decode();
+  handle(buffer);
+}
+
+export async function getLPCorporations(): Promise<LPCorporation[]> {
+  const res = await apiFetch(`${BASE}/api/lp/corporations`);
+  return handleResponse<LPCorporation[]>(res);
+}
+
+export async function getLPBalances(): Promise<LPBalancesResponse> {
+  const res = await apiFetch(`${BASE}/api/auth/lp/balances`);
+  return handleResponse<LPBalancesResponse>(res);
+}
+
+export async function getLPBPCPrices(): Promise<Record<number, number>> {
+  const res = await apiFetch(`${BASE}/api/auth/lp/bpc-prices`);
+  const body = await handleResponse<{ prices: Record<number, number> }>(res);
+  return body.prices ?? {};
+}
+
+/** Sets a blueprint copy's price per run, or clears it with null. Returns all overrides. */
+export async function setLPBPCPrice(typeID: number, pricePerRun: number | null): Promise<Record<number, number>> {
+  const res = await apiFetch(`${BASE}/api/auth/lp/bpc-prices`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ type_id: typeID, price_per_run: pricePerRun }),
+  });
+  const body = await handleResponse<{ prices: Record<number, number> }>(res);
+  return body.prices ?? {};
+}
