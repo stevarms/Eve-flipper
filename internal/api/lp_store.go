@@ -560,6 +560,8 @@ func lpBuildResultFrom(res *engine.IndustryAnalysis, err error) engine.LPBuildRe
 		InstantProfit:    res.InstantSellProfit,
 		InstantAvailable: res.InstantSellAvailable,
 		ListedProfit:     res.MakerSellProfit,
+		BuildCost:        res.OptimalBuildCost,
+		JobCost:          res.TotalJobCost,
 	}
 	for _, m := range res.FlatMaterials {
 		if m == nil || m.Quantity <= 0 {

@@ -76,6 +76,11 @@ type LPBuildResult struct {
 	// Materials is the build's flattened shopping list for all runs, with the
 	// structure's material bonus applied -- what the basket's multibuy adds.
 	Materials []LPMaterial
+	// BuildCost is materials plus job install for all runs; JobCost is the
+	// install part of it. Shown, never used in a value: the profits above
+	// already have them taken out.
+	BuildCost float64
+	JobCost   float64
 }
 
 // LPMaterial is one line of a build's shopping list.
@@ -131,6 +136,10 @@ type LPOfferRow struct {
 
 	UnitsPerRedemption int64   `json:"units_per_redemption"`
 	AvgDailyVolume     float64 `json:"avg_daily_volume"`
+	// The pricing region's best bid and ask for what gets sold: the item, or
+	// for a blueprint, its product. Shown so every value can be checked.
+	UnitBid float64 `json:"unit_bid"`
+	UnitAsk float64 `json:"unit_ask"`
 
 	BPCPerRun   float64 `json:"bpc_per_run"`
 	BPCSamples  int     `json:"bpc_samples"`
@@ -138,6 +147,8 @@ type LPOfferRow struct {
 	BuildError  string  `json:"build_error,omitempty"`
 
 	BuildMaterials []LPMaterial `json:"build_materials,omitempty"`
+	BuildCost      float64      `json:"build_cost"`
+	BuildJobCost   float64      `json:"build_job_cost"`
 }
 
 // NewLPOfferRow computes everything that needs only the market: the cost and,
@@ -173,6 +184,7 @@ func NewLPOfferRow(o LPOffer, meta LPOfferMeta, q *LPMarketQuote, fees LPFees) L
 	}
 	if q != nil {
 		row.AvgDailyVolume = q.AvgDailyVolume
+		row.UnitBid, row.UnitAsk = q.BestBid, q.BestAsk
 	}
 
 	// A blueprint copy has no market; its product's book is only liquidity.
@@ -194,6 +206,7 @@ func (r *LPOfferRow) ApplyBuild(b LPBuildResult) {
 	r.BuildInstant, r.BuildListed = nil, nil
 	r.BuildError = b.Error
 	r.BuildMaterials = b.Materials
+	r.BuildCost, r.BuildJobCost = b.BuildCost, b.JobCost
 	if b.Error == "" {
 		// The analyzer's profit is already net of the build; it is revenue
 		// the offer's cost has not been taken from yet.

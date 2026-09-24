@@ -4580,11 +4580,17 @@ export interface LPOfferRow {
   best_method: LPMethod;
   units_per_redemption: number;
   avg_daily_volume: number;
+  /** Best bid / ask for what gets sold: the item, or a blueprint's product. */
+  unit_bid: number;
+  unit_ask: number;
   bpc_per_run: number;
   bpc_samples: number;
   bpc_override: boolean;
   build_error?: string;
   build_materials?: LPMaterial[];
+  /** Materials + job install for all runs (0 until the build phase arrives). */
+  build_cost: number;
+  build_job_cost: number;
 }
 
 export type LPStreamMessage =

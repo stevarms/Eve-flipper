@@ -74,6 +74,9 @@ func TestLPMarketValuesApplyTheRightFees(t *testing.T) {
 	if row.BestMethod != "list" {
 		t.Fatalf("best method = %q, want list", row.BestMethod)
 	}
+	if row.UnitBid != 900_000 || row.UnitAsk != 1_000_000 {
+		t.Fatalf("the quote must be kept for display: bid %v ask %v", row.UnitBid, row.UnitAsk)
+	}
 	if row.UnitsPerRedemption != 5 || row.AvgDailyVolume != 20 {
 		t.Fatalf("liquidity = %d units, %.1f/day", row.UnitsPerRedemption, row.AvgDailyVolume)
 	}
@@ -145,8 +148,11 @@ func TestLPBPCSaleIsPerRunWithoutFees(t *testing.T) {
 func TestLPBuildPicksBestOfBuildAndBPC(t *testing.T) {
 	row := NewLPOfferRow(ravenOffer(0), ravenMeta, nil, LPFees{})
 	row.ApplyBPCPrice(&LPBPCPrice{PerRun: 30_000_000, Samples: 2}) // (300M-200M)/200k = 500
-	row.ApplyBuild(LPBuildResult{ListedProfit: 500_000_000, InstantProfit: 300_000_000, InstantAvailable: true})
+	row.ApplyBuild(LPBuildResult{ListedProfit: 500_000_000, InstantProfit: 300_000_000, InstantAvailable: true, BuildCost: 392e6, JobCost: 2e6})
 	lpClose(t, "build_listed", row.BuildListed, 1_500)
+	if row.BuildCost != 392e6 || row.BuildJobCost != 2e6 {
+		t.Fatalf("build cost %v job %v", row.BuildCost, row.BuildJobCost)
+	}
 	lpClose(t, "build_instant", row.BuildInstant, 500)
 	lpClose(t, "best", row.Best, 1_500)
 	if row.BestMethod != "build_list" {

@@ -736,6 +736,36 @@ function OfferDetail({
         )}
       </div>
 
+      <div className="space-y-1">
+        <div className="text-eve-dim uppercase tracking-wider text-[10px]">
+          {row.is_blueprint ? t("lpDetailProductMarket", { product: row.product_name }) : t("lpDetailMarket")}
+        </div>
+        <div className="flex justify-between">
+          <span>{t("lpDetailBid")}</span>
+          <span className="font-mono">{row.unit_bid > 0 ? formatISK(row.unit_bid) : "—"}</span>
+        </div>
+        <div className="flex justify-between">
+          <span>{t("lpDetailAsk")}</span>
+          <span className="font-mono">{row.unit_ask > 0 ? formatISK(row.unit_ask) : "—"}</span>
+        </div>
+        <div className="flex justify-between">
+          <span>{t("lpDetailVolume")}</span>
+          <span className="font-mono">
+            {row.avg_daily_volume > 0 ? formatUnits(row.avg_daily_volume) : "—"}
+            <span className="text-eve-dim"> · {t("lpDetailUnitsPerRedemption", { units: row.units_per_redemption })}</span>
+          </span>
+        </div>
+        {row.is_blueprint && row.build_cost > 0 && (
+          <div className="flex justify-between">
+            <span>{t("lpDetailBuildCost")}</span>
+            <span className="font-mono">
+              {formatISK(row.build_cost)}
+              <span className="text-eve-dim"> ({t("lpDetailJobCost", { cost: formatISK(row.build_job_cost) })})</span>
+            </span>
+          </div>
+        )}
+      </div>
+
       {row.is_blueprint && (
         <div className="space-y-1">
           <div className="text-eve-dim uppercase tracking-wider text-[10px]">{t("lpDetailBlueprint")}</div>
