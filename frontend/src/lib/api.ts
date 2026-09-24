@@ -4561,6 +4561,11 @@ export interface LPOfferRow {
   product_type_id: number;
   product_name: string;
   is_blueprint: boolean;
+  /** SDE category / group of what gets sold (a blueprint's product). */
+  category: string;
+  group: string;
+  /** Market browser path, root first ("Ammunition & Charges", ...). */
+  market_path: string[];
   /** Runs on the one copy the store hands over (blueprints only). */
   runs: number;
   quantity: number;

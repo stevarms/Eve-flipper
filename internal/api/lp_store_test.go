@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"eve-flipper/internal/esi"
+	"eve-flipper/internal/sde"
 )
 
 func lpContract(id int32, price, volume float64) esi.PublicContract {
@@ -210,5 +211,38 @@ func TestLPContractShapeOf(t *testing.T) {
 	}
 	if s := lpContractShapeOf(nil); s.OK {
 		t.Fatal("no items is not a single copy")
+	}
+}
+
+func TestLPOfferMetaClassifiesByWhatIsSold(t *testing.T) {
+	sdeData := &sde.Data{
+		Types: map[int32]*sde.ItemType{
+			17636: {ID: 17636, Name: "Raven Navy Issue", GroupID: 27, CategoryID: 6, MarketGroupID: 1377},
+			12608: {ID: 12608, Name: "Hail S", GroupID: 83, CategoryID: 8, MarketGroupID: 300},
+		},
+		Groups:     map[int32]*sde.ItemGroup{27: {ID: 27, Name: "Battleship"}, 83: {ID: 83, Name: "Projectile Ammo"}},
+		Categories: map[int32]*sde.ItemCategory{6: {ID: 6, Name: "Ship"}, 8: {ID: 8, Name: "Charge"}},
+		MarketGroups: map[int32]*sde.MarketGroup{
+			11:  {ID: 11, Name: "Ammunition & Charges"},
+			300: {ID: 300, Name: "Advanced Projectile Ammo", ParentID: 11},
+		},
+		Industry: &sde.IndustryData{Blueprints: map[int32]*sde.Blueprint{
+			17637: {BlueprintTypeID: 17637, ProductTypeID: 17636, ProductQuantity: 1},
+		}},
+	}
+
+	bp := lpOfferMeta(17637, sdeData)
+	if !bp.IsBlueprint || bp.Category != "Ship" || bp.Group != "Battleship" {
+		t.Fatalf("a blueprint is classified by its product: %+v", bp)
+	}
+
+	ammo := lpOfferMeta(12608, sdeData)
+	if ammo.Category != "Charge" || len(ammo.MarketPath) != 2 || ammo.MarketPath[0] != "Ammunition & Charges" {
+		t.Fatalf("ammo = %+v", ammo)
+	}
+
+	unknown := lpOfferMeta(1, sdeData)
+	if unknown.Category != "" || unknown.MarketPath != nil {
+		t.Fatalf("an unknown type has no classification: %+v", unknown)
 	}
 }

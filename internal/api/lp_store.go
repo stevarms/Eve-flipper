@@ -618,26 +618,49 @@ func (s *Server) lpVolumes(ctx context.Context, regionID int32, rows []engine.LP
 	return out
 }
 
-// lpOfferMeta is what the SDE says about an offer's item: its name and, for a
-// blueprint, what it builds and how many per run.
+// lpOfferMeta is what the SDE says about an offer's item: its name, what kind
+// of thing gets sold, and for a blueprint, what it builds and how many per run.
 func lpOfferMeta(typeID int32, sdeData *sde.Data) engine.LPOfferMeta {
 	meta := engine.LPOfferMeta{TypeName: lpTypeName(typeID, sdeData)}
-	if sdeData == nil || sdeData.Industry == nil {
+	if sdeData == nil {
 		return meta
 	}
-	bp, ok := sdeData.Industry.Blueprints[typeID]
-	if !ok || bp == nil || bp.ProductTypeID <= 0 {
-		return meta
+	if sdeData.Industry != nil {
+		if bp, ok := sdeData.Industry.Blueprints[typeID]; ok && bp != nil && bp.ProductTypeID > 0 {
+			meta.IsBlueprint = true
+			meta.TypeName = blueprintDisplayName(typeID, sdeData)
+			meta.ProductTypeID = bp.ProductTypeID
+			meta.ProductName = lpTypeName(bp.ProductTypeID, sdeData)
+			meta.ProductPerRun = int64(bp.ProductQuantity)
+			if meta.ProductPerRun <= 0 {
+				meta.ProductPerRun = 1
+			}
+		}
 	}
-	meta.IsBlueprint = true
-	meta.TypeName = blueprintDisplayName(typeID, sdeData)
-	meta.ProductTypeID = bp.ProductTypeID
-	meta.ProductName = lpTypeName(bp.ProductTypeID, sdeData)
-	meta.ProductPerRun = int64(bp.ProductQuantity)
-	if meta.ProductPerRun <= 0 {
-		meta.ProductPerRun = 1
+	// Classified by what gets sold: a Raven Navy Issue blueprint sorts with
+	// ships, not with every other blueprint.
+	sold := typeID
+	if meta.IsBlueprint {
+		sold = meta.ProductTypeID
 	}
+	meta.Category, meta.Group, meta.MarketPath = lpTypeClassification(sold, sdeData)
 	return meta
+}
+
+// lpTypeClassification is a type's SDE category and group names and its
+// market browser path. Any part the SDE does not know is left empty.
+func lpTypeClassification(typeID int32, sdeData *sde.Data) (category, group string, path []string) {
+	t, ok := sdeData.Types[typeID]
+	if !ok || t == nil {
+		return "", "", nil
+	}
+	if c, ok := sdeData.Categories[t.CategoryID]; ok && c != nil {
+		category = c.Name
+	}
+	if g, ok := sdeData.Groups[t.GroupID]; ok && g != nil {
+		group = g.Name
+	}
+	return category, group, sdeData.MarketGroupPath(t.MarketGroupID)
 }
 
 func lpTypeName(typeID int32, sdeData *sde.Data) string {

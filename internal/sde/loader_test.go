@@ -80,3 +80,29 @@ func writeMinimalSDEZip(path string) error {
 	}
 	return zw.Close()
 }
+
+func TestMarketGroupPath(t *testing.T) {
+	d := &Data{MarketGroups: map[int32]*MarketGroup{
+		11:  {ID: 11, Name: "Ammunition & Charges"},
+		100: {ID: 100, Name: "Projectile Ammo", ParentID: 11},
+		200: {ID: 200, Name: "Advanced", ParentID: 100},
+		7:   {ID: 7, Name: "Loop A", ParentID: 8},
+		8:   {ID: 8, Name: "Loop B", ParentID: 7},
+	}}
+	got := d.MarketGroupPath(200)
+	want := []string{"Ammunition & Charges", "Projectile Ammo", "Advanced"}
+	if len(got) != len(want) {
+		t.Fatalf("path = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("path = %v, want %v", got, want)
+		}
+	}
+	if p := d.MarketGroupPath(999); len(p) != 0 {
+		t.Fatalf("unknown group gave %v", p)
+	}
+	if p := d.MarketGroupPath(7); len(p) != 2 {
+		t.Fatalf("a cycle must stop after visiting each group once, got %v", p)
+	}
+}

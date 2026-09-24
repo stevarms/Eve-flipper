@@ -47,6 +47,12 @@ type LPOfferMeta struct {
 	ProductName   string
 	// ProductPerRun is how many product units one manufacturing run makes.
 	ProductPerRun int64
+	// Category, Group and MarketPath describe what gets sold -- the item, or
+	// a blueprint's product -- so implants sort together and a search for
+	// "ammunition" finds ammo, whatever the SDE category happens to be called.
+	Category   string
+	Group      string
+	MarketPath []string
 }
 
 // LPMarketQuote is the pricing region's book for one type. For a blueprint
@@ -115,6 +121,9 @@ type LPOfferRow struct {
 	ProductTypeID int32            `json:"product_type_id"`
 	ProductName   string           `json:"product_name"`
 	IsBlueprint   bool             `json:"is_blueprint"`
+	Category      string           `json:"category"`
+	Group         string           `json:"group"`
+	MarketPath    []string         `json:"market_path"`
 	Runs          int64            `json:"runs"`
 	Quantity      int64            `json:"quantity"`
 	LPCost        int64            `json:"lp_cost"`
@@ -162,6 +171,9 @@ func NewLPOfferRow(o LPOffer, meta LPOfferMeta, q *LPMarketQuote, fees LPFees) L
 		ProductTypeID: meta.ProductTypeID,
 		ProductName:   meta.ProductName,
 		IsBlueprint:   meta.IsBlueprint,
+		Category:      meta.Category,
+		Group:         meta.Group,
+		MarketPath:    meta.MarketPath,
 		Quantity:      o.Quantity,
 		LPCost:        o.LPCost,
 		ISKCost:       o.ISKCost,
@@ -169,6 +181,9 @@ func NewLPOfferRow(o LPOffer, meta LPOfferMeta, q *LPMarketQuote, fees LPFees) L
 	}
 	if row.RequiredItems == nil {
 		row.RequiredItems = []LPRequiredItem{}
+	}
+	if row.MarketPath == nil {
+		row.MarketPath = []string{}
 	}
 	row.Cost, row.Unpriced = lpOfferCost(o)
 

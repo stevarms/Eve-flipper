@@ -42,6 +42,9 @@ function row(over: Partial<LPOfferRow>): LPOfferRow {
     product_type_id: 0,
     product_name: "",
     is_blueprint: false,
+    category: "",
+    group: "",
+    market_path: [],
     runs: 0,
     quantity: 1,
     lp_cost: 1000,
@@ -110,7 +113,7 @@ describe("LPStoreTab", () => {
     expect(cells.length).toBeGreaterThan(0);
   });
 
-  it("groups trade-ins for the same product under one row", async () => {
+  it("lists every trade-in as its own row, with no collapsing", async () => {
     const user = userEvent.setup();
     const bp = { is_blueprint: true, type_id: 17637, product_type_id: 17636, type_name: "Raven Navy Issue Blueprint", product_name: "Raven Navy Issue" };
     streamed.rows = [
@@ -119,12 +122,51 @@ describe("LPStoreTab", () => {
     ];
     mount();
     await user.click(await screen.findByRole("button", { name: /^analyze$/i }));
-    expect(await screen.findByText("2 offers")).toBeInTheDocument();
-    expect(screen.queryByText("10 runs")).not.toBeInTheDocument();
+    expect(await screen.findByText(/^10 runs/)).toBeInTheDocument();
+    expect(screen.getByText(/^1 run/)).toBeInTheDocument();
+    expect(screen.getAllByRole("checkbox", { name: /select raven navy issue blueprint/i })).toHaveLength(2);
+  });
 
-    await user.click(screen.getByText("2 offers"));
-    expect(screen.getByText(/10 runs/)).toBeInTheDocument();
-    expect(screen.getByText(/^1 run ·|^1 run$/)).toBeInTheDocument();
+  it("sorts by category so implants sit together, and back the other way on a second click", async () => {
+    const user = userEvent.setup();
+    streamed.rows = [
+      row({ offer_id: 1, type_id: 1, type_name: "Hail S", category: "Charge", group: "Projectile Ammo", best: 3_000 }),
+      row({ offer_id: 2, type_id: 2, type_name: "Talon Alpha", category: "Implant", group: "Cyberimplant", best: 1_000 }),
+      row({ offer_id: 3, type_id: 3, type_name: "Raven Navy Issue Blueprint", category: "Ship", group: "Battleship", best: 2_000 }),
+      row({ offer_id: 4, type_id: 4, type_name: "Talon Beta", category: "Implant", group: "Cyberimplant", best: 500 }),
+    ];
+    mount();
+    await user.click(await screen.findByRole("button", { name: /^analyze$/i }));
+    await screen.findByText("Hail S");
+    const order = () => screen.getAllByRole("checkbox", { name: /^select /i }).map((el) => el.getAttribute("aria-label"));
+
+    expect(order()).toEqual(["Select Hail S", "Select Raven Navy Issue Blueprint", "Select Talon Alpha", "Select Talon Beta"]);
+
+    await user.click(screen.getByRole("button", { name: /^category$/i }));
+    expect(order()).toEqual(["Select Hail S", "Select Talon Alpha", "Select Talon Beta", "Select Raven Navy Issue Blueprint"]);
+
+    await user.click(screen.getByRole("button", { name: /^category/i }));
+    expect(order()).toEqual(["Select Raven Navy Issue Blueprint", "Select Talon Alpha", "Select Talon Beta", "Select Hail S"]);
+  });
+
+  it("finds ammo by searching its market group, not just its name", async () => {
+    const user = userEvent.setup();
+    streamed.rows = [
+      row({ offer_id: 1, type_id: 1, type_name: "Caldari Navy Scourge Light Missile", category: "Charge", group: "Light Missile", market_path: ["Ammunition & Charges", "Missiles", "Light Missiles"], best: 800 }),
+      row({ offer_id: 2, type_id: 2, type_name: "Low-grade Talon Alpha", category: "Implant", group: "Cyberimplant", market_path: ["Implants & Boosters", "Implants"], best: 2_000 }),
+    ];
+    mount();
+    await user.click(await screen.findByRole("button", { name: /^analyze$/i }));
+    await screen.findByText("Low-grade Talon Alpha");
+
+    await user.type(screen.getByPlaceholderText(/search/i), "ammunition");
+    expect(screen.getByText("Caldari Navy Scourge Light Missile")).toBeInTheDocument();
+    expect(screen.queryByText("Low-grade Talon Alpha")).not.toBeInTheDocument();
+
+    await user.clear(screen.getByPlaceholderText(/search/i));
+    await user.type(screen.getByPlaceholderText(/search/i), "implant");
+    expect(screen.getByText("Low-grade Talon Alpha")).toBeInTheDocument();
+    expect(screen.queryByText("Caldari Navy Scourge Light Missile")).not.toBeInTheDocument();
   });
 
   it("hides offers that trade less than the minimum volume, including ones with none", async () => {

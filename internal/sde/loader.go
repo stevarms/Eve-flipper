@@ -29,17 +29,18 @@ const (
 
 // Data holds all parsed SDE data.
 type Data struct {
-	Systems      map[int32]*SolarSystem // systemID -> system
-	SystemByName map[string]int32       // lowercase name -> systemID
-	SystemNames  []string               // all system names for autocomplete
-	Regions      map[int32]*Region      // regionID -> region
-	RegionByName map[string]int32       // lowercase name -> regionID
-	Types        map[int32]*ItemType    // typeID -> type
-	TypeByName   map[string]int32       // lowercase name -> typeID (for reverse lookup)
-	Groups       map[int32]*ItemGroup   // groupID -> group metadata
+	Systems      map[int32]*SolarSystem  // systemID -> system
+	SystemByName map[string]int32        // lowercase name -> systemID
+	SystemNames  []string                // all system names for autocomplete
+	Regions      map[int32]*Region       // regionID -> region
+	RegionByName map[string]int32        // lowercase name -> regionID
+	Types        map[int32]*ItemType     // typeID -> type
+	TypeByName   map[string]int32        // lowercase name -> typeID (for reverse lookup)
+	Groups       map[int32]*ItemGroup    // groupID -> group metadata
 	Categories   map[int32]*ItemCategory // categoryID -> category metadata
-	Contraband   map[int32]bool         // typeID -> listed in contrabandTypes
-	Stations     map[int64]*Station     // stationID -> station
+	MarketGroups map[int32]*MarketGroup  // marketGroupID -> market group (names + parent)
+	Contraband   map[int32]bool          // typeID -> listed in contrabandTypes
+	Stations     map[int64]*Station      // stationID -> station
 	Universe     *graph.Universe
 	Industry     *IndustryData // blueprints, reprocessing, etc.
 
@@ -101,6 +102,39 @@ type ItemCategory struct {
 	Name string
 }
 
+// MarketGroup is one node of the in-game market browser tree
+// (e.g. "Ammunition & Charges" > "Projectile Ammo").
+type MarketGroup struct {
+	ID       int32
+	Name     string
+	ParentID int32 // 0 for a root group
+}
+
+// MarketGroupPath returns the market browser path to a group, root first
+// ("Ammunition & Charges", "Projectile Ammo", ...). Unknown groups end the
+// path; a cycle in bad data cannot loop forever.
+func (d *Data) MarketGroupPath(marketGroupID int32) []string {
+	if d == nil || len(d.MarketGroups) == 0 {
+		return nil
+	}
+	var rev []string
+	seen := map[int32]bool{}
+	for id := marketGroupID; id > 0 && !seen[id]; {
+		seen[id] = true
+		g, ok := d.MarketGroups[id]
+		if !ok || g == nil {
+			break
+		}
+		rev = append(rev, g.Name)
+		id = g.ParentID
+	}
+	path := make([]string, len(rev))
+	for i, name := range rev {
+		path[len(rev)-1-i] = name
+	}
+	return path
+}
+
 // Station represents an NPC station from the SDE.
 type Station struct {
 	ID       int64
@@ -126,6 +160,7 @@ func Load(dataDir string) (*Data, error) {
 		TypeByName:   make(map[string]int32),
 		Groups:       make(map[int32]*ItemGroup),
 		Categories:   make(map[int32]*ItemCategory),
+		MarketGroups: make(map[int32]*MarketGroup),
 		Contraband:   make(map[int32]bool),
 		Stations:     make(map[int64]*Station),
 		Universe:     graph.NewUniverse(),
@@ -354,6 +389,26 @@ func (d *Data) loadTypes(dir string) error {
 			return nil
 		}
 		d.Categories[c.Key] = &ItemCategory{ID: c.Key, Name: name}
+		return nil
+	})
+
+	// Market browser groups, for searching by what the market calls things
+	// ("Ammunition & Charges") rather than the SDE category ("Charge").
+	// Optional: an older dump without the file just has no paths.
+	_, _ = readOptionalJSONL(dir, "marketGroups", func(raw json.RawMessage) error {
+		var g struct {
+			Key           int32             `json:"_key"`
+			Name          map[string]string `json:"name"`
+			ParentGroupID int32             `json:"parentGroupID"`
+		}
+		if err := json.Unmarshal(raw, &g); err != nil {
+			return err
+		}
+		name := strings.TrimSpace(g.Name["en"])
+		if name == "" {
+			return nil
+		}
+		d.MarketGroups[g.Key] = &MarketGroup{ID: g.Key, Name: name, ParentID: g.ParentGroupID}
 		return nil
 	})
 

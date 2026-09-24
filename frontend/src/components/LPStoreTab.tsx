@@ -47,6 +47,8 @@ interface Prefs {
   minVolume: number | null;
   typedLP: number | null;
   includeBuild: boolean;
+  sortKey: SortKey;
+  sortDir: "asc" | "desc";
 }
 
 interface SessionState {
@@ -56,7 +58,7 @@ interface SessionState {
   warnings: string[];
 }
 
-const DEFAULT_PREFS: Prefs = { corporationID: 1000180, filter: "all", minISKPerLP: null, minVolume: null, typedLP: null, includeBuild: false };
+const DEFAULT_PREFS: Prefs = { corporationID: 1000180, filter: "all", minISKPerLP: null, minVolume: null, typedLP: null, includeBuild: false, sortKey: "best", sortDir: "desc" };
 
 function loadPrefs(): Prefs {
   try {
@@ -111,9 +113,55 @@ function formatUnits(v: number): string {
   return v.toLocaleString(undefined, { maximumFractionDigits: 1 });
 }
 
-/** Offers of the same product are one decision: which trade-in to use. */
-function groupKey(r: LPOfferRow): number {
-  return r.is_blueprint ? r.product_type_id || r.type_id : r.type_id;
+type SortKey =
+  | "offer"
+  | "category"
+  | "lp"
+  | "cost"
+  | "instant"
+  | "listed"
+  | "bpc"
+  | "build_instant"
+  | "build_listed"
+  | "best"
+  | "volume";
+
+// Text columns sort A-Z first; number columns biggest first, since the
+// question they answer is "which is highest".
+const TEXT_SORTS: SortKey[] = ["offer", "category"];
+
+function sortValue(r: LPOfferRow, key: SortKey): number | string | null {
+  switch (key) {
+    case "offer":
+      return r.type_name.toLowerCase();
+    case "category":
+      // Category first, then group, so implants cluster and within them the
+      // same kind of implant sits together.
+      return r.category ? `${r.category} ${r.group}`.toLowerCase() : null;
+    case "lp":
+      return r.lp_cost;
+    case "cost":
+      return r.unpriced ? null : r.cost;
+    case "instant":
+      return r.instant;
+    case "listed":
+      return r.listed;
+    case "bpc":
+      return r.bpc_sale;
+    case "build_instant":
+      return r.build_instant;
+    case "build_listed":
+      return r.build_listed;
+    case "best":
+      return r.unpriced ? null : r.best;
+    case "volume":
+      return r.avg_daily_volume > 0 ? r.avg_daily_volume : null;
+  }
+}
+
+/** Everything a search matches: the name, the product, and what kind of thing it is. */
+function searchText(r: LPOfferRow): string {
+  return [r.type_name, r.product_name, r.category, r.group, ...(r.market_path ?? [])].join(" ").toLowerCase();
 }
 
 function requiredItemsMultibuy(r: LPOfferRow): string {
@@ -150,7 +198,6 @@ export function LPStoreTab({ isLoggedIn, onError }: Props) {
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState("");
   const [search, setSearch] = useState("");
-  const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [detail, setDetail] = useState<number | null>(null);
   const [notice, setNotice] = useState("");
 
@@ -294,28 +341,30 @@ export function LPStoreTab({ isLoggedIn, onError }: Props) {
       if (prefs.filter === "blueprints" && !r.is_blueprint) return false;
       if (prefs.minISKPerLP != null && (r.best == null || r.best < prefs.minISKPerLP)) return false;
       if (prefs.minVolume != null && r.avg_daily_volume < prefs.minVolume) return false;
-      if (q && !r.type_name.toLowerCase().includes(q) && !r.product_name.toLowerCase().includes(q)) return false;
+      if (q && !searchText(r).includes(q)) return false;
       return true;
     });
   }, [rows, prefs.filter, prefs.minISKPerLP, prefs.minVolume, search]);
 
-  // Groups sorted by their best variant; unvalued last. Within a group, best first.
-  const groups = useMemo(() => {
-    const m = new Map<number, LPOfferRow[]>();
-    for (const r of visibleRows) {
-      const k = groupKey(r);
-      const list = m.get(k) ?? [];
-      list.push(r);
-      m.set(k, list);
-    }
-    const byBest = (a: LPOfferRow, b: LPOfferRow) => (b.best ?? -Infinity) - (a.best ?? -Infinity);
-    const out = [...m.entries()].map(([key, list]) => {
-      list.sort(byBest);
-      return { key, offers: list, best: list[0] };
+  // Sorted by the chosen column. Rows with no value sort last whichever way
+  // round, so an ascending sort does not open on a screen of dashes.
+  const sortedRows = useMemo(() => {
+    const dir = prefs.sortDir === "asc" ? 1 : -1;
+    return [...visibleRows].sort((a, b) => {
+      const va = sortValue(a, prefs.sortKey);
+      const vb = sortValue(b, prefs.sortKey);
+      if (va == null && vb == null) return a.type_name.localeCompare(b.type_name);
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      const cmp = typeof va === "string" ? va.localeCompare(vb as string) : va - (vb as number);
+      return cmp * dir || a.type_name.localeCompare(b.type_name);
     });
-    out.sort((a, b) => byBest(a.best, b.best) || a.best.type_name.localeCompare(b.best.type_name));
-    return out;
-  }, [visibleRows]);
+  }, [visibleRows, prefs.sortKey, prefs.sortDir]);
+
+  const toggleSort = (key: SortKey) => {
+    if (prefs.sortKey === key) setPrefs({ sortDir: prefs.sortDir === "asc" ? "desc" : "asc" });
+    else setPrefs({ sortKey: key, sortDir: TEXT_SORTS.includes(key) ? "asc" : "desc" });
+  };
 
   const basket = useMemo(
     () => computeLPBasket(rows, selection, { includeBuild: prefs.includeBuild, balance: lpBalance }),
@@ -330,14 +379,6 @@ export function LPStoreTab({ isLoggedIn, onError }: Props) {
       return next;
     });
 
-  const toggleGroup = (key: number) =>
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-
   const valueCell = (r: LPOfferRow, v: number | null, pending: boolean, isBest: boolean) => {
     if (r.unpriced) return <span className="text-eve-warning" title={t("lpUnpricedHint")}>?</span>;
     if (v == null && pending && running) return <span className="text-eve-dim">…</span>;
@@ -345,7 +386,23 @@ export function LPStoreTab({ isLoggedIn, onError }: Props) {
     return <span className={`${tone} ${isBest ? "font-semibold" : ""}`}>{formatPerLP(v)}</span>;
   };
 
-  const offerRow = (r: LPOfferRow, nested: boolean) => {
+  const sortHeader = (key: SortKey, label: string, right: boolean, hint?: string) => {
+    const active = prefs.sortKey === key;
+    return (
+      <th className={right ? THR : TH} title={hint} aria-sort={active ? (prefs.sortDir === "asc" ? "ascending" : "descending") : "none"}>
+        <button
+          type="button"
+          className={`uppercase tracking-wider hover:text-eve-text ${active ? "text-eve-accent" : ""}`}
+          onClick={() => toggleSort(key)}
+        >
+          {label}
+          {active && <span className="ml-0.5">{prefs.sortDir === "asc" ? "▲" : "▼"}</span>}
+        </button>
+      </th>
+    );
+  };
+
+  const offerRow = (r: LPOfferRow) => {
     const count = selection.get(r.offer_id) ?? 0;
     const buildPending = r.is_blueprint && !r.build_error;
     return (
@@ -371,14 +428,20 @@ export function LPStoreTab({ isLoggedIn, onError }: Props) {
               />
             )}
           </td>
-          <td className={`${TD} ${nested ? "pl-6" : ""}`}>
-            {nested ? (
-              <span className="text-eve-dim">{offerLabel(r)}</span>
-            ) : (
+          <td className={TD}>
+            <div className="flex flex-col">
+              <ItemRef typeId={r.type_id} name={r.type_name} market={!r.is_blueprint} copyName />
+              <span className="text-[10px] text-eve-dim">{offerLabel(r)}</span>
+            </div>
+          </td>
+          <td className={TD} title={(r.market_path ?? []).join(" › ")}>
+            {r.category ? (
               <div className="flex flex-col">
-                <ItemRef typeId={r.type_id} name={r.type_name} market={!r.is_blueprint} copyName />
-                <span className="text-[10px] text-eve-dim">{offerLabel(r)}</span>
+                <span className="text-eve-text">{r.category}</span>
+                {r.group && <span className="text-[10px] text-eve-dim">{r.group}</span>}
               </div>
+            ) : (
+              <span className="text-eve-dim">—</span>
             )}
           </td>
           <td className={TDR}>{r.lp_cost.toLocaleString()}</td>
@@ -412,7 +475,7 @@ export function LPStoreTab({ isLoggedIn, onError }: Props) {
         </tr>
         {detail === r.offer_id && (
           <tr className="bg-eve-dark/80 border-b border-eve-border/40">
-            <td colSpan={12} className="px-4 py-3">
+            <td colSpan={13} className="px-4 py-3">
               <OfferDetail
                 row={r}
                 isLoggedIn={isLoggedIn}
@@ -617,51 +680,21 @@ export function LPStoreTab({ isLoggedIn, onError }: Props) {
               <tr className="text-eve-dim text-[10px] uppercase tracking-wider border-b border-eve-border">
                 <th className="px-2 py-1.5 w-6"></th>
                 <th className="px-1 py-1.5 w-14"></th>
-                <th className={TH}>{t("lpColItem")}</th>
-                <th className={THR}>LP</th>
-                <th className={THR} title={t("lpColCostHint")}>{t("lpColCost")}</th>
-                <th className={THR} title={t("lpColInstantHint")}>{t("lpColInstant")}</th>
-                <th className={THR} title={t("lpColListedHint")}>{t("lpColListed")}</th>
-                <th className={THR} title={t("lpColBPCHint")}>{t("lpColBPC")}</th>
-                <th className={THR} title={t("lpColBuildInstantHint")}>{t("lpColBuildInstant")}</th>
-                <th className={THR} title={t("lpColBuildListedHint")}>{t("lpColBuildListed")}</th>
-                <th className={THR}>{t("lpColBest")}</th>
-                <th className={THR} title={t("lpColVolumeHint")}>{t("lpColVolume")}</th>
+                {sortHeader("offer", t("lpColItem"), false)}
+                {sortHeader("category", t("lpColCategory"), false, t("lpColCategoryHint"))}
+                {sortHeader("lp", "LP", true)}
+                {sortHeader("cost", t("lpColCost"), true, t("lpColCostHint"))}
+                {sortHeader("instant", t("lpColInstant"), true, t("lpColInstantHint"))}
+                {sortHeader("listed", t("lpColListed"), true, t("lpColListedHint"))}
+                {sortHeader("bpc", t("lpColBPC"), true, t("lpColBPCHint"))}
+                {sortHeader("build_instant", t("lpColBuildInstant"), true, t("lpColBuildInstantHint"))}
+                {sortHeader("build_listed", t("lpColBuildListed"), true, t("lpColBuildListedHint"))}
+                {sortHeader("best", t("lpColBest"), true)}
+                {sortHeader("volume", t("lpColVolume"), true, t("lpColVolumeHint"))}
               </tr>
             </thead>
             <tbody>
-              {groups.map((g) => {
-                if (g.offers.length === 1) return offerRow(g.offers[0], false);
-                const open = expanded.has(g.key);
-                const head = g.best;
-                return (
-                  <Fragment key={`g-${g.key}`}>
-                    <tr className="border-b border-eve-border/40 bg-eve-panel/30 cursor-pointer" onClick={() => toggleGroup(g.key)}>
-                      <td className="px-2 py-1.5 text-eve-dim">{open ? "▾" : "▸"}</td>
-                      <td></td>
-                      <td className={TD}>
-                        <div className="flex flex-col">
-                          <ItemRef typeId={head.type_id} name={head.is_blueprint ? head.product_name || head.type_name : head.type_name} copyName />
-                          <span className="text-[10px] text-eve-dim">{t("lpOffersInGroup", { count: g.offers.length })}</span>
-                        </div>
-                      </td>
-                      <td colSpan={7}></td>
-                      <td className={TDR}>
-                        {head.best != null ? (
-                          <span>
-                            <span className={`font-semibold ${head.best < 0 ? "text-eve-error" : "text-eve-accent"}`}>{formatPerLP(head.best)}</span>
-                            <span className="block text-[10px] text-eve-dim">{head.best_method ? t(METHOD_LABEL[head.best_method]) : ""}</span>
-                          </span>
-                        ) : (
-                          "—"
-                        )}
-                      </td>
-                      <td className={TDR}>{head.avg_daily_volume > 0 ? formatUnits(head.avg_daily_volume) : "—"}</td>
-                    </tr>
-                    {open && g.offers.map((r) => offerRow(r, true))}
-                  </Fragment>
-                );
-              })}
+              {sortedRows.map((r) => offerRow(r))}
             </tbody>
           </table>
         )}
