@@ -483,12 +483,12 @@ func (s *Server) handleLPAnalyze(w http.ResponseWriter, r *http.Request) {
 				warn("blueprint copy contracts could not be loaded, so the blueprint-sale column is empty: " + err.Error())
 			} else {
 				ids := lpBPCCandidateContracts(contracts)
-				items := s.esi.FetchContractItemsBatch(ids, scanner.ContractItemsCache, func(done, total int) {
+				shapes := s.lpRefreshContractShapes(regionID, ids, scanner.ContractItemsCache, func(done, total int) {
 					if done == total || done%100 == 0 {
-						progress(fmt.Sprintf("Reading blueprint copy contracts %d/%d", done, total))
+						progress(fmt.Sprintf("Reading new blueprint copy contracts %d/%d", done, total))
 					}
 				})
-				prices = lpBPCPricesFromContracts(contracts, items, bpTypes)
+				prices = lpBPCPricesFromShapes(contracts, shapes, bpTypes)
 			}
 		}
 		for i := range rows {
@@ -708,21 +708,86 @@ func lpBPCCandidateContracts(contracts []esi.PublicContract) []int32 {
 	return ids
 }
 
+// lpContractShape is all the LP tool needs to know about a contract's
+// contents: whether it sells exactly one blueprint copy, and of what.
+type lpContractShape struct {
+	TypeID int32
+	Runs   int
+	OK     bool // exactly one included blueprint copy with runs
+}
+
+func lpContractShapeOf(items []esi.ContractItem) lpContractShape {
+	if len(items) != 1 {
+		return lpContractShape{}
+	}
+	it := items[0]
+	if !it.IsIncluded || !it.IsBlueprintCopy || it.Runs <= 0 || it.Quantity != 1 {
+		return lpContractShape{}
+	}
+	return lpContractShape{TypeID: it.TypeID, Runs: it.Runs, OK: true}
+}
+
+// lpContractShapes remembers every candidate contract's shape per region.
+// Contract contents never change, and The Forge has more single-copy-sized
+// contracts than the scanner's item cache holds, so without this every
+// analysis refetched thousands of contracts. Each refresh keeps only the
+// contracts still listed, so the map is bounded by the live market.
+var (
+	lpContractShapesMu sync.Mutex
+	lpContractShapes   = map[int32]map[int32]lpContractShape{}
+)
+
+// lpRefreshContractShapes returns the shape of every candidate, fetching only
+// the ones not seen before. A contract whose items could not be fetched is
+// left out, and tried again next time.
+func (s *Server) lpRefreshContractShapes(regionID int32, candidates []int32, cache *esi.ContractItemsCache, progress func(done, total int)) map[int32]lpContractShape {
+	lpContractShapesMu.Lock()
+	known := lpContractShapes[regionID]
+	lpContractShapesMu.Unlock()
+
+	live := make(map[int32]lpContractShape, len(candidates))
+	var missing []int32
+	for _, id := range candidates {
+		if shape, ok := known[id]; ok {
+			live[id] = shape
+		} else {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) > 0 {
+		items := s.esi.FetchContractItemsBatch(missing, cache, progress)
+		for _, id := range missing {
+			if its, ok := items[id]; ok {
+				live[id] = lpContractShapeOf(its)
+			}
+		}
+	}
+
+	lpContractShapesMu.Lock()
+	lpContractShapes[regionID] = live
+	lpContractShapesMu.Unlock()
+	return live
+}
+
 // lpBPCPricesFromContracts is the median asking price per run for each wanted
 // blueprint type, from contracts selling exactly one copy of it and nothing
 // else. Per run, because the same blueprint is sold as 1-run and 10-run copies.
 func lpBPCPricesFromContracts(contracts []esi.PublicContract, items map[int32][]esi.ContractItem, want map[int32]bool) map[int32]engine.LPBPCPrice {
+	shapes := make(map[int32]lpContractShape, len(items))
+	for id, its := range items {
+		shapes[id] = lpContractShapeOf(its)
+	}
+	return lpBPCPricesFromShapes(contracts, shapes, want)
+}
+
+func lpBPCPricesFromShapes(contracts []esi.PublicContract, shapes map[int32]lpContractShape, want map[int32]bool) map[int32]engine.LPBPCPrice {
 	samples := map[int32][]float64{}
 	for _, c := range contracts {
-		its, ok := items[c.ContractID]
-		if !ok || len(its) != 1 || c.Price <= 0 {
+		shape, ok := shapes[c.ContractID]
+		if !ok || !shape.OK || c.Price <= 0 || !want[shape.TypeID] {
 			continue
 		}
-		it := its[0]
-		if !it.IsIncluded || !it.IsBlueprintCopy || it.Runs <= 0 || it.Quantity != 1 || !want[it.TypeID] {
-			continue
-		}
-		samples[it.TypeID] = append(samples[it.TypeID], c.Price/float64(it.Runs))
+		samples[shape.TypeID] = append(samples[shape.TypeID], c.Price/float64(shape.Runs))
 	}
 	out := make(map[int32]engine.LPBPCPrice, len(samples))
 	for typeID, ss := range samples {

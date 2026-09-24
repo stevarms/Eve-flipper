@@ -171,3 +171,44 @@ func TestLPBalancesUnavailableWhenLoggedOut(t *testing.T) {
 		t.Fatalf("got %v", out)
 	}
 }
+
+func TestLPContractShapesReuseKnownAndDropDelisted(t *testing.T) {
+	const region int32 = 99_000_001
+	lpContractShapesMu.Lock()
+	lpContractShapes[region] = map[int32]lpContractShape{
+		1: {TypeID: 17637, Runs: 1, OK: true},
+		2: {TypeID: 17637, Runs: 10, OK: true}, // no longer listed
+	}
+	lpContractShapesMu.Unlock()
+	t.Cleanup(func() {
+		lpContractShapesMu.Lock()
+		delete(lpContractShapes, region)
+		lpContractShapesMu.Unlock()
+	})
+
+	// Every candidate is already known, so no ESI call is made -- the server
+	// has no ESI client at all, and would panic if it tried.
+	srv := &Server{}
+	got := srv.lpRefreshContractShapes(region, []int32{1}, nil, nil)
+	if len(got) != 1 || !got[1].OK || got[1].Runs != 1 {
+		t.Fatalf("shapes = %+v", got)
+	}
+	lpContractShapesMu.Lock()
+	_, stale := lpContractShapes[region][2]
+	lpContractShapesMu.Unlock()
+	if stale {
+		t.Fatal("a delisted contract must be dropped from the cache")
+	}
+}
+
+func TestLPContractShapeOf(t *testing.T) {
+	if s := lpContractShapeOf([]esi.ContractItem{bpcItem(17637, 3)}); !s.OK || s.Runs != 3 || s.TypeID != 17637 {
+		t.Fatalf("a lone copy: %+v", s)
+	}
+	if s := lpContractShapeOf([]esi.ContractItem{bpcItem(1, 1), bpcItem(2, 1)}); s.OK {
+		t.Fatal("two items is not a single copy")
+	}
+	if s := lpContractShapeOf(nil); s.OK {
+		t.Fatal("no items is not a single copy")
+	}
+}
