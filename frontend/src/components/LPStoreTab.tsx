@@ -248,6 +248,7 @@ export function LPStoreTab({ isLoggedIn, onError }: Props) {
           structure_job_cost_reduction: sharedPrefs.structureJobCostReduction,
           skip_reactions: sharedPrefs.skipReactions,
           cost_model: sharedPrefs.costModel,
+          build_mode: sharedPrefs.buildMode,
         },
         applyMessage,
         controller.signal,

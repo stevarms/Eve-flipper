@@ -63,6 +63,12 @@ type lpAnalyzeRequest struct {
 	StructureJobCostReduction float64 `json:"structure_job_cost_reduction"`
 	SkipReactions             bool    `json:"skip_reactions"`
 	CostModel                 string  `json:"cost_model"`
+	// BuildMode is the Industry tab's build-vs-buy choice for components:
+	// "auto" builds a component when that is cheaper, "buy_all" buys every
+	// component, "build_all" builds them all. It decides whether the build
+	// value (and the build-materials multibuy) assumes you also run the
+	// component jobs.
+	BuildMode string `json:"build_mode"`
 }
 
 type lpCorporation struct {
@@ -240,6 +246,13 @@ func (s *Server) handleLPAnalyze(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid cost_model")
 		return
 	}
+	req.BuildMode = strings.TrimSpace(strings.ToLower(req.BuildMode))
+	switch req.BuildMode {
+	case "", "auto", "buy_all", "build_all":
+	default:
+		writeError(w, http.StatusBadRequest, "invalid build_mode")
+		return
+	}
 	if strings.TrimSpace(req.PricingSystemName) == "" {
 		req.PricingSystemName = "Jita"
 	}
@@ -320,6 +333,7 @@ func (s *Server) handleLPAnalyze(w http.ResponseWriter, r *http.Request) {
 			StructureTypeID: req.StructureTypeID,
 		},
 		CostModel: req.CostModel,
+		BuildMode: req.BuildMode,
 	}
 
 	progress("Loading market orders...")

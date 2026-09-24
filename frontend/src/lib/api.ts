@@ -4609,6 +4609,8 @@ export interface LPAnalyzeRequest {
   structure_job_cost_reduction: number;
   skip_reactions: boolean;
   cost_model: string;
+  /** "auto" | "buy_all" | "build_all" -- whether components are built or bought. */
+  build_mode: string;
 }
 
 export interface LPCorporation {
