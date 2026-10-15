@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "repo": "stevarms/Eve-flipper",
-  "generated_at": "2026-10-15T17:06:24.294Z",
+  "generated_at": "2026-10-15T21:28:39.484Z",
   "latest_release": "v1.16.0",
-  "total_downloads": 1900,
-  "current_github_total": 34,
+  "total_downloads": 1901,
+  "current_github_total": 35,
   "active_asset_count": 48,
   "archived_asset_count": 404,
   "clone_stats": {
@@ -5862,13 +5862,13 @@
       "tag_name": "v1.12.1",
       "release_id": "387692403",
       "state": "active",
-      "download_count": 1,
-      "github_download_count": 1,
+      "download_count": 2,
+      "github_download_count": 2,
       "browser_download_url": "https://github.com/stevarms/Eve-flipper/releases/download/v1.12.1/eve-flipper-desktop-windows-amd64.exe",
       "created_at": "2026-09-12T20:18:27Z",
       "updated_at": "2026-09-12T20:18:29Z",
       "first_seen_at": "2026-09-12T20:37:31.962Z",
-      "last_seen_at": "2026-09-12T20:37:31.962Z"
+      "last_seen_at": "2026-10-15T21:28:39.484Z"
     },
     {
       "id": "559891449",
